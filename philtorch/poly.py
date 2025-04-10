@@ -1,6 +1,8 @@
 import torch
+import torch.nn.functional as F
 from torch import Tensor
 from typing import Tuple
+from functools import reduce
 
 
 def roots(p: Tensor) -> Tensor:
@@ -32,7 +34,6 @@ def roots(p: Tensor) -> Tensor:
         # A = diag(NX.ones((N - 2,), p.dtype), -1)
         A = torch.diag(p.new_ones(N - 2), -1)
         A[0, :] = -p[1:] / p[0]
-        # roots = eigvals(A)
         roots = torch.linalg.eigvals(A)
     else:
         roots = torch.tensor([])
@@ -46,52 +47,6 @@ def roots(p: Tensor) -> Tensor:
 def polydiv(u: Tensor, v: Tensor) -> Tuple[Tensor, Tensor]:
     """
     Returns the quotient and remainder of polynomial division.
-
-    .. note::
-       This forms part of the old polynomial API. Since version 1.4, the
-       new polynomial API defined in `numpy.polynomial` is preferred.
-       A summary of the differences can be found in the
-       :doc:`transition guide </reference/routines.polynomials>`.
-
-    The input arrays are the coefficients (including any coefficients
-    equal to zero) of the "numerator" (dividend) and "denominator"
-    (divisor) polynomials, respectively.
-
-    Parameters
-    ----------
-    u : array_like or poly1d
-        Dividend polynomial's coefficients.
-
-    v : array_like or poly1d
-        Divisor polynomial's coefficients.
-
-    Returns
-    -------
-    q : ndarray
-        Coefficients, including those equal to zero, of the quotient.
-    r : ndarray
-        Coefficients, including those equal to zero, of the remainder.
-
-    See Also
-    --------
-    poly, polyadd, polyder, polydiv, polyfit, polyint, polymul, polysub
-    polyval
-
-    Notes
-    -----
-    Both `u` and `v` must be 0-d or 1-d (ndim = 0 or 1), but `u.ndim` need
-    not equal `v.ndim`. In other words, all four possible combinations -
-    ``u.ndim = v.ndim = 0``, ``u.ndim = v.ndim = 1``,
-    ``u.ndim = 1, v.ndim = 0``, and ``u.ndim = 0, v.ndim = 1`` - work.
-
-    Examples
-    --------
-    .. math:: \\frac{3x^2 + 5x + 2}{2x + 1} = 1.5x + 1.75, remainder 0.25
-
-    >>> x = np.array([3.0, 5.0, 2.0])
-    >>> y = np.array([2.0, 1.0])
-    >>> np.polydiv(x, y)
-    (array([1.5 , 1.75]), array([0.25]))
 
     """
     assert (
@@ -112,3 +67,50 @@ def polydiv(u: Tensor, v: Tensor) -> Tuple[Tensor, Tensor]:
     while torch.abs(r[0]) < 1e-8 and (r.shape[-1] > 1):
         r = r[1:]
     return q, r
+
+
+def polysmul(*polynomials: Tensor) -> Tensor:
+    n = len(polynomials)
+    if n == 1:
+        return polynomials[0]
+
+    a1 = polysmul(*polynomials[: n // 2])
+    a2 = polysmul(*polynomials[n // 2 :])
+    return polymul(a1, a2)
+
+
+def polymul(a1: Tensor, a2: Tensor) -> Tensor:
+    if a1.shape[0] > a2.shape[0]:
+        a1, a2 = a2, a1
+    weight = a1.flip(0).unsqueeze(0).unsqueeze(0)
+    prod = F.conv1d(
+        a2.unsqueeze(0).unsqueeze(0),
+        weight,
+        padding=weight.shape[2] - 1,
+        # groups=c2.shape[0],
+    ).squeeze()
+    return prod
+
+
+def polyval(p: Tensor, x: Tensor) -> Tensor:
+    """
+    Evaluate a polynomial at specific values.
+    """
+    return reduce(lambda y, pv: y * x + pv, p.unbind(0))
+
+
+def polysub(a1: Tensor, a2: Tensor) -> Tensor:
+    """
+    Difference (subtraction) of two polynomials.
+
+    """
+    diff = len(a2) - len(a1)
+    if diff == 0:
+        val = a1 - a2
+    elif diff > 0:
+        zr = a1.new_zeros(diff)
+        val = torch.cat((zr, a1)) - a2
+    else:
+        zr = a2.new_zeros(-diff)
+        val = a1 - torch.cat((zr, a2))
+    return val
