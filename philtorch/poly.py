@@ -5,6 +5,21 @@ from typing import Tuple
 from functools import reduce
 
 
+def trim_zeros(p: Tensor) -> Tensor:
+    """
+    Trim leading zeros from a polynomial.
+
+    """
+    if p.numel() == 1:
+        return p
+
+    # find non-zero array entries
+    non_zero = torch.nonzero(p).squeeze()
+    if non_zero.numel() == 0:
+        return p.new_zeros(1)
+    return p[non_zero[0] :]
+
+
 def roots(p: Tensor) -> Tensor:
     """
     Return the roots of a polynomial with coefficients given in p.
@@ -49,9 +64,9 @@ def polydiv(u: Tensor, v: Tensor) -> Tuple[Tensor, Tensor]:
     Returns the quotient and remainder of polynomial division.
 
     """
-    assert (
-        u.is_floating_point() and v.is_floating_point()
-    ), "polydiv function only supports floating point types."
+    # assert (
+    #     u.is_floating_point() and v.is_floating_point()
+    # ), "polydiv function only supports floating point types."
     assert u.ndim == 1 and v.ndim == 1, "polydiv function only supports 1D arrays."
 
     # w has the common type
@@ -83,12 +98,16 @@ def polymul(a1: Tensor, a2: Tensor) -> Tensor:
     if a1.shape[0] > a2.shape[0]:
         a1, a2 = a2, a1
     weight = a1.flip(0).unsqueeze(0).unsqueeze(0)
-    prod = F.conv1d(
-        a2.unsqueeze(0).unsqueeze(0),
-        weight,
-        padding=weight.shape[2] - 1,
-        # groups=c2.shape[0],
-    ).squeeze()
+    prod = (
+        F.conv1d(
+            a2.unsqueeze(0).unsqueeze(0),
+            weight,
+            padding=weight.shape[2] - 1,
+            # groups=c2.shape[0],
+        )
+        .squeeze(0)
+        .squeeze(0)
+    )
     return prod
 
 
@@ -96,6 +115,8 @@ def polyval(p: Tensor, x: Tensor) -> Tensor:
     """
     Evaluate a polynomial at specific values.
     """
+    if p.numel() == 1:
+        return p
     return reduce(lambda y, pv: y * x + pv, p.unbind(0))
 
 
@@ -113,4 +134,38 @@ def polysub(a1: Tensor, a2: Tensor) -> Tensor:
     else:
         zr = a2.new_zeros(-diff)
         val = a1 - torch.cat((zr, a2))
+    return val
+
+
+def polyder(p: Tensor, m: int = 1) -> Tensor:
+    """
+    Return the derivative of the specified order of a polynomial.
+    """
+    if m < 0:
+        raise ValueError("Order of derivative must be positive (see polyint)")
+
+    if m == 0:
+        return p
+    if p.numel() == 1:
+        return p.new_zeros(1)
+
+    n = len(p) - 1
+    y = p[:-1] * torch.arange(n, 0, -1, device=p.device).float()
+    return polyder(y, m - 1)
+
+
+def polyadd(a1: Tensor, a2: Tensor) -> Tensor:
+    """
+    Sum (addition) of two polynomials.
+
+    """
+    diff = len(a2) - len(a1)
+    if diff == 0:
+        val = a1 + a2
+    elif diff > 0:
+        zr = a1.new_zeros(diff)
+        val = torch.cat((zr, a1)) + a2
+    else:
+        zr = a2.new_zeros(-diff)
+        val = a1 + torch.cat((zr, a2))
     return val
