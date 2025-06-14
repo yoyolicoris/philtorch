@@ -44,11 +44,11 @@ def unique_roots(
         if used[i]:
             continue
 
-        group = group_mask[i] & ~used
+        group = group_mask[i] & ~used & (is_complex if is_complex[i] else ~is_complex)
         used[group] = True
         p_unique.append(reduction(p[group]))
         p_multiplicity.append(torch.count_nonzero(group))
-        p_is_complex.append(is_complex[group].any())
+        p_is_complex.append(is_complex[i])
 
     return torch.stack(p_unique), torch.stack(p_multiplicity), torch.stack(p_is_complex)
 
@@ -171,7 +171,7 @@ def residuez(
 
 def sos2pfe(
     sos: Tensor, tol: float = 0.001, rtype: str = "avg"
-) -> Tuple[Tensor, Tuple[Tensor, Tensor], Tuple[Tensor, Tensor], Tuple[Tensor, Tensor]]:
+) -> Tuple[Tuple[Tensor, Tensor], Tuple[Tensor, Tensor], Tuple[Tensor, Tensor], Tensor]:
     """Convert second-order sections to partial-fraction expansion."""
     assert sos.is_floating_point(), "SOS must be floating point type."
     assert sos.ndim == 2, "SOS must be 2D array."
@@ -193,13 +193,13 @@ def sos2pfe(
     is_complex_root = sqrt_term < 0
 
     all_roots = (
-        torch.cat(
+        torch.stack(
             [
                 -a1 + (sqrt_term + 0j).sqrt(),
                 -a1 - (sqrt_term + 0j).sqrt(),
             ],
-            dim=0,
-        )
+            dim=1,
+        ).flatten()
         * 0.5
     )
     is_complex_root_ext = is_complex_root.repeat(2)
@@ -359,9 +359,15 @@ def sos2pfe(
     cplx_powers = torch.cat(
         [cplx_repeated[2].new_ones(len(cplx_non_repeated[0])), cplx_repeated[2]], dim=0
     )
+
+    assert len(cplx_poles) % 2 == 0, "Complex poles must be even."
+    cplx_poles = cplx_poles[::2]
+    cplx_residues = cplx_residues[::2]
+    cplx_powers = cplx_powers[::2]
+
     return (
-        G0,
-        (real_poles, cplx_poles),
         (real_residues, cplx_residues),
+        (real_poles, cplx_poles),
         (real_powers, cplx_powers),
+        G0,
     )
