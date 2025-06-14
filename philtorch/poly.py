@@ -17,6 +17,7 @@ def trim_zeros(p: Tensor) -> Tensor:
     non_zero = torch.nonzero(p).squeeze()
     if non_zero.numel() == 0:
         return p.new_zeros(1)
+    non_zero = non_zero.view(-1)
     return p[non_zero[0] :]
 
 
@@ -69,6 +70,9 @@ def polydiv(u: Tensor, v: Tensor) -> Tuple[Tensor, Tensor]:
     # ), "polydiv function only supports floating point types."
     assert u.ndim == 1 and v.ndim == 1, "polydiv function only supports 1D arrays."
 
+    u = trim_zeros(u)
+    v = trim_zeros(v)
+
     # w has the common type
     m = len(u) - 1
     n = len(v) - 1
@@ -95,6 +99,8 @@ def polysmul(*polynomials: Tensor) -> Tensor:
 
 
 def polymul(a1: Tensor, a2: Tensor) -> Tensor:
+    a1 = trim_zeros(a1)
+    a2 = trim_zeros(a2)
     if a1.shape[0] > a2.shape[0]:
         a1, a2 = a2, a1
     weight = a1.flip(0).unsqueeze(0).unsqueeze(0)
@@ -115,6 +121,7 @@ def polyval(p: Tensor, x: Tensor) -> Tensor:
     """
     Evaluate a polynomial at specific values.
     """
+    p = trim_zeros(p)
     if p.numel() == 1:
         return p
     return reduce(lambda y, pv: y * x + pv, p.unbind(0))
@@ -146,6 +153,9 @@ def polyder(p: Tensor, m: int = 1) -> Tensor:
 
     if m == 0:
         return p
+
+    p = trim_zeros(p)
+
     if p.numel() == 1:
         return p.new_zeros(1)
 
