@@ -67,7 +67,8 @@ def lfilter(
         case "df2":
             filt = chain_functions(
                 partial(lpv_allpole, broadcasted_a, zi=zi),
-                partial(lpv_fir, broadcasted_b),
+                lambda x, _: x,
+                partial(lpv_fir, broadcasted_b, zi=zi),
             )
         case "tdf2":
             raise NotImplementedError(
