@@ -3,17 +3,13 @@ requires = ["setuptools >= 77.0.3"]
 build-backend = "setuptools.build_meta"
 
 [project]
-dynamic = ["version"]
+# dynamic = ["version"]
 name = "philtorch"
 version = "0.1.0"
 dependencies = ["torch >= 2.0.0"]
 requires-python = ">=3.8"
-authors = [
-    { name = "Chin-Yun Yu", email = "chin-yun.yu@qmul.ac.uk" },
-]
-maintainers = [
-    { name = "Chin-Yun Yu", email = "chin-yun.yu@qmul.ac.uk" },
-]
+authors = [{ name = "Chin-Yun Yu", email = "chin-yun.yu@qmul.ac.uk" }]
+maintainers = [{ name = "Chin-Yun Yu", email = "chin-yun.yu@qmul.ac.uk" }]
 description = "A PyTorch library for time-varying IIR filters."
 readme = "README.md"
 license = "MIT"
