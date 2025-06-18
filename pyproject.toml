@@ -26,7 +26,7 @@ zip-safe = false
 dynamic = ["version"]
 name = "philtorch"
 dependencies = ["torch >= 2.0.0"]
-requires-python = ">=3.8"
+requires-python = ">=3.10"
 authors = [{ name = "Chin-Yun Yu", email = "chin-yun.yu@qmul.ac.uk" }]
 maintainers = [{ name = "Chin-Yun Yu", email = "chin-yun.yu@qmul.ac.uk" }]
 description = "A PyTorch library for time-varying IIR filters."
