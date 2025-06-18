@@ -12,9 +12,10 @@ def lfilter(
     b: Tensor, a: Tensor, x: Tensor, zi: Optional[Tensor] = None, form: str = "df2"
 ) -> Union[Tensor, Tuple[Tensor, Tensor]]:
 
-    orig_shape = x.shape
+    squeeze_first = False
     if x.dim() == 1:
         x = x.unsqueeze(0)
+        squeeze_first = True
     elif x.dim() > 2:
         raise ValueError("Input signal x must be 1D or 2D.")
 
@@ -91,7 +92,8 @@ def lfilter(
 
     y = filt(x)
     if isinstance(y, tuple):
-        y, zf = y
-        return y.reshape(orig_shape), zf
+        if squeeze_first:
+            return y[0].squeeze(0), y[1].squeeze(0)
+        return y
 
-    return y.reshape(orig_shape)
+    return y.squeeze(0) if squeeze_first else y
