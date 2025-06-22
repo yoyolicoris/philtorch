@@ -1,6 +1,5 @@
 import torch
 from torch import Tensor
-import torch.nn.functional as F
 from torchlpc import sample_wise_lpc
 from typing import Optional, Union, Tuple
 
@@ -10,9 +9,9 @@ def lpv_fir(
 ) -> Union[Tensor, Tuple[Tensor, Tensor]]:
     """Apply a batch of parameter-varying FIR filters to input signal
     Args:
-        b (Tensor): Coefficients of the FIR filters, shape (B, T, N).
+        b (Tensor): Coefficients of the FIR filters, shape (B, T, N+1).
         x (Tensor): Input signal, shape (B, T).
-        zi (Tensor, optional): Initial conditions for the filter, shape (B, N-1).
+        zi (Tensor, optional): Initial conditions for the filter, shape (B, N).
     Returns:
         Filtered output signal, shape (B, T), and optionally the final state of the filter.
     """
@@ -47,6 +46,14 @@ def lpv_fir(
 def lpv_allpole(
     a: Tensor, x: Tensor, zi: Optional[Tensor] = None
 ) -> Union[Tensor, Tuple[Tensor, Tensor]]:
+    """Apply a batch of parameter-varying all-pole filters to input signal
+    Args:
+        a (Tensor): Coefficients of the all-pole filters, shape (B, T, N).
+        x (Tensor): Input signal, shape (B, T).
+        zi (Tensor, optional): Initial conditions for the filter, shape (B, N).
+    Returns:
+        Filtered output signal, shape (B, T), and optionally the final state of the filter.
+    """
     assert a.dim() == 3, "Denominator coefficients a must be 3D."
     assert x.dim() == 2, "Input signal x must be 2D."
     B, T = x.shape
@@ -66,8 +73,4 @@ def lpv_allpole(
 
         return_zf = False
 
-    y = sample_wise_lpc(x, a, zi=zi)
-
-    if return_zf:
-        return y, y[:, -zi.shape[1] :].flip(1)
-    return y
+    return sample_wise_lpc(x, a, zi=zi, return_zf=return_zf)
