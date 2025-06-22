@@ -1,6 +1,5 @@
 import torch
 from torch import Tensor
-from torchlpc import sample_wise_lpc
 from typing import Optional, Union, Tuple
 from functools import reduce, partial
 
@@ -11,6 +10,16 @@ from ..utils import chain_functions
 def lfilter(
     b: Tensor, a: Tensor, x: Tensor, zi: Optional[Tensor] = None, form: str = "df2"
 ) -> Union[Tensor, Tuple[Tensor, Tensor]]:
+    """Apply a batch of parameter-varying linear filters to input signal.
+    Args:
+        b (Tensor): Coefficients of the FIR filters, shape (B, T, N+1).
+        a (Tensor): Coefficients of the all-pole filters, shape (B, T, N).
+        x (Tensor): Input signal, shape (B, T).
+        zi (Tensor, optional): Initial conditions for the filter, shape (B, N).
+        form (str): The filter form to use. Options are 'df2', 'tdf2', 'df1', 'tdf1'.
+    Returns:
+        Filtered output signal, shape (B, T), and optionally the final state of the filter.
+    """
 
     squeeze_first = False
     if x.dim() == 1:
@@ -55,7 +64,7 @@ def lfilter(
 
     return_zf = (zi is not None) and (form in ("df2", "tdf2"))
     if zi is None:
-        zi = x.new_zeros((B, order + 1))
+        zi = x.new_zeros((B, order))
     elif zi.dim() == 1:
         zi = zi.unsqueeze(0).expand(B, -1)
     elif zi.dim() == 2:
@@ -96,7 +105,8 @@ def lfilter(
         if squeeze_first:
             y = y.squeeze(0)
             zf = zf.squeeze(0)
-    elif squeeze_first:
-        y = y.squeeze(0)
+        return y if not return_zf else (y, zf)
 
-    return y if not return_zf else (y, zf)
+    if squeeze_first:
+        y = y.squeeze(0)
+    return y
