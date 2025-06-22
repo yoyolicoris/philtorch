@@ -39,12 +39,11 @@ jobs:
         export CXX=$(brew --prefix llvm@15)/bin/clang++
         export LDFLAGS="-L/usr/local/opt/libomp/lib"
         export CPPFLAGS="-I/usr/local/opt/libomp/include"  
-        pip install torch torchlpc
+        pip install torch
     - name: Install torch (ubuntu)
       if: matrix.os == 'ubuntu-latest'
       run: | 
         pip install torch --index-url https://download.pytorch.org/whl/cpu
-        pip install torchlpc
     - name: Install dependency
       run: |
         if [ -f requirements.txt ]; then pip install -r requirements.txt; fi

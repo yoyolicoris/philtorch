@@ -25,7 +25,7 @@ zip-safe = false
 [project]
 dynamic = ["version"]
 name = "philtorch"
-dependencies = ["torch >= 2.0.0"]
+dependencies = ["torch >= 2.0.0", "torchlpc >= 0.7.2"]
 requires-python = ">=3.10"
 authors = [{ name = "Chin-Yun Yu", email = "chin-yun.yu@qmul.ac.uk" }]
 maintainers = [{ name = "Chin-Yun Yu", email = "chin-yun.yu@qmul.ac.uk" }]
