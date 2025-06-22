@@ -3,7 +3,7 @@ import numpy as np
 import torch
 from typing import Tuple
 
-from philtorch.lpv.lfilter import lfilter
+from philtorch.lpv import lfilter
 
 
 def _generate_time_varying_coeffs(
