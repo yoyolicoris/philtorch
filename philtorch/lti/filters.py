@@ -19,14 +19,18 @@ def lfilter(
         Filtered output signal with the same shape as x and optionally the final state of the filter.
     """
 
-    squeeze_first = False
+    squeeze_first = (
+        (x.dim() == 1)
+        & (b.dim() == 2)
+        & (a.dim() == 2)
+        & ((zi is None) or (zi.dim() == 1))
+    )
     if x.dim() == 1:
         x = x.unsqueeze(0)
-        squeeze_first = True
     elif x.dim() > 2:
         raise ValueError("Input signal x must be 1D or 2D.")
 
-    B, T = x.shape
+    _, T = x.shape
 
     if b.dim() == 1:
         b = b.unsqueeze(0)
@@ -52,15 +56,16 @@ def lfilter(
             dim=1,
         )
 
-    order = a.shape[1]
+    B = max(b.shape[0], a.shape[0], x.shape[0])
     broadcasted_b = b.expand(B, -1)
     broadcasted_a = a.expand(B, -1)
+    broadcasted_x = x.expand(B, -1)
 
     # Use parameter-varying filter implementation, temporarily
     y = lpv_lfilter(
         broadcasted_b.unsqueeze(1).expand(-1, T, -1),
         broadcasted_a.unsqueeze(1).expand(-1, T, -1),
-        x,
+        broadcasted_x,
         zi=zi,
         form=form,
     )

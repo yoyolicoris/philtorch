@@ -67,10 +67,6 @@ def lfilter(
 
     B = max(b.shape[0], a.shape[0], x.shape[0])
 
-    broadcasted_b = b.expand(B, -1, -1)
-    broadcasted_a = a.expand(B, -1, -1)
-    broadcasted_x = x.expand(B, -1)
-
     return_zf = (zi is not None) and (form in ("df2", "tdf2"))
     if zi is None:
         zi = x.new_zeros((B, order))
@@ -78,9 +74,14 @@ def lfilter(
         zi = zi.unsqueeze(0).expand(B, -1)
     elif zi.dim() == 2:
         assert zi.shape[1] == order, "Initial conditions zi must match filter order."
+        B = max(B, zi.shape[0])
         zi = zi.expand(B, -1)
     else:
         raise ValueError("Initial conditions zi must be 1D or 2D.")
+
+    broadcasted_b = b.expand(B, -1, -1)
+    broadcasted_a = a.expand(B, -1, -1)
+    broadcasted_x = x.expand(B, -1)
 
     match form:
         case "df2":
