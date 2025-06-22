@@ -1,7 +1,6 @@
 import torch
 from torch import Tensor
 from typing import Optional, Union, Tuple
-from functools import reduce, partial
 
 from ..lpv import lfilter as lpv_lfilter
 
@@ -58,10 +57,17 @@ def lfilter(
     broadcasted_a = a.expand(B, -1)
 
     # Use parameter-varying filter implementation, temporarily
-    return lpv_lfilter(
+    y = lpv_lfilter(
         broadcasted_b.unsqueeze(1).expand(-1, T, -1),
         broadcasted_a.unsqueeze(1).expand(-1, T, -1),
         x,
         zi=zi,
         form=form,
     )
+    if isinstance(y, tuple):
+        y, zf = y
+        if squeeze_first:
+            y = y.squeeze(0)
+            zf = zf.squeeze(0)
+        return y, zf
+    return y.squeeze(0) if squeeze_first else y
