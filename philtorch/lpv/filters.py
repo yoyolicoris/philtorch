@@ -12,23 +12,28 @@ def lfilter(
 ) -> Union[Tensor, Tuple[Tensor, Tensor]]:
     """Apply a batch of parameter-varying linear filters to input signal.
     Args:
-        b (Tensor): Coefficients of the FIR filters, shape (B, T, N+1).
-        a (Tensor): Coefficients of the all-pole filters, shape (B, T, N).
-        x (Tensor): Input signal, shape (B, T).
-        zi (Tensor, optional): Initial conditions for the filter, shape (B, N).
+        b (Tensor): Coefficients of the FIR filters, shape (B, T, N+1) or (T, N+1).
+        a (Tensor): Coefficients of the all-pole filters, shape (B, T, N) or (T, N).
+        x (Tensor): Input signal, shape (B, T) or (T).
+        zi (Tensor, optional): Initial conditions for the filter, shape (B, N) or (N).
         form (str): The filter form to use. Options are 'df2', 'tdf2', 'df1', 'tdf1'.
     Returns:
-        Filtered output signal, shape (B, T), and optionally the final state of the filter.
+        Filtered output signal with the same time steps as x and optionally the final state of the filter.
     """
 
-    squeeze_first = False
+    squeeze_first = (
+        (x.dim() == 1)
+        & (b.dim() == 2)
+        & (a.dim() == 2)
+        & ((zi is None) or (zi.dim() == 1))
+    )
+
     if x.dim() == 1:
         x = x.unsqueeze(0)
-        squeeze_first = True
     elif x.dim() > 2:
         raise ValueError("Input signal x must be 1D or 2D.")
 
-    B, T = x.shape
+    _, T = x.shape
 
     if b.dim() == 2:
         b = b.unsqueeze(0)
@@ -59,8 +64,12 @@ def lfilter(
         )
 
     order = a.shape[2]
+
+    B = max(b.shape[0], a.shape[0], x.shape[0])
+
     broadcasted_b = b.expand(B, -1, -1)
     broadcasted_a = a.expand(B, -1, -1)
+    broadcasted_x = x.expand(B, -1)
 
     return_zf = (zi is not None) and (form in ("df2", "tdf2"))
     if zi is None:
@@ -68,8 +77,8 @@ def lfilter(
     elif zi.dim() == 1:
         zi = zi.unsqueeze(0).expand(B, -1)
     elif zi.dim() == 2:
-        assert zi.shape[0] == B, "Initial conditions zi must match batch size B."
         assert zi.shape[1] == order, "Initial conditions zi must match filter order."
+        zi = zi.expand(B, -1)
     else:
         raise ValueError("Initial conditions zi must be 1D or 2D.")
 
@@ -99,7 +108,7 @@ def lfilter(
                 f"Unknown filter form: {form}. Supported forms are 'df2', 'tdf2', 'df1', 'tdf1'."
             )
 
-    y = filt(x)
+    y = filt(broadcasted_x)
     if isinstance(y, tuple):
         y, zf = y
         if squeeze_first:
