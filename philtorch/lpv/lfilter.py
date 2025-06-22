@@ -92,8 +92,11 @@ def lfilter(
 
     y = filt(x)
     if isinstance(y, tuple):
+        y, zf = y
         if squeeze_first:
-            return y[0].squeeze(0), y[1].squeeze(0)
-        return y
+            y = y.squeeze(0)
+            zf = zf.squeeze(0)
+    elif squeeze_first:
+        y = y.squeeze(0)
 
-    return y.squeeze(0) if squeeze_first else y
+    return y if not return_zf else (y, zf)
