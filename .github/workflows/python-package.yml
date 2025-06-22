@@ -36,9 +36,6 @@ jobs:
     - name: Install torch (mac)
       if: matrix.os == 'macos-latest'
       run: |
-        export CXX=$(brew --prefix llvm@15)/bin/clang++
-        export LDFLAGS="-L/usr/local/opt/libomp/lib"
-        export CPPFLAGS="-I/usr/local/opt/libomp/include"  
         pip install torch
     - name: Install torch (ubuntu)
       if: matrix.os == 'ubuntu-latest'
@@ -47,6 +44,9 @@ jobs:
     - name: Install dependency
       run: |
         if [ -f requirements.txt ]; then pip install -r requirements.txt; fi
+        export CXX=$(brew --prefix llvm@15)/bin/clang++
+        export LDFLAGS="-L/usr/local/opt/libomp/lib"
+        export CPPFLAGS="-I/usr/local/opt/libomp/include"  
         pip install -e .[dev]
     - name: Lint with flake8
       run: |
