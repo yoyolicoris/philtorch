@@ -24,7 +24,7 @@ def lpv_fir(
     ), "The first two dimensions of b must match the shape of x."
 
     if zi is None:
-        return_zf = True
+        return_zf = False
         zi = x.new_zeros((B, b.shape[2] - 1))
     else:
         assert zi.dim() == 2, "Initial conditions zi must be 2D."
@@ -33,13 +33,13 @@ def lpv_fir(
             zi.shape[1] == b.shape[2] - 1
         ), "The second dimension of zi must match the filter order."
 
-        return_zf = False
+        return_zf = True
 
     unfolded_x = torch.cat([zi.flip(1), x], dim=1).unfold(1, b.shape[2], 1)
     y = torch.linalg.vecdot(unfolded_x, b.flip(2))
 
     if return_zf:
-        return y, unfolded_x[:, -1, :].flip(1)
+        return y, unfolded_x[:, -1, :-1].flip(1)
     return y
 
 
@@ -62,15 +62,17 @@ def lpv_allpole(
     ), "The first two dimensions of a must match the shape of x."
 
     if zi is None:
-        return_zf = True
+        return_zf = False
         zi = x.new_zeros((B, a.shape[2]))
     else:
         assert zi.dim() == 2, "Initial conditions zi must be 2D."
         assert zi.shape[0] == B, "The first dimension of zi must match the batch size."
         assert (
             zi.shape[1] == a.shape[2]
-        ), "The second dimension of zi must match the filter order."
+        ), "The second dimension of zi must match the filter order, but got {} instead of {}".format(
+            zi.shape[1], a.shape[2]
+        )
 
-        return_zf = False
+        return_zf = True
 
     return sample_wise_lpc(x, a, zi=zi, return_zf=return_zf)
