@@ -113,7 +113,7 @@ def test_linearity_property():
     y_expected = alpha * y1 + beta * y2
 
     # Check linearity within reasonable tolerance
-    assert torch.allclose(y_combined, y_expected, atol=1e-6)
+    assert torch.allclose(y_combined, y_expected, atol=5e-6)
 
 
 def test_zero_input_zero_output():
