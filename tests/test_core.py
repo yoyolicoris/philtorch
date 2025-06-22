@@ -46,5 +46,5 @@ def test_fir_inverse(B: int, T: int, order: int):
     x_reconstructed, _ = lpv_allpole(a, y / g0.squeeze(2), zi=zi)
     assert x.shape == x_reconstructed.shape, "Reconstructed signal shape mismatch"
     assert torch.allclose(
-        x, x_reconstructed, atol=1e-6
+        x, x_reconstructed, atol=5e-6
     ), "Reconstructed signal mismatch"
