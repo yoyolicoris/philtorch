@@ -20,3 +20,38 @@ def find_eigenvectors(A: torch.Tensor, eigenvalues: torch.Tensor) -> torch.Tenso
     X = torch.cat([X.new_ones(X.shape[:-1] + (1,)), X], dim=-1).mT
     X = X / torch.linalg.matrix_norm(X, dim=(-2, -1), keepdim=True)
     return X
+
+
+def a2companion(a: torch.Tensor) -> torch.Tensor:
+    """
+    Convert all-pole coefficients to companion matrix.
+
+    Args:
+        a (torch.Tensor): All-pole coefficients of shape (..., M).
+
+    Returns:
+        torch.Tensor: Companion matrix of shape (..., M, M).
+    """
+    assert a.dim() >= 1, "All-pole coefficients must be at least 1D."
+    M = a.shape[-1]
+    A = torch.cat([-a, a.new_zeros(a.shape[:-1] + (M * (M - 1),))], dim=-1).unflatten(
+        -1, (M, M)
+    )
+    c = A + torch.diag(a.new_ones(M - 1), diagonal=-1)
+    return c
+
+
+def vandermonde(poles: torch.Tensor) -> torch.Tensor:
+    """
+    Create a Vandermonde matrix from poles.
+
+    Args:
+        poles (torch.Tensor): Poles of shape (..., M).
+
+    Returns:
+        torch.Tensor: Vandermonde matrix of shape (..., M, M).
+    """
+    assert poles.dim() >= 1, "Poles must be at least 1D."
+    M = poles.shape[-1]
+    vander = torch.stack([poles**i for i in range(M - 1, -1, -1)], dim=-2)
+    return vander
