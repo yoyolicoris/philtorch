@@ -18,7 +18,7 @@ def find_eigenvectors(A: torch.Tensor, eigenvalues: torch.Tensor) -> torch.Tenso
     X = torch.linalg.solve(WtW, WtB)
     X = X.reshape(A.shape[:-2] + (n, n - 1))
     X = torch.cat([X.new_ones(X.shape[:-1] + (1,)), X], dim=-1).mT
-    X = X / torch.linalg.matrix_norm(X, dim=(-2, -1), keepdim=True)
+    X = X * torch.linalg.det(X)[..., None, None] ** (-1 / n)
     return X
 
 
@@ -53,5 +53,7 @@ def vandermonde(poles: torch.Tensor) -> torch.Tensor:
     """
     assert poles.dim() >= 1, "Poles must be at least 1D."
     M = poles.shape[-1]
-    vander = torch.stack([poles**i for i in range(M - 1, -1, -1)], dim=-2)
+    vander = poles.unsqueeze(-2) ** torch.arange(
+        M - 1, -1, -1, device=poles.device
+    ).unsqueeze(1)
     return vander
