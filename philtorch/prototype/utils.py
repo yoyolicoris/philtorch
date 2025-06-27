@@ -17,9 +17,9 @@ def find_eigenvectors(A: torch.Tensor, eigenvalues: torch.Tensor) -> torch.Tenso
 
     X = torch.linalg.solve(WtW, WtB)
     X = X.reshape(A.shape[:-2] + (n, n - 1))
-    X = torch.cat([X.new_ones(X.shape[:-1] + (1,)), X], dim=-1).mT
-    X = X * torch.linalg.det(X)[..., None, None] ** (-1 / n)
-    return X
+    X = torch.cat([X.new_ones(X.shape[:-1] + (1,)), X], dim=-1)
+    X = X / torch.linalg.vector_norm(X, dim=-1, keepdim=True)
+    return X.mT
 
 
 def a2companion(a: torch.Tensor) -> torch.Tensor:
