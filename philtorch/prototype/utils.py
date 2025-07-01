@@ -1,7 +1,9 @@
 import torch
+from torch import Tensor
+from itertools import accumulate
 
 
-def find_eigenvectors(A: torch.Tensor, eigenvalues: torch.Tensor) -> torch.Tensor:
+def find_eigenvectors(A: Tensor, eigenvalues: Tensor) -> Tensor:
     assert A.dim() >= 2, "Matrix A must be at least 2D."
     assert eigenvalues.dim() >= 1, "Eigenvalues must be at least 1D."
     assert A.shape[-2] == A.shape[-1], "Matrix A must be square."
@@ -22,7 +24,7 @@ def find_eigenvectors(A: torch.Tensor, eigenvalues: torch.Tensor) -> torch.Tenso
     return X.mT
 
 
-def a2companion(a: torch.Tensor) -> torch.Tensor:
+def a2companion(a: Tensor) -> Tensor:
     """
     Convert all-pole coefficients to companion matrix.
 
@@ -41,7 +43,7 @@ def a2companion(a: torch.Tensor) -> torch.Tensor:
     return c
 
 
-def vandermonde(poles: torch.Tensor) -> torch.Tensor:
+def vandermonde(poles: Tensor) -> Tensor:
     """
     Create a Vandermonde matrix from poles.
 
@@ -57,3 +59,37 @@ def vandermonde(poles: torch.Tensor) -> torch.Tensor:
         M - 1, -1, -1, device=poles.device
     ).unsqueeze(1)
     return vander
+
+
+def matrix_power_accumulate(A: Tensor, n: int) -> Tensor:
+    """Compute the matrix power of A raised to n, accumulating the result.
+    Args:
+        A (Tensor): The input matrix, shape (*, N, N) where * can be any number of batch dimensions.
+        n (int): The exponent to which the matrix A is raised. Could be negative, zero, or positive.
+        initial (Optional[Tensor]): Initial value for accumulation, shape (*, N, N).
+    Returns:
+        Tensor: The accumulated result after raising A to the power of n with shape (*, max(n, 1), N, N).
+    """
+    assert A.dim() >= 2, "Input matrix A must have at least 2 dimensions."
+    assert A.shape[-2] == A.shape[-1], "Input matrix A must be square."
+
+    if n == 0:
+        return (
+            torch.eye(A.shape[-1], device=A.device, dtype=A.dtype)
+            .broadcast_to(A.shape)
+            .unsqueeze(-3)
+        )
+    elif n < 0:
+        Ainv = torch.linalg.inv(A)
+        return matrix_power_accumulate(Ainv, -n)
+
+    # TODO: Use parallel scan
+    return torch.stack(
+        list(
+            accumulate(
+                [A] * n,
+                torch.matmul,
+            )
+        ),
+        dim=-3,
+    )

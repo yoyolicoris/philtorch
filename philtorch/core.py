@@ -1,8 +1,7 @@
 import torch
 from torch import Tensor
 from torchlpc import sample_wise_lpc
-from typing import Optional, Union, Tuple, List
-from itertools import accumulate
+from typing import Optional, Union, Tuple
 
 
 def lpv_fir(
@@ -77,35 +76,3 @@ def lpv_allpole(
         return_zf = True
 
     return sample_wise_lpc(x, a, zi=zi, return_zf=return_zf)
-
-
-def matrix_power_accumulate(A: Tensor, n: int) -> Tensor:
-    """Compute the matrix power of A raised to n, accumulating the result.
-    Args:
-        A (Tensor): The input matrix, shape (*, N, N) where * can be any number of batch dimensions.
-        n (int): The exponent to which the matrix A is raised.
-        initial (Optional[Tensor]): Initial value for accumulation, shape (*, N, N).
-    Returns:
-        Tensor: The accumulated result after raising A to the power of n with shape (*, max(n, 1), N, N).
-    """
-    assert A.dim() >= 2, "Input matrix A must have at least 2 dimensions."
-    assert A.shape[-2] == A.shape[-1], "Input matrix A must be square."
-    assert n >= 0, "Exponent n must be non-negative."
-
-    if n == 0:
-        return (
-            torch.eye(A.shape[-1], device=A.device, dtype=A.dtype)
-            .broadcast_to(A.shape)
-            .unsqueeze(-3)
-        )
-
-    # TODO: Use parallel scan
-    return torch.stack(
-        list(
-            accumulate(
-                [A] * n,
-                torch.matmul,
-            )
-        ),
-        dim=-3,
-    )
