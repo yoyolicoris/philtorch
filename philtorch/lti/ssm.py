@@ -13,7 +13,7 @@ def ssm_recursion(
     *,
     unroll_factor: Optional[int] = None,
     out_idx: Optional[int] = None,
-):
+) -> Union[Tensor, Tuple[Tensor, Tensor]]:
     assert x.dim() in (
         2,
         3,
