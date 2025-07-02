@@ -54,7 +54,6 @@ python_functions = ["test_*"]
 addopts = [
     "--tb=short",
     "--strict-markers",
-    "--cov-report=xml",
     "--cov=philtorch",
     "--cov-report=term-missing:skip-covered",
 ]
