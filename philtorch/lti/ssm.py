@@ -46,7 +46,7 @@ def _recursion_loop(
     return output
 
 
-def ssm_recursion(
+def state_space_recursion(
     A: Tensor,
     x: Tensor,
     zi: Optional[Tensor] = None,
@@ -57,16 +57,18 @@ def ssm_recursion(
     assert x.dim() in (
         2,
         3,
-    ), "Input signal must be 2D or 3D (batch, time, [features])"
-    assert A.dim() in (2, 3), "State matrix A must be 2D or 3D"
-    assert A.shape[-2] == A.shape[-1], "State matrix A must be square"
+    ), f"Input signal must be 2D or 3D (batch, time, [features]), got {x.shape}"
+    assert A.dim() in (2, 3), f"State matrix A must be 2D or 3D, got {A.shape}"
+    assert A.shape[-2] == A.shape[-1], f"State matrix A must be square, got {A.shape}"
     if A.dim() == 3:
-        assert x.shape[0] == A.shape[0], "Batch size of A must match batch size of x"
+        assert (
+            x.shape[0] == A.shape[0]
+        ), f"Batch size of A must match batch size of x, got A: {A.shape[0]}, x: {x.shape[0]}"
 
     if x.dim() == 3:
         assert (
             A.shape[-1] == x.shape[-1]
-        ), "Last dimension of A must match last dimension of x"
+        ), f"Last dimension of A must match last dimension of x, got A: {A.shape[-1]}, x: {x.shape[-1]}"
 
     batch_size, N, *_ = x.shape
     M = A.shape[-1]
@@ -76,9 +78,13 @@ def ssm_recursion(
     elif zi.dim() == 1:
         zi = zi.unsqueeze(0).expand(batch_size, -1)
     else:
-        assert zi.dim() == 2, "Initial conditions zi must be 2D"
-        assert zi.shape[0] == batch_size, "Batch size of zi must match batch size of x"
-        assert zi.shape[1] == M, "Last dimension of zi must match last dimension of A"
+        assert zi.dim() == 2, f"Initial conditions zi must be 2D, got {zi.shape}"
+        assert (
+            zi.shape[0] == batch_size
+        ), f"Batch size of zi must match batch size of x, got zi: {zi.shape[0]}, x: {batch_size}"
+        assert (
+            zi.shape[1] == M
+        ), f"Last dimension of zi must match last dimension of A, got zi: {zi.shape[1]}, A: {M}"
 
     if unroll_factor is None:
         block_size = int(N**0.5)
@@ -118,7 +124,10 @@ def ssm_recursion(
     z = unrolled_x @ mat1
 
     initials = torch.cat(
-        [zi.unsqueeze(1), ssm_recursion(A_powered, z, zi, unroll_factor=unroll_factor)],
+        [
+            zi.unsqueeze(1),
+            state_space_recursion(A_powered, z, zi, unroll_factor=unroll_factor),
+        ],
         dim=1,
     )
 
