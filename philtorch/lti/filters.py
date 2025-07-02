@@ -5,9 +5,10 @@ from typing import Optional, Union, Tuple
 from functools import partial
 
 from ..lpv import lfilter as lpv_lfilter
-from .ssm import state_space
+from .ssm import state_space, state_space_recursion
 from ..prototype.utils import a2companion
 from ..utils import chain_functions
+from ..core import lti_fir
 
 
 def lfilter(
@@ -74,36 +75,47 @@ def _ssm_lfilter(
 ) -> Union[Tensor, Tuple[Tensor, Tensor]]:
     """Apply a batch of time-invariant linear filters to input signal using state-space model."""
     A = a2companion(a)
-    b0 = b[..., :1]  # First coefficient of the FIR filter
-    beta = b[..., 1:] - b0 * a
-    D = b[..., 0]
 
     match form:
         case "df2":
+            b0 = b[..., :1]  # First coefficient of the FIR filter
+            C = b[..., 1:] - b0 * a
+            D = b[..., 0]
             filt = partial(
                 state_space,
                 A,
                 B=None,
-                C=beta,
+                C=C,
                 D=D,
                 zi=zi,
                 out_idx=None,
                 **kwargs,
             )
         case "tdf2":
+            b0 = b[..., :1]  # First coefficient of the FIR filter
+            B = b[..., 1:] - b0 * a
+            D = b[..., 0]
             filt = partial(
                 state_space,
                 A.mT.conj(),
-                B=beta.conj(),
+                B=B.conj(),
                 C=None,
                 D=D.conj(),
                 zi=zi,
                 out_idx=0,
                 **kwargs,
             )
-        case "df1" | "tdf1":
-            raise NotImplementedError(
-                f"Filter form '{form}' is not implemented in SSM backend."
+        case "df1":
+            zi = x.new_zeros((x.size(0), A.size(-1)))
+            filt = chain_functions(
+                partial(lti_fir, b),
+                partial(state_space_recursion, A, zi, out_idx=0, **kwargs),
+            )
+        case "tdf1":
+            zi = x.new_zeros((x.size(0), A.size(-1)))
+            filt = chain_functions(
+                partial(state_space_recursion, A.mT.conj(), zi, out_idx=0, **kwargs),
+                partial(lti_fir, b.conj(), tranpose=True),
             )
         case _:
             raise ValueError(f"Unknown filter form: {form}")
