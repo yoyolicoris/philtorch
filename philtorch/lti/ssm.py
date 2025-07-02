@@ -238,9 +238,6 @@ def state_space(
     elif zi.dim() == 1:
         zi = zi.unsqueeze(0).expand(batch_size, -1)
 
-    if C is not None:
-        assert C.dim() in (2, 3), f"Output matrix C must be 2D or 3D, got {C.shape}"
-
     if B is not None:
         match B.shape:
             case (M,):
@@ -248,13 +245,15 @@ def state_space(
                     x.dim() == 2
                 ), f"Input signal x must be 2D when B is of shape {M,}, got {x.shape}"
                 Bx = x.unsqueeze(-1) * B
-            case (M, _):
-                Bx = x @ B.T
+            case (1,) | ():
+                Bx = x * B
             case (batch_size, M):
                 assert (
                     x.dim() == 2
                 ), f"Input signal x must be 2D when B is of shape {batch_size, M}, got {x.shape}"
                 Bx = x.unsqueeze(-1) * B.unsqueeze(1)
+            case (M, _):
+                Bx = x @ B.T
             case (batch_size, M, _):
                 Bx = torch.linalg.vecdot(
                     B.unsqueeze(1).conj(), x.unsqueeze(-2)
@@ -296,6 +295,8 @@ def state_space(
         match C.shape:
             case (M,):
                 Ch = h @ C
+            case (1,) | ():
+                Ch = h * C
             case (batch_size, M):
                 Ch = torch.linalg.vecdot(C.unsqueeze(1).conj(), h)
             case (_, M):
