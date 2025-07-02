@@ -22,10 +22,12 @@ def _generate_random_filter_coeffs(order: int, B: int) -> np.ndarray:
 @pytest.mark.parametrize("B", [1, 8, 16])
 @pytest.mark.parametrize("T", [17, 29, 101])
 @pytest.mark.parametrize("order", [1, 2, 4])
+@pytest.mark.parametrize("unroll_factor", [None, 2, 5])
 def test_time_invariant_filter(
     B: int,
     T: int,
     order: int,
+    unroll_factor: Optional[int],
 ):
     """Test time-invariant filters against scipy.signal.lfilter"""
 
@@ -39,7 +41,7 @@ def test_time_invariant_filter(
     A = a2companion(a_torch)
 
     # Apply philtorch filter
-    y_torch = ssm_recursion(A, x_torch, out_idx=0)
+    y_torch = ssm_recursion(A, x_torch, out_idx=0, unroll_factor=unroll_factor)
 
     # Apply scipy filter
     y_scipy = np.stack(
