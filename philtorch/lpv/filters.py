@@ -54,18 +54,18 @@ def lfilter(
 
     if b.shape[2] < a.shape[2] + 1:
         b = torch.cat(
-            (b, b.new_zeros((b.shape[0], b.shape[1], a.shape[2] + 1 - b.shape[2]))),
+            (b, b.new_zeros((b.size(0), b.shape[1], a.shape[2] + 1 - b.shape[2]))),
             dim=2,
         )
     elif b.shape[2] > a.shape[2] + 1:
         a = torch.cat(
-            (a, a.new_zeros((a.shape[0], a.shape[1], b.shape[2] - a.shape[2] - 1))),
+            (a, a.new_zeros((a.size(0), a.shape[1], b.shape[2] - a.shape[2] - 1))),
             dim=2,
         )
 
     order = a.shape[2]
 
-    B = max(b.shape[0], a.shape[0], x.shape[0])
+    B = max(b.size(0), a.size(0), x.size(0))
 
     return_zf = (zi is not None) and (form in ("df2", "tdf2"))
     if zi is None:
@@ -74,7 +74,7 @@ def lfilter(
         zi = zi.unsqueeze(0).expand(B, -1)
     elif zi.dim() == 2:
         assert zi.shape[1] == order, "Initial conditions zi must match filter order."
-        B = max(B, zi.shape[0])
+        B = max(B, zi.size(0))
         zi = zi.expand(B, -1)
     else:
         raise ValueError("Initial conditions zi must be 1D or 2D.")
