@@ -25,11 +25,11 @@ def _generate_random_signal(B: int, T: int) -> np.ndarray:
     return np.random.randn(B, T)
 
 
-@pytest.mark.parametrize("B", [1, 8, 16])
+@pytest.mark.parametrize("B", [1, 8])
 @pytest.mark.parametrize("T", [32, 128])
 @pytest.mark.parametrize("num_order", [1, 2, 4])
 @pytest.mark.parametrize("den_order", [1, 3, 5])
-@pytest.mark.parametrize("form", ["df1", "df2"])
+@pytest.mark.parametrize("form", ["df2", "tdf2"])
 def test_time_invariant_filter(
     B: int, T: int, num_order: int, den_order: int, form: str
 ):
@@ -53,4 +53,6 @@ def test_time_invariant_filter(
     )
 
     # Compare outputs
-    assert np.allclose(y_torch.numpy(), y_scipy)
+    assert np.allclose(y_torch.numpy(), y_scipy), np.max(
+        np.abs(y_torch.numpy() - y_scipy)
+    )

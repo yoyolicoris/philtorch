@@ -52,7 +52,7 @@ def test_time_invariant_filter(
     )
 
     # Compare outputs
-    assert np.allclose(y_torch.numpy(), y_scipy, atol=1e-6)
+    assert np.allclose(y_torch.numpy(), y_scipy)
 
 
 @pytest.mark.parametrize("order", [8])
@@ -81,4 +81,4 @@ def test_out_idx(order: int, out_idx: int):
         y_scipy = y_scipy[:, :-out_idx]
 
     # Compare outputs
-    assert np.allclose(y_torch.numpy(), y_scipy, atol=1e-6)
+    assert np.allclose(y_torch.numpy(), y_scipy)
