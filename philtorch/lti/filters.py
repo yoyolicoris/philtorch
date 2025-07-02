@@ -1,19 +1,30 @@
 import torch
 from torch import Tensor
+import torch.nn.functional as F
 from typing import Optional, Union, Tuple
+from functools import partial
 
 from ..lpv import lfilter as lpv_lfilter
+from .ssm import state_space
+from ..prototype.utils import a2companion
+from ..utils import chain_functions
 
 
 def lfilter(
-    b: Tensor, a: Tensor, x: Tensor, zi: Optional[Tensor] = None, form: str = "df2"
+    b: Tensor,
+    a: Tensor,
+    x: Tensor,
+    zi: Optional[Tensor] = None,
+    form: str = "df2",
+    backend: str = "ssm",
+    **kwargs,
 ) -> Union[Tensor, Tuple[Tensor, Tensor]]:
     """Apply a batch of time-invariant linear filters to input signal.
     Args:
-        b (Tensor): Coefficients of the FIR filters, shape (B, N+1) or (N+1).
-        a (Tensor): Coefficients of the all-pole filters, shape (B, N) or (N).
-        x (Tensor): Input signal, shape (B, T) or (T).
-        zi (Tensor, optional): Initial conditions for the filter, shape (B, N) or (N).
+        b (Tensor): Coefficients of the FIR filters, shape (B, M+1) or (M+1).
+        a (Tensor): Coefficients of the all-pole filters, shape (B, M) or (M).
+        x (Tensor): Input signal, shape (B, N) or (N).
+        zi (Tensor, optional): Initial conditions for the filter, shape (B, M) or (M).
         form (str): The filter form to use. Options are 'df2', 'tdf2', 'df1', 'tdf1'.
     Returns:
         Filtered output signal with the same shape as x and optionally the final state of the filter.
@@ -21,8 +32,8 @@ def lfilter(
 
     squeeze_first = (
         (x.dim() == 1)
-        & (b.dim() == 2)
-        & (a.dim() == 2)
+        & (b.dim() == 1)
+        & (a.dim() == 1)
         & ((zi is None) or (zi.dim() == 1))
     )
     if x.dim() == 1:
@@ -30,45 +41,35 @@ def lfilter(
     elif x.dim() > 2:
         raise ValueError("Input signal x must be 1D or 2D.")
 
-    _, T = x.shape
+    _, N = x.shape
 
-    if b.dim() == 1:
-        b = b.unsqueeze(0)
-    elif b.dim() == 2:
-        pass
-    else:
-        raise ValueError("Numerator coefficients b must be 1D or 2D.")
-    if a.dim() == 1:
-        a = a.unsqueeze(0)
-    elif a.dim() == 2:
-        pass
-    else:
-        raise ValueError("Denominator coefficients a must be 1D or 2D.")
+    assert b.dim() in (1, 2), "Numerator coefficients b must be 1D or 2D."
+    assert a.dim() in (1, 2), "Denominator coefficients a must be 1D or 2D."
 
-    if b.shape[1] < a.shape[1] + 1:
-        b = torch.cat(
-            (b, b.new_zeros((b.shape[0], a.shape[1] + 1 - b.shape[1]))),
-            dim=1,
-        )
+    if b.size(-1) < a.size(-1) + 1:
+        b = F.pad(b, (0, a.size(-1) + 1 - b.size(-1)))
     elif b.shape[1] > a.shape[1] + 1:
-        a = torch.cat(
-            (a, a.new_zeros((a.shape[0], b.shape[1] - a.shape[1] - 1))),
-            dim=1,
-        )
+        a = F.pad(a, (0, b.size(-1) - a.size(-1) - 1))
 
-    B = max(b.shape[0], a.shape[0], x.shape[0])
-    broadcasted_b = b.expand(B, -1)
-    broadcasted_a = a.expand(B, -1)
-    broadcasted_x = x.expand(B, -1)
+    match backend:
+        case "ssm":
+            y = _ssm_lfilter(b, a, x, zi, form=form, **kwargs)
+        case _:
+            raise ValueError(f"Unknown backend: {backend}")
 
-    # Use parameter-varying filter implementation, temporarily
-    y = lpv_lfilter(
-        broadcasted_b.unsqueeze(1).expand(-1, T, -1),
-        broadcasted_a.unsqueeze(1).expand(-1, T, -1),
-        broadcasted_x,
-        zi=zi,
-        form=form,
-    )
+    # B = max(b.size(0), a.size(0), x.size(0))
+    # broadcasted_b = b.expand(B, -1)
+    # broadcasted_a = a.expand(B, -1)
+    # broadcasted_x = x.expand(B, -1)
+
+    # # Use parameter-varying filter implementation, temporarily
+    # y = lpv_lfilter(
+    #     broadcasted_b.unsqueeze(1).expand(-1, T, -1),
+    #     broadcasted_a.unsqueeze(1).expand(-1, T, -1),
+    #     broadcasted_x,
+    #     zi=zi,
+    #     form=form,
+    # )
     if isinstance(y, tuple):
         y, zf = y
         if squeeze_first:
@@ -76,3 +77,49 @@ def lfilter(
             zf = zf.squeeze(0)
         return y, zf
     return y.squeeze(0) if squeeze_first else y
+
+
+def _ssm_lfilter(
+    b: Tensor,
+    a: Tensor,
+    x: Tensor,
+    zi: Optional[Tensor] = None,
+    form: str = "df2",
+    **kwargs,
+) -> Union[Tensor, Tuple[Tensor, Tensor]]:
+    """Apply a batch of time-invariant linear filters to input signal using state-space model."""
+    A = a2companion(a)
+    b0 = b[..., :1]  # First coefficient of the FIR filter
+    beta = b[..., 1:] - b0 * a
+    D = b[..., 0]
+
+    match form:
+        case "df2":
+            filt = partial(
+                state_space,
+                A,
+                B=None,
+                C=beta,
+                D=D,
+                zi=zi,
+                **kwargs,
+            )
+        case "tdf2":
+            filt = partial(
+                state_space,
+                A.mT.conj(),
+                B=beta.conj(),
+                C=None,
+                D=D.conj(),
+                zi=zi,
+                out_idx=0,
+                **kwargs,
+            )
+        case "df1" | "tdf1":
+            raise NotImplementedError(
+                f"Filter form '{form}' is not implemented in SSM backend."
+            )
+        case _:
+            raise ValueError(f"Unknown filter form: {form}")
+
+    return filt(x)
