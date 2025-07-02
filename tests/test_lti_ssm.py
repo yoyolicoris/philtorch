@@ -23,7 +23,7 @@ def _generate_random_filter_coeffs(order: int, B: int) -> np.ndarray:
 @pytest.mark.parametrize("T", [17, 29, 101])
 @pytest.mark.parametrize("order", [1, 3])
 @pytest.mark.parametrize("unroll_factor", [None, 1, 5])
-def test_time_invariant_filter(
+def test_time_invariant_ssm(
     B: int,
     T: int,
     order: int,
@@ -38,7 +38,7 @@ def test_time_invariant_filter(
     # Convert to torch tensors
     a_torch = torch.from_numpy(a)
     x_torch = torch.from_numpy(x)
-    A = a2companion(a_torch)
+    A = a2companion(a_torch).squeeze(0)
     zi = x_torch.new_zeros(B, A.shape[-1])
 
     # Apply philtorch filter
