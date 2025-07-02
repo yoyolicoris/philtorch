@@ -83,6 +83,8 @@ def matrix_power_accumulate(A: Tensor, n: int) -> Tensor:
     elif n < 0:
         Ainv = torch.linalg.inv(A)
         return matrix_power_accumulate(Ainv, -n)
+    elif n == 1:
+        return A.unsqueeze(-3)
 
     factors = factorint(n, multiple=True)
     return _mat_pwr_accum_runner(A, factors)
