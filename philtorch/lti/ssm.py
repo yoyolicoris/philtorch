@@ -3,7 +3,7 @@ import torch.nn.functional as F
 from typing import Optional, Union, Tuple
 from torch import Tensor
 
-from ..prototype.utils import a2companion, matrix_power_accumulate
+from ..prototype.utils import matrix_power_accumulate
 
 
 def _recursion_loop(
@@ -269,7 +269,11 @@ def state_space(
     if return_zf or out_idx is None:
         h = state_space_recursion(A, zi, Bx, out_idx=None, **kwargs)
         zf = h[:, -1, :] if return_zf else None
-        h = torch.cat([zi.unsqueeze(1), h[:, :-1]], dim=1)
+        h = (
+            torch.cat([zi.unsqueeze(1), h[:, :-1]], dim=1)
+            if out_idx is None
+            else torch.cat([zi[:, None, out_idx], h[:, :-1, out_idx]], dim=1)
+        )
     else:
         zf = None
         h = state_space_recursion(A, zi, Bx, out_idx=out_idx, **kwargs)
