@@ -47,7 +47,7 @@ def lfilter(
 
     if b.size(-1) < a.size(-1) + 1:
         b = F.pad(b, (0, a.size(-1) + 1 - b.size(-1)))
-    elif b.shape[1] > a.shape[1] + 1:
+    elif b.size(-1) > a.size(-1) + 1:
         a = F.pad(a, (0, b.size(-1) - a.size(-1) - 1))
 
     match backend:
