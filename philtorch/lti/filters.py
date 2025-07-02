@@ -41,8 +41,6 @@ def lfilter(
     elif x.dim() > 2:
         raise ValueError("Input signal x must be 1D or 2D.")
 
-    _, N = x.shape
-
     assert b.dim() in (1, 2), "Numerator coefficients b must be 1D or 2D."
     assert a.dim() in (1, 2), "Denominator coefficients a must be 1D or 2D."
 
@@ -57,19 +55,6 @@ def lfilter(
         case _:
             raise ValueError(f"Unknown backend: {backend}")
 
-    # B = max(b.size(0), a.size(0), x.size(0))
-    # broadcasted_b = b.expand(B, -1)
-    # broadcasted_a = a.expand(B, -1)
-    # broadcasted_x = x.expand(B, -1)
-
-    # # Use parameter-varying filter implementation, temporarily
-    # y = lpv_lfilter(
-    #     broadcasted_b.unsqueeze(1).expand(-1, T, -1),
-    #     broadcasted_a.unsqueeze(1).expand(-1, T, -1),
-    #     broadcasted_x,
-    #     zi=zi,
-    #     form=form,
-    # )
     if isinstance(y, tuple):
         y, zf = y
         if squeeze_first:
@@ -102,6 +87,7 @@ def _ssm_lfilter(
                 C=beta,
                 D=D,
                 zi=zi,
+                out_idx=None,
                 **kwargs,
             )
         case "tdf2":
