@@ -15,7 +15,7 @@ def _recursion_loop(
     results = []
     AT = A.mT
     if x.dim() == 2:
-        M = A.shape[-1]
+        M = A.size(-1)
         x = torch.cat(
             [x.unsqueeze(-1), x.new_zeros(*x.shape, M - 1)], dim=-1
         )  # (batch, time, M)
@@ -48,27 +48,27 @@ def state_space_recursion(
         3,
     ), f"Input signal must be 2D or 3D (batch, time, [features]), got {x.shape}"
     assert A.dim() in (2, 3), f"State matrix A must be 2D or 3D, got {A.shape}"
-    assert A.shape[-2] == A.shape[-1], f"State matrix A must be square, got {A.shape}"
+    assert A.size(-2) == A.size(-1), f"State matrix A must be square, got {A.shape}"
     if A.dim() == 3:
-        assert (
-            x.shape[0] == A.shape[0]
-        ), f"Batch size of A must match batch size of x, got A: {A.shape[0]}, x: {x.shape[0]}"
+        assert x.size(0) == A.size(
+            0
+        ), f"Batch size of A must match batch size of x, got A: {A.size(0)}, x: {x.size(0)}"
 
     if x.dim() == 3:
-        assert (
-            A.shape[-1] == x.shape[-1]
-        ), f"Last dimension of A must match last dimension of x, got A: {A.shape[-1]}, x: {x.shape[-1]}"
+        assert A.size(-1) == x.size(
+            -1
+        ), f"Last dimension of A must match last dimension of x, got A: {A.size(-1)}, x: {x.size(-1)}"
 
-    batch_size, N, *_ = x.shape
-    M = A.shape[-1]
+    batch_size, N = x.size(0), x.size(1)
+    M = A.size(-1)
 
     assert zi.dim() == 2, f"Initial conditions zi must be 2D, got {zi.shape}"
     assert (
-        zi.shape[0] == batch_size
-    ), f"Batch size of zi must match batch size of x, got zi: {zi.shape[0]}, x: {batch_size}"
+        zi.size(0) == batch_size
+    ), f"Batch size of zi must match batch size of x, got zi: {zi.size(0)}, x: {batch_size}"
     assert (
-        zi.shape[1] == M
-    ), f"Last dimension of zi must match last dimension of A, got zi: {zi.shape[1]}, A: {M}"
+        zi.size(1) == M
+    ), f"Last dimension of zi must match last dimension of A, got zi: {zi.size(1)}, A: {M}"
 
     if unroll_factor is None:
         block_size = int(N**0.5)
@@ -84,7 +84,7 @@ def state_space_recursion(
     remainder = N % block_size
     if remainder != 0:
         x = F.pad(x, (0, 0) * (x.dim() - 2) + (0, block_size - remainder))
-        N = x.shape[1]  # Update T after padding
+        N = x.size(1)  # Update T after padding
 
     unrolled_x = x.unflatten(1, (-1, block_size)).flatten(2, -1)
 
@@ -214,6 +214,7 @@ def state_space(
     C: Optional[Tensor] = None,
     D: Optional[Tensor] = None,
     zi: Optional[Tensor] = None,
+    out_idx: Optional[int] = None,
     **kwargs,
 ):
     assert x.dim() in (
@@ -222,14 +223,14 @@ def state_space(
     ), f"Input signal must be 2D or 3D (batch, time, [features]), got {x.shape}"
 
     assert A.dim() in (2, 3), f"State matrix A must be 2D or 3D, got {A.shape}"
-    assert A.shape[-2] == A.shape[-1], f"State matrix A must be square, got {A.shape}"
+    assert A.size(-2) == A.size(-1), f"State matrix A must be square, got {A.shape}"
     if A.dim() == 3:
-        assert (
-            x.shape[0] == A.shape[0]
-        ), f"Batch size of A must match batch size of x, got A: {A.shape[0]}, x: {x.shape[0]}"
+        assert x.size(0) == A.size(
+            0
+        ), f"Batch size of A must match batch size of x, got A: {A.size(0)}, x: {x.size(0)}"
 
     batch_size, N, *_ = x.shape
-    M = A.shape[-1]
+    M = A.size(-1)
 
     return_zf = True
     if zi is None:
@@ -262,11 +263,17 @@ def state_space(
                 raise ValueError(
                     f"Input matrix B must be of shape ({M,}), ({M}, features), ({batch_size}, {M}), or ({batch_size}, {M}, features), got {B.shape}"
                 )
+    else:
+        Bx = x
 
-    h = state_space_recursion(A, zi, Bx, **kwargs)
-    if return_zf:
-        zf = h[:, -1, :]
-    h = torch.cat([zi.unsqueeze(1), h[:, :-1]], dim=1)
+    if return_zf or out_idx is None:
+        h = state_space_recursion(A, zi, Bx, out_idx=None, **kwargs)
+        zf = h[:, -1, :] if return_zf else None
+        h = torch.cat([zi.unsqueeze(1), h[:, :-1]], dim=1)
+    else:
+        zf = None
+        h = state_space_recursion(A, zi, Bx, out_idx=out_idx, **kwargs)
+        h = torch.cat([zi[:, None, out_idx], h[:, :-1]], dim=1)
 
     if D is not None:
         match D.shape:
