@@ -1,6 +1,7 @@
 import torch
 from torch import Tensor
 from itertools import accumulate
+from sympy.ntheory import factorint
 
 
 def find_eigenvectors(A: Tensor, eigenvalues: Tensor) -> Tensor:
@@ -83,13 +84,31 @@ def matrix_power_accumulate(A: Tensor, n: int) -> Tensor:
         Ainv = torch.linalg.inv(A)
         return matrix_power_accumulate(Ainv, -n)
 
-    # TODO: Use parallel scan
-    return torch.stack(
+    factors = factorint(n, multiple=True)
+    return _mat_pwr_accum_runner(A, factors)
+
+
+def _mat_pwr_accum_runner(A: Tensor, factors: list[int]) -> Tensor:
+    fac, *factors = factors
+    accums = torch.stack(
         list(
             accumulate(
-                [A] * n,
+                [A] * fac,
                 torch.matmul,
             )
         ),
+        dim=-3,
+    )
+    if len(factors) == 0:
+        return accums
+    higher_powers = _mat_pwr_accum_runner(accums[..., -1, :, :], factors)
+    tmp = accums[..., None, :-1, :, :] @ higher_powers[..., :-1, None, :, :]
+    return torch.cat(
+        [
+            accums,
+            torch.cat([tmp, higher_powers[..., 1:, None, :, :]], dim=-3).flatten(
+                -4, -3
+            ),
+        ],
         dim=-3,
     )
