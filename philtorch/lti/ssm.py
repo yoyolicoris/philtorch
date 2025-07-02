@@ -12,24 +12,13 @@ def _recursion_loop(
     x: Tensor,
     out_idx: Optional[int] = None,
 ) -> Tensor:
-    assert x.dim() in (2, 3), "Input signal must be 2D or 3D (batch, time, [features])"
-    assert A.dim() in (2, 3), "State matrix A must be 2D or 3D"
-    assert A.shape[-2] == A.shape[-1], "State matrix A must be square"
-    if A.dim() == 3:
-        assert x.shape[0] == A.shape[0], "Batch size of A must match batch size of x"
-
-    if x.dim() == 3:
-        assert (
-            A.shape[-1] == x.shape[-1]
-        ), "Last dimension of A must match last dimension of x"
-    assert zi.dim() == 2, "Initial conditions zi must be 2D"
-    assert zi.shape[0] == x.shape[0], "Batch size of zi must match batch size of x"
-    assert (
-        zi.shape[1] == A.shape[-1]
-    ), "Last dimension of zi must match last dimension of A"
-
     results = []
     AT = A.mT
+    if x.dim() == 2:
+        M = A.shape[-1]
+        x = torch.cat(
+            [x.unsqueeze(-1), x.new_zeros(*x.shape, M - 1)], dim=-1
+        )  # (batch, time, M)
     if A.dim() == 2:
         h = zi
         for xn in x.unbind(1):
@@ -48,8 +37,8 @@ def _recursion_loop(
 
 def state_space_recursion(
     A: Tensor,
+    zi: Tensor,
     x: Tensor,
-    zi: Optional[Tensor] = None,
     *,
     unroll_factor: Optional[int] = None,
     out_idx: Optional[int] = None,
@@ -73,18 +62,13 @@ def state_space_recursion(
     batch_size, N, *_ = x.shape
     M = A.shape[-1]
 
-    if zi is None:
-        zi = x.new_zeros(batch_size, M)
-    elif zi.dim() == 1:
-        zi = zi.unsqueeze(0).expand(batch_size, -1)
-    else:
-        assert zi.dim() == 2, f"Initial conditions zi must be 2D, got {zi.shape}"
-        assert (
-            zi.shape[0] == batch_size
-        ), f"Batch size of zi must match batch size of x, got zi: {zi.shape[0]}, x: {batch_size}"
-        assert (
-            zi.shape[1] == M
-        ), f"Last dimension of zi must match last dimension of A, got zi: {zi.shape[1]}, A: {M}"
+    assert zi.dim() == 2, f"Initial conditions zi must be 2D, got {zi.shape}"
+    assert (
+        zi.shape[0] == batch_size
+    ), f"Batch size of zi must match batch size of x, got zi: {zi.shape[0]}, x: {batch_size}"
+    assert (
+        zi.shape[1] == M
+    ), f"Last dimension of zi must match last dimension of A, got zi: {zi.shape[1]}, A: {M}"
 
     if unroll_factor is None:
         block_size = int(N**0.5)
@@ -126,7 +110,7 @@ def state_space_recursion(
     initials = torch.cat(
         [
             zi.unsqueeze(1),
-            state_space_recursion(A_powered, z, zi, unroll_factor=unroll_factor),
+            state_space_recursion(A_powered, zi, z, unroll_factor=unroll_factor),
         ],
         dim=1,
     )
@@ -221,3 +205,114 @@ def state_space_recursion(
         # if we padded the input, we need to remove the padding from the output
         output = output[:, : -(block_size - remainder)]
     return output
+
+
+def state_space(
+    A: Tensor,
+    x: Tensor,
+    B: Optional[Tensor] = None,
+    C: Optional[Tensor] = None,
+    D: Optional[Tensor] = None,
+    zi: Optional[Tensor] = None,
+    **kwargs,
+):
+    assert x.dim() in (
+        2,
+        3,
+    ), f"Input signal must be 2D or 3D (batch, time, [features]), got {x.shape}"
+
+    assert A.dim() in (2, 3), f"State matrix A must be 2D or 3D, got {A.shape}"
+    assert A.shape[-2] == A.shape[-1], f"State matrix A must be square, got {A.shape}"
+    if A.dim() == 3:
+        assert (
+            x.shape[0] == A.shape[0]
+        ), f"Batch size of A must match batch size of x, got A: {A.shape[0]}, x: {x.shape[0]}"
+
+    batch_size, N, *_ = x.shape
+    M = A.shape[-1]
+
+    return_zf = True
+    if zi is None:
+        return_zf = False
+        zi = x.new_zeros(batch_size, M)
+    elif zi.dim() == 1:
+        zi = zi.unsqueeze(0).expand(batch_size, -1)
+
+    if C is not None:
+        assert C.dim() in (2, 3), f"Output matrix C must be 2D or 3D, got {C.shape}"
+
+    if B is not None:
+        match B.shape:
+            case (M,):
+                assert (
+                    x.dim() == 2
+                ), f"Input signal x must be 2D when B is of shape {M,}, got {x.shape}"
+                Bx = x.unsqueeze(-1) * B
+            case (M, _):
+                Bx = x @ B.T
+            case (batch_size, M):
+                assert (
+                    x.dim() == 2
+                ), f"Input signal x must be 2D when B is of shape {batch_size, M}, got {x.shape}"
+                Bx = x.unsqueeze(-1) * B.unsqueeze(1)
+            case (batch_size, M, _):
+                Bx = torch.linalg.vecdot(
+                    B.unsqueeze(1).conj(), x.unsqueeze(-2)
+                )  # (batch_size, N, M)
+            case _:
+                raise ValueError(
+                    f"Input matrix B must be of shape ({M,}), ({M}, features), ({batch_size}, {M}), or ({batch_size}, {M}, features), got {B.shape}"
+                )
+
+    h = state_space_recursion(A, zi, Bx, **kwargs)
+    if return_zf:
+        zf = h[:, -1, :]
+    h = torch.cat([zi.unsqueeze(1), h[:, :-1]], dim=1)
+
+    if D is not None:
+        match D.shape:
+            case (batch_size,):
+                assert (
+                    x.dim() == 2
+                ), f"Input signal x must be 2D when D is of shape {batch_size,}, got {x.shape}"
+                Dx = D.unsqueeze(1) * x
+            case (1,) | ():
+                Dx = x * D
+            case (_, _):
+                assert (
+                    x.dim() == 3
+                ), f"Input signal x must be 3D when D is of shape {D.shape}, got {x.shape}"
+                Dx = x @ D.T
+            case (batch_size, _, _):
+                Dx = torch.linalg.vecdot(D.unsqueeze(1).conj(), x.unsqueeze(-2))
+            case _:
+                raise ValueError(
+                    f"Input matrix D must be of shape ({batch_size,}), (1,), (_, _), or ({batch_size}, _, features), got {D.shape}"
+                )
+    else:
+        Dx = None
+
+    if C is not None:
+        match C.shape:
+            case (M,):
+                Ch = h @ C
+            case (batch_size, M):
+                Ch = torch.linalg.vecdot(C.unsqueeze(1).conj(), h)
+            case (_, M):
+                Ch = h @ C.T
+            case (batch_size, _, M):
+                Ch = h @ C.mT
+            case _:
+                raise ValueError(
+                    f"Output matrix C must be of shape ({M,}), ({batch_size}, {M}), (_, {M}), or ({batch_size}, _, {M}), got {C.shape}"
+                )
+    else:
+        Ch = h
+
+    if Dx is not None:
+        y = Ch + Dx
+    else:
+        y = Ch
+    if return_zf:
+        return y, zf
+    return y
