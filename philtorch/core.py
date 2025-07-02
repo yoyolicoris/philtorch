@@ -1,5 +1,6 @@
 import torch
 from torch import Tensor
+import torch.nn.functional as F
 from torchlpc import sample_wise_lpc
 from typing import Optional, Union, Tuple
 
@@ -25,17 +26,17 @@ def lpv_fir(
 
     if zi is None:
         return_zf = False
-        zi = x.new_zeros((B, b.shape[2] - 1))
+        zi = x.new_zeros((B, b.size(2) - 1))
     else:
         assert zi.dim() == 2, "Initial conditions zi must be 2D."
-        assert zi.shape[0] == B, "The first dimension of zi must match the batch size."
+        assert zi.size(0) == B, "The first dimension of zi must match the batch size."
         assert (
-            zi.shape[1] == b.shape[2] - 1
+            zi.size(1) == b.size(2) - 1
         ), "The second dimension of zi must match the filter order."
 
         return_zf = True
 
-    unfolded_x = torch.cat([zi.flip(1), x], dim=1).unfold(1, b.shape[2], 1)
+    unfolded_x = torch.cat([zi.flip(1), x], dim=1).unfold(1, b.size(2), 1)
     y = torch.linalg.vecdot(unfolded_x, b.flip(2))
 
     if return_zf:
@@ -63,16 +64,74 @@ def lpv_allpole(
 
     if zi is None:
         return_zf = False
-        zi = x.new_zeros((B, a.shape[2]))
+        zi = x.new_zeros((B, a.size(2)))
     else:
         assert zi.dim() == 2, "Initial conditions zi must be 2D."
-        assert zi.shape[0] == B, "The first dimension of zi must match the batch size."
-        assert (
-            zi.shape[1] == a.shape[2]
+        assert zi.size(0) == B, "The first dimension of zi must match the batch size."
+        assert zi.size(1) == a.size(
+            2
         ), "The second dimension of zi must match the filter order, but got {} instead of {}".format(
-            zi.shape[1], a.shape[2]
+            zi.size(1), a.size(2)
         )
 
         return_zf = True
 
     return sample_wise_lpc(x, a, zi=zi, return_zf=return_zf)
+
+
+def lti_fir(
+    b: Tensor,
+    x: Tensor,
+    zi: Optional[Tensor] = None,
+    tranpose: bool = False,
+) -> Union[Tensor, Tuple[Tensor, Tensor]]:
+    """Apply a batch of time-invariant FIR filters to input signal
+    Args:
+        b (Tensor): Coefficients of the FIR filters, shape (B, M+1).
+        x (Tensor): Input signal, shape (B, N).
+        zi (Tensor, optional): Initial conditions for the filter, shape (B, M).
+    Returns:
+        Filtered output signal, shape (B, N), and optionally the final state of the filter.
+    """
+    assert b.dim() == 2, "Numerator coefficients b must be 2D."
+    assert x.dim() == 2, "Input signal x must be 2D."
+    B, N = x.shape
+    assert b.shape[0] == B, "The first dimension of b must match the batch size of x."
+    M = b.size(1) - 1
+
+    if zi is not None:
+        assert zi.dim() == 2, "Initial conditions zi must be 2D."
+        assert zi.size(0) == B, "The first dimension of zi must match the batch size."
+        assert (
+            zi.size(1) == M
+        ), "The second dimension of zi must match the filter order."
+
+    if tranpose:
+        y = F.conv_transpose1d(
+            x.unsqueeze(0),
+            b.unsqueeze(1),
+            stride=1,
+            groups=B,
+        ).squeeze(0)
+        if zi is not None:
+            zf = y[:, -M:].flip(1)
+            y = y[:, :-M]
+            y = torch.cat([zi + y[:, :M], y[:, M:]], dim=1)
+            return y, zf
+        return y[:, :-M]
+
+    if zi is None:
+        zf = None
+        padded_x = F.pad(x, (M, 0))
+    else:
+        padded_x = torch.cat([zi.flip(1), x], dim=1)
+        zf = padded_x[:, -M:].flip(1)
+
+    y = F.conv1d(
+        padded_x.unsqueeze(0),
+        b.flip(1).unsqueeze(1),
+        groups=B,
+    ).squeeze(0)
+    if zf is not None:
+        return y, zf
+    return y
