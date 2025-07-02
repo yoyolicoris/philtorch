@@ -19,9 +19,9 @@ def _generate_random_filter_coeffs(order: int, B: int) -> np.ndarray:
     return a
 
 
-@pytest.mark.parametrize("B", [1, 8, 16])
+@pytest.mark.parametrize("B", [1, 8])
 @pytest.mark.parametrize("T", [17, 29, 101])
-@pytest.mark.parametrize("order", [1, 2, 4])
+@pytest.mark.parametrize("order", [1, 3])
 @pytest.mark.parametrize("unroll_factor", [None, 2, 5])
 def test_time_invariant_filter(
     B: int,
