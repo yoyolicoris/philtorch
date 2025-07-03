@@ -69,12 +69,6 @@ def scan(a: Tensor, init: Tensor, x: Tensor, *, unroll_factor: int = 1) -> Tenso
     a_powered = a_powers[..., -1]
     a_powers_plus_I = F.pad(a_powers[..., :-1].flip(-1), (0, 1), value=1.0)
 
-    # mat1 = (
-    #     A_powers_plus_I.transpose(-2, -1).flatten(-3, -2)
-    #     if x.dim() == 3
-    #     else A_powers_plus_I[..., 0]  # assume x -> x * [1, 0, 0, ...] in the 2D case
-    # )
-    # z = unrolled_x @ mat1
     z = (
         unrolled_x @ a_powers_plus_I
         if a_powers_plus_I.dim() == 1
@@ -100,7 +94,6 @@ def scan(a: Tensor, init: Tensor, x: Tensor, *, unroll_factor: int = 1) -> Tenso
     output = aug_x @ aug_A.mT
 
     # concat the first M - 1 outputs with the last one
-
     output = torch.cat([output, initials[:, 1:, None]], dim=2).flatten(1, 2)
     if remainder != 0:
         # if we padded the input, we need to remove the padding from the output
