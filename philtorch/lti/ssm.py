@@ -40,7 +40,7 @@ def state_space_recursion(
     zi: Tensor,
     x: Tensor,
     *,
-    unroll_factor: Optional[int] = None,
+    unroll_factor: int = 1,
     out_idx: Optional[int] = None,
 ) -> Tensor:
     assert x.dim() in (
@@ -70,9 +70,7 @@ def state_space_recursion(
         zi.size(1) == M
     ), f"Last dimension of zi must match last dimension of A, got zi: {zi.size(1)}, A: {M}"
 
-    if unroll_factor is None:
-        block_size = min(32, int(N**0.5))
-    elif unroll_factor < 1:
+    if unroll_factor < 1:
         raise ValueError("Unroll factor must be >= 1")
     else:
         block_size = unroll_factor
@@ -214,8 +212,9 @@ def state_space(
     C: Optional[Tensor] = None,
     D: Optional[Tensor] = None,
     zi: Optional[Tensor] = None,
+    unroll_factor: Optional[int] = None,
     out_idx: Optional[int] = None,
-    **kwargs,
+    # **kwargs,
 ):
     assert x.dim() in (
         2,
@@ -238,6 +237,9 @@ def state_space(
         zi = x.new_zeros(batch_size, M)
     elif zi.dim() == 1:
         zi = zi.unsqueeze(0).expand(batch_size, -1)
+
+    if unroll_factor is None:
+        unroll_factor = round(N**0.5)
 
     if B is not None:
         match B.shape:
@@ -267,7 +269,7 @@ def state_space(
         Bx = x
 
     if return_zf or out_idx is None:
-        h = state_space_recursion(A, zi, Bx, out_idx=None, **kwargs)
+        h = state_space_recursion(A, zi, Bx, unroll_factor=unroll_factor, out_idx=None)
         zf = h[:, -1, :] if return_zf else None
         h = (
             torch.cat([zi.unsqueeze(1), h[:, :-1]], dim=1)
@@ -276,7 +278,9 @@ def state_space(
         )
     else:
         zf = None
-        h = state_space_recursion(A, zi, Bx, out_idx=out_idx, **kwargs)
+        h = state_space_recursion(
+            A, zi, Bx, unroll_factor=unroll_factor, out_idx=out_idx
+        )
         h = torch.cat([zi[:, None, out_idx], h[:, :-1]], dim=1)
 
     if D is not None:

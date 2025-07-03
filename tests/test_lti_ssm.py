@@ -22,12 +22,12 @@ def _generate_random_filter_coeffs(order: int, B: int) -> np.ndarray:
 @pytest.mark.parametrize("B", [1, 8])
 @pytest.mark.parametrize("T", [17, 29, 101])
 @pytest.mark.parametrize("order", [1, 3])
-@pytest.mark.parametrize("unroll_factor", [None, 1, 5])
+@pytest.mark.parametrize("unroll_factor", [1, 5])
 def test_time_invariant_ssm(
     B: int,
     T: int,
     order: int,
-    unroll_factor: Optional[int],
+    unroll_factor: int,
 ):
     """Test time-invariant filters against scipy.signal.lfilter"""
 
