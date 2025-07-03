@@ -2,8 +2,10 @@ import torch
 import torch.nn.functional as F
 from typing import Optional, Union, Tuple
 from torch import Tensor
+from torchlpc import sample_wise_lpc
 
 from ..mat import matrix_power_accumulate, find_eigenvectors
+from .scan import scan
 
 
 def _recursion_loop(
@@ -505,19 +507,20 @@ def diag_state_space(
     else:
         assert False, f"Input signal x must be 2D or 3D, got {x.shape}"
 
-    Vinvh = (
-        state_space_recursion(
-            L.broadcast_to((batch_size, M)).flatten(0, 1)[..., None, None],
-            Vinvzi.reshape(-1, 1),
-            VinvBx.mT.flatten(0, 1).unsqueeze(-1),
-            out_idx=None,
-            unroll_factor=unroll_factor,
-        )
-        .squeeze(-1)
-        .unflatten(0, (batch_size, M))
-    )
+    Vinvh = scan(
+        L.broadcast_to((batch_size, M)).flatten(0, 1),
+        Vinvzi.flatten(),
+        VinvBx.mT.flatten(0, 1),
+        unroll_factor=unroll_factor,
+    ).unflatten(0, (batch_size, M))
     if not return_zf and out_idx is not None:
-        h = (V[..., out_idx : out_idx + 1, :] @ Vinvh).squeeze(-2)
+        h = torch.cat(
+            [
+                zi[:, None, out_idx],
+                (V[..., out_idx, None, :] @ Vinvh[..., :-1]).squeeze(-2),
+            ],
+            dim=1,
+        )
         zf = None
     else:
         h = (V @ Vinvh).mT

@@ -218,11 +218,10 @@ def _diag_ssm_lfilter(
                 diag_state_space,
                 A=A.mT.conj(),
                 B=B.conj(),
-                C=torch.tensor(
-                    [1] + [0] * (B.size(-1) - 1), device=B.device, dtype=B.dtype
-                ),
+                C=None,
                 D=D.conj(),
                 zi=zi,
+                out_idx=0,
                 **kwargs,
             )
         case _:
