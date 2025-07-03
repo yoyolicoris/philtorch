@@ -95,30 +95,26 @@ def test_tdf2_zi(num_order: int, den_order: int):
 
 @pytest.mark.parametrize("B", [1, 8])
 @pytest.mark.parametrize("T", [101])
-@pytest.mark.parametrize("num_order", [1, 2, 4])
-@pytest.mark.parametrize("den_order", [1, 3, 6])
+@pytest.mark.parametrize(("num_order", "den_order"), [(1, 1), (2, 2), (3, 3), (4, 5)])
 @pytest.mark.parametrize("form", ["df2", "tdf2"])
-def test_diag_ssm_backend(B: int, T: int, num_order: int, den_order: int, form: str):
+@pytest.mark.parametrize("enable_L", [True, False])
+def test_diag_ssm_backend(
+    B: int, T: int, num_order: int, den_order: int, form: str, enable_L: bool
+):
     """Test time-invariant filters against scipy.signal.lfilter"""
 
     # Generate test data
     # b, a = _generate_random_filter_coeffs(num_order, den_order, B)
     b = np.random.randn(B, num_order + 1)
-    num_cmplx_poles = num_order // 2
-    num_real_poles = num_order - 2 * num_cmplx_poles
+    num_cmplx_poles = den_order // 2
+    num_real_poles = den_order - 2 * num_cmplx_poles
 
     cmplx_poles = np.random.rand(num_cmplx_poles) ** 0.5 * np.exp(
         1j * np.random.rand(num_cmplx_poles) * 2 * np.pi
     )
     real_poles = np.random.rand(num_real_poles) ** 0.5 + 0j
-
-    a = (
-        np.polynomial.Polynomial.fromroots(
-            np.concatenate([cmplx_poles, cmplx_poles.conj(), real_poles])
-        )
-        .coef.real[-2::-1]
-        .copy()
-    )
+    roots = np.concatenate([cmplx_poles, cmplx_poles.conj(), real_poles])
+    a = np.polynomial.Polynomial.fromroots(roots).coef.real[-2::-1].copy()
 
     x = _generate_random_signal(B, T)
 
@@ -126,9 +122,10 @@ def test_diag_ssm_backend(B: int, T: int, num_order: int, den_order: int, form: 
     b_torch = torch.from_numpy(b)
     a_torch = torch.from_numpy(a)
     x_torch = torch.from_numpy(x)
+    L = torch.from_numpy(roots) if enable_L else None
 
     # Apply philtorch filter
-    y_torch = lfilter(b_torch, a_torch, x_torch, form=form, backend="diag_ssm")
+    y_torch = lfilter(b_torch, a_torch, x_torch, form=form, backend="diag_ssm", L=L)
 
     # Apply scipy filter
     y_scipy = np.stack(
