@@ -4,7 +4,7 @@ import torch.nn.functional as F
 from typing import Optional, Union, Tuple
 from functools import partial
 
-from .ssm import state_space, state_space_recursion
+from .ssm import state_space, state_space_recursion, diag_state_space
 from ..mat import a2companion
 from ..utils import chain_functions
 
@@ -109,6 +109,8 @@ def lfilter(
     match backend:
         case "ssm":
             y = _ssm_lfilter(b, a, x, zi, form=form, **kwargs)
+        case "diag_ssm":
+            y = _diag_ssm_lfilter(b, a, x, zi, form=form, **kwargs)
         case _:
             raise ValueError(f"Unknown backend: {backend}")
 
@@ -172,6 +174,52 @@ def _ssm_lfilter(
             filt = chain_functions(
                 partial(state_space_recursion, A.mT.conj(), zi, out_idx=0, **kwargs),
                 partial(fir, b.conj(), tranpose=True),
+            )
+        case _:
+            raise ValueError(f"Unknown filter form: {form}")
+
+    return filt(x)
+
+
+def _diag_ssm_lfilter(
+    b: Tensor,
+    a: Tensor,
+    x: Tensor,
+    zi: Optional[Tensor] = None,
+    form: str = "df2",
+    **kwargs,
+) -> Union[Tensor, Tuple[Tensor, Tensor]]:
+    """Apply a batch of time-invariant linear filters to input signal using state-space model."""
+    A = a2companion(a)
+
+    match form:
+        case "df2":
+            b0 = b[..., :1]  # First coefficient of the FIR filter
+            C = b[..., 1:] - b0 * a
+            D = b[..., 0]
+            filt = partial(
+                diag_state_space,
+                A=A,
+                B=None,
+                C=C,
+                D=D,
+                zi=zi,
+                **kwargs,
+            )
+        case "tdf2":
+            b0 = b[..., :1]  # First coefficient of the FIR filter
+            B = b[..., 1:] - b0 * a
+            D = b[..., 0]
+            filt = partial(
+                diag_state_space,
+                A=A.mT.conj(),
+                B=B.conj(),
+                C=torch.tensor(
+                    [1] + [0] * (B.size(-1) - 1), device=B.device, dtype=B.dtype
+                ),
+                D=D.conj(),
+                zi=zi,
+                **kwargs,
             )
         case _:
             raise ValueError(f"Unknown filter form: {form}")
