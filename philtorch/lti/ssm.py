@@ -350,7 +350,7 @@ def diag_state_space(
     C: Optional[Tensor] = None,
     D: Optional[Tensor] = None,
     zi: Optional[Tensor] = None,
-    **kwargs,
+    unroll_factor: Optional[int] = None,
 ):
     assert x.dim() in (
         2,
@@ -358,6 +358,8 @@ def diag_state_space(
     ), f"Input signal must be 2D or 3D (batch, time, [features]), got {x.shape}"
 
     batch_size, N = x.size(0), x.size(1)
+    if unroll_factor is None:
+        unroll_factor = round(N**0.5)
 
     if L is None:
         assert A is not None, "Either L or A must be provided"
@@ -508,7 +510,7 @@ def diag_state_space(
             Vinvzi.reshape(-1, 1),
             VinvBx.mT.flatten(0, 1).unsqueeze(-1),
             out_idx=None,
-            **kwargs,
+            unroll_factor=unroll_factor,
         )
         .squeeze(-1)
         .unflatten(0, (batch_size, M))
