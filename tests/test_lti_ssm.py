@@ -5,7 +5,7 @@ from scipy import signal
 from typing import Tuple, Optional
 
 from philtorch.lti import state_space_recursion
-from philtorch.prototype.utils import a2companion
+from philtorch.mat import a2companion
 
 from .test_lti_lfilter import _generate_random_signal
 
@@ -39,7 +39,7 @@ def test_time_invariant_ssm(
     a_torch = torch.from_numpy(a)
     x_torch = torch.from_numpy(x)
     A = a2companion(a_torch).squeeze(0)
-    zi = x_torch.new_zeros(B, A.shape[-1])
+    zi = x_torch.new_zeros(B, A.size(-1))
 
     # Apply philtorch filter
     y_torch = state_space_recursion(
@@ -69,7 +69,7 @@ def test_out_idx(order: int, out_idx: int):
     a_torch = torch.from_numpy(a)
     x_torch = torch.from_numpy(x)
     A = a2companion(a_torch)
-    zi = x_torch.new_zeros(B, A.shape[-1])
+    zi = x_torch.new_zeros(B, A.size(-1))
 
     # Apply philtorch filter with out_idx
     y_torch = state_space_recursion(A, zi, x_torch, out_idx=out_idx)[:, out_idx:]
