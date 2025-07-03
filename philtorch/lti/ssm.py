@@ -3,7 +3,7 @@ import torch.nn.functional as F
 from typing import Optional, Union, Tuple
 from torch import Tensor
 
-from ..mat import matrix_power_accumulate
+from ..mat import matrix_power_accumulate, find_eigenvectors
 
 
 def _recursion_loop(
@@ -283,6 +283,14 @@ def state_space(
         )
         h = torch.cat([zi[:, None, out_idx], h[:, :-1]], dim=1)
 
+    y = _ssm_C_D(h, x, C, D, batch_size, M)
+
+    if return_zf:
+        return y, zf
+    return y
+
+
+def _ssm_C_D(h, x, C, D, batch_size, M):
     if D is not None:
         match D.shape:
             case (batch_size,):
@@ -329,6 +337,191 @@ def state_space(
         y = Ch + Dx
     else:
         y = Ch
+    return y
+
+
+def diag_state_space(
+    x: Tensor,
+    L: Optional[Tensor] = None,
+    V: Optional[Tensor] = None,
+    Vinv: Optional[Tensor] = None,
+    A: Optional[Tensor] = None,
+    B: Optional[Tensor] = None,
+    C: Optional[Tensor] = None,
+    D: Optional[Tensor] = None,
+    zi: Optional[Tensor] = None,
+    **kwargs,
+):
+    assert x.dim() in (
+        2,
+        3,
+    ), f"Input signal must be 2D or 3D (batch, time, [features]), got {x.shape}"
+
+    batch_size, N = x.size(0), x.size(1)
+
+    if L is None:
+        assert A is not None, "Either L or A must be provided"
+        assert A.dim() in (2, 3), f"State matrix A must be 2D or 3D, got {A.shape}"
+        assert A.size(-2) == A.size(-1), f"State matrix A must be square, got {A.shape}"
+        if A.dim() == 3:
+            assert x.size(0) == A.size(
+                0
+            ), f"Batch size of A must match batch size of x, got A: {A.size(0)}, x: {x.size(0)}"
+        L = torch.linalg.eigvals(A)
+        V = Vinv = None
+        M = A.size(-1)
+    else:
+        match L.shape:
+            case (_,):
+                M = L.size(0)
+                if V is not None:
+                    assert V.dim() == 2, f"P must be 2D, got {V.shape}"
+                    assert (
+                        V.size(0) == V.size(1) == M
+                    ), f"P must be square with size {M}, got {V.shape}"
+                if Vinv is not None:
+                    assert Vinv.dim() == 2, f"Vinv must be 2D, got {Vinv.shape}"
+                    assert (
+                        Vinv.size(0) == Vinv.size(1) == M
+                    ), f"Vinv must be square with size {M}, got {Vinv.shape}"
+
+                if A is not None:
+                    assert A.dim() == 2, f"A must be 2D, got {A.shape}"
+                    assert (
+                        A.size(0) == A.size(1) == M
+                    ), f"A must be square with size {M}, got {A.shape}"
+
+            case (batch_size, _):
+                M = L.size(1)
+                assert not (
+                    V is None and Vinv is None
+                ), "P and Vinv cannot both be None when L is a batch of vectors"
+                if V is not None:
+                    assert V.dim() == 3, f"P must be 3D, got {V.shape}"
+                    assert (
+                        V.size(0) == batch_size and V.size(1) == V.size(2) == M
+                    ), f"P must be a batch of square matrices with size {M}, got {V.shape}"
+                if Vinv is not None:
+                    assert Vinv.dim() == 3, f"Vinv must be 3D, got {Vinv.shape}"
+                    assert (
+                        Vinv.size(0) == batch_size and Vinv.size(1) == Vinv.size(2) == M
+                    ), f"Vinv must be a batch of square matrices with size {M}, got {Vinv.shape}"
+
+                if A is not None:
+                    assert A.dim() == 3, f"A must be 3D, got {A.shape}"
+                    assert (
+                        A.size(0) == batch_size and A.size(1) == A.size(2) == M
+                    ), f"A must be a batch of square matrices with size {M}, got {A.shape}"
+
+            case _:
+                raise ValueError(
+                    f"L must be a vector or a batch of vectors, got {L.shape}"
+                )
+
+    match (V, Vinv, A):
+        case (None, None, None):
+            # scalar case
+            V = Vinv = torch.eye(M, device=x.device, dtype=x.dtype)
+        case (None, None, _):
+            V = find_eigenvectors(A, L)
+            Vinv = torch.linalg.inv(V)
+        case (None, _, None):
+            V = torch.linalg.inv(Vinv)
+        case (_, None, None):
+            Vinv = torch.linalg.inv(V)
+        case (_, _, None):
+            pass
+        case _:
+            raise ValueError("Only one of V, Vinv, or A can be provided at a time.")
+    assert Vinv is not None, "Vinv must be provided or computed from A or V"
+    assert V is not None, "V must be provided or computed from A or Vinv"
+
+    return_zf = True
+    if zi is None:
+        return_zf = False
+        zi = x.new_zeros(batch_size, M)
+    elif zi.dim() == 1:
+        zi = zi.unsqueeze(0).expand(batch_size, -1)
+
+    x_orig = x
+    if Vinv.is_complex():
+        if not zi.is_complex():
+            zi = zi + 0j  # Ensure zi is complex if Vinv is complex
+        if not x.is_complex():
+            x = x + 0j  # Ensure x is complex if Vinv is complex
+        if B is not None and not B.is_complex():
+            B = B + 0j
+
+    match Vinv.dim():
+        case 2:
+            Vinvzi = zi @ Vinv.T
+        case 3:
+            Vinvzi = torch.linalg.vecdot(Vinv.conj(), zi.unsqueeze(1))
+        case _:
+            assert False, f"Vinv must be 2D or 3D, got {Vinv.shape}"
+
+    if B is not None:
+        match B.shape:
+            case (M,):
+                assert (
+                    x.dim() == 2
+                ), f"Input signal x must be 2D when B is of shape {M,}, got {x.shape}"
+                VinvB = Vinv @ B
+                if VinvB.dim() == 2:
+                    VinvB = VinvB.unsqueeze(1)
+                VinvBx = x.unsqueeze(-1) * VinvB
+            case (1,) | ():
+                VinvB = Vinv * B
+                VinvBx = x @ VinvB.mT
+            case (batch_size, M):
+                assert (
+                    x.dim() == 2
+                ), f"Input signal x must be 2D when B is of shape {batch_size, M}, got {x.shape}"
+                VinvB = (
+                    B @ Vinv.T
+                    if Vinv.dim() == 2
+                    else torch.linalg.vecdot(Vinv.conj(), B.unsqueeze(1))
+                )
+                VinvBx = x.unsqueeze(-1) * VinvB.unsqueeze(1)
+            case (M, _):
+                VinvB = Vinv @ B.T
+                VinvBx = x @ VinvB.mT
+            case (batch_size, M, _):
+                VinvB = Vinv @ B.mT
+                VinvBx = torch.linalg.vecdot(VinvB.unsqueeze(1).conj(), x.unsqueeze(-2))
+            case _:
+                raise ValueError(
+                    f"Input matrix B must be of shape ({M,}), ({M}, features), ({batch_size}, {M}), or ({batch_size}, {M}, features), got {B.shape}"
+                )
+    elif x.dim() == 2 and Vinv.dim() == 2:
+        VinvBx = x.unsqueeze(-1) * Vinv[:, 0]
+    elif x.dim() == 2 and Vinv.dim() == 3:
+        VinvBx = x.unsqueeze(-1) * Vinv[:, None, :, 0]
+    elif x.dim() == 3:
+        VinvBx = x @ Vinv.mT
+    else:
+        assert False, f"Input signal x must be 2D or 3D, got {x.shape}"
+
+    Vinvh = (
+        state_space_recursion(
+            L.broadcast_to((batch_size, M)).flatten(0, 1)[..., None, None],
+            Vinvzi.reshape(-1, 1),
+            VinvBx.mT.flatten(0, 1).unsqueeze(-1),
+            out_idx=None,
+            **kwargs,
+        )
+        .squeeze(-1)
+        .unflatten(0, (batch_size, M))
+    )
+    h = (V @ Vinvh).mT
+    zf = h[:, -1, :] if return_zf else None
+    h = torch.cat([zi.unsqueeze(1), h[:, :-1]], dim=1)
+
+    if C is not None and not C.is_complex():
+        h = h.real
+        zf = zf.real if return_zf else None
+
+    y = _ssm_C_D(h, x_orig, C, D, batch_size, M)
     if return_zf:
         return y, zf
     return y
