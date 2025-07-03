@@ -4,11 +4,67 @@ import torch.nn.functional as F
 from typing import Optional, Union, Tuple
 from functools import partial
 
-from ..lpv import lfilter as lpv_lfilter
 from .ssm import state_space, state_space_recursion
-from ..prototype.utils import a2companion
+from ..mat import a2companion
 from ..utils import chain_functions
-from ..core import lti_fir
+
+
+def fir(
+    b: Tensor,
+    x: Tensor,
+    zi: Optional[Tensor] = None,
+    tranpose: bool = False,
+) -> Union[Tensor, Tuple[Tensor, Tensor]]:
+    """Apply a batch of time-invariant FIR filters to input signal
+    Args:
+        b (Tensor): Coefficients of the FIR filters, shape (B, M+1).
+        x (Tensor): Input signal, shape (B, N).
+        zi (Tensor, optional): Initial conditions for the filter, shape (B, M).
+    Returns:
+        Filtered output signal, shape (B, N), and optionally the final state of the filter.
+    """
+    assert b.dim() == 2, "Numerator coefficients b must be 2D."
+    assert x.dim() == 2, "Input signal x must be 2D."
+    B, N = x.shape
+    assert b.shape[0] == B, "The first dimension of b must match the batch size of x."
+    M = b.size(1) - 1
+
+    if zi is not None:
+        assert zi.dim() == 2, "Initial conditions zi must be 2D."
+        assert zi.size(0) == B, "The first dimension of zi must match the batch size."
+        assert (
+            zi.size(1) == M
+        ), "The second dimension of zi must match the filter order."
+
+    if tranpose:
+        y = F.conv_transpose1d(
+            x.unsqueeze(0),
+            b.unsqueeze(1),
+            stride=1,
+            groups=B,
+        ).squeeze(0)
+        if zi is not None:
+            zf = y[:, -M:].flip(1)
+            y = y[:, :-M]
+            y = torch.cat([zi + y[:, :M], y[:, M:]], dim=1)
+            return y, zf
+        return y[:, :-M]
+
+    if zi is None:
+        zf = None
+        padded_x = F.pad(x, (M, 0))
+    else:
+        padded_x = torch.cat([zi.flip(1), x], dim=1)
+        zf = padded_x[:, -M:].flip(1)
+
+    y = F.conv1d(
+        padded_x.unsqueeze(0),
+        b.flip(1).unsqueeze(1),
+        groups=B,
+    ).squeeze(0)
+    if zf is not None:
+        return y, zf
+    return y
 
 
 def lfilter(
@@ -108,14 +164,14 @@ def _ssm_lfilter(
         case "df1":
             zi = x.new_zeros((x.size(0), A.size(-1)))
             filt = chain_functions(
-                partial(lti_fir, b),
+                partial(fir, b),
                 partial(state_space_recursion, A, zi, out_idx=0, **kwargs),
             )
         case "tdf1":
             zi = x.new_zeros((x.size(0), A.size(-1)))
             filt = chain_functions(
                 partial(state_space_recursion, A.mT.conj(), zi, out_idx=0, **kwargs),
-                partial(lti_fir, b.conj(), tranpose=True),
+                partial(fir, b.conj(), tranpose=True),
             )
         case _:
             raise ValueError(f"Unknown filter form: {form}")

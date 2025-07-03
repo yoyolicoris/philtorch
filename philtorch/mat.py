@@ -7,10 +7,10 @@ from sympy.ntheory import factorint
 def find_eigenvectors(A: Tensor, eigenvalues: Tensor) -> Tensor:
     assert A.dim() >= 2, "Matrix A must be at least 2D."
     assert eigenvalues.dim() >= 1, "Eigenvalues must be at least 1D."
-    assert A.shape[-2] == A.shape[-1], "Matrix A must be square."
-    assert A.shape[-1] == eigenvalues.shape[-1], "Eigenvalues must match the size of A."
+    assert A.size(-2) == A.size(-1), "Matrix A must be square."
+    assert A.size(-1) == eigenvalues.size(-1), "Eigenvalues must match the size of A."
 
-    n = A.shape[-1]
+    n = A.size(-1)
     I = torch.eye(n, device=A.device, dtype=A.dtype)
     W = A.unsqueeze(-3) - eigenvalues[..., None, None] * I
     B, W = torch.split(W, [1, n - 1], dim=-1)
@@ -36,7 +36,7 @@ def a2companion(a: Tensor) -> Tensor:
         torch.Tensor: Companion matrix of shape (..., M, M).
     """
     assert a.dim() >= 1, "All-pole coefficients must be at least 1D."
-    M = a.shape[-1]
+    M = a.size(-1)
     A = torch.cat([-a, a.new_zeros(a.shape[:-1] + (M * (M - 1),))], dim=-1).unflatten(
         -1, (M, M)
     )
@@ -55,7 +55,7 @@ def vandermonde(poles: Tensor) -> Tensor:
         torch.Tensor: Vandermonde matrix of shape (..., M, M).
     """
     assert poles.dim() >= 1, "Poles must be at least 1D."
-    M = poles.shape[-1]
+    M = poles.size(-1)
     vander = poles.unsqueeze(-2) ** torch.arange(
         M - 1, -1, -1, device=poles.device
     ).unsqueeze(1)
@@ -67,16 +67,15 @@ def matrix_power_accumulate(A: Tensor, n: int) -> Tensor:
     Args:
         A (Tensor): The input matrix, shape (*, N, N) where * can be any number of batch dimensions.
         n (int): The exponent to which the matrix A is raised. Could be negative, zero, or positive.
-        initial (Optional[Tensor]): Initial value for accumulation, shape (*, N, N).
     Returns:
         Tensor: The accumulated result after raising A to the power of n with shape (*, max(n, 1), N, N).
     """
     assert A.dim() >= 2, "Input matrix A must have at least 2 dimensions."
-    assert A.shape[-2] == A.shape[-1], "Input matrix A must be square."
+    assert A.size(-2) == A.size(-1), "Input matrix A must be square."
 
     if n == 0:
         return (
-            torch.eye(A.shape[-1], device=A.device, dtype=A.dtype)
+            torch.eye(A.size(-1), device=A.device, dtype=A.dtype)
             .broadcast_to(A.shape)
             .unsqueeze(-3)
         )
@@ -92,15 +91,7 @@ def matrix_power_accumulate(A: Tensor, n: int) -> Tensor:
 
 def _mat_pwr_accum_runner(A: Tensor, factors: list[int]) -> Tensor:
     fac, *factors = factors
-    accums = torch.stack(
-        list(
-            accumulate(
-                [A] * fac,
-                torch.matmul,
-            )
-        ),
-        dim=-3,
-    )
+    accums = torch.stack(list(accumulate([A] * fac, torch.matmul)), dim=-3)
     if len(factors) == 0:
         return accums
     higher_powers = _mat_pwr_accum_runner(accums[..., -1, :, :], factors)

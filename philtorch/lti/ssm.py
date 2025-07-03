@@ -3,7 +3,7 @@ import torch.nn.functional as F
 from typing import Optional, Union, Tuple
 from torch import Tensor
 
-from ..prototype.utils import matrix_power_accumulate
+from ..mat import matrix_power_accumulate
 
 
 def _recursion_loop(
@@ -71,7 +71,7 @@ def state_space_recursion(
     ), f"Last dimension of zi must match last dimension of A, got zi: {zi.size(1)}, A: {M}"
 
     if unroll_factor is None:
-        block_size = int(N**0.5)
+        block_size = min(32, int(N**0.5))
     elif unroll_factor < 1:
         raise ValueError("Unroll factor must be >= 1")
     else:
