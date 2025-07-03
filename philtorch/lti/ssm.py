@@ -350,6 +350,7 @@ def diag_state_space(
     C: Optional[Tensor] = None,
     D: Optional[Tensor] = None,
     zi: Optional[Tensor] = None,
+    out_idx: Optional[int] = None,
     unroll_factor: Optional[int] = None,
 ):
     assert x.dim() in (
@@ -515,9 +516,20 @@ def diag_state_space(
         .squeeze(-1)
         .unflatten(0, (batch_size, M))
     )
-    h = (V @ Vinvh).mT
-    zf = h[:, -1, :] if return_zf else None
-    h = torch.cat([zi.unsqueeze(1), h[:, :-1]], dim=1)
+    if not return_zf and out_idx is not None:
+        h = (V[..., out_idx : out_idx + 1, :] @ Vinvh).squeeze(-2)
+        zf = None
+    else:
+        h = (V @ Vinvh).mT
+        zf = h[:, -1, :] if return_zf else None
+        h = torch.cat(
+            (
+                [zi.unsqueeze(1), h[:, :-1]]
+                if out_idx is None
+                else [zi[:, None, out_idx], h[:, :-1, out_idx]]
+            ),
+            dim=1,
+        )
 
     if C is not None and not C.is_complex():
         h = h.real
