@@ -5,6 +5,7 @@ from scipy import signal
 from typing import Tuple, Optional
 
 from philtorch.lti import lfilter, fir
+from philtorch.mat import a2companion, vandermonde
 
 
 def _generate_random_filter_coeffs(
@@ -174,8 +175,15 @@ def test_tdf2_zi(num_order: int, den_order: int):
 @pytest.mark.parametrize(("num_order", "den_order"), [(1, 1), (2, 2), (3, 3), (4, 5)])
 @pytest.mark.parametrize("form", ["df2", "tdf2"])
 @pytest.mark.parametrize("enable_L", [True, False])
+@pytest.mark.parametrize("enable_V", [True, False])
 def test_diag_ssm_backend(
-    B: int, T: int, num_order: int, den_order: int, form: str, enable_L: bool
+    B: int,
+    T: int,
+    num_order: int,
+    den_order: int,
+    form: str,
+    enable_L: bool,
+    enable_V: bool,
 ):
     """Test time-invariant filters against scipy.signal.lfilter"""
 
@@ -198,10 +206,20 @@ def test_diag_ssm_backend(
     b_torch = torch.from_numpy(b)
     a_torch = torch.from_numpy(a)
     x_torch = torch.from_numpy(x)
-    L = torch.from_numpy(roots) if enable_L else None
+    roots_torch = torch.from_numpy(roots)
+    L = roots_torch if enable_L else None
+    V = vandermonde(roots_torch) if enable_V else None
+
+    if form == "tdf2" and enable_V:
+        Vinv = V.T
+        V = None
+    else:
+        Vinv = None
 
     # Apply philtorch filter
-    y_torch = lfilter(b_torch, a_torch, x_torch, form=form, backend="diag_ssm", L=L)
+    y_torch = lfilter(
+        b_torch, a_torch, x_torch, form=form, backend="diag_ssm", L=L, V=V, Vinv=Vinv
+    )
 
     # Apply scipy filter
     y_scipy = np.stack(
