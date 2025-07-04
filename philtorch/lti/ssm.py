@@ -485,10 +485,10 @@ def diag_state_space(
                 )
                 VinvBx = x.unsqueeze(-1) * VinvB.unsqueeze(1)
             case (BM, _) if BM == M:
-                VinvB = Vinv @ B.T
+                VinvB = Vinv @ B
                 VinvBx = x @ VinvB.mT
             case (B_batch, BM, _) if B_batch == batch_size and BM == M:
-                VinvB = Vinv @ B.mT
+                VinvB = Vinv @ B
                 VinvBx = torch.linalg.vecdot(VinvB.unsqueeze(1).conj(), x.unsqueeze(-2))
             case _:
                 raise ValueError(
