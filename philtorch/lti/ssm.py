@@ -471,9 +471,6 @@ def diag_state_space(
                 if VinvB.dim() == 2:
                     VinvB = VinvB.unsqueeze(1)
                 VinvBx = x.unsqueeze(-1) * VinvB
-            case (1,) | ():
-                VinvB = Vinv * B
-                VinvBx = x @ VinvB.mT
             case (B_batch, BM) if B_batch == batch_size and BM == M:
                 assert (
                     x.dim() == 2
