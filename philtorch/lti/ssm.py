@@ -245,21 +245,21 @@ def state_space(
 
     if B is not None:
         match B.shape:
-            case (M,):
+            case (B_M,) if B_M == M:
                 assert (
                     x.dim() == 2
                 ), f"Input signal x must be 2D when B is of shape {M,}, got {x.shape}"
                 Bx = x.unsqueeze(-1) * B
-            case (1,) | ():
-                Bx = x * B
-            case (batch_size, M):
+            # case (1,) | ():
+            #     Bx = x * B
+            case (B_batch_size, B_M) if B_batch_size == batch_size and B_M == M:
                 assert (
                     x.dim() == 2
                 ), f"Input signal x must be 2D when B is of shape {batch_size, M}, got {x.shape}"
                 Bx = x.unsqueeze(-1) * B.unsqueeze(1)
-            case (M, _):
+            case (B_M, _) if B_M == M:
                 Bx = x @ B.T
-            case (batch_size, M, _):
+            case (B_batch_size, B_M, _) if B_batch_size == batch_size and B_M == M:
                 Bx = torch.linalg.vecdot(
                     B.unsqueeze(1).conj(), x.unsqueeze(-2)
                 )  # (batch_size, N, M)
@@ -318,15 +318,15 @@ def _ssm_C_D(h, x, C, D, batch_size, M):
 
     if C is not None:
         match C.shape:
-            case (M,):
+            case (C_M,) if C_M == M:
                 Ch = h @ C
-            case (1,) | ():
-                Ch = h * C
-            case (batch_size, M):
+            # case (1,) | ():
+            #     Ch = h * C
+            case (C_batch_size, C_M) if C_batch_size == batch_size and C_M == M:
                 Ch = torch.linalg.vecdot(C.unsqueeze(1).conj(), h)
-            case (_, M):
+            case (_, C_M) if C_M == M:
                 Ch = h @ C.T
-            case (batch_size, _, M):
+            case (C_batch_size, _, C_M) if C_batch_size == batch_size and C_M == M:
                 Ch = h @ C.mT
             case _:
                 raise ValueError(
