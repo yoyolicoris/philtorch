@@ -245,21 +245,19 @@ def state_space(
 
     if B is not None:
         match B.shape:
-            case (B_M,) if B_M == M:
+            case (BM,) if BM == M:
                 assert (
                     x.dim() == 2
                 ), f"Input signal x must be 2D when B is of shape {M,}, got {x.shape}"
                 Bx = x.unsqueeze(-1) * B
-            # case (1,) | ():
-            #     Bx = x * B
-            case (B_batch_size, B_M) if B_batch_size == batch_size and B_M == M:
+            case (B_batch, BM) if B_batch == batch_size and BM == M:
                 assert (
                     x.dim() == 2
                 ), f"Input signal x must be 2D when B is of shape {batch_size, M}, got {x.shape}"
                 Bx = x.unsqueeze(-1) * B.unsqueeze(1)
-            case (B_M, _) if B_M == M:
+            case (BM, _) if BM == M:
                 Bx = x @ B.T
-            case (B_batch_size, B_M, _) if B_batch_size == batch_size and B_M == M:
+            case (B_batch, BM, _) if B_batch == batch_size and BM == M:
                 Bx = torch.linalg.vecdot(
                     B.unsqueeze(1).conj(), x.unsqueeze(-2)
                 )  # (batch_size, N, M)
@@ -295,7 +293,7 @@ def state_space(
 def _ssm_C_D(h, x, C, D, batch_size, M):
     if D is not None:
         match D.shape:
-            case (D_batch_size,) if D_batch_size == batch_size:
+            case (D_batch,) if D_batch == batch_size:
                 assert (
                     x.dim() == 2
                 ), f"Input signal x must be 2D when D is of shape {batch_size,}, got {x.shape}"
@@ -307,7 +305,7 @@ def _ssm_C_D(h, x, C, D, batch_size, M):
                     x.dim() == 3
                 ), f"Input signal x must be 3D when D is of shape {D.shape}, got {x.shape}"
                 Dx = x @ D.T
-            case (D_batch_size, _, _) if D_batch_size == batch_size:
+            case (D_batch, _, _) if D_batch == batch_size:
                 Dx = torch.linalg.vecdot(D.unsqueeze(1).conj(), x.unsqueeze(-2))
             case _:
                 raise ValueError(
@@ -318,15 +316,13 @@ def _ssm_C_D(h, x, C, D, batch_size, M):
 
     if C is not None:
         match C.shape:
-            case (C_M,) if C_M == M:
+            case (CM,) if CM == M:
                 Ch = h @ C
-            # case (1,) | ():
-            #     Ch = h * C
-            case (C_batch_size, C_M) if C_batch_size == batch_size and C_M == M:
+            case (C_batch, CM) if C_batch == batch_size and CM == M:
                 Ch = torch.linalg.vecdot(C.unsqueeze(1).conj(), h)
-            case (_, C_M) if C_M == M:
+            case (_, CM) if CM == M:
                 Ch = h @ C.T
-            case (C_batch_size, _, C_M) if C_batch_size == batch_size and C_M == M:
+            case (C_batch, _, CM) if C_batch == batch_size and CM == M:
                 Ch = h @ C.mT
             case _:
                 raise ValueError(
@@ -396,7 +392,7 @@ def diag_state_space(
                         A.size(0) == A.size(1) == M
                     ), f"A must be square with size {M}, got {A.shape}"
 
-            case (batch_size, _):
+            case (L_batch, _) if L_batch == batch_size:
                 M = L.size(1)
                 assert not (
                     V is None and Vinv is None
@@ -467,7 +463,7 @@ def diag_state_space(
 
     if B is not None:
         match B.shape:
-            case (M,):
+            case (BM,) if BM == M:
                 assert (
                     x.dim() == 2
                 ), f"Input signal x must be 2D when B is of shape {M,}, got {x.shape}"
@@ -478,7 +474,7 @@ def diag_state_space(
             case (1,) | ():
                 VinvB = Vinv * B
                 VinvBx = x @ VinvB.mT
-            case (batch_size, M):
+            case (B_batch, BM) if B_batch == batch_size and BM == M:
                 assert (
                     x.dim() == 2
                 ), f"Input signal x must be 2D when B is of shape {batch_size, M}, got {x.shape}"
@@ -488,10 +484,10 @@ def diag_state_space(
                     else torch.linalg.vecdot(Vinv.conj(), B.unsqueeze(1))
                 )
                 VinvBx = x.unsqueeze(-1) * VinvB.unsqueeze(1)
-            case (M, _):
+            case (BM, _) if BM == M:
                 VinvB = Vinv @ B.T
                 VinvBx = x @ VinvB.mT
-            case (batch_size, M, _):
+            case (B_batch, BM, _) if B_batch == batch_size and BM == M:
                 VinvB = Vinv @ B.mT
                 VinvBx = torch.linalg.vecdot(VinvB.unsqueeze(1).conj(), x.unsqueeze(-2))
             case _:
