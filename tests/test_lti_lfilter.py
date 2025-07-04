@@ -172,7 +172,17 @@ def test_tdf2_zi(num_order: int, den_order: int):
 
 @pytest.mark.parametrize("B", [1, 8])
 @pytest.mark.parametrize("T", [101])
-@pytest.mark.parametrize(("num_order", "den_order"), [(1, 1), (2, 2), (3, 3), (4, 5)])
+@pytest.mark.parametrize(
+    ("num_order", "den_order", "delayed_form"),
+    [
+        (1, 1, False),
+        (3, 3, True),
+        (4, 5, False),
+        (6, 5, True),
+        (3, 2, False),
+        (5, 3, True),
+    ],
+)
 @pytest.mark.parametrize("form", ["df2", "tdf2"])
 @pytest.mark.parametrize("enable_L", [True, False])
 @pytest.mark.parametrize("enable_V", [True, False])
@@ -184,6 +194,7 @@ def test_diag_ssm_backend(
     form: str,
     enable_L: bool,
     enable_V: bool,
+    delayed_form: bool,
 ):
     """Test time-invariant filters against scipy.signal.lfilter"""
 
@@ -218,7 +229,15 @@ def test_diag_ssm_backend(
 
     # Apply philtorch filter
     y_torch = lfilter(
-        b_torch, a_torch, x_torch, form=form, backend="diag_ssm", L=L, V=V, Vinv=Vinv
+        b_torch,
+        a_torch,
+        x_torch,
+        form=form,
+        backend="diag_ssm",
+        L=L,
+        V=V,
+        Vinv=Vinv,
+        delayed_form=delayed_form,
     )
 
     # Apply scipy filter
