@@ -44,7 +44,7 @@ def fir(
             groups=B,
         ).squeeze(0)
         if zi is not None:
-            zf = y[:, -M:].flip(1)
+            zf = y[:, -M:]
             y = y[:, :-M]
             y = torch.cat([zi + y[:, :M], y[:, M:]], dim=1)
             return y, zf
