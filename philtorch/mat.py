@@ -54,12 +54,9 @@ def vandermonde(poles: Tensor) -> Tensor:
     Returns:
         torch.Tensor: Vandermonde matrix of shape (..., M, M).
     """
-    assert poles.dim() >= 1, "Poles must be at least 1D."
-    M = poles.size(-1)
-    vander = poles.unsqueeze(-2) ** torch.arange(
-        M - 1, -1, -1, device=poles.device
-    ).unsqueeze(1)
-    return vander
+    if poles.size(-1) == 1:
+        return torch.ones_like(poles).unsqueeze(-1)
+    return torch.linalg.vander(poles).flip(-1).mT
 
 
 def matrix_power_accumulate(A: Tensor, n: int) -> Tensor:
