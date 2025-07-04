@@ -7,6 +7,7 @@ from functools import partial
 from .ssm import state_space, state_space_recursion, diag_state_space
 from ..mat import a2companion
 from ..utils import chain_functions
+from ..poly import polydiv
 
 
 def fir(
@@ -101,15 +102,6 @@ def lfilter(
     assert b.dim() in (1, 2), "Numerator coefficients b must be 1D or 2D."
     assert a.dim() in (1, 2), "Denominator coefficients a must be 1D or 2D."
 
-    if b.size(-1) < a.size(-1) + 1:
-        b = F.pad(b, (0, a.size(-1) + 1 - b.size(-1)))
-    elif b.size(-1) > a.size(-1) + 1:
-        if backend == "diag_ssm":
-            raise NotImplementedError(
-                f"Diagonal SSM backend does not support FIR filters with more coefficients than the denominator. We plan to support this in the future."
-            )
-        a = F.pad(a, (0, b.size(-1) - a.size(-1) - 1))
-
     match backend:
         case "ssm":
             y = _ssm_lfilter(b, a, x, zi, form=form, **kwargs)
@@ -136,6 +128,11 @@ def _ssm_lfilter(
     **kwargs,
 ) -> Union[Tensor, Tuple[Tensor, Tensor]]:
     """Apply a batch of time-invariant linear filters to input signal using state-space model."""
+    if b.size(-1) < a.size(-1) + 1:
+        b = F.pad(b, (0, a.size(-1) + 1 - b.size(-1)))
+    elif b.size(-1) > a.size(-1) + 1:
+        a = F.pad(a, (0, b.size(-1) - a.size(-1) - 1))
+
     A = a2companion(a)
 
     match form:
@@ -191,9 +188,30 @@ def _diag_ssm_lfilter(
     x: Tensor,
     zi: Optional[Tensor] = None,
     form: str = "df2",
+    delayed_form: bool = False,
     **kwargs,
 ) -> Union[Tensor, Tuple[Tensor, Tensor]]:
     """Apply a batch of time-invariant linear filters to input signal using state-space model."""
+
+    if b.size(-1) > a.size(-1) + 1:
+        zi = None
+        if delayed_form:
+            q, r = polydiv(b, F.pad(a, (1, 0), value=1.0))
+            direct_filt = partial(fir, q)
+            delay = b.size(-1) - a.size(-1)
+            b = r
+        else:
+            rev_q, rev_r = polydiv(b.flip(-1), F.pad(a.flip(-1), (0, 1), value=1.0))
+            direct_filt = partial(fir, rev_q.flip(-1))
+            delay = 0
+            b = rev_r.flip(-1)
+    else:
+        direct_filt = None
+        delay = 0
+
+    if b.size(-1) < a.size(-1) + 1:
+        b = F.pad(b, (0, a.size(-1) + 1 - b.size(-1)))
+
     A = a2companion(a)
 
     match form:
@@ -227,4 +245,15 @@ def _diag_ssm_lfilter(
         case _:
             raise ValueError(f"Unknown filter form: {form}")
 
-    return filt(x)
+    results = filt(x)
+    if isinstance(results, tuple):
+        return results
+    y = results
+
+    if delay > 0:
+        y = F.pad(y[:, :-delay], (delay, 0))
+
+    if direct_filt is not None:
+        y = y + direct_filt(x)
+
+    return y
