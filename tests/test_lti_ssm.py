@@ -106,7 +106,10 @@ def test_ssm_shape_handling(x_shape, A_shape, B_shape, C_shape, D_shape, zi_shap
     A = torch.randn(*A_shape)
     B = torch.randn(*B_shape) if B_shape is not None else None
     C = torch.randn(*C_shape) if C_shape is not None else None
-    D = torch.randn(*D_shape) if D_shape is not None else None
+    if D_shape is None:
+        D = None
+    else:
+        D = torch.randn(*D_shape) if len(D_shape) > 0 else torch.randn(1)
     zi = torch.randn(*zi_shape) if zi_shape is not None else None
 
     result = state_space(A, x, B=B, C=C, D=D, zi=zi, unroll_factor=unroll_factor)
@@ -130,3 +133,44 @@ def test_ssm_shape_handling(x_shape, A_shape, B_shape, C_shape, D_shape, zi_shap
             assert y.shape[2] == C_shape[1]
         else:
             assert False, f"Unexpected C_shape: {C_shape}"
+
+
+@pytest.mark.parametrize(
+    ("D_shape", "x_shape", "B_shape", "C_shape"),
+    [
+        ((1,), (5, 97), (3,), (3,)),
+        ((), (5, 97), (3,), (3,)),
+        ((1,), (5, 97, 2), (3, 2), (2, 3)),
+        ((), (5, 97, 2), (3, 2), (2, 3)),
+        ((5,), (5, 97), (3,), (3,)),
+        ((7, 2), (5, 97, 2), (3, 2), (7, 3)),
+        ((5, 7, 2), (5, 97, 2), (3, 2), (5, 7, 3)),
+    ],
+)
+@pytest.mark.parametrize("A_shape", [(3, 3)])
+@pytest.mark.parametrize("zi_shape", [None, (3,), (5, 3)])
+def test_ssm_D_shape_handling(x_shape, A_shape, B_shape, C_shape, D_shape, zi_shape):
+    unroll_factor = 4
+
+    x = torch.randn(*x_shape)
+    A = torch.randn(*A_shape)
+    B = torch.randn(*B_shape)
+    C = torch.randn(*C_shape)
+    D = torch.randn(*D_shape) if len(D_shape) > 0 else torch.randn(1)
+    zi = torch.randn(*zi_shape) if zi_shape is not None else None
+
+    result = state_space(A, x, B=B, C=C, D=D, zi=zi, unroll_factor=unroll_factor)
+
+    if zi is not None:
+        y, zf = result
+        assert zf.shape[-1] == zi_shape[-1]
+    else:
+        y = result
+
+    assert y.shape[:2] == x.shape[:2]
+
+    if y.dim() == 3:
+        if len(D_shape) > 1:
+            assert y.shape[2] == D_shape[-2]
+        else:
+            assert y.shape[2] == C_shape[-2]
