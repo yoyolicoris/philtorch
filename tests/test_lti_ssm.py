@@ -4,7 +4,7 @@ import torch
 from scipy import signal
 from typing import Tuple, Optional
 
-from philtorch.lti import state_space_recursion, state_space
+from philtorch.lti import state_space_recursion, state_space, diag_state_space
 from philtorch.mat import a2companion
 
 from .test_lti_lfilter import _generate_random_signal
@@ -99,7 +99,8 @@ def test_out_idx(order: int, out_idx: int):
 @pytest.mark.parametrize("C_shape", [None, (3,), (5, 3), (2, 3), (5, 2, 3)])
 @pytest.mark.parametrize("D_shape", [None])
 @pytest.mark.parametrize("zi_shape", [None, (3,), (5, 3)])
-def test_ssm_shape_handling(x_shape, A_shape, B_shape, C_shape, D_shape, zi_shape):
+@pytest.mark.parametrize("ssm", [state_space, diag_state_space])
+def test_ssm_shape_handling(x_shape, A_shape, B_shape, C_shape, D_shape, zi_shape, ssm):
     unroll_factor = 4
 
     x = torch.randn(*x_shape)
@@ -112,7 +113,7 @@ def test_ssm_shape_handling(x_shape, A_shape, B_shape, C_shape, D_shape, zi_shap
         D = torch.randn(*D_shape) if len(D_shape) > 0 else torch.randn(1)
     zi = torch.randn(*zi_shape) if zi_shape is not None else None
 
-    result = state_space(A, x, B=B, C=C, D=D, zi=zi, unroll_factor=unroll_factor)
+    result = ssm(A=A, x=x, B=B, C=C, D=D, zi=zi, unroll_factor=unroll_factor)
 
     if zi is not None:
         y, zf = result
@@ -149,7 +150,10 @@ def test_ssm_shape_handling(x_shape, A_shape, B_shape, C_shape, D_shape, zi_shap
 )
 @pytest.mark.parametrize("A_shape", [(3, 3)])
 @pytest.mark.parametrize("zi_shape", [None, (3,), (5, 3)])
-def test_ssm_D_shape_handling(x_shape, A_shape, B_shape, C_shape, D_shape, zi_shape):
+@pytest.mark.parametrize("ssm", [state_space, diag_state_space])
+def test_ssm_D_shape_handling(
+    x_shape, A_shape, B_shape, C_shape, D_shape, zi_shape, ssm
+):
     unroll_factor = 4
 
     x = torch.randn(*x_shape)
@@ -159,7 +163,7 @@ def test_ssm_D_shape_handling(x_shape, A_shape, B_shape, C_shape, D_shape, zi_sh
     D = torch.randn(*D_shape) if len(D_shape) > 0 else torch.randn(1)
     zi = torch.randn(*zi_shape) if zi_shape is not None else None
 
-    result = state_space(A, x, B=B, C=C, D=D, zi=zi, unroll_factor=unroll_factor)
+    result = ssm(A=A, x=x, B=B, C=C, D=D, zi=zi, unroll_factor=unroll_factor)
 
     if zi is not None:
         y, zf = result
