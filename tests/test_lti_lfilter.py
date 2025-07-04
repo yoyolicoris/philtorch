@@ -178,7 +178,7 @@ def test_tdf2_zi(num_order: int, den_order: int):
         (1, 1, False),
         (3, 3, True),
         (4, 5, False),
-        (6, 5, True),
+        (4, 6, True),
         (3, 2, False),
         (5, 3, True),
     ],
