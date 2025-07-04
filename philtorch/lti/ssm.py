@@ -295,7 +295,7 @@ def state_space(
 def _ssm_C_D(h, x, C, D, batch_size, M):
     if D is not None:
         match D.shape:
-            case (batch_size,):
+            case (D_batch_size,) if D_batch_size == batch_size:
                 assert (
                     x.dim() == 2
                 ), f"Input signal x must be 2D when D is of shape {batch_size,}, got {x.shape}"
@@ -307,7 +307,7 @@ def _ssm_C_D(h, x, C, D, batch_size, M):
                     x.dim() == 3
                 ), f"Input signal x must be 3D when D is of shape {D.shape}, got {x.shape}"
                 Dx = x @ D.T
-            case (batch_size, _, _):
+            case (D_batch_size, _, _) if D_batch_size == batch_size:
                 Dx = torch.linalg.vecdot(D.unsqueeze(1).conj(), x.unsqueeze(-2))
             case _:
                 raise ValueError(
