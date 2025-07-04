@@ -4,7 +4,7 @@ import torch
 from scipy import signal
 from typing import Tuple, Optional
 
-from philtorch.lti import state_space_recursion
+from philtorch.lti import state_space_recursion, state_space
 from philtorch.mat import a2companion
 
 from .test_lti_lfilter import _generate_random_signal
@@ -82,3 +82,51 @@ def test_out_idx(order: int, out_idx: int):
 
     # Compare outputs
     assert np.allclose(y_torch.numpy(), y_scipy)
+
+
+@pytest.mark.parametrize(
+    ("x_shape", "B_shape"),
+    [
+        ((5, 97), (3,)),
+        ((5, 97), (5, 3)),
+        ((5, 97), None),
+        ((5, 97, 3), None),
+        ((5, 97, 2), (3, 2)),
+        ((5, 97, 2), (5, 3, 2)),
+    ],
+)
+@pytest.mark.parametrize("A_shape", [(3, 3), (5, 3, 3)])
+@pytest.mark.parametrize("C_shape", [None, (3,), (5, 3), (2, 3), (5, 2, 3)])
+@pytest.mark.parametrize("D_shape", [None])
+@pytest.mark.parametrize("zi_shape", [None, (3,), (5, 3)])
+def test_ssm_shape_handling(x_shape, A_shape, B_shape, C_shape, D_shape, zi_shape):
+    unroll_factor = 4
+
+    x = torch.randn(*x_shape)
+    A = torch.randn(*A_shape)
+    B = torch.randn(*B_shape) if B_shape is not None else None
+    C = torch.randn(*C_shape) if C_shape is not None else None
+    D = torch.randn(*D_shape) if D_shape is not None else None
+    zi = torch.randn(*zi_shape) if zi_shape is not None else None
+
+    result = state_space(A, x, B=B, C=C, D=D, zi=zi, unroll_factor=unroll_factor)
+
+    if zi is not None:
+        y, zf = result
+        assert zf.shape[-1] == zi_shape[-1]
+    else:
+        y = result
+
+    assert y.shape[:2] == x.shape[:2]
+
+    if y.dim() == 3:
+        if C_shape is None:
+            assert y.shape[2] == A.shape[-1]
+        elif len(C_shape) == 1:
+            assert y.shape[2] == C_shape[0]
+        elif len(C_shape) == 2 and C_shape[0] != x_shape[0]:
+            assert y.shape[2] == C_shape[0]
+        elif len(C_shape) == 3:
+            assert y.shape[2] == C_shape[1]
+        else:
+            assert False, f"Unexpected C_shape: {C_shape}"
