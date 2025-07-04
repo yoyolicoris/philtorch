@@ -426,11 +426,11 @@ def diag_state_space(
         case (None, None, _):
             V = find_eigenvectors(A, L)
             Vinv = torch.linalg.inv(V)
-        case (None, _, None):
+        case (None, _, _):
             V = torch.linalg.inv(Vinv)
-        case (_, None, None):
+        case (_, None, _):
             Vinv = torch.linalg.inv(V)
-        case (_, _, None):
+        case (_, _, _):
             pass
         case _:
             raise ValueError("Only one of V, Vinv, or A can be provided at a time.")
