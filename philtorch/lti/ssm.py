@@ -230,6 +230,11 @@ def state_space(
             0
         ), f"Batch size of A must match batch size of x, got A: {A.size(0)}, x: {x.size(0)}"
 
+    if not (C is None or out_idx is None):
+        raise ValueError(
+            "C and out_idx cannot be used together. Use either C or out_idx."
+        )
+
     batch_size, N, *_ = x.shape
     M = A.size(-1)
 
@@ -355,6 +360,10 @@ def diag_state_space(
         2,
         3,
     ), f"Input signal must be 2D or 3D (batch, time, [features]), got {x.shape}"
+    if not (C is None or out_idx is None):
+        raise ValueError(
+            "C and out_idx cannot be used together. Use either C or out_idx."
+        )
 
     batch_size, N = x.size(0), x.size(1)
     if unroll_factor is None:
