@@ -135,7 +135,7 @@ def lfilter(
     a: Tensor,
     x: Tensor,
     zi: Optional[Tensor] = None,
-    form: str = "df2",
+    form: str = "tdf2",
     backend: str = "ssm",
     **kwargs,
 ) -> Union[Tensor, Tuple[Tensor, Tensor]]:
@@ -317,5 +317,72 @@ def _diag_ssm_lfilter(
 
     if direct_filt is not None:
         y = y + direct_filt(x)
+
+    return y
+
+
+def filtfilt(
+    b: Tensor,
+    a: Tensor,
+    x: Tensor,
+    padmode: Optional[str] = "replicate",
+    padlen: Optional[int] = None,
+    method: str = "pad",
+    irlen: Optional[int] = None,
+    form: str = "tdf2",
+    **kwargs,
+) -> Union[Tensor, Tuple[Tensor, Tensor]]:
+    """Apply a batch of time-invariant linear filters to input signal in both forward and backward directions.
+    Args:
+        b (Tensor): Coefficients of the FIR filters, shape (B, M+1) or (M+1).
+        a (Tensor): Coefficients of the all-pole filters, shape (B, M) or (M).
+        x (Tensor): Input signal, shape (B, N) or (N).
+        padmode (str, optional): Padding mode to use. Default is 'replicate'.
+        padlen (int, optional): Length of padding to apply to the input signal. If None, it will be set to 3 times the number of taps.
+        method (str, optional): Method to use for filtering. Options are 'pad' or 'gust'. Default is 'pad'.
+        irlen (int, optional): Length of the impulse response. If provided, it will be used to determine the padding length.
+        form (str): The filter form to use. Options are 'df2', 'tdf2', 'df1', 'tdf1'.
+        **kwargs: Additional keyword arguments to pass to the filtering function.
+    Returns:
+        Filtered output signal with the same shape as x and optionally the final state of the filter.
+    """
+    assert method in ("pad", "gust"), "Method must be either 'pad' or 'gust'."
+
+    if method == "gust":
+        raise NotImplementedError("Gustafsson's method is not implemented yet.")
+
+    if padmode is None:
+        padlen = 0
+
+    ntaps = max(b.size(-1), a.size(-1) + 1)
+    if padlen is None:
+        edge = 3 * ntaps
+    else:
+        edge = padlen
+
+    assert (
+        x.size(1) > edge
+    ), f"Input signal length {x.size(1)} must be greater than pad length {edge}."
+
+    if edge > 0 and padmode is not None:
+        ext = F.pad(
+            x,
+            (edge, edge),
+            mode=padmode,
+        )
+    else:
+        ext = x
+
+    zi = lfilter_zi(b, a, transpose=(form == "tdf2"))
+    x0 = x[:, :1]
+
+    y, _ = lfilter(b, a, ext, zi=zi * x0, form=form, **kwargs)
+    y0 = y[:, -1:]
+
+    y, _ = lfilter(b, a, y.flip(1), zi=zi * y0, form=form, **kwargs)
+    y = y.flip(1)
+
+    if edge > 0:
+        y = y[:, edge:-edge]
 
     return y
