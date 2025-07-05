@@ -25,7 +25,7 @@ def find_eigenvectors(A: Tensor, eigenvalues: Tensor) -> Tensor:
     return X.mT
 
 
-def a2companion(a: Tensor) -> Tensor:
+def companion(a: Tensor) -> Tensor:
     """
     Convert all-pole coefficients to companion matrix.
 
@@ -37,10 +37,11 @@ def a2companion(a: Tensor) -> Tensor:
     """
     assert a.dim() >= 1, "All-pole coefficients must be at least 1D."
     M = a.size(-1)
-    A = torch.cat([-a, a.new_zeros(a.shape[:-1] + (M * (M - 1),))], dim=-1).unflatten(
+    c = torch.cat([-a, a.new_zeros(a.shape[:-1] + (M * (M - 1),))], dim=-1).unflatten(
         -1, (M, M)
     )
-    c = A + torch.diag(a.new_ones(M - 1), diagonal=-1)
+    # c = A + torch.diag(a.new_ones(M - 1), diagonal=-1)
+    c[..., list(range(1, M)), list(range(M - 1))] = 1
     return c
 
 

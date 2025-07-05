@@ -5,7 +5,7 @@ from scipy import signal
 from typing import Tuple, Optional
 
 from philtorch.lti import lfilter, fir
-from philtorch.mat import a2companion, vandermonde
+from philtorch.mat import companion, vandermonde
 
 
 def _generate_random_filter_coeffs(

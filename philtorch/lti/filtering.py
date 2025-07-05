@@ -5,7 +5,7 @@ from typing import Optional, Union, Tuple
 from functools import partial
 
 from .ssm import state_space, state_space_recursion, diag_state_space
-from ..mat import a2companion
+from ..mat import companion
 from ..utils import chain_functions
 from ..poly import polydiv
 
@@ -133,7 +133,7 @@ def _ssm_lfilter(
     elif b.size(-1) > a.size(-1) + 1:
         a = F.pad(a, (0, b.size(-1) - a.size(-1) - 1))
 
-    A = a2companion(a)
+    A = companion(a)
 
     match form:
         case "df2":
@@ -212,7 +212,7 @@ def _diag_ssm_lfilter(
     if b.size(-1) < a.size(-1) + 1:
         b = F.pad(b, (0, a.size(-1) + 1 - b.size(-1)))
 
-    A = a2companion(a)
+    A = companion(a)
 
     match form:
         case "df2":
