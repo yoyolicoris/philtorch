@@ -1,6 +1,6 @@
 from .filters import lfilter, fir
 from .ssm import state_space_recursion, diag_state_space, state_space
-from .scan import scan
+from .recur import linear_recurrence
 
 __all__ = [
     "lfilter",
@@ -8,5 +8,5 @@ __all__ = [
     "diag_state_space",
     "state_space",
     "fir",
-    "scan",
+    "linear_recurrence",
 ]

@@ -1,4 +1,4 @@
 from .filters import lfilter
-from .scan import scan
+from .recur import linear_recurrence
 
-__all__ = ["lfilter", "scan"]
+__all__ = ["lfilter", "linear_recurrence"]

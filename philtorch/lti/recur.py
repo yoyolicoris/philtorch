@@ -11,19 +11,24 @@ def _scalar_recursion_loop(
 ) -> Tensor:
     results = []
     h = init
-    for an, xn in zip(a.unbind(dim=1), x.unbind(dim=1)):
-        h = an * h + xn
+    for xn in x.unbind(dim=1):
+        h = a * h + xn
         results.append(h)
     return torch.stack(results, dim=1)
 
 
-def scan(a: Tensor, init: Tensor, x: Tensor, *, unroll_factor: int = 1) -> Tensor:
+def linear_recurrence(
+    a: Tensor, init: Tensor, x: Tensor, *, unroll_factor: int = 1
+) -> Tensor:
     assert x.dim() == 2, f"Input x must be 2D, got {x.shape}"
-    assert a.dim() in (1, 2), f"State matrix a must be 1D or 2D, got {a.shape}"
-    if a.dim() == 1 and a.size(0) != x.size(1):
+    assert a.dim() in (0, 1), f"State matrix a must be 1D or 0D, got {a.shape}"
+    if a.dim() == 1 and a.size(0) > 1 and a.size(0) != x.size(0):
         raise ValueError(
-            f"State matrix a must be 1D with the same length as x, got a: {a.size(0)}, x: {x.size(1)}"
+            f"State matrix a must be 1D with the same batch size as x, got a: {a.size(0)}, x: {x.size(0)}"
         )
+
+    if a.dim() == 0:
+        a = a.expand(1)
 
     batch_size, N = x.size(0), x.size(1)
 
@@ -51,21 +56,31 @@ def scan(a: Tensor, init: Tensor, x: Tensor, *, unroll_factor: int = 1) -> Tenso
     remainder = N % block_size
     if remainder != 0:
         x = F.pad(x, (0, block_size - remainder))
-        N = x.size(1)  # Update N after padding
+        N = x.size(1)  # Update T after padding
 
     unrolled_x = x.unflatten(1, (-1, block_size))
-    unrolled_a = a.unflatten(-1, (-1, block_size))
 
-    a_powers = torch.cumprod(unrolled_a, dim=-1)
+    a_powers = torch.cumprod(
+        (
+            a.expand(block_size)
+            if a.numel() == 1
+            else a.unsqueeze(1).expand(-1, block_size)
+        ),
+        dim=-1,
+    )
     a_powered = a_powers[..., -1]
     a_powers_plus_I = F.pad(a_powers[..., :-1].flip(-1), (0, 1), value=1.0)
 
-    z = torch.linalg.vecdot(unrolled_x.conj(), a_powers_plus_I)
+    z = (
+        unrolled_x @ a_powers_plus_I
+        if a_powers_plus_I.dim() == 1
+        else torch.linalg.vecdot(unrolled_x.conj(), a_powers_plus_I.unsqueeze(1))
+    )
 
     initials = torch.cat(
         [
             init.unsqueeze(1).broadcast_to(batch_size, 1),
-            scan(a_powered, init, z, unroll_factor=unroll_factor),
+            linear_recurrence(a_powered, init, z, unroll_factor=unroll_factor),
         ],
         dim=1,
     )
@@ -78,10 +93,10 @@ def scan(a: Tensor, init: Tensor, x: Tensor, *, unroll_factor: int = 1) -> Tenso
         .flip(-2)
     )
 
-    output = aug_A @ aug_x.unsqueeze(-1)
+    output = aug_x @ aug_A.mT
 
     # concat the first M - 1 outputs with the last one
-    output = torch.cat([output.squeeze(-1), initials[:, 1:, None]], dim=2).flatten(1, 2)
+    output = torch.cat([output, initials[:, 1:, None]], dim=2).flatten(1, 2)
     if remainder != 0:
         # if we padded the input, we need to remove the padding from the output
         output = output[:, : -(block_size - remainder)]

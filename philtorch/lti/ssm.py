@@ -5,7 +5,7 @@ from torch import Tensor
 from torchlpc import sample_wise_lpc
 
 from ..mat import matrix_power_accumulate, find_eigenvectors
-from .scan import scan
+from .recur import linear_recurrence
 
 
 def _recursion_loop(
@@ -509,7 +509,7 @@ def diag_state_space(
     else:
         assert False, f"Input signal x must be 2D or 3D, got {x.shape}"
 
-    Vinvh = scan(
+    Vinvh = linear_recurrence(
         L.broadcast_to((batch_size, M)).flatten(0, 1),
         Vinvzi.flatten(),
         VinvBx.mT.flatten(0, 1),
