@@ -4,7 +4,7 @@ import torch
 from scipy import signal
 from typing import Tuple, Optional
 
-from philtorch.lti import lfilter, fir
+from philtorch.lti import lfilter, fir, lfilter_zi
 from philtorch.mat import companion, vandermonde
 
 
@@ -24,6 +24,45 @@ def _generate_random_filter_coeffs(
 def _generate_random_signal(B: int, T: int) -> np.ndarray:
     """Generate random input signal"""
     return np.random.randn(B, T)
+
+
+@pytest.mark.parametrize("b_shape", [(3, 5), (4,)])
+@pytest.mark.parametrize("a_shape", [(3, 4), (5,)])
+def test_lfilter_zi(b_shape, a_shape):
+    """Test lfilter_zi function"""
+
+    # Generate random filter coefficients
+    b = np.random.randn(*b_shape)
+    a = np.random.randn(*a_shape)
+    a = a / np.abs(a).sum(axis=-1, keepdims=True)  # Normalize a
+
+    # Convert to torch tensors
+    b_torch = torch.from_numpy(b)
+    a_torch = torch.from_numpy(a)
+
+    if b.ndim > 1:
+        batch_size = b.shape[0]
+    elif a.ndim > 1:
+        batch_size = a.shape[0]
+    else:
+        batch_size = 1
+    b = np.broadcast_to(b, (batch_size, b.shape[-1]))
+    a = np.broadcast_to(a, (batch_size, a.shape[-1]))
+    # Apply scipy lfilter_zi
+    zi_scipy = np.stack(
+        [signal.lfilter_zi(b[i], [1.0] + a[i].tolist()) for i in range(b.shape[0])],
+        axis=0,
+    )
+    if b.ndim == 1:
+        zi_scipy = zi_scipy.flatten()
+
+    # Apply philtorch lfilter_zi
+    zi_torch = lfilter_zi(b_torch, a_torch)
+
+    # Compare outputs
+    assert np.allclose(zi_torch.numpy(), zi_scipy), np.max(
+        np.abs(zi_torch.numpy() - zi_scipy)
+    )
 
 
 def test_df_fir():

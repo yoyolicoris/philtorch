@@ -10,11 +10,40 @@ from ..utils import chain_functions
 from ..poly import polydiv
 
 
+def lfilter_zi(b: Tensor, a: Tensor, transpose: bool = True) -> Tensor:
+    """Compute the initial conditions for a linear filter given its coefficients.
+    Args:
+        b (Tensor): Coefficients of the FIR filter, shape (..., M+1).
+        a (Tensor): Coefficients of the all-pole filter, shape (..., M).
+    Returns:
+        Tensor: Initial conditions for the filter, shape (..., M).
+    """
+    assert b.dim() >= 1, "Numerator coefficients b must be at least 1D."
+    assert a.dim() >= 1, "Denominator coefficients a must be at least 1D."
+
+    n = max(b.size(-1), a.size(-1) + 1)
+    if b.size(-1) < n:
+        b = F.pad(b, (0, n - b.size(-1)), value=0.0)
+    if a.size(-1) < n - 1:
+        a = F.pad(a, (0, n - 1 - a.size(-1)), value=0.0)
+
+    A = companion(a)
+    if transpose:
+        A = A.mT.conj()
+
+    IminusA = torch.eye(n - 1, device=b.device, dtype=b.dtype) - A
+    B = b[..., 1:] - b[..., :1] * a
+    if IminusA.ndim == 2:
+        IminusA = IminusA.expand(*b.shape[:-1], -1, -1)
+    zi = torch.linalg.solve(IminusA, B)
+    return zi
+
+
 def fir(
     b: Tensor,
     x: Tensor,
     zi: Optional[Tensor] = None,
-    tranpose: bool = False,
+    tranpose: bool = True,
 ) -> Union[Tensor, Tuple[Tensor, Tensor]]:
     """Apply a batch of time-invariant FIR filters to input signal
     Args:
