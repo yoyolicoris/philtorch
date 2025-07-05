@@ -374,15 +374,14 @@ def filtfilt(
         ext = x
 
     zi = lfilter_zi(b, a, transpose=(form == "tdf2"))
-    x0 = x[:, :1]
+    x0 = ext[:, :1]
 
     y, _ = lfilter(b, a, ext, zi=zi * x0, form=form, **kwargs)
     y0 = y[:, -1:]
 
     y, _ = lfilter(b, a, y.flip(1), zi=zi * y0, form=form, **kwargs)
-    y = y.flip(1)
 
     if edge > 0:
         y = y[:, edge:-edge]
 
-    return y
+    return y.flip(1)
