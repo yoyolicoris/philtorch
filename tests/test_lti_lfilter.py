@@ -4,7 +4,7 @@ import torch
 from scipy import signal
 from typing import Tuple, Optional
 
-from philtorch.lti import lfilter, fir, lfilter_zi
+from philtorch.lti import lfilter, fir, lfilter_zi, lfiltic
 from philtorch.mat import companion, vandermonde
 
 
@@ -39,8 +39,69 @@ def _generate_a(den_order):
     return a, roots
 
 
+@pytest.mark.parametrize("b_shape", [(3, 5), (5,)])
+@pytest.mark.parametrize("a_shape", [(3, 2), (2,)])
+@pytest.mark.parametrize("x_shape", [None, (4,), (3, 4)])
+@pytest.mark.parametrize("y_shape", [(2,), (3, 2)])
+def test_lfiltic(b_shape, a_shape, y_shape, x_shape):
+    """Test lfiltic function"""
+
+    # Generate random filter coefficients
+    b = np.random.randn(*b_shape)
+    if len(a_shape) == 1:
+        a = _generate_a(a_shape[0])[0]
+    else:
+        a = np.stack([_generate_a(a_shape[1])[0] for _ in range(a_shape[0])], axis=0)
+    y = np.random.randn(*y_shape)
+    x = np.random.randn(*x_shape) if x_shape is not None else None
+
+    # Convert to torch tensors
+    b_torch = torch.from_numpy(b)
+    a_torch = torch.from_numpy(a)
+    y_torch = torch.from_numpy(y)
+    x_torch = torch.from_numpy(x) if x is not None else None
+
+    if b.ndim > 1:
+        batch_size = b.shape[0]
+    elif a.ndim > 1:
+        batch_size = a.shape[0]
+    elif y.ndim > 1:
+        batch_size = y.shape[0]
+    elif x is not None and x.ndim > 1:
+        batch_size = x.shape[0]
+    else:
+        batch_size = 1
+    b = np.broadcast_to(b, (batch_size, b.shape[-1]))
+    a = np.broadcast_to(a, (batch_size, a.shape[-1]))
+    y = np.broadcast_to(y, (batch_size, y.shape[-1]))
+    if x is not None:
+        x = np.broadcast_to(x, (batch_size, x.shape[-1]))
+
+    # Apply scipy lfiltic
+    zi_scipy = np.stack(
+        [
+            signal.lfiltic(
+                b[i], [1.0] + a[i].tolist(), y[i], x[i] if x is not None else None
+            )
+            for i in range(b.shape[0])
+        ],
+        axis=0,
+    )
+    if b.ndim == 1:
+        zi_scipy = zi_scipy.flatten()
+
+    # Apply philtorch lfiltic
+    zi_torch = lfiltic(b_torch, a_torch, y_torch, x_torch)
+
+    print(f"zi_torch: {zi_torch}, zi_scipy: {zi_scipy}")
+    # Compare outputs
+    assert np.allclose(zi_torch.numpy(), zi_scipy), np.max(
+        np.abs(zi_torch.numpy() - zi_scipy)
+    )
+
+
 @pytest.mark.parametrize("b_shape", [(3, 5), (4,)])
-@pytest.mark.parametrize("a_shape", [(3, 4), (5,)])
+@pytest.mark.parametrize("a_shape", [(3, 2), (5,)])
 def test_lfilter_zi(b_shape, a_shape):
     """Test lfilter_zi function"""
 

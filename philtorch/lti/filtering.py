@@ -10,6 +10,39 @@ from ..utils import chain_functions
 from ..poly import polydiv
 
 
+def lfiltic(b: Tensor, a: Tensor, y: Tensor, x: Optional[Tensor] = None) -> Tensor:
+    """Compute the initial conditions for a linear filter given its coefficients and output.
+    Args:
+        b (Tensor): Coefficients of the FIR filter, shape (..., M+1).
+        a (Tensor): Coefficients of the all-pole filter, shape (..., N).
+        y (Tensor): Output signal, shape (..., N).
+        x (Tensor, optional): Input signal, shape (..., M). If not provided,
+            it will be initialized to zeros.
+    Returns:
+        Tensor: Initial conditions for the filter, shape (..., max(M, N)).
+    """
+    assert b.dim() >= 1, "Numerator coefficients b must be at least 1D."
+    assert a.dim() >= 1, "Denominator coefficients a must be at least 1D."
+
+    n = a.size(-1)
+    m = b.size(-1) - 1
+    k = max(n, m)
+
+    if x is None:
+        x = b.new_zeros(m)
+
+    b_mat = F.pad(b[..., 1:], (0, m - 1), value=0.0).unfold(-1, m, 1)
+    a_mat = F.pad(a, (0, n - 1), value=0.0).unfold(-1, n, 1)
+    zi_b = (b_mat @ x.unsqueeze(-1)).squeeze(-1)
+    zi_a = (a_mat @ y.unsqueeze(-1)).squeeze(-1)
+    if zi_b.size(-1) < k:
+        zi_b = F.pad(zi_b, (0, k - zi_b.size(-1)), value=0.0)
+    if zi_a.size(-1) < k:
+        zi_a = F.pad(zi_a, (0, k - zi_a.size(-1)), value=0.0)
+    zi = zi_b - zi_a
+    return zi
+
+
 def lfilter_zi(b: Tensor, a: Tensor, transpose: bool = True) -> Tensor:
     """Compute the initial conditions for a linear filter given its coefficients.
     Args:
