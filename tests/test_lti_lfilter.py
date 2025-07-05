@@ -4,7 +4,7 @@ import torch
 from scipy import signal
 from typing import Tuple, Optional
 
-from philtorch.lti import lfilter, fir, lfilter_zi, lfiltic
+from philtorch.lti import lfilter, fir, lfilter_zi, lfiltic, filtfilt
 from philtorch.mat import companion, vandermonde
 
 
@@ -37,6 +37,55 @@ def _generate_a(den_order):
     roots = np.concatenate([cmplx_poles, cmplx_poles.conj(), real_poles])
     a = np.polynomial.Polynomial.fromroots(roots).coef.real[-2::-1].copy()
     return a, roots
+
+
+@pytest.mark.parametrize("b_shape", [(3, 5), (5,)])
+@pytest.mark.parametrize("a_shape", [(3, 4), (4,)])
+@pytest.mark.parametrize("padmode", ["reflect", "replicate", None])
+@pytest.mark.parametrize("padlen", [None, 0, 21])
+def test_filtfilt(b_shape, a_shape, padmode, padlen):
+    x = np.random.randn(3, 100)
+    b = np.random.randn(*b_shape)
+    if len(a_shape) == 1:
+        a = _generate_a(a_shape[0])[0]
+    else:
+        a = np.stack([_generate_a(a_shape[1])[0] for _ in range(a_shape[0])], axis=0)
+
+    # Convert to torch tensors
+    b_torch = torch.from_numpy(b)
+    a_torch = torch.from_numpy(a)
+    x_torch = torch.from_numpy(x)
+
+    b = np.broadcast_to(b, (x.shape[0], b.shape[-1]))
+    a = np.broadcast_to(a, (x.shape[0], a.shape[-1]))
+    match padmode:
+        case "reflect":
+            padtype = "even"
+        case "replicate":
+            padtype = "constant"
+        case None:
+            padtype = None
+        case _:
+            raise ValueError(f"Unsupported padmode: {padmode}")
+
+    # Apply scipy filtfilt
+    y_scipy = np.stack(
+        [
+            signal.filtfilt(
+                b[i], [1.0] + a[i].tolist(), x[i], padtype=padtype, padlen=padlen
+            )
+            for i in range(b.shape[0])
+        ],
+        axis=0,
+    )
+
+    # Apply philtorch filtfilt
+    y_torch = filtfilt(b_torch, a_torch, x_torch, padmode=padmode, padlen=padlen)
+
+    # Compare outputs
+    assert np.allclose(y_torch.numpy(), y_scipy), np.max(
+        np.abs(y_torch.numpy() - y_scipy)
+    )
 
 
 @pytest.mark.parametrize("b_shape", [(3, 5), (5,)])
