@@ -26,6 +26,19 @@ def _generate_random_signal(B: int, T: int) -> np.ndarray:
     return np.random.randn(B, T)
 
 
+def _generate_a(den_order):
+    num_cmplx_poles = den_order // 2
+    num_real_poles = den_order - 2 * num_cmplx_poles
+
+    cmplx_poles = np.random.rand(num_cmplx_poles) ** 0.5 * np.exp(
+        1j * np.random.rand(num_cmplx_poles) * 2 * np.pi
+    )
+    real_poles = np.random.rand(num_real_poles) ** 0.5 + 0j
+    roots = np.concatenate([cmplx_poles, cmplx_poles.conj(), real_poles])
+    a = np.polynomial.Polynomial.fromroots(roots).coef.real[-2::-1].copy()
+    return a, roots
+
+
 @pytest.mark.parametrize("b_shape", [(3, 5), (4,)])
 @pytest.mark.parametrize("a_shape", [(3, 4), (5,)])
 def test_lfilter_zi(b_shape, a_shape):
@@ -33,8 +46,10 @@ def test_lfilter_zi(b_shape, a_shape):
 
     # Generate random filter coefficients
     b = np.random.randn(*b_shape)
-    a = np.random.randn(*a_shape)
-    a = a / np.abs(a).sum(axis=-1, keepdims=True)  # Normalize a
+    if len(a_shape) == 1:
+        a = _generate_a(a_shape[0])[0]
+    else:
+        a = np.stack([_generate_a(a_shape[1])[0] for _ in range(a_shape[0])], axis=0)
 
     # Convert to torch tensors
     b_torch = torch.from_numpy(b)
@@ -240,15 +255,7 @@ def test_diag_ssm_backend(
     # Generate test data
     # b, a = _generate_random_filter_coeffs(num_order, den_order, B)
     b = np.random.randn(B, num_order + 1)
-    num_cmplx_poles = den_order // 2
-    num_real_poles = den_order - 2 * num_cmplx_poles
-
-    cmplx_poles = np.random.rand(num_cmplx_poles) ** 0.5 * np.exp(
-        1j * np.random.rand(num_cmplx_poles) * 2 * np.pi
-    )
-    real_poles = np.random.rand(num_real_poles) ** 0.5 + 0j
-    roots = np.concatenate([cmplx_poles, cmplx_poles.conj(), real_poles])
-    a = np.polynomial.Polynomial.fromroots(roots).coef.real[-2::-1].copy()
+    a, roots = _generate_a(den_order)
 
     x = _generate_random_signal(B, T)
 
