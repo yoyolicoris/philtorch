@@ -1,4 +1,4 @@
-from .filters import lfilter, fir
+from .filtering import lfilter, fir
 from .ssm import state_space_recursion, diag_state_space, state_space
 from .recur import linear_recurrence
 
