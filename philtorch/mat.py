@@ -2,6 +2,7 @@ import torch
 from torch import Tensor
 from itertools import accumulate
 from sympy.ntheory import factorint
+from typing import Optional
 
 
 def find_eigenvectors(A: Tensor, eigenvalues: Tensor) -> Tensor:
@@ -58,6 +59,31 @@ def vandermonde(poles: Tensor) -> Tensor:
     if poles.size(-1) == 1:
         return torch.ones_like(poles).unsqueeze(-1)
     return torch.linalg.vander(poles).flip(-1).mT
+
+
+def confluent_vandermonde(poles: Tensor, m: int, n: Optional[int] = None) -> Tensor:
+    """
+    Create a confluent Vandermonde matrix from poles.
+
+    Args:
+        poles (torch.Tensor): Poles of shape (...).
+        m (int): Number of columns in the output matrix.
+        n (Optional[int]): Number of rows in the output matrix. If None, defaults to the same as m.
+    Returns:
+        torch.Tensor: Confluent Vandermonde matrix of shape (..., n, m).
+    """
+    if n is None:
+        n = m
+    i = torch.arange(n, device=poles.device).unsqueeze(-1)
+    j = torch.arange(m, device=poles.device)
+
+    iminusj = i - j
+    mask = iminusj >= 0
+    num = i.clamp_min(1).cumprod(0)
+    denum = iminusj.clamp_min(1).cumprod(0) * j.clamp_min(1).cumprod(0)
+    coef = num // torch.where(denum > num, 1, denum)
+    power = iminusj.relu()
+    return torch.where(mask, coef * poles[..., None, None] ** power, 0).flip(-2)
 
 
 def matrix_power_accumulate(A: Tensor, n: int) -> Tensor:
