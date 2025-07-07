@@ -76,7 +76,7 @@ def fir(
     b: Tensor,
     x: Tensor,
     zi: Optional[Tensor] = None,
-    tranpose: bool = True,
+    transpose: bool = True,
 ) -> Union[Tensor, Tuple[Tensor, Tensor]]:
     """Apply a batch of time-invariant FIR filters to input signal
     Args:
@@ -99,7 +99,7 @@ def fir(
             zi.size(1) == M
         ), "The second dimension of zi must match the filter order."
 
-    if tranpose:
+    if transpose:
         y = F.conv_transpose1d(
             x.unsqueeze(0),
             b.unsqueeze(1),
@@ -229,14 +229,14 @@ def _ssm_lfilter(
         case "df1":
             zi = x.new_zeros((x.size(0), A.size(-1)))
             filt = chain_functions(
-                partial(fir, b),
+                partial(fir, b.broadcast_to((x.size(0), -1))),
                 partial(state_space_recursion, A, zi, out_idx=0, **kwargs),
             )
         case "tdf1":
             zi = x.new_zeros((x.size(0), A.size(-1)))
             filt = chain_functions(
                 partial(state_space_recursion, A.mT.conj(), zi, out_idx=0, **kwargs),
-                partial(fir, b.conj(), tranpose=True),
+                partial(fir, b.conj().broadcast_to((x.size(0), -1)), transpose=True),
             )
         case _:
             raise ValueError(f"Unknown filter form: {form}")

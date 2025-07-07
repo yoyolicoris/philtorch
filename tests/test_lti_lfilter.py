@@ -205,7 +205,7 @@ def test_df_fir():
     x_torch = torch.from_numpy(x)
 
     # Apply philtorch filter
-    y_torch = fir(b_torch, x_torch, tranpose=False)
+    y_torch = fir(b_torch, x_torch, transpose=False)
     # Apply scipy filter
     y_scipy = np.stack([signal.lfilter(b[i], [1.0], x[i]) for i in range(B)], axis=0)
 
@@ -240,7 +240,7 @@ def test_tdf_fir(include_zi: bool):
         zi_torch = None
 
     # Apply philtorch filter
-    torch_results = fir(b_torch, x_torch, zi=zi_torch, tranpose=True)
+    torch_results = fir(b_torch, x_torch, zi=zi_torch, transpose=True)
     # Apply scipy filter
     scipy_results = [
         signal.lfilter(b[i], [1.0], x[i], zi=zi[i] if zi is not None else None)
