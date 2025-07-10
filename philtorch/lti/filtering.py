@@ -43,7 +43,7 @@ def lfiltic(b: Tensor, a: Tensor, y: Tensor, x: Optional[Tensor] = None) -> Tens
     return zi
 
 
-def lfilter_zi(b: Tensor, a: Tensor, transpose: bool = True) -> Tensor:
+def lfilter_zi(a: Tensor, b: Optional[Tensor] = None, transpose: bool = True) -> Tensor:
     """Compute the initial conditions for a linear filter given its coefficients.
     Args:
         b (Tensor): Coefficients of the FIR filter, shape (..., M+1).
@@ -51,23 +51,31 @@ def lfilter_zi(b: Tensor, a: Tensor, transpose: bool = True) -> Tensor:
     Returns:
         Tensor: Initial conditions for the filter, shape (..., M).
     """
-    assert b.dim() >= 1, "Numerator coefficients b must be at least 1D."
     assert a.dim() >= 1, "Denominator coefficients a must be at least 1D."
 
-    n = max(b.size(-1), a.size(-1) + 1)
-    if b.size(-1) < n:
-        b = F.pad(b, (0, n - b.size(-1)), value=0.0)
-    if a.size(-1) < n - 1:
-        a = F.pad(a, (0, n - 1 - a.size(-1)), value=0.0)
+    if not transpose:
+        n = a.size(-1) + 1
+        A = companion(a)
+        B = a.new_zeros(n - 1)
+        B[0] = 1.0
+    elif b is not None:
+        assert b.dim() >= 1, "Numerator coefficients b must be at least 1D."
+        n = max(b.size(-1), a.size(-1) + 1)
+        if b.size(-1) < n:
+            b = F.pad(b, (0, n - b.size(-1)), value=0.0)
+        if a.size(-1) < n - 1:
+            a = F.pad(a, (0, n - 1 - a.size(-1)), value=0.0)
+        A = companion(a).mT.conj()
+        B = b[..., 1:] - b[..., :1] * a
+    else:
+        raise ValueError(
+            "Numerator coefficients b must be provided for transpose=True."
+        )
 
-    A = companion(a)
-    if transpose:
-        A = A.mT.conj()
+    IminusA = torch.eye(n - 1, device=a.device, dtype=a.dtype) - A
 
-    IminusA = torch.eye(n - 1, device=b.device, dtype=b.dtype) - A
-    B = b[..., 1:] - b[..., :1] * a
-    if IminusA.ndim == 2:
-        IminusA = IminusA.expand(*b.shape[:-1], -1, -1)
+    if IminusA.ndim == 2 and B.ndim > 1:
+        IminusA = IminusA.expand(*B.shape[:-1], -1, -1)
     zi = torch.linalg.solve(IminusA, B)
     return zi
 
@@ -373,7 +381,7 @@ def filtfilt(
     else:
         ext = x
 
-    zi = lfilter_zi(b, a, transpose=(form == "tdf2"))
+    zi = lfilter_zi(a, b, transpose=(form == "tdf2"))
     x0 = ext[:, :1]
 
     y, _ = lfilter(b, a, ext, zi=zi * x0, form=form, **kwargs)

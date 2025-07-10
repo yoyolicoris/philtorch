@@ -182,7 +182,7 @@ def test_lfilter_zi(b_shape, a_shape):
         zi_scipy = zi_scipy.flatten()
 
     # Apply philtorch lfilter_zi
-    zi_torch = lfilter_zi(b_torch, a_torch)
+    zi_torch = lfilter_zi(b=b_torch, a=a_torch)
 
     # Compare outputs
     assert np.allclose(zi_torch.numpy(), zi_scipy), np.max(
