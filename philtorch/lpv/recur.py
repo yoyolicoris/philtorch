@@ -11,10 +11,10 @@ def _scalar_recursion_loop(
 ) -> Tensor:
     results = []
     h = init
-    for an, xn in zip(a.unbind(dim=1), x.unbind(dim=1)):
-        h = an * h + xn
+    for an, xn in zip(a.unbind(dim=-1), x.unbind(dim=-1)):
+        h = torch.addcmul(xn, h, an)
         results.append(h)
-    return torch.stack(results, dim=1)
+    return torch.stack(results, dim=-1)
 
 
 def linear_recurrence(
@@ -53,14 +53,15 @@ def linear_recurrence(
     remainder = N % block_size
     if remainder != 0:
         x = F.pad(x, (0, block_size - remainder))
+        a = F.pad(a, (0, block_size - remainder))
         N = x.size(1)  # Update N after padding
 
     unrolled_x = x.unflatten(1, (-1, block_size))
     unrolled_a = a.unflatten(-1, (-1, block_size))
 
-    a_powers = torch.cumprod(unrolled_a, dim=-1)
-    a_powered = a_powers[..., -1]
-    a_powers_plus_I = F.pad(a_powers[..., :-1].flip(-1), (0, 1), value=1.0)
+    a_powers = torch.cumprod(unrolled_a[..., 1:].flip(-1), dim=-1).flip(-1)
+    a_powered = a_powers[..., 0] * unrolled_a[..., 0]
+    a_powers_plus_I = F.pad(a_powers, (0, 1), value=1.0)
 
     z = torch.linalg.vecdot(unrolled_x.conj(), a_powers_plus_I)
 
@@ -72,18 +73,12 @@ def linear_recurrence(
         dim=1,
     )
 
-    # prepare the augmented matrix and input for all the remaining steps
-    aug_x = torch.cat([initials[:, :-1, None], unrolled_x[..., :-1]], dim=2)
-    aug_A = (
-        F.pad(a_powers_plus_I, (0, block_size - 2), value=0.0)
-        .unfold(-1, block_size, 1)
-        .flip(-2)
+    output = _scalar_recursion_loop(
+        unrolled_a[..., :-1], initials[:, :-1], unrolled_x[..., :-1]
     )
 
-    output = aug_A @ aug_x.unsqueeze(-1)
-
     # concat the first M - 1 outputs with the last one
-    output = torch.cat([output.squeeze(-1), initials[:, 1:, None]], dim=2).flatten(1, 2)
+    output = torch.cat([output, initials[:, 1:, None]], dim=2).flatten(1, 2)
     if remainder != 0:
         # if we padded the input, we need to remove the padding from the output
         output = output[:, : -(block_size - remainder)]
