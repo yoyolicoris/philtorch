@@ -103,3 +103,36 @@ def _mat_pwr_accum_runner(A: Tensor, factors: list[int]) -> Tensor:
         ],
         dim=-3,
     )
+
+
+def matrices_cumdot(A: Tensor) -> Tensor:
+    """Compute the cumulative dot product of matrices along the last third dimension.
+    Args:
+        A (Tensor): Input tensor of shape (..., M, N, N) where ... can be any number of batch dimensions.
+    Returns:
+        Tensor: Cumulative dot product of matrices with shape (..., M, N, N).
+    """
+    assert A.dim() >= 3, "Input tensor A must have at least 3 dimensions."
+    assert A.size(-2) == A.size(-1), "Input tensor A must have square matrices."
+
+    M = A.size(-3)
+    leading_dims = len(A.shape) - 3
+    factors = factorint(M, multiple=True)[::-1]
+    unfolded_A = A.unflatten(-3, factors)
+    return _mat_cumdot_runner(unfolded_A, leading_dims).flatten(leading_dims, -3)
+
+
+def _mat_cumdot_runner(A: Tensor, leading_dims: int) -> Tensor:
+    accums = torch.stack(list(accumulate(A.unbind(-3), torch.matmul)), dim=-3)
+    if A.dim() == leading_dims + 3:
+        return accums
+
+    higher_powers = _mat_cumdot_runner(accums[..., -1, :, :], leading_dims)
+    tmp = accums[..., 1:, :-1, :, :] @ higher_powers[..., :-1, None, :, :]
+    return torch.cat(
+        [
+            accums[..., :1, :, :, :],
+            torch.cat([tmp, higher_powers[..., 1:, None, :, :]], dim=-3),
+        ],
+        dim=-4,
+    )
