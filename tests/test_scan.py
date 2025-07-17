@@ -28,3 +28,25 @@ def test_linear_recurrence_equivalence():
     assert torch.allclose(
         lpv_output, lti_output
     ), "LPV linear_recurrence output does not match LTI linear_recurrence output"
+
+
+def test_linear_recurrence_unrolling():
+    """Test that unrolling works correctly in LPV linear_recurrence."""
+    batch_size = 2
+    N = 17
+    unroll_factor = 3
+
+    a = torch.rand(batch_size, N) * 2 - 1
+    x = torch.randn(batch_size, N)
+    init = torch.randn(batch_size)
+
+    output_naive = lpv_linear_recurrence(
+        a, init, x, unroll_factor=1
+    )  # Naive implementation without unrolling
+    output_unrolled = lpv_linear_recurrence(
+        a, init, x, unroll_factor=unroll_factor
+    )  # Unrolled implementation
+    # Check output shape
+    assert torch.allclose(output_naive, output_unrolled), torch.max(
+        torch.abs(output_naive - output_unrolled)
+    )
