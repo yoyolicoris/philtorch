@@ -39,3 +39,27 @@ def test_ssm_equivalence():
     assert torch.allclose(lpv_output, lti_output), torch.max(
         torch.abs(lpv_output - lti_output)
     )
+
+
+def test_ssm_unrolling():
+    """Test that unrolling works correctly in LPV state_space."""
+    batch_size = 2
+    N = 17
+    unroll_factor = 3
+    order = 2
+
+    _, a = _generate_time_varying_coeffs(batch_size, N, order, order)
+    x = _generate_test_signal(batch_size, N, "white_noise")
+    A = companion(a)
+    zi = torch.randn(batch_size, order)
+
+    output_naive = lpv_state_space(
+        A, zi, x, unroll_factor=1
+    )  # Naive implementation without unrolling
+    output_unrolled = lpv_state_space(
+        A, zi, x, unroll_factor=unroll_factor
+    )  # Unrolled implementation
+    # Check output shape
+    assert torch.allclose(output_naive, output_unrolled), torch.max(
+        torch.abs(output_naive - output_unrolled)
+    )
