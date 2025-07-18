@@ -13,6 +13,9 @@ def _recursion_loop(
     x: Tensor,
     out_idx: Optional[int] = None,
 ) -> Tensor:
+    assert x.size(1) == A.size(
+        -3
+    ), f"State matrix A must have the same time dimension as x, got A: {A.size(-3)}, x: {x.size(1)}"
     results = []
     AT = A.mT
     if x.dim() == 2:
@@ -90,11 +93,12 @@ def state_space_recursion(
         A = F.pad(A, (0,) * 4 + (0, block_size - remainder))  # pad
         N = x.size(1)  # Update T after padding
 
-    unrolled_x = x.unflatten(1, (-1, block_size)).flatten(2, -1)
+    unrolled_x = x.unflatten(1, (-1, block_size))
+    unrolled_x_flatten = unrolled_x.flatten(2, -1)
     unrolled_A = A.unflatten(-3, (-1, block_size))
 
     A_cums = matrices_cumdot(unrolled_A[..., 1:, :, :].flip(-3)).flip(-3)
-    A_last_cum = A_cums[..., 0, :, :] @ A[..., 0, :, :]
+    A_last_cum = A_cums[..., 0, :, :] @ unrolled_A[..., 0, :, :]
     A_cums_plus_I = torch.cat(
         [
             A_cums,
@@ -104,34 +108,12 @@ def state_space_recursion(
         ],
         dim=-3,
     )
-    # (
-    #     A_cums.transpose(-3, -1)
-    #     .unsqueeze(-2)
-    #     .expand(*A_cums.shape[:-3], -1, -1, block_size, -1)
-    #     .tril(-1)
-    #     .fill_diagonal_(1.0)
-    #     .transpose(-2, -1)
-    #     .transpose(-4, -1)
-    #     .transpose(-3, -2)
-    #     .flatten(-4, -3)
-    #     .flatten(-2, -1)
-    # )
-    # torch.cat(
-    #     [
-    #         A_cums[..., :-1, :, :].flip(-3),
-    #         torch.eye(M, device=A.device, dtype=A.dtype)
-    #         .broadcast_to(A.shape)
-    #         .unsqueeze(-3),
-    #     ],
-    #     dim=-3,
-    # )
-
     mat1 = (
-        A_cums_plus_I.transpose(-2, -1).flatten(-3, -2)
+        A_cums_plus_I.mT.flatten(-3, -2)
         if x.dim() == 3
         else A_cums_plus_I[..., 0]  # assume x -> x * [1, 0, 0, ...] in the 2D case
     )
-    z = torch.squeeze(unrolled_x.unsqueeze(-2) @ mat1, -2)
+    z = torch.squeeze(unrolled_x_flatten.unsqueeze(-2) @ mat1, -2)
 
     initials = torch.cat(
         [
@@ -154,11 +136,7 @@ def state_space_recursion(
 
     # concat the first M - 1 outputs with the last one
     if out_idx is None:
-        output = (
-            torch.cat([output, initials[:, 1:, :]], dim=2)
-            .unflatten(2, (-1, M))
-            .flatten(1, 2)
-        )
+        output = torch.cat([output, initials[:, 1:, None, :]], dim=2).flatten(1, 2)
     else:
         output = torch.cat([output, initials[:, 1:, out_idx, None]], dim=2).flatten(
             1, 2
