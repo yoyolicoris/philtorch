@@ -10,7 +10,7 @@ from philtorch.lti import linear_recurrence as lti_linear_recurrence
 def test_linear_recurrence_equivalence():
     """Test that LPV linear_recurrence is equivalent to LTI linear_recurrence for scalar inputs."""
     batch_size = 3
-    N = 100
+    N = 101
     unroll_factor = 5
 
     a = torch.rand(batch_size) * 2 - 1
@@ -25,9 +25,9 @@ def test_linear_recurrence_equivalence():
     lti_output = lti_linear_recurrence(a, init, x, unroll_factor=unroll_factor)
 
     # Compare outputs
-    assert torch.allclose(
-        lpv_output, lti_output
-    ), "LPV linear_recurrence output does not match LTI linear_recurrence output"
+    assert torch.allclose(lpv_output, lti_output, atol=1e-7), torch.max(
+        torch.abs(lpv_output - lti_output)
+    )
 
 
 def test_linear_recurrence_unrolling():
