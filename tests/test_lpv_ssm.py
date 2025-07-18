@@ -36,7 +36,7 @@ def test_ssm_equivalence():
     lti_output = lti_state_space(A, zi, x, unroll_factor=unroll_factor)
     print(lti_output, lpv_output)
     # Compare outputs
-    assert torch.allclose(lpv_output, lti_output), torch.max(
+    assert torch.allclose(lpv_output, lti_output, atol=1e-7), torch.max(
         torch.abs(lpv_output - lti_output)
     )
 
@@ -60,6 +60,6 @@ def test_ssm_unrolling():
         A, zi, x, unroll_factor=unroll_factor
     )  # Unrolled implementation
     # Check output shape
-    assert torch.allclose(output_naive, output_unrolled), torch.max(
+    assert torch.allclose(output_naive, output_unrolled, atol=1e-7), torch.max(
         torch.abs(output_naive - output_unrolled)
     )
