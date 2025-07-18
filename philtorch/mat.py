@@ -116,6 +116,8 @@ def matrices_cumdot(A: Tensor) -> Tensor:
     assert A.size(-2) == A.size(-1), "Input tensor A must have square matrices."
 
     M = A.size(-3)
+    if M == 1:
+        return A
     leading_dims = len(A.shape) - 3
     factors = factorint(M, multiple=True)[::-1]
     unfolded_A = A.unflatten(-3, factors)
