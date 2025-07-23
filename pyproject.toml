@@ -3,6 +3,8 @@ requires = [
     "setuptools >= 77.0.3",
     "setuptools-git-versioning>=2.0,<3",
     "wheel",
+    "torch",
+    "numpy",
 ]
 build-backend = "setuptools.build_meta"
 
@@ -17,6 +19,10 @@ dirty_template = "{tag}.{branch}{ccount}" # same thing here
 [tool.setuptools.package-data]
 # include VERSION file to a package
 philtorch = ["VERSION"]
+
+[tool.setuptools.packages.find]
+where = ["."]
+exclude = ["tests", "tests.*"]
 
 [tool.setuptools]
 # this package will read some included files in runtime, avoid installing it as .zip
