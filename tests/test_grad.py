@@ -36,10 +36,15 @@ from philtorch.lpv.ssm import SecondOrderRecurrence
         ),
     ],
 )
+@pytest.mark.parametrize(
+    "share_A",
+    [True, False],
+)
 def test_second_order(
     x_requires_grad: bool,
     A_requires_grad: bool,
     zi_requires_grad: bool,
+    share_A: bool,
     samples: int,
     cmplx: bool,
     device: str,
@@ -56,12 +61,14 @@ def test_second_order(
                 dtype=torch.double if not cmplx else torch.complex128,
             ),
             torch.randn(
-                batch_size,
-                samples,
-                order,
-                order,
+                *(
+                    (batch_size, samples, order, order)
+                    if not share_A
+                    else (samples, order, order)
+                ),
                 dtype=torch.double if not cmplx else torch.complex128,
-            ),
+            )
+            * 0.25,
             torch.randn(
                 batch_size, order, dtype=torch.double if not cmplx else torch.complex128
             ),

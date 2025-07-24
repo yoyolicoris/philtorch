@@ -64,9 +64,6 @@ class SecondOrderRecurrence(Function):
         fwd_x = grad_x if grad_x is not None else torch.zeros_like(y)
 
         if grad_A is not None:
-            # unfolded_y = (
-            #     torch.cat([zi.flip(1), y[:, :-1]], dim=1).unfold(1, order, 1).flip(2)
-            # )
             padded_y = torch.cat([zi.unsqueeze(1), y[:, :-1]], dim=1)
             fwd_A = (grad_A @ padded_y.unsqueeze(-1)).squeeze(-1)
             fwd_x = fwd_x + fwd_A
