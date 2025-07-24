@@ -103,6 +103,22 @@ def _recursion_loop(
     return output
 
 
+def _ext_ss_recur(
+    A: Tensor, zi: Tensor, x: Tensor, *, out_idx: Optional[int] = None, **_
+) -> Tensor:
+    """
+    Extension function for state space recursion.
+    This is a placeholder for the actual extension implementation.
+    """
+    assert (
+        EXTENSION_LOADED
+    ), "Extension not loaded. Please ensure philtorch is built with extensions."
+    y = torch.ops.philtorch.recur2(A, zi, x)
+    if out_idx is not None:
+        y = y[:, :, out_idx]
+    return y
+
+
 def state_space_recursion(
     A: Tensor,
     zi: Tensor,
@@ -141,15 +157,6 @@ def state_space_recursion(
     assert (
         zi.size(1) == M
     ), f"Last dimension of zi must match last dimension of A, got zi: {zi.size(1)}, A: {M}"
-
-    # if M == 2 and x.is_cuda and EXTENSION_LOADED:
-    #     # Special case for 2D state space, use the extension
-    #     if x.dim() == 2:
-    #         x = torch.stack([x, torch.zeros_like(x)], dim=-1)
-    #     output = SecondOrderRecurrence.apply(A, zi, x)
-    #     if out_idx is not None:
-    #         output = output[:, :, out_idx]
-    #     return output
 
     if unroll_factor < 1:
         raise ValueError("Unroll factor must be >= 1")
@@ -285,8 +292,12 @@ def state_space(
     else:
         Bx = x
 
+    recur_runner = (
+        _ext_ss_recur if (M == 2 and EXTENSION_LOADED) else state_space_recursion
+    )
+
     if return_zf or out_idx is None:
-        h = state_space_recursion(A, zi, Bx, unroll_factor=unroll_factor, out_idx=None)
+        h = recur_runner(A, zi, Bx, unroll_factor=unroll_factor, out_idx=None)
         zf = h[:, -1, :] if return_zf else None
         h = (
             torch.cat([zi.unsqueeze(1), h[:, :-1]], dim=1)
@@ -295,9 +306,7 @@ def state_space(
         )
     else:
         zf = None
-        h = state_space_recursion(
-            A, zi, Bx, unroll_factor=unroll_factor, out_idx=out_idx
-        )
+        h = recur_runner(A, zi, Bx, unroll_factor=unroll_factor, out_idx=out_idx)
         h = torch.cat([zi[:, None, out_idx], h[:, :-1]], dim=1)
 
     y = _ssm_C_D(h, x, C, D, batch_size, M)
