@@ -1,10 +1,77 @@
 import torch
 import torch.nn.functional as F
-from typing import Optional, Union, Tuple
+from torch.autograd import Function
+from typing import Optional, Union, Tuple, Any, List
 from torch import Tensor
 
 from ..mat import matrices_cumdot
 from ..lti.ssm import _ssm_C_D
+
+
+class SecondOrderRecurrence(Function):
+    @staticmethod
+    def forward(A: Tensor, zi: Tensor, x: Tensor) -> Tensor:
+        assert A.is_cuda & zi.is_cuda & x.is_cuda, "All inputs must be on CUDA"
+        return torch.ops.philtorch.recur2(A, zi, x)
+
+    @staticmethod
+    def setup_context(ctx: Any, inputs: List[Any], output: Any) -> Any:
+        A, zi, _ = inputs
+        y = output
+        ctx.save_for_backward(A, zi, y)
+        ctx.save_for_forward(A, zi, y)
+
+    @staticmethod
+    def backward(
+        ctx: Any, grad_y: torch.Tensor
+    ) -> Tuple[Optional[torch.Tensor], Optional[torch.Tensor], Optional[torch.Tensor]]:
+        A, zi, y = ctx.saved_tensors
+        grad_x = grad_A = grad_zi = None
+
+        AmT = A.mT.conj_physical()
+        AmT_rolled = torch.roll(AmT, shifts=-1, dims=-3)
+
+        flipped_grad_x = SecondOrderRecurrence.apply(
+            AmT_rolled.flip(-3),
+            torch.zeros_like(zi),
+            grad_y.flip(1),
+        )
+
+        if ctx.needs_input_grad[1]:
+            grad_zi = (AmT[..., 0, :, :] @ flipped_grad_x[:, -1, :, None]).squeeze(-1)
+
+        if ctx.needs_input_grad[2]:
+            grad_x = flipped_grad_x.flip(1)
+
+        if ctx.needs_input_grad[0]:
+            valid_y = y[:, :-1]
+            padded_y = torch.cat([zi.unsqueeze(1), valid_y], dim=1)
+            grad_A = padded_y.conj_physical().unsqueeze(-2) * flipped_grad_x.flip(
+                1
+            ).unsqueeze(-1)
+            if A.dim() == 3:
+                grad_A = grad_A.sum(0)
+
+        return grad_A, grad_zi, grad_x
+
+    @staticmethod
+    def jvp(
+        ctx: Any, grad_A: torch.Tensor, grad_zi: torch.Tensor, grad_x: torch.Tensor
+    ) -> torch.Tensor:
+        A, zi, y = ctx.saved_tensors
+
+        fwd_zi = grad_zi if grad_zi is not None else torch.zeros_like(zi)
+        fwd_x = grad_x if grad_x is not None else torch.zeros_like(y)
+
+        if grad_A is not None:
+            # unfolded_y = (
+            #     torch.cat([zi.flip(1), y[:, :-1]], dim=1).unfold(1, order, 1).flip(2)
+            # )
+            padded_y = torch.cat([zi.unsqueeze(1), y[:, :-1]], dim=1)
+            fwd_A = (grad_A @ padded_y.unsqueeze(-1)).squeeze(-1)
+            fwd_x = fwd_x + fwd_A
+
+        return SecondOrderRecurrence.apply(A, fwd_zi, fwd_x)
 
 
 def _recursion_loop(
@@ -82,7 +149,7 @@ def state_space_recursion(
         # Special case for 2D state space, use the extension
         if x.dim() == 2:
             x = torch.stack([x, torch.zeros_like(x)], dim=-1)
-        output = torch.ops.philtorch.recur2(A, zi, x)
+        output = SecondOrderRecurrence.apply(A, zi, x)
         if out_idx is not None:
             output = output[:, :, out_idx]
         return output
