@@ -27,7 +27,7 @@ from philtorch.lpv.ssm import SecondOrderRecurrence
 @pytest.mark.parametrize(
     "device",
     [
-        # "cpu",
+        "cpu",
         pytest.param(
             "cuda",
             marks=pytest.mark.skipif(
