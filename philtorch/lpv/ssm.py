@@ -6,6 +6,7 @@ from torch import Tensor
 
 from ..mat import matrices_cumdot
 from ..lti.ssm import _ssm_C_D
+from .. import EXTENSION_LOADED
 
 
 class SecondOrderRecurrence(Function):
@@ -142,7 +143,7 @@ def state_space_recursion(
         zi.size(1) == M
     ), f"Last dimension of zi must match last dimension of A, got zi: {zi.size(1)}, A: {M}"
 
-    if M == 2 and x.is_cuda:
+    if M == 2 and x.is_cuda and EXTENSION_LOADED:
         # Special case for 2D state space, use the extension
         if x.dim() == 2:
             x = torch.stack([x, torch.zeros_like(x)], dim=-1)
