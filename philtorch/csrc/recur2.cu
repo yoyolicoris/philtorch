@@ -14,23 +14,6 @@
 #include <torch/script.h>
 #include <torch/torch.h>
 
-extern "C" {
-/* Creates a dummy empty _C module that can be imported from Python.
-   The import from Python will load the .so associated with this extension
-   built from this file, so that all the TORCH_LIBRARY calls below are run.*/
-PyObject *PyInit__C(void) {
-    static struct PyModuleDef module_def = {
-        PyModuleDef_HEAD_INIT,
-        "_C", /* name of module */
-        NULL, /* module documentation, may be NULL */
-        -1,   /* size of per-interpreter state of the module,
-                 or -1 if the module keeps state in global variables. */
-        NULL, /* methods */
-    };
-    return PyModule_Create(&module_def);
-}
-}
-
 template <typename T>
 using sqm2_pair = cuda::std::tuple<T, T, T, T, T, T>;
 
@@ -118,9 +101,9 @@ void share_mat_recur_second_order(const scalar_t *A, const scalar_t *x,
         recur2_binary_op<scalar_t>());
 }
 
-at::Tensor mat_recur_second_order_wrapper(const at::Tensor &A,
-                                          const at::Tensor &zi,
-                                          const at::Tensor &x) {
+at::Tensor mat_recur_second_order_cuda_impl(const at::Tensor &A,
+                                            const at::Tensor &zi,
+                                            const at::Tensor &x) {
     TORCH_CHECK(x.is_floating_point() || x.is_complex(),
                 "Input must be floating point or complex");
     TORCH_CHECK(zi.scalar_type() == zi.scalar_type(),
@@ -168,10 +151,6 @@ at::Tensor mat_recur_second_order_wrapper(const at::Tensor &A,
         .contiguous();  // Remove the initial state from the output
 }
 
-TORCH_LIBRARY(philtorch, m) {
-    m.def("philtorch::recur2(Tensor A, Tensor zi, Tensor x) -> Tensor");
-}
-
 TORCH_LIBRARY_IMPL(philtorch, CUDA, m) {
-    m.impl("recur2", &mat_recur_second_order_wrapper);
+    m.impl("recur2", &mat_recur_second_order_cuda_impl);
 }
