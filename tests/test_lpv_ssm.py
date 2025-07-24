@@ -53,8 +53,19 @@ def test_ssm_equivalence(device):
     )
 
 
-@pytest.mark.skipif(not torch.cuda.is_available(), reason="CUDA not available")
-def test_recur2_extension():
+@pytest.mark.parametrize(
+    "device",
+    [
+        "cpu",
+        pytest.param(
+            "cuda",
+            marks=pytest.mark.skipif(
+                not torch.cuda.is_available(), reason="CUDA not available"
+            ),
+        ),
+    ],
+)
+def test_recur2_extension(device):
     """Test that the recur2 extension works correctly."""
     batch_size = 2
     N = 17
@@ -62,9 +73,9 @@ def test_recur2_extension():
 
     _, a = _generate_time_varying_coeffs(batch_size, N, order, order)
     # x = _generate_test_signal(batch_size, N, "white_noise").cuda()
-    x = torch.randn(batch_size, N, 2).cuda()  # Simulated input
-    A = companion(a).cuda()
-    zi = torch.randn(batch_size, order).cuda()
+    x = torch.randn(batch_size, N, 2).to(device)  # Simulated input
+    A = companion(a).to(device)
+    zi = torch.randn(batch_size, order).to(device)
 
     print(x.shape, A.shape, zi.shape)
     ext_output = torch.ops.philtorch.recur2(A, zi, x)
