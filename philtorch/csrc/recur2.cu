@@ -21,19 +21,8 @@ template <typename T>
 struct recur2_binary_op {
     __host__ __device__ sqm2_pair<T> operator()(const sqm2_pair<T> &a,
                                                 const sqm2_pair<T> &b) const {
-        auto a_a = thrust::get<0>(a);
-        auto a_b = thrust::get<1>(a);
-        auto a_c = thrust::get<2>(a);
-        auto a_d = thrust::get<3>(a);
-        auto b_a = thrust::get<0>(b);
-        auto b_b = thrust::get<1>(b);
-        auto b_c = thrust::get<2>(b);
-        auto b_d = thrust::get<3>(b);
-
-        auto b_a_vec = thrust::get<4>(b);
-        auto b_b_vec = thrust::get<5>(b);
-        auto a_a_vec = thrust::get<4>(a);
-        auto a_b_vec = thrust::get<5>(a);
+        auto [a_a, a_b, a_c, a_d, a_a_vec, a_b_vec] = a;
+        auto [b_a, b_b, b_c, b_d, b_a_vec, b_b_vec] = b;
 
         return cuda::std::make_tuple(
             b_a * a_a + b_b * a_c, b_a * a_b + b_b * a_d, b_c * a_a + b_d * a_c,
