@@ -22,10 +22,12 @@ jobs:
       uses: actions/setup-python@v5
       with:
         python-version: '3.x'
+        cache: 'pip' # caching pip dependencies
     - name: Install dependencies
       run: |
         python -m pip install --upgrade pip
         pip install build "setuptools-git-versioning>=2,<3"
+        pip install torch --index-url https://download.pytorch.org/whl/cpu
     - name: Display version
       run: |
           setuptools-git-versioning -v >> $GITHUB_STEP_SUMMARY
