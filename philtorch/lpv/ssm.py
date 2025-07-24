@@ -78,6 +78,15 @@ def state_space_recursion(
         zi.size(1) == M
     ), f"Last dimension of zi must match last dimension of A, got zi: {zi.size(1)}, A: {M}"
 
+    if M == 2 and x.is_cuda:
+        # Special case for 2D state space, use the extension
+        if x.dim() == 2:
+            x = torch.stack([x, torch.zeros_like(x)], dim=-1)
+        output = torch.ops.philtorch.recur2(A, zi, x)
+        if out_idx is not None:
+            output = output[:, :, out_idx]
+        return output
+
     if unroll_factor < 1:
         raise ValueError("Unroll factor must be >= 1")
     else:
