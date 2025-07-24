@@ -32,12 +32,15 @@ def get_extensions():
         sources += cuda_sources
         extra_compile_args["nvcc"] = ["--extended-lambda"]
 
+    if len(sources) == 0:
+        return []
+
     ext_modules = [
         extension(
             f"{library_name}._C",
             # sources,
-            # [os.path.relpath(s, this_dir) for s in sources],
-            ["philtorch/csrc/recur2.cu"],
+            [os.path.relpath(s, this_dir) for s in sources],
+            # ["philtorch/csrc/recur2.cu"],
             extra_compile_args=extra_compile_args,
             extra_link_args=extra_link_args,
         )
@@ -46,7 +49,12 @@ def get_extensions():
     return ext_modules
 
 
-setup(
-    ext_modules=get_extensions(),
-    cmdclass={"build_ext": BuildExtension},
-)
+ext_modules = get_extensions()
+
+if not ext_modules:
+    setup()
+else:
+    setup(
+        ext_modules=ext_modules,
+        cmdclass={"build_ext": BuildExtension},
+    )
