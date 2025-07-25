@@ -119,8 +119,6 @@ void host_share_mat_recur_N_order(const scalar_t *A, const scalar_t *x,
 
 at::Tensor mat_recur_N_order_cpu_impl(const at::Tensor &A, const at::Tensor &zi,
                                       const at::Tensor &x) {
-    TORCH_CHECK(x.is_floating_point() || x.is_complex(),
-                "Input must be floating point or complex");
     TORCH_CHECK(zi.scalar_type() == zi.scalar_type(),
                 "zi must have the same scalar type as input");
     TORCH_CHECK(A.scalar_type() == A.scalar_type(),
@@ -143,7 +141,7 @@ at::Tensor mat_recur_N_order_cpu_impl(const at::Tensor &A, const at::Tensor &zi,
         // Batch
         auto Ax = at::cat({A_contiguous, x_contiguous.unsqueeze(-2)}, -2)
                       .contiguous();
-        AT_DISPATCH_FLOATING_AND_COMPLEX_TYPES(
+        AT_DISPATCH_ALL_TYPES_AND_COMPLEX(
             x.scalar_type(), "host_batch_mat_recur_N_order", [&] {
                 host_batch_mat_recur_N_order<scalar_t>(
                     Ax.const_data_ptr<scalar_t>(),
@@ -153,7 +151,7 @@ at::Tensor mat_recur_N_order_cpu_impl(const at::Tensor &A, const at::Tensor &zi,
             });
     } else {
         // Shared
-        AT_DISPATCH_FLOATING_AND_COMPLEX_TYPES(
+        AT_DISPATCH_ALL_TYPES_AND_COMPLEX(
             x.scalar_type(), "host_share_mat_recur_N_order", [&] {
                 host_share_mat_recur_N_order<scalar_t>(
                     A_contiguous.const_data_ptr<scalar_t>(),

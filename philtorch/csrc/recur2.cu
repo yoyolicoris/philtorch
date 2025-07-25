@@ -93,8 +93,6 @@ void share_mat_recur_second_order(const scalar_t *A, const scalar_t *x,
 at::Tensor mat_recur_second_order_cuda_impl(const at::Tensor &A,
                                             const at::Tensor &zi,
                                             const at::Tensor &x) {
-    TORCH_CHECK(x.is_floating_point() || x.is_complex(),
-                "Input must be floating point or complex");
     TORCH_CHECK(zi.scalar_type() == zi.scalar_type(),
                 "zi must have the same scalar type as input");
     TORCH_CHECK(A.scalar_type() == A.scalar_type(),
@@ -117,7 +115,7 @@ at::Tensor mat_recur_second_order_cuda_impl(const at::Tensor &A,
 
     if (A.dim() == 4) {
         // Batch
-        AT_DISPATCH_FLOATING_AND_COMPLEX_TYPES(
+        AT_DISPATCH_ALL_TYPES_AND_COMPLEX(
             x.scalar_type(), "batch_mat_recur_second_order", [&] {
                 batch_mat_recur_second_order<scalar_t>(
                     A_contiguous.const_data_ptr<scalar_t>(),
@@ -126,7 +124,7 @@ at::Tensor mat_recur_second_order_cuda_impl(const at::Tensor &A,
             });
     } else {
         // Shared
-        AT_DISPATCH_FLOATING_AND_COMPLEX_TYPES(
+        AT_DISPATCH_ALL_TYPES_AND_COMPLEX(
             x.scalar_type(), "share_mat_recur_second_order", [&] {
                 share_mat_recur_second_order<scalar_t>(
                     A_contiguous.const_data_ptr<scalar_t>(),
