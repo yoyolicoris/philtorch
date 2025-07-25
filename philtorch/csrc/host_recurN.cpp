@@ -18,50 +18,47 @@ host_sqmN_pair<T> recurN_binary_op(const int &n,
                                    const host_sqmN_pair<T> &b) {
     int size = a.size();
     host_sqmN_pair<T> result(size);
-    std::for_each(std::execution::par, std::begin(indexes), std::end(indexes),
-                  [&](const auto &i) {
-                      auto row = i / n;
-                      auto col = i % n;
-                      if (row == n) {
-                          result[i] = std::transform_reduce(
-                              std::execution::par, std::begin(b) + col * n,
-                              std::begin(b) + (col + 1) * n,
-                              std::begin(a) + n * n, b[i], std::plus<T>(),
-                              std::multiplies<T>());
-                      } else {
-                          auto tmp = a[std::slice(col, n, n)] *
-                                     b[std::slice(row * n, n, 1)];
-                          result[i] = tmp.sum();
-                      }
-                  });
+    std::transform(
+        std::execution::par, std::begin(indexes), std::end(indexes),
+        std::begin(result), [&](const auto &i) {
+            auto row = i / n;
+            auto col = i % n;
+            T tmp;
+            if (row == n) {
+                tmp = std::transform_reduce(
+                    std::execution::par, std::begin(b) + col * n,
+                    std::begin(b) + (col + 1) * n, std::begin(a) + n * n, b[i],
+                    std::plus<T>(), std::multiplies<T>());
+            } else {
+                tmp = (a[std::slice(col, n, n)] * b[std::slice(row * n, n, 1)])
+                          .sum();
+            }
+            return tmp;
+        });
     return result;
 }
 
 template <typename scalar_t>
-void host_batch_mat_recur_N_order(const scalar_t *A, const scalar_t *x,
-                                  scalar_t *out, int n_steps, int order) {
+void host_batch_mat_recur_N_order(const scalar_t *Ax, scalar_t *out,
+                                  int n_steps, int order) {
     std::vector<host_sqmN_pair<scalar_t>> buffer(n_steps);
-    auto order_squared = order * order;
+    auto vec_size = order * order + order;
 
     at::parallel_for(0, n_steps, 1, [&](int64_t start, int64_t end) {
         for (auto i = start; i < end; i++) {
-            buffer[i].resize(order_squared + order);
-            auto offset = i * order_squared;
-            std::copy(std::execution::par, A + offset,
-                      A + offset + order_squared, std::begin(buffer[i]));
-            offset = i * order;
-            std::copy(std::execution::par, x + offset, x + offset + order,
-                      std::begin(buffer[i]) + order_squared);
+            buffer[i].resize(vec_size);
+            auto offset = i * vec_size;
+            std::copy(std::execution::par, Ax + offset, Ax + offset + vec_size,
+                      std::begin(buffer[i]));
         }
     });
 
-    auto indexes = std::valarray<int>(order_squared + order);
-    at::parallel_for(0, order_squared + order, 1,
-                     [&](int64_t start, int64_t end) {
-                         for (auto i = start; i < end; i++) {
-                             indexes[i] = i;
-                         }
-                     });
+    auto indexes = std::valarray<int>(vec_size);
+    at::parallel_for(0, vec_size, 1, [&](int64_t start, int64_t end) {
+        for (auto i = start; i < end; i++) {
+            indexes[i] = i;
+        }
+    });
     std::inclusive_scan(
         std::execution::par, buffer.begin(), buffer.end(), buffer.begin(),
         std::bind(recurN_binary_op<scalar_t>, order, indexes,
@@ -71,8 +68,8 @@ void host_batch_mat_recur_N_order(const scalar_t *A, const scalar_t *x,
         for (auto i = start; i < end; i++) {
             auto &result = buffer[i];
             auto offset = i * order;
-            std::copy(std::execution::par, std::begin(result) + order_squared,
-                      std::begin(result) + order_squared + order, out + offset);
+            std::copy(std::execution::par, std::begin(result) + order * order,
+                      std::begin(result) + vec_size, out + offset);
         }
     });
 }
@@ -144,11 +141,13 @@ at::Tensor mat_recur_N_order_cpu_impl(const at::Tensor &A, const at::Tensor &zi,
 
     if (A.dim() == 4) {
         // Batch
+        auto Ax = at::cat({A_contiguous, x_contiguous.unsqueeze(-2)}, -2)
+                      .contiguous();
         AT_DISPATCH_FLOATING_AND_COMPLEX_TYPES(
             x.scalar_type(), "host_batch_mat_recur_N_order", [&] {
                 host_batch_mat_recur_N_order<scalar_t>(
-                    A_contiguous.const_data_ptr<scalar_t>(),
-                    x_contiguous.const_data_ptr<scalar_t>(),
+                    Ax.const_data_ptr<scalar_t>(),
+                    // x_contiguous.const_data_ptr<scalar_t>(),
                     out.mutable_data_ptr<scalar_t>(), n_steps * n_batches,
                     order);
             });
