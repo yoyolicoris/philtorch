@@ -18,7 +18,6 @@ host_sqmN_pair<T> recurN_binary_op(const int &n,
                                    const host_sqmN_pair<T> &b) {
     int size = a.size();
     host_sqmN_pair<T> result(size);
-    // auto indexes = std::make_index_sequence<size>{};
     std::for_each(std::execution::par, std::begin(indexes), std::end(indexes),
                   [&](const auto &i) {
                       auto row = i / n;
@@ -30,17 +29,9 @@ host_sqmN_pair<T> recurN_binary_op(const int &n,
                               std::begin(a) + n * n, b[i], std::plus<T>(),
                               std::multiplies<T>());
                       } else {
-                          //   auto a_col = a[std::slice(col, n, n)];
-                          //   result[i] = std::transform_reduce(
-                          //       std::execution::par, std::begin(b) + row * n,
-                          //       std::begin(b) + (row + 1) * n,
-                          //       std::begin(a_col), std::plus<T>(),
-                          //       std::multiplies<T>());
-                          T sum = 0;
-                          for (int j = 0; j < n; ++j) {
-                              sum += b[row * n + j] * a[j * n + col];
-                          }
-                          result[i] = sum;
+                          auto tmp = a[std::slice(col, n, n)] *
+                                     b[std::slice(row * n, n, 1)];
+                          result[i] = tmp.sum();
                       }
                   });
     return result;
@@ -172,8 +163,7 @@ at::Tensor mat_recur_N_order_cpu_impl(const at::Tensor &A, const at::Tensor &zi,
                     n_batches);
             });
     }
-    return out.reshape({n_batches, n_steps, order})
-        .slice(1, 1, n_steps)
+    return out.slice(1, 1, n_steps)
         .contiguous();  // Remove the initial state from the output
 }
 
