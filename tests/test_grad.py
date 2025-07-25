@@ -79,4 +79,4 @@ def test_second_order(
     zi.requires_grad = zi_requires_grad
 
     assert gradcheck(MatrixRecurrence.apply, (A, zi, x), check_forward_ad=True)
-    assert gradgradcheck(MatrixRecurrence.apply, (A, zi, x))
+    assert gradgradcheck(MatrixRecurrence.apply, (A, zi, x), check_fwd_over_rev=True)
