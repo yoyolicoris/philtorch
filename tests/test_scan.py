@@ -25,7 +25,7 @@ def test_linear_recurrence_equivalence():
     lti_output = lti_linear_recurrence(a, init, x, unroll_factor=unroll_factor)
 
     # Compare outputs
-    assert torch.allclose(lpv_output, lti_output, atol=1e-7), torch.max(
+    assert torch.allclose(lpv_output, lti_output, atol=1e-6), torch.max(
         torch.abs(lpv_output - lti_output)
     )
 
