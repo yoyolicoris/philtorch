@@ -310,7 +310,7 @@ def state_space(
                 Bx = torch.linalg.vecdot(B.conj(), x.unsqueeze(-2))
             case _:
                 raise ValueError(
-                    f"Input matrix B must be of shape ({M,}), ({batch_size, M}), ({N, M}), ({batch_size, N, M}), ({batch_size, N,} features), or ({batch_size, N, M}, features), got {B.shape}"
+                    f"Input matrix B must be of shape ({M,}), ({batch_size, M}), ({N, M}), ({batch_size, N, M}), ({batch_size, N}, features), or ({batch_size, N, M}, features), got {B.shape}"
                 )
     else:
         Bx = x
@@ -351,7 +351,7 @@ def state_space(
             case (DN, _) if DN == N:
                 assert (
                     x.dim() == 2
-                ), f"Input signal x must be 2D when D is of shape {N, features}, got {x.shape}"
+                ), f"Input signal x must be 2D when D is of shape ({N}, features), got {x.shape}"
                 Dx = D * x.unsqueeze(-1)
             case (D_batch, DN) if D_batch == batch_size and DN == N:
                 assert (
@@ -366,7 +366,7 @@ def state_space(
             case (D_batch, DN, _) if D_batch == batch_size and DN == N:
                 assert (
                     x.dim() == 2
-                ), f"Input signal x must be 2D when D is of shape {batch_size, N, features}, got {x.shape}"
+                ), f"Input signal x must be 2D when D is of shape ({batch_size, N}, features), got {x.shape}"
                 Dx = D * x.unsqueeze(-1)
             case (DN, _, _) if DN == N:
                 Dx = x @ D.mT
@@ -376,7 +376,7 @@ def state_space(
                 Dx = torch.linalg.vecdot(D.conj(), x.unsqueeze(-2))
             case _:
                 raise ValueError(
-                    f"Input matrix D must be of shape ({batch_size,}), ({batch_size, N}), ({N, features}), ({batch_size, N, features}), or ({batch_size, N, features}), got {D.shape}"
+                    f"Input matrix D must be of shape ({batch_size,}), ({batch_size, N}), ({N}, features), ({batch_size, N}, features), or ({batch_size, N}, features), got {D.shape}"
                 )
     else:
         Dx = None
@@ -399,7 +399,7 @@ def state_space(
                 Ch = torch.linalg.vecdot(C.conj(), h.unsqueeze(-2))
             case _:
                 raise ValueError(
-                    f"Output matrix C must be of shape ({M,}), ({N, M}), ({batch_size, M}), ({batch_size, N, M}), or ({batch_size, N, features}), got {C.shape}"
+                    f"Output matrix C must be of shape ({M,}), ({N, M}), ({batch_size, M}), ({batch_size, N, M}), or ({batch_size, N}, features), got {C.shape}"
                 )
     else:
         Ch = h
