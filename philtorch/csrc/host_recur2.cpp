@@ -151,6 +151,7 @@ at::Tensor mat_recur_second_order_cpu_impl(const at::Tensor &A,
 
 TORCH_LIBRARY(philtorch, m) {
     m.def("philtorch::recur2(Tensor A, Tensor zi, Tensor x) -> Tensor");
+    m.def("philtorch::recurN(Tensor A, Tensor zi, Tensor x) -> Tensor");
 }
 
 TORCH_LIBRARY_IMPL(philtorch, CPU, m) {
