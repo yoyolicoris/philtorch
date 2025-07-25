@@ -3,16 +3,19 @@ import torch.nn.functional as F
 from torch.autograd import Function
 from typing import Optional, Union, Tuple, Any, List
 from torch import Tensor
+from torchlpc import sample_wise_lpc
 
 from ..mat import matrices_cumdot
 from ..lti.ssm import _ssm_C_D
 from .. import EXTENSION_LOADED
 
 
-class SecondOrderRecurrence(Function):
+class MatrixRecurrence(Function):
     @staticmethod
     def forward(A: Tensor, zi: Tensor, x: Tensor) -> Tensor:
-        return torch.ops.philtorch.recur2(A, zi, x)
+        if x.size(-1) == 2:
+            return torch.ops.philtorch.recur2(A, zi, x)
+        return torch.ops.philtorch.recurN(A, zi, x)
 
     @staticmethod
     def setup_context(ctx: Any, inputs: List[Any], output: Any) -> Any:
@@ -31,7 +34,7 @@ class SecondOrderRecurrence(Function):
         AmT = A.mT.conj_physical()
         AmT_rolled = torch.roll(AmT, shifts=-1, dims=-3)
 
-        flipped_grad_x = SecondOrderRecurrence.apply(
+        flipped_grad_x = MatrixRecurrence.apply(
             AmT_rolled.flip(-3),
             torch.zeros_like(zi),
             grad_y.flip(1),
@@ -68,7 +71,7 @@ class SecondOrderRecurrence(Function):
             fwd_A = (grad_A @ padded_y.unsqueeze(-1)).squeeze(-1)
             fwd_x = fwd_x + fwd_A
 
-        return SecondOrderRecurrence.apply(A, fwd_zi, fwd_x)
+        return MatrixRecurrence.apply(A, fwd_zi, fwd_x)
 
 
 def _recursion_loop(
@@ -113,7 +116,10 @@ def _ext_ss_recur(
     assert (
         EXTENSION_LOADED
     ), "Extension not loaded. Please ensure philtorch is built with extensions."
-    y = torch.ops.philtorch.recur2(A, zi, x)
+    if x.size(-1) == 1:
+        y = sample_wise_lpc(-A[..., 0].broadcast_to(x.shape), zi, x.squeeze(-1))
+    else:
+        y = MatrixRecurrence.apply(A, zi, x)
     if out_idx is not None:
         y = y[:, :, out_idx]
     return y
@@ -293,7 +299,9 @@ def state_space(
         Bx = x
 
     recur_runner = (
-        _ext_ss_recur if (M == 2 and EXTENSION_LOADED) else state_space_recursion
+        _ext_ss_recur
+        if ((A.is_cpu or (M <= 2)) and EXTENSION_LOADED)
+        else state_space_recursion
     )
 
     if return_zf or out_idx is None:

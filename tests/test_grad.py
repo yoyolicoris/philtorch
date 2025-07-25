@@ -1,7 +1,7 @@
 import pytest
 import torch
 from torch.autograd.gradcheck import gradcheck, gradgradcheck
-from philtorch.lpv.ssm import SecondOrderRecurrence
+from philtorch.lpv.ssm import MatrixRecurrence
 
 
 @pytest.mark.parametrize(
@@ -78,5 +78,5 @@ def test_second_order(
     x.requires_grad = x_requires_grad
     zi.requires_grad = zi_requires_grad
 
-    assert gradcheck(SecondOrderRecurrence.apply, (A, zi, x), check_forward_ad=True)
-    assert gradgradcheck(SecondOrderRecurrence.apply, (A, zi, x))
+    assert gradcheck(MatrixRecurrence.apply, (A, zi, x), check_forward_ad=True)
+    assert gradgradcheck(MatrixRecurrence.apply, (A, zi, x))
