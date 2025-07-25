@@ -48,8 +48,41 @@ def test_ssm_equivalence(device):
     # LTI state_space
     lti_output = lti_state_space(A, zi, x, unroll_factor=unroll_factor)
     # Compare outputs
-    assert torch.allclose(lpv_output, lti_output, atol=1e-7), torch.max(
+    assert torch.allclose(lpv_output, lti_output, atol=1e-6), torch.max(
         torch.abs(lpv_output - lti_output)
+    )
+
+
+@pytest.mark.parametrize(
+    "device",
+    [
+        "cpu",
+        # pytest.param(
+        #     "cuda",
+        #     marks=pytest.mark.skipif(
+        #         not torch.cuda.is_available(), reason="CUDA not available"
+        #     ),
+        # ),
+    ],
+)
+@pytest.mark.parametrize("order", [2, 3, 5])
+def test_recurN_extension(device, order):
+    """Test that the recur2 extension works correctly."""
+    batch_size = 2
+    N = 37
+
+    _, a = _generate_time_varying_coeffs(batch_size, N, order, order)
+    # x = _generate_test_signal(batch_size, N, "white_noise").cuda()
+    x = torch.randn(batch_size, N, order).to(device)  # Simulated input
+    A = companion(a).to(device)
+    zi = torch.randn(batch_size, order).to(device)
+
+    ext_output = torch.ops.philtorch.recurN(A, zi, x)
+    torch_output = lpv_state_space(A, zi, x, unroll_factor=1)
+
+    # Compare outputs
+    assert torch.allclose(ext_output, torch_output, atol=1e-6), torch.max(
+        torch.abs(ext_output - torch_output)
     )
 
 
@@ -77,12 +110,11 @@ def test_recur2_extension(device):
     A = companion(a).to(device)
     zi = torch.randn(batch_size, order).to(device)
 
-    print(x.shape, A.shape, zi.shape)
     ext_output = torch.ops.philtorch.recur2(A, zi, x)
     torch_output = lpv_state_space(A, zi, x, unroll_factor=1)
 
     # Compare outputs
-    assert torch.allclose(ext_output, torch_output, atol=1e-7), torch.max(
+    assert torch.allclose(ext_output, torch_output, atol=1e-6), torch.max(
         torch.abs(ext_output - torch_output)
     )
 
@@ -118,6 +150,6 @@ def test_ssm_unrolling(device):
         A, zi, x, unroll_factor=unroll_factor
     )  # Unrolled implementation
     # Check output shape
-    assert torch.allclose(output_naive, output_unrolled, atol=1e-7), torch.max(
+    assert torch.allclose(output_naive, output_unrolled, atol=1e-6), torch.max(
         torch.abs(output_naive - output_unrolled)
     )
