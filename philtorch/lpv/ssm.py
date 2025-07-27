@@ -285,11 +285,6 @@ def state_space(
                     x.dim() == 2
                 ), f"Input signal x must be 2D when B is of shape {M,}, got {x.shape}"
                 Bx = x.unsqueeze(-1) * B
-            case (B_batch,) if B_batch == batch_size:
-                assert (
-                    x.dim() == 2
-                ), f"Input signal x must be 2D when B is of shape {M,}, got {x.shape}"
-                Bx = B.unsqueeze(1) * x
             case (BM, F) if BM == M and F == features:
                 Bx = x @ B.T
             case (BN, BM) if BN == N and BM == M:
@@ -352,6 +347,8 @@ def state_space(
 
     if D is not None:
         match D.shape:
+            case (F,) if F == features:
+                Dx = x @ D
             case (DN,) if DN == N:
                 assert (
                     x.dim() == 2
@@ -370,6 +367,10 @@ def state_space(
                 ), f"Input signal x must be 2D when D is of shape {D.shape}, got {x.shape}"
                 Dx = x.unsqueeze(-1) * D
             case (DN, F) if DN == N and F == features:
+                Dx = torch.linalg.vecdot(D.conj(), x)
+            case (D_batch, F) if D_batch == batch_size and F == features:
+                Dx = torch.linalg.vecdot(D.conj().unsqueeze(1), x)
+            case (DN, _) if DN == N:
                 assert (
                     x.dim() == 2
                 ), f"Input signal x must be 2D when D is of shape ({N, features}), got {x.shape}"
