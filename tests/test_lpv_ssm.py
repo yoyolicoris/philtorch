@@ -3,8 +3,9 @@ from torch import Tensor
 from torch.nn import functional as F
 from typing import Optional
 import pytest
+from itertools import product, chain
 
-from philtorch.lpv import state_space_recursion as lpv_state_space
+from philtorch.lpv import state_space_recursion as lpv_state_space, state_space
 from philtorch.lti import state_space_recursion as lti_state_space
 from philtorch.mat import companion
 
@@ -153,3 +154,122 @@ def test_ssm_unrolling(device):
     assert torch.allclose(output_naive, output_unrolled, atol=1e-6), torch.max(
         torch.abs(output_naive - output_unrolled)
     )
+
+
+@pytest.mark.parametrize(
+    ("x_shape", "B_shape"),
+    [
+        ((5, 97), (3,)),
+        ((5, 97), (5, 3)),
+        ((5, 97), (5, 97, 3)),
+        ((5, 97), (97, 3)),
+        ((5, 97, 3), None),
+        ((5, 97, 2), (3, 2)),
+        ((5, 97, 2), (5, 3, 2)),
+        ((5, 97, 2), (97, 3, 2)),
+        ((5, 97, 2), (5, 97, 3, 2)),
+    ],
+)
+@pytest.mark.parametrize("A_shape", [(97, 3, 3), (5, 97, 3, 3)])
+@pytest.mark.parametrize(
+    "C_shape",
+    [
+        None,
+        (3,),
+        (5, 3),
+        (2, 3),
+        (5, 2, 3),
+        (97, 3),
+        (5, 97, 3),
+        (97, 2, 3),
+        (5, 97, 2, 3),
+    ],
+)
+@pytest.mark.parametrize("D_shape", [None])
+@pytest.mark.parametrize("zi_shape", [None, (3,), (5, 3)])
+def test_ssm_shape_handling(x_shape, A_shape, B_shape, C_shape, D_shape, zi_shape):
+    unroll_factor = 3
+
+    x = torch.randn(*x_shape)
+    A = torch.randn(*A_shape)
+    B = torch.randn(*B_shape) if B_shape is not None else None
+    C = torch.randn(*C_shape) if C_shape is not None else None
+    if D_shape is None:
+        D = None
+    else:
+        D = torch.randn(*D_shape) if len(D_shape) > 0 else torch.randn(1)
+    zi = torch.randn(*zi_shape) if zi_shape is not None else None
+
+    result = state_space(A=A, x=x, B=B, C=C, D=D, zi=zi, unroll_factor=unroll_factor)
+
+    if zi is not None:
+        y, zf = result
+        assert zf.shape[-1] == zi_shape[-1]
+    else:
+        y = result
+
+    assert y.shape[:2] == x.shape[:2]
+
+    if y.dim() == 3:
+        if C_shape is None:
+            assert y.shape[2] == A.shape[-1]
+        elif len(C_shape) == 2:
+            assert y.shape[2] == C_shape[0]
+        elif len(C_shape) == 3:
+            assert y.shape[2] == C_shape[1]
+        elif len(C_shape) == 4:
+            assert y.shape[2] == C_shape[2]
+        else:
+            assert False, f"Unexpected C_shape: {C_shape}"
+
+
+@pytest.mark.parametrize(
+    ("D_shape", "x_shape", "B_shape", "C_shape"),
+    chain(
+        product(
+            [(5,), (1,), ()],
+            [(5, 97)],
+            [(3,), (97, 3), (5, 3), (5, 97, 3)],
+            [(3,), (97, 3), (5, 3), (5, 97, 3)],
+        ),
+        product(
+            [(1,), (), (2, 2), (5, 2, 2), (5, 97, 2, 2)],
+            [(5, 97, 2)],
+            [(3, 2), (97, 3, 2), (5, 3, 2), (5, 97, 3, 2)],
+            [(2, 3), (97, 2, 3), (5, 2, 3), (5, 97, 2, 3)],
+        ),
+        product(
+            [(4,), (5, 4), (5, 97, 4)],
+            [(5, 97)],
+            [(3,), (97, 3), (5, 3), (5, 97, 3)],
+            [(4, 3), (97, 4, 3), (5, 4, 3), (5, 97, 4, 3)],
+        ),
+        product(
+            [(7, 2), (5, 7, 2), (5, 97, 7, 2)],
+            [(5, 97, 2)],
+            [(3, 2), (97, 3, 2), (5, 3, 2), (5, 97, 3, 2)],
+            [(7, 3), (97, 7, 3), (5, 7, 3), (5, 97, 7, 3)],
+        ),
+    ),
+)
+@pytest.mark.parametrize("A_shape", [(97, 3, 3), (5, 97, 3, 3)])
+@pytest.mark.parametrize("zi_shape", [None, (3,), (5, 3)])
+def test_ssm_D_shape_handling(x_shape, A_shape, B_shape, C_shape, D_shape, zi_shape):
+    unroll_factor = 4
+
+    x = torch.randn(*x_shape)
+    A = torch.randn(*A_shape)
+    B = torch.randn(*B_shape)
+    C = torch.randn(*C_shape)
+    D = torch.randn(*D_shape) if len(D_shape) > 0 else torch.randn(1)
+    zi = torch.randn(*zi_shape) if zi_shape is not None else None
+
+    result = state_space(A=A, x=x, B=B, C=C, D=D, zi=zi, unroll_factor=unroll_factor)
+
+    if zi is not None:
+        y, zf = result
+        assert zf.shape[-1] == zi_shape[-1]
+    else:
+        y = result
+
+    assert y.shape[:2] == x.shape[:2]

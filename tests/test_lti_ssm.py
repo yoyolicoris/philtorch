@@ -3,6 +3,7 @@ import numpy as np
 import torch
 from scipy import signal
 from typing import Tuple, Optional
+from itertools import product, chain
 
 from philtorch.lti import state_space_recursion, state_space, diag_state_space
 from philtorch.mat import companion
@@ -126,9 +127,7 @@ def test_ssm_shape_handling(x_shape, A_shape, B_shape, C_shape, D_shape, zi_shap
     if y.dim() == 3:
         if C_shape is None:
             assert y.shape[2] == A.shape[-1]
-        elif len(C_shape) == 1:
-            assert y.shape[2] == C_shape[0]
-        elif len(C_shape) == 2 and C_shape[0] != x_shape[0]:
+        elif len(C_shape) == 2:
             assert y.shape[2] == C_shape[0]
         elif len(C_shape) == 3:
             assert y.shape[2] == C_shape[1]
@@ -138,15 +137,32 @@ def test_ssm_shape_handling(x_shape, A_shape, B_shape, C_shape, D_shape, zi_shap
 
 @pytest.mark.parametrize(
     ("D_shape", "x_shape", "B_shape", "C_shape"),
-    [
-        ((1,), (5, 97), (3,), (3,)),
-        ((), (5, 97), (3,), (3,)),
-        ((1,), (5, 97, 2), (3, 2), (2, 3)),
-        ((), (5, 97, 2), (3, 2), (2, 3)),
-        ((5,), (5, 97), (3,), (3,)),
-        ((7, 2), (5, 97, 2), (3, 2), (7, 3)),
-        ((5, 7, 2), (5, 97, 2), (3, 2), (5, 7, 3)),
-    ],
+    chain(
+        product(
+            [(5,), (1,), ()],
+            [(5, 97)],
+            [(3,), (5, 3)],
+            [(3,), (5, 3)],
+        ),
+        product(
+            [(1,), (), (2, 2), (5, 2, 2)],
+            [(5, 97, 2)],
+            [(3, 2), (5, 3, 2)],
+            [(2, 3), (5, 2, 3)],
+        ),
+        product(
+            [(4,), (5, 4)],
+            [(5, 97)],
+            [(3,), (5, 3)],
+            [(4, 3), (5, 4, 3)],
+        ),
+        product(
+            [(7, 2), (5, 7, 2)],
+            [(5, 97, 2)],
+            [(3, 2), (5, 3, 2)],
+            [(7, 3), (5, 7, 3)],
+        ),
+    ),
 )
 @pytest.mark.parametrize("A_shape", [(3, 3)])
 @pytest.mark.parametrize("zi_shape", [None, (3,), (5, 3)])
@@ -172,9 +188,3 @@ def test_ssm_D_shape_handling(
         y = result
 
     assert y.shape[:2] == x.shape[:2]
-
-    if y.dim() == 3:
-        if len(D_shape) > 1:
-            assert y.shape[2] == D_shape[-2]
-        else:
-            assert y.shape[2] == C_shape[-2]
