@@ -162,9 +162,15 @@ def test_ssm_shape_handling(x_shape, A_shape, B_shape, C_shape, D_shape, zi_shap
             [(3, 2), (5, 3, 2)],
             [(7, 3), (5, 7, 3)],
         ),
+        product(
+            [(2,), (5, 2)],
+            [(5, 97, 2)],
+            [(3, 2), (5, 3, 2)],
+            [(3,), (5, 3)],
+        ),
     ),
 )
-@pytest.mark.parametrize("A_shape", [(3, 3)])
+@pytest.mark.parametrize("A_shape", [(3, 3), (5, 3, 3)])
 @pytest.mark.parametrize("zi_shape", [None, (3,), (5, 3)])
 @pytest.mark.parametrize("ssm", [state_space, diag_state_space])
 def test_ssm_D_shape_handling(

@@ -248,6 +248,11 @@ def state_space(
     if unroll_factor is None:
         unroll_factor = round(N**0.5)
 
+    if x.dim() == 2:
+        features = -1
+    else:
+        features = x.size(-1)
+
     if B is not None:
         match B.shape:
             case (BM,) if BM == M:
@@ -260,15 +265,17 @@ def state_space(
                     x.dim() == 2
                 ), f"Input signal x must be 2D when B is of shape {batch_size, M}, got {x.shape}"
                 Bx = x.unsqueeze(-1) * B.unsqueeze(1)
-            case (BM, _) if BM == M:
+            case (BM, F) if BM == M and F == features:
                 Bx = x @ B.T
-            case (B_batch, BM, _) if B_batch == batch_size and BM == M:
+            case (B_batch, BM, F) if (
+                B_batch == batch_size and BM == M and F == features
+            ):
                 Bx = torch.linalg.vecdot(
                     B.unsqueeze(1).conj(), x.unsqueeze(-2)
                 )  # (batch_size, N, M)
             case _:
                 raise ValueError(
-                    f"Input matrix B must be of shape ({M,}), ({M}, features), ({batch_size}, {M}), or ({batch_size}, {M}, features), got {B.shape}"
+                    f"Input matrix B must be of shape ({M,}), ({batch_size, M}), ({M, features}), or ({batch_size, M, features}), got {B.shape}"
                 )
     else:
         Bx = x
@@ -296,8 +303,15 @@ def state_space(
 
 
 def _ssm_C_D(h, x, C, D, batch_size, M):
+    if x.dim() == 2:
+        features = -1
+    else:
+        features = x.size(-1)
+
     if D is not None:
         match D.shape:
+            case (F,) if F == features:
+                Dx = x @ D
             case (D_batch,) if D_batch == batch_size:
                 assert (
                     x.dim() == 2
@@ -308,23 +322,22 @@ def _ssm_C_D(h, x, C, D, batch_size, M):
             case (_,):
                 assert (
                     x.dim() == 2
-                ), f"Input signal x must be 2D when D is of shape (_, _), got {x.shape}"
+                ), f"Input signal x must be 2D when D is of shape (_,), got {x.shape}"
                 Dx = D * x.unsqueeze(-1)
+            case (D_batch, F) if D_batch == batch_size and F == features:
+                Dx = torch.linalg.vecdot(D.unsqueeze(1).conj(), x)
             case (D_batch, _) if D_batch == batch_size:
                 assert (
                     x.dim() == 2
                 ), f"Input signal x must be 2D when D is of shape ({batch_size}, _), got {x.shape}"
                 Dx = D.unsqueeze(1) * x.unsqueeze(-1)
-            case (_, _):
-                assert (
-                    x.dim() == 3
-                ), f"Input signal x must be 3D when D is of shape {D.shape}, got {x.shape}"
+            case (_, F) if F == features:
                 Dx = x @ D.T
-            case (D_batch, _, _) if D_batch == batch_size:
+            case (D_batch, _, F) if D_batch == batch_size and F == features:
                 Dx = torch.linalg.vecdot(D.unsqueeze(1).conj(), x.unsqueeze(-2))
             case _:
                 raise ValueError(
-                    f"Input matrix D must be of shape ({batch_size,}), (1,), (_, _), or ({batch_size}, _, features), got {D.shape}"
+                    f"Input matrix D must be of shape ({batch_size,}), (), ({features},), (_, ), ({batch_size}, {features}), ({batch_size}, _), (_, {features}), or ({batch_size}, _, {features}), got {D.shape}"
                 )
     else:
         Dx = None
@@ -341,7 +354,7 @@ def _ssm_C_D(h, x, C, D, batch_size, M):
                 Ch = h @ C.mT
             case _:
                 raise ValueError(
-                    f"Output matrix C must be of shape ({M,}), ({batch_size}, {M}), (_, {M}), or ({batch_size}, _, {M}), got {C.shape}"
+                    f"Output matrix C must be of shape ({M,}), ({batch_size, M}), (_, {M}), or ({batch_size}, _, {M}), got {C.shape}"
                 )
     else:
         Ch = h
@@ -480,6 +493,11 @@ def diag_state_space(
         case _:
             assert False, f"Vinv must be 2D or 3D, got {Vinv.shape}"
 
+    if x.dim() == 2:
+        features = -1
+    else:
+        features = x.size(-1)
+
     if B is not None:
         match B.shape:
             case (BM,) if BM == M:
@@ -500,15 +518,17 @@ def diag_state_space(
                     else torch.linalg.vecdot(Vinv.conj(), B.unsqueeze(1))
                 )
                 VinvBx = x.unsqueeze(-1) * VinvB.unsqueeze(1)
-            case (BM, _) if BM == M:
+            case (BM, F) if BM == M and F == features:
                 VinvB = Vinv @ B
                 VinvBx = x @ VinvB.mT
-            case (B_batch, BM, _) if B_batch == batch_size and BM == M:
+            case (B_batch, BM, F) if (
+                B_batch == batch_size and BM == M and F == features
+            ):
                 VinvB = Vinv @ B
                 VinvBx = torch.linalg.vecdot(VinvB.unsqueeze(1).conj(), x.unsqueeze(-2))
             case _:
                 raise ValueError(
-                    f"Input matrix B must be of shape ({M,}), ({M}, features), ({batch_size}, {M}), or ({batch_size}, {M}, features), got {B.shape}"
+                    f"Input matrix B must be of shape ({M,}), ({batch_size, M}), ({M, features}), or ({batch_size, M, features}), got {B.shape}"
                 )
     elif x.dim() == 2 and Vinv.dim() == 2:
         VinvBx = x.unsqueeze(-1) * Vinv[:, 0]
