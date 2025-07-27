@@ -305,6 +305,16 @@ def _ssm_C_D(h, x, C, D, batch_size, M):
                 Dx = D.unsqueeze(1) * x
             case (1,) | ():
                 Dx = x * D
+            case (_,):
+                assert (
+                    x.dim() == 2
+                ), f"Input signal x must be 2D when D is of shape (_, _), got {x.shape}"
+                Dx = D * x.unsqueeze(-1)
+            case (D_batch, _) if D_batch == batch_size:
+                assert (
+                    x.dim() == 2
+                ), f"Input signal x must be 2D when D is of shape ({batch_size}, _), got {x.shape}"
+                Dx = D.unsqueeze(1) * x.unsqueeze(-1)
             case (_, _):
                 assert (
                     x.dim() == 3

@@ -342,7 +342,7 @@ def state_space(
                 assert (
                     x.dim() == 2
                 ), f"Input signal x must be 2D when D is of shape {N,}, got {x.shape}"
-                Dx = D.unsqueeze(1) * x
+                Dx = D * x
             case (D_batch,) if D_batch == batch_size:
                 assert (
                     x.dim() == 2
@@ -350,6 +350,11 @@ def state_space(
                 Dx = D.unsqueeze(1) * x
             case (1,) | ():
                 Dx = x * D
+            case (_,):
+                assert (
+                    x.dim() == 2
+                ), f"Input signal x must be 2D when D is of shape {D.shape}, got {x.shape}"
+                Dx = x.unsqueeze(-1) * D
             case (DN, _) if DN == N:
                 assert (
                     x.dim() == 2
@@ -360,6 +365,11 @@ def state_space(
                     x.dim() == 2
                 ), f"Input signal x must be 2D when D is of shape {batch_size, N}, got {x.shape}"
                 Dx = D * x
+            case (D_batch, _) if D_batch == batch_size:
+                assert (
+                    x.dim() == 2
+                ), f"Input signal x must be 2D when D is of shape {batch_size, features}, got {x.shape}"
+                Dx = D.unsqueeze(1) * x.unsqueeze(-1)
             case (_, _):
                 assert (
                     x.dim() == 3
