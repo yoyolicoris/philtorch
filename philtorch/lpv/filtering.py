@@ -50,11 +50,16 @@ def fir(
     if transpose:
         shifted_b = diag_shift(b, discard_end=not return_zf)
         y = torch.linalg.vecdot(
-            F.pad(x, (shifted_b.size(2) - 1, 0)).unfold(1, shifted_b.size(2), 1).conj(),
+            F.pad(
+                x,
+                (shifted_b.size(2) - 1, 0 if not return_zf else shifted_b.size(2) - 1),
+            )
+            .unfold(1, shifted_b.size(2), 1)
+            .conj(),
             shifted_b.flip(2),
         )
         if return_zf:
-            y, zf = torch.split_with_sizes(y, [T, b.size(2) - 1])
+            y, zf = torch.split_with_sizes(y, [T, b.size(2) - 1], 1)
             return (
                 torch.cat(
                     [
@@ -195,22 +200,11 @@ def _torchlpc_lfilter(
         b.shape[1] == a.shape[1] == T
     ), "The number of time steps in b and a must match the input signal x."
 
-    # if b.shape[2] < a.shape[2] + 1:
-    #     b = torch.cat(
-    #         (b, b.new_zeros((b.size(0), b.shape[1], a.shape[2] + 1 - b.shape[2]))),
-    #         dim=2,
-    #     )
-    # elif b.shape[2] > a.shape[2] + 1:
-    #     a = torch.cat(
-    #         (a, a.new_zeros((a.size(0), a.shape[1], b.shape[2] - a.shape[2] - 1))),
-    #         dim=2,
-    #     )
-
     order = max(a.shape[2], b.shape[2] - 1)
 
     B = max(b.size(0), a.size(0), x.size(0))
 
-    # return_zf = (zi is not None) and (form in ("df2", "tdf2"))
+    return_zf = (zi is not None) and (form in ("df2", "tdf2"))
     if zi is None:
         zi = x.new_zeros((B, order))
     elif zi.dim() == 1:
@@ -234,8 +228,12 @@ def _torchlpc_lfilter(
                 lambda x, a_zf: fir(broadcasted_b, x, zi=zi[:, : b.shape[2] - 1])
                 + (a_zf,),
                 lambda x, b_zf, a_zf: (
-                    x,
-                    b_zf if b_zf.size(1) > a_zf.size(1) else a_zf,
+                    (
+                        x,
+                        b_zf if b_zf.size(1) > a_zf.size(1) else a_zf,
+                    )
+                    if return_zf
+                    else x
                 ),
             )
         case "tdf2":
