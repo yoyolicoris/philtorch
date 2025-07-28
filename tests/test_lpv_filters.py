@@ -219,7 +219,6 @@ def test_initial_conditions_df2():
 
     y, zf = lfilter(b, a, x, zi=zi, form="df2")
 
-    print(y.shape, zf.shape, b.shape, a.shape, x.shape)
     assert y.shape == (B, T)
     assert zf.shape == (B, order)
     assert not torch.isnan(y).any()
