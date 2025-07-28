@@ -271,6 +271,36 @@ def test_df_fir():
     )
 
 
+def test_df_allpole():
+    """Test df2 filter with all-pole coefficients"""
+
+    B = 3
+    T = 100
+    num_order = 4
+
+    a = np.random.randn(B, num_order)
+    a /= np.abs(a).sum(axis=-1, keepdims=True).clip(min=1e-6)  # Ensure stability
+    x = _generate_random_signal(B, T)
+
+    # Convert to torch tensors
+    a_torch = torch.from_numpy(a)
+    x_torch = torch.from_numpy(x)
+
+    # Apply philtorch filter
+    y_torch = lpv_allpole(
+        a_torch.unsqueeze(1).expand(-1, T, -1), x_torch, transpose=False
+    )
+    # Apply scipy filter
+    y_scipy = np.stack(
+        [signal.lfilter([1.0], [1.0] + a[i].tolist(), x[i]) for i in range(B)], axis=0
+    )
+
+    # Compare outputs
+    assert np.allclose(y_torch.numpy(), y_scipy), np.max(
+        np.abs(y_torch.numpy() - y_scipy)
+    )
+
+
 @pytest.mark.parametrize("include_zi", [True, False])
 def test_tdf_fir(include_zi: bool):
     """Test df2 filter with FIR coefficients"""
@@ -302,6 +332,62 @@ def test_tdf_fir(include_zi: bool):
     # Apply scipy filter
     scipy_results = [
         signal.lfilter(b[i], [1.0], x[i], zi=zi[i] if zi is not None else None)
+        for i in range(B)
+    ]
+
+    if include_zi:
+        y_scipy, zf_scipy = zip(*scipy_results)
+        y_scipy = np.stack(y_scipy, axis=0)
+        zf_scipy = np.stack(zf_scipy, axis=0)
+        y_torch, zf_torch = torch_results
+
+        assert np.allclose(zf_torch.numpy(), zf_scipy), np.max(
+            np.abs(zf_torch.numpy() - zf_scipy)
+        )
+    else:
+        y_scipy = np.vstack(scipy_results)
+        y_torch = torch_results
+
+    # Compare outputs
+    assert np.allclose(y_torch.numpy(), y_scipy), np.max(
+        np.abs(y_torch.numpy() - y_scipy)
+    )
+
+
+@pytest.mark.parametrize("include_zi", [True, False])
+def test_tdf_allpole(include_zi: bool):
+    """Test df2 filter with FIR coefficients"""
+
+    B = 3
+    T = 100
+    num_order = 4
+
+    a = np.random.randn(B, num_order)
+    a /= np.abs(a).sum(axis=-1, keepdims=True).clip(min=1e-6)  # Ensure stability
+    x = _generate_random_signal(B, T)
+    if include_zi:
+        # Generate random initial conditions
+        zi = np.random.randn(B, num_order)
+    else:
+        zi = None
+
+    # Convert to torch tensors
+    a_torch = torch.from_numpy(a)
+    x_torch = torch.from_numpy(x)
+    if zi is not None:
+        zi_torch = torch.from_numpy(zi)
+    else:
+        zi_torch = None
+
+    # Apply philtorch filter
+    torch_results = lpv_allpole(
+        a_torch.unsqueeze(1).expand(-1, T, -1), x_torch, zi=zi_torch, transpose=True
+    )
+    # Apply scipy filter
+    scipy_results = [
+        signal.lfilter(
+            [1.0], [1.0] + a[i].tolist(), x[i], zi=zi[i] if zi is not None else None
+        )
         for i in range(B)
     ]
 
