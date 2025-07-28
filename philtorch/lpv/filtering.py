@@ -2,13 +2,92 @@ import torch
 from torch import Tensor
 from typing import Optional, Union, Tuple
 from functools import reduce, partial
+from torchlpc import sample_wise_lpc
 
-from ..core import lpv_fir, lpv_allpole
 from ..utils import chain_functions
 
 
+def fir(
+    b: Tensor, x: Tensor, zi: Optional[Tensor] = None
+) -> Union[Tensor, Tuple[Tensor, Tensor]]:
+    """Apply a batch of parameter-varying FIR filters to input signal
+    Args:
+        b (Tensor): Coefficients of the FIR filters, shape (B, T, N+1).
+        x (Tensor): Input signal, shape (B, T).
+        zi (Tensor, optional): Initial conditions for the filter, shape (B, N).
+    Returns:
+        Filtered output signal, shape (B, T), and optionally the final state of the filter.
+    """
+    assert b.dim() == 3, "Numerator coefficients b must be 3D."
+    assert x.dim() == 2, "Input signal x must be 2D."
+
+    B, T = x.shape
+    assert (
+        b.shape[:2] == x.shape
+    ), "The first two dimensions of b must match the shape of x."
+
+    if zi is None:
+        return_zf = False
+        zi = x.new_zeros((B, b.size(2) - 1))
+    else:
+        assert zi.dim() == 2, "Initial conditions zi must be 2D."
+        assert zi.size(0) == B, "The first dimension of zi must match the batch size."
+        assert (
+            zi.size(1) == b.size(2) - 1
+        ), "The second dimension of zi must match the filter order."
+
+        return_zf = True
+
+    unfolded_x = torch.cat([zi.flip(1), x], dim=1).unfold(1, b.size(2), 1)
+    y = torch.linalg.vecdot(unfolded_x.conj(), b.flip(2))
+
+    if return_zf:
+        return y, unfolded_x[:, -1, :-1].flip(1)
+    return y
+
+
+def allpole(
+    a: Tensor, x: Tensor, zi: Optional[Tensor] = None
+) -> Union[Tensor, Tuple[Tensor, Tensor]]:
+    """Apply a batch of parameter-varying all-pole filters to input signal
+    Args:
+        a (Tensor): Coefficients of the all-pole filters, shape (B, T, N).
+        x (Tensor): Input signal, shape (B, T).
+        zi (Tensor, optional): Initial conditions for the filter, shape (B, N).
+    Returns:
+        Filtered output signal, shape (B, T), and optionally the final state of the filter.
+    """
+    assert a.dim() == 3, "Denominator coefficients a must be 3D."
+    assert x.dim() == 2, "Input signal x must be 2D."
+    B, T = x.shape
+    assert (
+        a.shape[:2] == x.shape
+    ), "The first two dimensions of a must match the shape of x."
+
+    if zi is None:
+        return_zf = False
+        zi = x.new_zeros((B, a.size(2)))
+    else:
+        assert zi.dim() == 2, "Initial conditions zi must be 2D."
+        assert zi.size(0) == B, "The first dimension of zi must match the batch size."
+        assert zi.size(1) == a.size(
+            2
+        ), "The second dimension of zi must match the filter order, but got {} instead of {}".format(
+            zi.size(1), a.size(2)
+        )
+
+        return_zf = True
+
+    return sample_wise_lpc(x, a, zi=zi, return_zf=return_zf)
+
+
 def lfilter(
-    b: Tensor, a: Tensor, x: Tensor, zi: Optional[Tensor] = None, form: str = "df2"
+    b: Tensor,
+    a: Tensor,
+    x: Tensor,
+    zi: Optional[Tensor] = None,
+    form: str = "df2",
+    backend: str = "torchlpc",
 ) -> Union[Tensor, Tuple[Tensor, Tensor]]:
     """Apply a batch of parameter-varying linear filters to input signal.
     Args:
@@ -33,6 +112,42 @@ def lfilter(
     elif x.dim() > 2:
         raise ValueError("Input signal x must be 1D or 2D.")
 
+    assert b.dim() in (2, 3), "Numerator coefficients b must be 2D or 3D."
+    assert a.dim() in (2, 3), "Denominator coefficients a must be 2D or 3D."
+
+    match backend:
+        case "ssm":
+            raise NotImplementedError(
+                "The 'ssm' backend is not implemented yet. Use 'torchlpc' instead."
+            )
+        case "torchlpc":
+            y = _torchlpc_lfilter(b, a, x, zi=zi, form=form)
+        case _:
+            raise ValueError(
+                f"Unknown backend: {backend}. Supported backends are 'ssm', 'torchlpc'."
+            )
+
+    if isinstance(y, tuple):
+        y, zf = y
+        if squeeze_first:
+            y = y.squeeze(0)
+            zf = zf.squeeze(0)
+        return y, zf
+
+    if squeeze_first:
+        y = y.squeeze(0)
+    return y
+
+
+def _torchlpc_lfilter(
+    b: Tensor,
+    a: Tensor,
+    x: Tensor,
+    zi: Optional[Tensor] = None,
+    form: str = "df2",
+) -> Union[Tensor, Tuple[Tensor, Tensor]]:
+    """Apply a batch of parameter-varying linear filters using torchlpc's sample_wise_lpc."""
+
     _, T = x.shape
 
     if b.dim() == 2:
@@ -52,25 +167,26 @@ def lfilter(
         b.shape[1] == a.shape[1] == T
     ), "The number of time steps in b and a must match the input signal x."
 
-    if b.shape[2] < a.shape[2] + 1:
-        b = torch.cat(
-            (b, b.new_zeros((b.size(0), b.shape[1], a.shape[2] + 1 - b.shape[2]))),
-            dim=2,
-        )
-    elif b.shape[2] > a.shape[2] + 1:
-        a = torch.cat(
-            (a, a.new_zeros((a.size(0), a.shape[1], b.shape[2] - a.shape[2] - 1))),
-            dim=2,
-        )
+    # if b.shape[2] < a.shape[2] + 1:
+    #     b = torch.cat(
+    #         (b, b.new_zeros((b.size(0), b.shape[1], a.shape[2] + 1 - b.shape[2]))),
+    #         dim=2,
+    #     )
+    # elif b.shape[2] > a.shape[2] + 1:
+    #     a = torch.cat(
+    #         (a, a.new_zeros((a.size(0), a.shape[1], b.shape[2] - a.shape[2] - 1))),
+    #         dim=2,
+    #     )
 
-    order = a.shape[2]
+    order = max(a.shape[2], b.shape[2] - 1)
 
     B = max(b.size(0), a.size(0), x.size(0))
 
-    return_zf = (zi is not None) and (form in ("df2", "tdf2"))
+    # return_zf = (zi is not None) and (form in ("df2", "tdf2"))
     if zi is None:
         zi = x.new_zeros((B, order))
     elif zi.dim() == 1:
+        assert zi.shape[0] == order, "Initial conditions zi must match filter order."
         zi = zi.unsqueeze(0).expand(B, -1)
     elif zi.dim() == 2:
         assert zi.shape[1] == order, "Initial conditions zi must match filter order."
@@ -86,9 +202,13 @@ def lfilter(
     match form:
         case "df2":
             filt = chain_functions(
-                partial(lpv_allpole, broadcasted_a, zi=zi),
-                lambda x, _: x,
-                partial(lpv_fir, broadcasted_b, zi=zi),
+                partial(allpole, broadcasted_a, zi=zi[:, : a.shape[2]]),
+                lambda x, a_zf: fir(broadcasted_b, x, zi=zi[:, : b.shape[2] - 1])
+                + (a_zf,),
+                lambda x, b_zf, a_zf: (
+                    x,
+                    b_zf if b_zf.size(1) > a_zf.size(1) else a_zf,
+                ),
             )
         case "tdf2":
             raise NotImplementedError(
@@ -97,8 +217,8 @@ def lfilter(
         case "df1":
             # In Direct Form I, the initial conditions are neglected.
             filt = chain_functions(
-                partial(lpv_fir, broadcasted_b),
-                partial(lpv_allpole, broadcasted_a),
+                partial(fir, broadcasted_b),
+                partial(allpole, broadcasted_a),
             )
         case "tdf1":
             raise NotImplementedError(
@@ -109,14 +229,4 @@ def lfilter(
                 f"Unknown filter form: {form}. Supported forms are 'df2', 'tdf2', 'df1', 'tdf1'."
             )
 
-    y = filt(broadcasted_x)
-    if isinstance(y, tuple):
-        y, zf = y
-        if squeeze_first:
-            y = y.squeeze(0)
-            zf = zf.squeeze(0)
-        return y if not return_zf else (y, zf)
-
-    if squeeze_first:
-        y = y.squeeze(0)
-    return y
+    return filt(broadcasted_x)
