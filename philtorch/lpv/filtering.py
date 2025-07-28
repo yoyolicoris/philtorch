@@ -3,12 +3,21 @@ from torch import Tensor
 from typing import Optional, Union, Tuple
 from functools import reduce, partial
 from torchlpc import sample_wise_lpc
+import torch.nn.functional as F
 
 from ..utils import chain_functions
+from ..mat import companion
+from .ssm import (
+    state_space,
+    state_space_recursion,
+    _ext_ss_recur,
+    extension_backend_indicator,
+)
+from .utils import diag_shift
 
 
 def fir(
-    b: Tensor, x: Tensor, zi: Optional[Tensor] = None
+    b: Tensor, x: Tensor, zi: Optional[Tensor] = None, transpose: bool = False
 ) -> Union[Tensor, Tuple[Tensor, Tensor]]:
     """Apply a batch of parameter-varying FIR filters to input signal
     Args:
@@ -37,6 +46,26 @@ def fir(
         ), "The second dimension of zi must match the filter order."
 
         return_zf = True
+
+    if transpose:
+        shifted_b = diag_shift(b, discard_end=not return_zf)
+        y = torch.linalg.vecdot(
+            F.pad(x, (shifted_b.size(2) - 1, 0)).unfold(1, shifted_b.size(2), 1).conj(),
+            shifted_b.flip(2),
+        )
+        if return_zf:
+            y, zf = torch.split_with_sizes(y, [T, b.size(2) - 1])
+            return (
+                torch.cat(
+                    [
+                        y[..., : b.size(2) - 1] + zi,
+                        y[..., b.size(2) - 1 :],
+                    ],
+                    dim=-1,
+                ),
+                zf,
+            )
+        return y
 
     unfolded_x = torch.cat([zi.flip(1), x], dim=1).unfold(1, b.size(2), 1)
     y = torch.linalg.vecdot(unfolded_x.conj(), b.flip(2))
@@ -87,7 +116,8 @@ def lfilter(
     x: Tensor,
     zi: Optional[Tensor] = None,
     form: str = "df2",
-    backend: str = "torchlpc",
+    backend: str = "ssm",
+    **kwargs: Optional[dict],
 ) -> Union[Tensor, Tuple[Tensor, Tensor]]:
     """Apply a batch of parameter-varying linear filters to input signal.
     Args:
@@ -117,9 +147,7 @@ def lfilter(
 
     match backend:
         case "ssm":
-            raise NotImplementedError(
-                "The 'ssm' backend is not implemented yet. Use 'torchlpc' instead."
-            )
+            y = _ssm_lfilter(b, a, x, zi=zi, form=form, **kwargs)
         case "torchlpc":
             y = _torchlpc_lfilter(b, a, x, zi=zi, form=form)
         case _:
@@ -230,3 +258,88 @@ def _torchlpc_lfilter(
             )
 
     return filt(broadcasted_x)
+
+
+def _ssm_lfilter(
+    b: Tensor,
+    a: Tensor,
+    x: Tensor,
+    zi: Optional[Tensor] = None,
+    form: str = "df2",
+    **kwargs,
+) -> Union[Tensor, Tuple[Tensor, Tensor]]:
+    """Apply a batch of time-invariant linear filters to input signal using state-space model."""
+    if b.size(-1) < a.size(-1) + 1:
+        b = F.pad(b, (0, a.size(-1) + 1 - b.size(-1)))
+    elif b.size(-1) > a.size(-1) + 1:
+        a = F.pad(a, (0, b.size(-1) - a.size(-1) - 1))
+
+    A = companion(a)
+
+    match form:
+        case "df2":
+            b0 = b[..., :1]  # First coefficient of the FIR filter
+            C = b[..., 1:] - b0 * a
+            D = b[..., 0]
+            filt = partial(
+                state_space,
+                A,
+                B=None,
+                C=C,
+                D=D,
+                zi=zi,
+                out_idx=None,
+                **kwargs,
+            )
+        case "tdf2":
+            b0 = b[..., :1]  # First coefficient of the FIR filter
+            B = b[..., 1:] - b0 * a
+            D = b[..., 0]
+            filt = partial(
+                state_space,
+                A.mT.conj(),
+                B=B.conj(),
+                C=None,
+                D=D.conj(),
+                zi=zi,
+                out_idx=0,
+                **kwargs,
+            )
+        case "df1":
+            zi = x.new_zeros((x.size(0), A.size(-1)))
+            filt = chain_functions(
+                partial(fir, b.broadcast_to((x.size(0), -1, -1))),
+                partial(
+                    (
+                        _ext_ss_recur
+                        if extension_backend_indicator(x, A.size(-1))
+                        else state_space_recursion
+                    ),
+                    A,
+                    zi,
+                    out_idx=0,
+                    **kwargs,
+                ),
+            )
+        case "tdf1":
+            zi = x.new_zeros((x.size(0), A.size(-1)))
+            filt = chain_functions(
+                partial(
+                    (
+                        _ext_ss_recur
+                        if extension_backend_indicator(x, A.size(-1))
+                        else state_space_recursion
+                    ),
+                    A.mT.conj(),
+                    zi,
+                    out_idx=0,
+                    **kwargs,
+                ),
+                partial(
+                    fir, b.conj().broadcast_to((x.size(0), -1, -1)), transpose=True
+                ),
+            )
+        case _:
+            raise ValueError(f"Unknown filter form: {form}")
+
+    return filt(x)
