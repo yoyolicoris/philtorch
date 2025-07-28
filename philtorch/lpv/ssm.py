@@ -6,8 +6,14 @@ from torch import Tensor
 from torchlpc import sample_wise_lpc
 
 from ..mat import matrices_cumdot
-from ..lti.ssm import _ssm_C_D
 from .. import EXTENSION_LOADED
+
+
+def extension_backend_indicator(x: Tensor, M: int) -> bool:
+    """
+    Check if the extension backend should be used based on the input tensor and its last dimension.
+    """
+    return EXTENSION_LOADED and (x.is_cpu or (M <= 2))
 
 
 class MatrixRecurrence(Function):
@@ -116,11 +122,22 @@ def _ext_ss_recur(
     assert (
         EXTENSION_LOADED
     ), "Extension not loaded. Please ensure philtorch is built with extensions."
-    if x.size(-1) == 1:
-        y = sample_wise_lpc(-A[..., 0].broadcast_to(x.shape), zi, x.squeeze(-1))
+    if x.dim() == 2 and A.size(-1) == 1:
+        y = sample_wise_lpc(x, -A[..., 0].broadcast_to(x.shape + (1,)), zi).unsqueeze(
+            -1
+        )
+    elif A.size(-1) == 1:
+        y = sample_wise_lpc(
+            x.squeeze(-1), -A[..., 0].broadcast_to(x.shape), zi
+        ).unsqueeze(-1)
     else:
+        x = (
+            torch.cat([x.unsqueeze(-1), x.new_zeros(*x.shape, A.size(-1) - 1)], dim=-1)
+            if x.dim() == 2
+            else x
+        )
         y = MatrixRecurrence.apply(A, zi, x)
-    if out_idx is not None:
+    if out_idx is not None and y.dim() == 3:
         y = y[:, :, out_idx]
     return y
 
@@ -322,9 +339,7 @@ def state_space(
         Bx = x
 
     recur_runner = (
-        _ext_ss_recur
-        if ((A.is_cpu or (M <= 2)) and EXTENSION_LOADED)
-        else state_space_recursion
+        _ext_ss_recur if extension_backend_indicator(x, M) else state_space_recursion
     )
 
     if return_zf or out_idx is None:
