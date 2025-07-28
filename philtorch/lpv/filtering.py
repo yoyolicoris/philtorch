@@ -81,7 +81,7 @@ def fir(
 
 
 def allpole(
-    a: Tensor, x: Tensor, zi: Optional[Tensor] = None
+    a: Tensor, x: Tensor, zi: Optional[Tensor] = None, transpose: bool = False
 ) -> Union[Tensor, Tuple[Tensor, Tensor]]:
     """Apply a batch of parameter-varying all-pole filters to input signal
     Args:
@@ -111,6 +111,18 @@ def allpole(
         )
 
         return_zf = True
+
+    if transpose:
+        a = diag_shift(a, offset=1, discard_end=not return_zf)
+        x = torch.cat(
+            [zi + x[:, : a.size(2)], x[:, a.size(2) :]]
+            + ([torch.zeros_like(zi)] if return_zf else []),
+            dim=1,
+        )
+        y = sample_wise_lpc(x, a)
+        if return_zf:
+            return torch.split_with_sizes(y, [T, a.size(2)], 1)
+        return y
 
     return sample_wise_lpc(x, a, zi=zi, return_zf=return_zf)
 
