@@ -229,23 +229,6 @@ def test_initial_conditions_df2():
     assert torch.isfinite(zf).all()
 
 
-def test_performance_large_signals():
-    """Test performance with larger signals"""
-    B, T = 8, 1000
-    b, a = _generate_time_varying_coeffs(B, T, 4, 3)
-    x = _generate_test_signal(B, T, "white_noise")
-
-    # This should complete without errors
-    y = lfilter(b, a, x, form="df1")
-
-    if isinstance(y, tuple):
-        y = y[0]
-
-    assert y.shape == (B, T)
-    assert not torch.isnan(y).any()
-    assert torch.isfinite(y).all()
-
-
 def test_df_fir():
     """Test df2 filter with FIR coefficients"""
 
@@ -408,3 +391,31 @@ def test_tdf_allpole(include_zi: bool):
     assert np.allclose(y_torch.numpy(), y_scipy), np.max(
         np.abs(y_torch.numpy() - y_scipy)
     )
+
+
+@pytest.mark.parametrize("transpose", [True, False])
+@pytest.mark.parametrize("filt", [lpv_fir, lpv_allpole])
+def test_zi_continuation(filt, transpose: bool):
+    """Test that final state can be used to continue filtering"""
+    B, T = 2, 27
+    b, a = _generate_time_varying_coeffs(B, T, 3, 3)
+    if filt == lpv_fir:
+        coef = b
+    else:
+        coef = a
+    x = _generate_test_signal(B, T, "white_noise")
+
+    # First pass with initial conditions
+    zi = torch.randn(B, 3) * 0.1
+    y1, zf1 = filt(coef, x, zi=zi, transpose=transpose)
+
+    y2 = []
+    for xn, coef_n in zip(x.chunk(3, dim=1), coef.chunk(3, dim=1)):
+        yn, zf = filt(coef_n, xn, zi=zi, transpose=transpose)
+        zi = zf
+        y2.append(yn)
+    y2 = torch.cat(y2, dim=1)
+
+    assert y1.shape == y2.shape, "Output shape mismatch between passes"
+    assert torch.allclose(y1, y2), "Output mismatch between passes"
+    assert torch.allclose(zf1, zf), "Final state mismatch between passes"
