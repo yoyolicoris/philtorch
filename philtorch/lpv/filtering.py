@@ -76,7 +76,7 @@ def fir(
     y = torch.linalg.vecdot(unfolded_x.conj(), b.flip(2))
 
     if return_zf:
-        return y, unfolded_x[:, -1, :-1].flip(1)
+        return y, unfolded_x[:, -1, 1:].flip(1)
     return y
 
 
