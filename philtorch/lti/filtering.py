@@ -110,7 +110,7 @@ def fir(
     if transpose:
         y = F.conv_transpose1d(
             x.unsqueeze(0),
-            b.unsqueeze(1),
+            b.unsqueeze(1).conj(),
             stride=1,
             groups=B,
         ).squeeze(0)

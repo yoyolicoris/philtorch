@@ -50,13 +50,11 @@ def fir(
     if transpose:
         shifted_b = diag_shift(b, discard_end=not return_zf)
         y = torch.linalg.vecdot(
+            shifted_b.flip(2),
             F.pad(
                 x,
                 (shifted_b.size(2) - 1, 0 if not return_zf else shifted_b.size(2) - 1),
-            )
-            .unfold(1, shifted_b.size(2), 1)
-            .conj(),
-            shifted_b.flip(2),
+            ).unfold(1, shifted_b.size(2), 1),
         )
         if return_zf:
             y, zf = torch.split_with_sizes(y, [T, b.size(2) - 1], 1)
@@ -113,7 +111,7 @@ def allpole(
         return_zf = True
 
     if transpose:
-        a = diag_shift(a, offset=1, discard_end=not return_zf)
+        a = diag_shift(a.conj(), offset=1, discard_end=not return_zf)
         x = torch.cat(
             [zi + x[:, : a.size(2)], x[:, a.size(2) :]]
             + ([torch.zeros_like(zi)] if return_zf else []),
@@ -259,8 +257,16 @@ def _torchlpc_lfilter(
                 partial(allpole, broadcasted_a),
             )
         case "tdf1":
-            raise NotImplementedError(
-                "Transposed Direct Form I (tdf1) is not implemented yet."
+            # raise NotImplementedError(
+            #     "Transposed Direct Form I (tdf1) is not implemented yet."
+            # )
+            filt = chain_functions(
+                partial(
+                    allpole,
+                    broadcasted_a,
+                    transpose=True,
+                ),
+                partial(fir, broadcasted_b, transpose=True),
             )
         case _:
             raise ValueError(
