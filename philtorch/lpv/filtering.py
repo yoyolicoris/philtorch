@@ -257,9 +257,7 @@ def _torchlpc_lfilter(
                 partial(allpole, broadcasted_a),
             )
         case "tdf1":
-            # raise NotImplementedError(
-            #     "Transposed Direct Form I (tdf1) is not implemented yet."
-            # )
+            # In Transposed Direct Form I, the initial conditions are neglected.
             filt = chain_functions(
                 partial(
                     allpole,

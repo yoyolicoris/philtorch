@@ -21,10 +21,10 @@ from .test_lti_lfilter import (
     ("form", "backend"),
     chain(
         zip(["df2", "tdf2", "df1", "tdf1"], ["ssm"] * 4),
-        zip(["df2", "df1"], ["torchlpc"] * 2),
+        zip(["df2", "df1", "tdf1"], ["torchlpc"] * 3),
     ),
 )
-def test_time_invariant_filter(
+def test_against_lti_scipy(
     B: int, T: int, num_order: int, den_order: int, form: str, backend: str
 ):
     """Test time-invariant filters against scipy.signal.lfilter"""
