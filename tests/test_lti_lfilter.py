@@ -190,6 +190,24 @@ def test_lfilter_zi(b_shape, a_shape):
     )
 
 
+@pytest.mark.parametrize("transpose", [True, False])
+def test_zi_constant_response(transpose: bool):
+    b, a = signal.butter(5, 0.25)
+    a0 = a[0]
+    b = b / a0
+    a = a[1:] / a0
+
+    b = torch.from_numpy(b).float()
+    a = torch.from_numpy(a).float()
+
+    zi = lfilter_zi(a, b if transpose else None, transpose=transpose)
+    y, _ = lfilter(
+        b, a, torch.ones(3, 10), zi=zi, form="df2" if not transpose else "tdf2"
+    )
+
+    assert torch.all(torch.diff(y).abs() < 1e-5), y.diff().abs().max()
+
+
 def test_df_fir():
     """Test df2 filter with FIR coefficients"""
 
