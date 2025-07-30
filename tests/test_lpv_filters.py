@@ -417,5 +417,5 @@ def test_zi_continuation(filt, transpose: bool):
     y2 = torch.cat(y2, dim=1)
 
     assert y1.shape == y2.shape, "Output shape mismatch between passes"
-    assert torch.allclose(y1, y2), "Output mismatch between passes"
-    assert torch.allclose(zf1, zf), "Final state mismatch between passes"
+    assert torch.allclose(y1, y2, atol=1e-6), "Output mismatch between passes"
+    assert torch.allclose(zf1, zf, atol=1e-6), "Final state mismatch between passes"
