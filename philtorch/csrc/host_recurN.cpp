@@ -19,14 +19,14 @@ host_sqmN_pair<T> recurN_binary_op(const int &n,
     int size = a.size();
     host_sqmN_pair<T> result(size);
     std::transform(
-        std::execution::par, std::begin(indexes), std::end(indexes),
+        std::begin(indexes), std::end(indexes),
         std::begin(result), [&](const auto &i) {
             auto row = i / n;
             auto col = i % n;
             T tmp;
             if (row == n) {
                 tmp = std::transform_reduce(
-                    std::execution::par, std::begin(b) + col * n,
+                    std::begin(b) + col * n,
                     std::begin(b) + (col + 1) * n, std::begin(a) + n * n, b[i],
                     std::plus<T>(), std::multiplies<T>());
             } else {
@@ -48,7 +48,7 @@ void host_batch_mat_recur_N_order(const scalar_t *Ax, scalar_t *out,
         for (auto i = start; i < end; i++) {
             buffer[i].resize(vec_size);
             auto offset = i * vec_size;
-            std::copy(std::execution::par, Ax + offset, Ax + offset + vec_size,
+            std::copy(Ax + offset, Ax + offset + vec_size,
                       std::begin(buffer[i]));
         }
     });
@@ -60,7 +60,7 @@ void host_batch_mat_recur_N_order(const scalar_t *Ax, scalar_t *out,
         }
     });
     std::inclusive_scan(
-        std::execution::par, buffer.begin(), buffer.end(), buffer.begin(),
+        buffer.begin(), buffer.end(), buffer.begin(),
         std::bind(recurN_binary_op<scalar_t>, order, indexes,
                   std::placeholders::_1, std::placeholders::_2));
 
@@ -68,7 +68,7 @@ void host_batch_mat_recur_N_order(const scalar_t *Ax, scalar_t *out,
         for (auto i = start; i < end; i++) {
             auto &result = buffer[i];
             auto offset = i * order;
-            std::copy(std::execution::par, std::begin(result) + order * order,
+            std::copy(std::begin(result) + order * order,
                       std::begin(result) + vec_size, out + offset);
         }
     });
@@ -122,10 +122,10 @@ void host_share_mat_recur_N_order(const scalar_t *A, const scalar_t *x,
         for (auto i = start; i < end; i++) {
             auto offset = i % n_steps * order_squared;
             buffer[i].resize(order_squared + order);
-            std::copy(std::execution::par, A + offset,
+            std::copy(A + offset,
                       A + offset + order_squared, std::begin(buffer[i]));
             offset = i * order;
-            std::copy(std::execution::par, x + offset, x + offset + order,
+            std::copy(x + offset, x + offset + order,
                       std::begin(buffer[i]) + order_squared);
         }
     });
@@ -139,7 +139,7 @@ void host_share_mat_recur_N_order(const scalar_t *A, const scalar_t *x,
                      });
 
     std::inclusive_scan(
-        std::execution::par, buffer.begin(), buffer.end(), buffer.begin(),
+        buffer.begin(), buffer.end(), buffer.begin(),
         std::bind(recurN_binary_op<scalar_t>, order, indexes,
                   std::placeholders::_1, std::placeholders::_2));
 
@@ -147,7 +147,7 @@ void host_share_mat_recur_N_order(const scalar_t *A, const scalar_t *x,
         for (auto i = start; i < end; i++) {
             auto &result = buffer[i];
             auto offset = i * order;
-            std::copy(std::execution::par, std::begin(result) + order_squared,
+            std::copy(std::begin(result) + order_squared,
                       std::begin(result) + order_squared + order, out + offset);
         }
     });

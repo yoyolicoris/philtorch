@@ -11,7 +11,6 @@ from torch.utils.cpp_extension import (
 
 library_name = "philtorch"
 
-libraries = ["tbb"]
 
 def get_extensions():
     use_cuda = torch.cuda.is_available() and CUDA_HOME is not None
@@ -43,7 +42,6 @@ def get_extensions():
             [os.path.relpath(s, this_dir) for s in sources],
             # ["philtorch/csrc/recur2.cu"],
             extra_compile_args=extra_compile_args,
-            libraries=libraries,
             extra_link_args=extra_link_args,
         )
     ]
