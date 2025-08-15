@@ -196,7 +196,6 @@ at::Tensor mat_recur_N_order_cpu_impl(const at::Tensor &A, const at::Tensor &zi,
             x.scalar_type(), "host_batch_mat_recur_N_order", [&] {
                 host_batch_mat_recur_N_order<scalar_t>(
                     Ax.const_data_ptr<scalar_t>(),
-                    // x_contiguous.const_data_ptr<scalar_t>(),
                     out.mutable_data_ptr<scalar_t>(), n_steps * n_batches,
                     order);
             });
@@ -259,4 +258,5 @@ at::Tensor mat_recur_N_order_cpu_omp_impl(const at::Tensor &A,
 
 TORCH_LIBRARY_IMPL(philtorch, CPU, m) {
     m.impl("recurN", &mat_recur_N_order_cpu_omp_impl);
+    m.impl("recur2", &mat_recur_N_order_cpu_omp_impl);
 }
