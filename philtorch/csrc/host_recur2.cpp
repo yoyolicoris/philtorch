@@ -125,8 +125,9 @@ at::Tensor mat_recur_second_order_cpu_impl(const at::Tensor &A,
 
     if (A.dim() == 4) {
         // Batch
-        AT_DISPATCH_ALL_TYPES_AND_COMPLEX(
-            x.scalar_type(), "host_batch_mat_recur_second_order", [&] {
+        AT_DISPATCH_FLOATING_AND_COMPLEX_TYPES_AND1(
+            at::kLong, x.scalar_type(), "host_batch_mat_recur_second_order",
+            [&] {
                 host_batch_mat_recur_second_order<scalar_t>(
                     A_contiguous.const_data_ptr<scalar_t>(),
                     x_contiguous.const_data_ptr<scalar_t>(),
@@ -134,8 +135,9 @@ at::Tensor mat_recur_second_order_cpu_impl(const at::Tensor &A,
             });
     } else {
         // Shared
-        AT_DISPATCH_ALL_TYPES_AND_COMPLEX(
-            x.scalar_type(), "host_share_mat_recur_second_order", [&] {
+        AT_DISPATCH_FLOATING_AND_COMPLEX_TYPES_AND1(
+            at::kLong, x.scalar_type(), "host_share_mat_recur_second_order",
+            [&] {
                 host_share_mat_recur_second_order<scalar_t>(
                     A_contiguous.const_data_ptr<scalar_t>(),
                     x_contiguous.const_data_ptr<scalar_t>(),
