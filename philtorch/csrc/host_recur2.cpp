@@ -57,8 +57,8 @@ void host_batch_mat_recur_second_order(const scalar_t *A, const scalar_t *x,
         }
     });
 
-    std::inclusive_scan(buffer.begin(), buffer.end(),
-                        buffer.begin(), recur2_binary_op<scalar_t>);
+    std::inclusive_scan(buffer.begin(), buffer.end(), buffer.begin(),
+                        recur2_binary_op<scalar_t>);
 
     at::parallel_for(0, n_steps, 1, [&](int64_t start, int64_t end) {
         for (auto i = start; i < end; i++) {
@@ -91,8 +91,8 @@ void host_share_mat_recur_second_order(const scalar_t *A, const scalar_t *x,
         }
     });
 
-    std::inclusive_scan(buffer.begin(), buffer.end(),
-                        buffer.begin(), recur2_binary_op<scalar_t>);
+    std::inclusive_scan(buffer.begin(), buffer.end(), buffer.begin(),
+                        recur2_binary_op<scalar_t>);
 
     at::parallel_for(0, total_steps, 1, [&](int64_t start, int64_t end) {
         for (auto i = start; i < end; i++) {
@@ -125,8 +125,9 @@ at::Tensor mat_recur_second_order_cpu_impl(const at::Tensor &A,
 
     if (A.dim() == 4) {
         // Batch
-        AT_DISPATCH_ALL_TYPES_AND_COMPLEX(
-            x.scalar_type(), "host_batch_mat_recur_second_order", [&] {
+        AT_DISPATCH_FLOATING_AND_COMPLEX_TYPES_AND1(
+            at::kLong, x.scalar_type(), "host_batch_mat_recur_second_order",
+            [&] {
                 host_batch_mat_recur_second_order<scalar_t>(
                     A_contiguous.const_data_ptr<scalar_t>(),
                     x_contiguous.const_data_ptr<scalar_t>(),
@@ -134,8 +135,9 @@ at::Tensor mat_recur_second_order_cpu_impl(const at::Tensor &A,
             });
     } else {
         // Shared
-        AT_DISPATCH_ALL_TYPES_AND_COMPLEX(
-            x.scalar_type(), "host_share_mat_recur_second_order", [&] {
+        AT_DISPATCH_FLOATING_AND_COMPLEX_TYPES_AND1(
+            at::kLong, x.scalar_type(), "host_share_mat_recur_second_order",
+            [&] {
                 host_share_mat_recur_second_order<scalar_t>(
                     A_contiguous.const_data_ptr<scalar_t>(),
                     x_contiguous.const_data_ptr<scalar_t>(),
@@ -150,9 +152,4 @@ at::Tensor mat_recur_second_order_cpu_impl(const at::Tensor &A,
 TORCH_LIBRARY(philtorch, m) {
     m.def("philtorch::recur2(Tensor A, Tensor zi, Tensor x) -> Tensor");
     m.def("philtorch::recurN(Tensor A, Tensor zi, Tensor x) -> Tensor");
-    m.def("philtorch::recurN_OMP(Tensor A, Tensor zi, Tensor x) -> Tensor");
-}
-
-TORCH_LIBRARY_IMPL(philtorch, CPU, m) {
-    m.impl("recur2", &mat_recur_second_order_cpu_impl);
 }
