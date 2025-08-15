@@ -19,16 +19,16 @@ host_sqmN_pair<T> recurN_binary_op(const int &n,
     int size = a.size();
     host_sqmN_pair<T> result(size);
     std::transform(
-        std::begin(indexes), std::end(indexes),
-        std::begin(result), [&](const auto &i) {
+        std::begin(indexes), std::end(indexes), std::begin(result),
+        [&](const auto &i) {
             auto row = i / n;
             auto col = i % n;
             T tmp;
             if (row == n) {
                 tmp = std::transform_reduce(
-                    std::begin(b) + col * n,
-                    std::begin(b) + (col + 1) * n, std::begin(a) + n * n, b[i],
-                    std::plus<T>(), std::multiplies<T>());
+                    std::begin(b) + col * n, std::begin(b) + (col + 1) * n,
+                    std::begin(a) + n * n, b[i], std::plus<T>(),
+                    std::multiplies<T>());
             } else {
                 tmp = (a[std::slice(col, n, n)] * b[std::slice(row * n, n, 1)])
                           .sum();
@@ -75,36 +75,27 @@ void host_batch_mat_recur_N_order(const scalar_t *Ax, scalar_t *out,
 }
 
 template <typename scalar_t>
-void host_batch_mat_recur_N_order_omp(
-    int B, int T, int N,
-    const scalar_t* A,   // [B][T][N][N]
-    const scalar_t* X,   // [B][T][N]
-    scalar_t* H_out      // [B][T][N]
+void host_batch_mat_recur_N_order_omp(int B, int T, int N,
+                                      const scalar_t *A,  // [B][T][N][N]
+                                      scalar_t *H_out     // [B][T][N]
 ) {
-    // Process each batch in parallel
-    #pragma omp parallel for
+// Process each batch in parallel
+#pragma omp parallel for
     for (int b = 0; b < B; ++b) {
-        const scalar_t* A_b = A + b * T * N * N;
-        const scalar_t* X_b = X + b * T * N;
-        scalar_t* H_b       = H_out + b * T * N;
-
-        // Initial condition h0 = 0
-        for (int i = 0; i < N; ++i)
-            H_b[i] = 0.0f;
+        const scalar_t *A_b = A + b * T * N * N;
+        scalar_t *H_b = H_out + b * T * N;
 
         // t loop
-        for (int t = 0; t < T; ++t) {
-            const scalar_t* A_bt = A_b + t * N * N;
-            const scalar_t* X_bt = X_b + t * N;
-            const scalar_t* H_prev = (t == 0) ? H_b : H_b + (t - 1) * N;
-            scalar_t* H_curr = H_b + t * N;
+        for (int t = 1; t < T; ++t) {
+            const scalar_t *A_bt = A_b + t * N * N;
+            const scalar_t *H_prev = H_b + (t - 1) * N;
+            scalar_t *H_curr = H_b + t * N;
 
             for (int i = 0; i < N; ++i) {
-                scalar_t sum = X_bt[i];
-                const scalar_t* Arow = A_bt + i * N;
-                for (int j = 0; j < N; ++j)
-                    sum += Arow[j] * H_prev[j];
-                H_curr[i] = sum;
+                scalar_t sum = 0;
+                const scalar_t *Arow = A_bt + i * N;
+                for (int j = 0; j < N; ++j) sum += Arow[j] * H_prev[j];
+                H_curr[i] += sum;
             }
         }
     }
@@ -122,8 +113,8 @@ void host_share_mat_recur_N_order(const scalar_t *A, const scalar_t *x,
         for (auto i = start; i < end; i++) {
             auto offset = i % n_steps * order_squared;
             buffer[i].resize(order_squared + order);
-            std::copy(A + offset,
-                      A + offset + order_squared, std::begin(buffer[i]));
+            std::copy(A + offset, A + offset + order_squared,
+                      std::begin(buffer[i]));
             offset = i * order;
             std::copy(x + offset, x + offset + order,
                       std::begin(buffer[i]) + order_squared);
@@ -200,8 +191,9 @@ at::Tensor mat_recur_N_order_cpu_impl(const at::Tensor &A, const at::Tensor &zi,
         .contiguous();  // Remove the initial state from the output
 }
 
-at::Tensor mat_recur_N_order_cpu_omp_impl(const at::Tensor &A, const at::Tensor &zi,
-                                      const at::Tensor &x) {
+at::Tensor mat_recur_N_order_cpu_omp_impl(const at::Tensor &A,
+                                          const at::Tensor &zi,
+                                          const at::Tensor &x) {
     TORCH_CHECK(zi.scalar_type() == zi.scalar_type(),
                 "zi must have the same scalar type as input");
     TORCH_CHECK(A.scalar_type() == A.scalar_type(),
@@ -218,16 +210,17 @@ at::Tensor mat_recur_N_order_cpu_omp_impl(const at::Tensor &A, const at::Tensor 
 
     auto A_contiguous = at::pad(A, {0, 0, 0, 0, 1, 0}).contiguous();
     auto x_contiguous = at::cat({zi.unsqueeze(1), x}, 1).contiguous();
-    auto out = at::empty_like(x_contiguous);
+    auto out = x_contiguous.clone();
 
-    if (A.dim() == 4){
+    if (A.dim() == 4) {
         AT_DISPATCH_ALL_TYPES_AND_COMPLEX(
             x.scalar_type(), "host_batch_mat_recur_N_order_omp", [&] {
                 host_batch_mat_recur_N_order_omp<scalar_t>(
                     n_batches, n_steps, order,
-                    A_contiguous.const_data_ptr<scalar_t>(), x_contiguous.const_data_ptr<scalar_t>(), out.mutable_data_ptr<scalar_t>());
+                    A_contiguous.const_data_ptr<scalar_t>(),
+                    out.mutable_data_ptr<scalar_t>());
             });
-    }else {
+    } else {
         // Shared
         AT_DISPATCH_ALL_TYPES_AND_COMPLEX(
             x.scalar_type(), "host_share_mat_recur_N_order", [&] {
@@ -243,8 +236,5 @@ at::Tensor mat_recur_N_order_cpu_omp_impl(const at::Tensor &A, const at::Tensor 
 }
 
 TORCH_LIBRARY_IMPL(philtorch, CPU, m) {
-    m.impl("recurN", &mat_recur_N_order_cpu_impl);
-}
-TORCH_LIBRARY_IMPL(philtorch, CPU, m) {
-    m.impl("recurN_OMP", &mat_recur_N_order_cpu_omp_impl);
+    m.impl("recurN", &mat_recur_N_order_cpu_omp_impl);
 }
