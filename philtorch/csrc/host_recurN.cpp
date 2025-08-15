@@ -102,6 +102,30 @@ void host_batch_mat_recur_N_order_omp(int B, int T, int N,
 }
 
 template <typename scalar_t>
+void host_share_mat_recur_N_order_omp(int B, int T, int N,
+                                      const scalar_t *A,  // [T][N][N]
+                                      scalar_t *H_out     // [B][T][N]
+) {
+// Process each batch in parallel
+#pragma omp parallel for
+    for (int b = 0; b < B; ++b) {
+        scalar_t *H_b = H_out + b * T * N;
+        // t loop
+        for (int t = 1; t < T; ++t) {
+            const scalar_t *A_bt = A + t * N * N;
+            const scalar_t *H_prev = H_b + (t - 1) * N;
+            scalar_t *H_curr = H_b + t * N;
+            for (int i = 0; i < N; ++i) {
+                scalar_t sum = 0;
+                const scalar_t *Arow = A_bt + i * N;
+                for (int j = 0; j < N; ++j) sum += Arow[j] * H_prev[j];
+                H_curr[i] += sum;
+            }
+        }
+    }
+}
+
+template <typename scalar_t>
 void host_share_mat_recur_N_order(const scalar_t *A, const scalar_t *x,
                                   scalar_t *out, int n_steps, int order,
                                   int n_batches) {
@@ -209,8 +233,7 @@ at::Tensor mat_recur_N_order_cpu_omp_impl(const at::Tensor &A,
     auto order = A.size(-1);
 
     auto A_contiguous = at::pad(A, {0, 0, 0, 0, 1, 0}).contiguous();
-    auto x_contiguous = at::cat({zi.unsqueeze(1), x}, 1).contiguous();
-    auto out = x_contiguous.clone();
+    auto out = at::cat({zi.unsqueeze(1), x}, 1).contiguous();
 
     if (A.dim() == 4) {
         AT_DISPATCH_ALL_TYPES_AND_COMPLEX(
@@ -224,11 +247,10 @@ at::Tensor mat_recur_N_order_cpu_omp_impl(const at::Tensor &A,
         // Shared
         AT_DISPATCH_ALL_TYPES_AND_COMPLEX(
             x.scalar_type(), "host_share_mat_recur_N_order", [&] {
-                host_share_mat_recur_N_order<scalar_t>(
+                host_share_mat_recur_N_order_omp<scalar_t>(
+                    n_batches, n_steps, order,
                     A_contiguous.const_data_ptr<scalar_t>(),
-                    x_contiguous.const_data_ptr<scalar_t>(),
-                    out.mutable_data_ptr<scalar_t>(), n_steps, order,
-                    n_batches);
+                    out.mutable_data_ptr<scalar_t>());
             });
     }
     return out.slice(1, 1, n_steps)
