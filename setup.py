@@ -26,6 +26,10 @@ def format_branch_name(name):
     if name in ["master", "dev"]:
         return name
 
+    # workaround for current github CI/CD pipelines
+    if name in ["HEAD", "head"]:
+        return f"dev+head"
+
     # fail in case of wrong branch names like "bugfix/issue-unknown"
     raise ValueError(f"Wrong branch name: {name}")
 
