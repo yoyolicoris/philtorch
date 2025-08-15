@@ -19,7 +19,7 @@ def format_branch_name(name):
 
     match = pattern.search(name)
     if match:
-        return f"dev+{match.group(0)}" # => dev+"(fix|feat)/issue-name"
+        return f"dev+{match.group(0)}"  # => dev+"(fix|feat)/issue-name"
 
     # function is called even if branch name is not used in a current template
     # just left properly named branches intact
