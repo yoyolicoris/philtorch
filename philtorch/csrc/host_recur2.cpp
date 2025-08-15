@@ -57,8 +57,8 @@ void host_batch_mat_recur_second_order(const scalar_t *A, const scalar_t *x,
         }
     });
 
-    std::inclusive_scan(buffer.begin(), buffer.end(),
-                        buffer.begin(), recur2_binary_op<scalar_t>);
+    std::inclusive_scan(buffer.begin(), buffer.end(), buffer.begin(),
+                        recur2_binary_op<scalar_t>);
 
     at::parallel_for(0, n_steps, 1, [&](int64_t start, int64_t end) {
         for (auto i = start; i < end; i++) {
@@ -91,8 +91,8 @@ void host_share_mat_recur_second_order(const scalar_t *A, const scalar_t *x,
         }
     });
 
-    std::inclusive_scan(buffer.begin(), buffer.end(),
-                        buffer.begin(), recur2_binary_op<scalar_t>);
+    std::inclusive_scan(buffer.begin(), buffer.end(), buffer.begin(),
+                        recur2_binary_op<scalar_t>);
 
     at::parallel_for(0, total_steps, 1, [&](int64_t start, int64_t end) {
         for (auto i = start; i < end; i++) {
@@ -150,9 +150,4 @@ at::Tensor mat_recur_second_order_cpu_impl(const at::Tensor &A,
 TORCH_LIBRARY(philtorch, m) {
     m.def("philtorch::recur2(Tensor A, Tensor zi, Tensor x) -> Tensor");
     m.def("philtorch::recurN(Tensor A, Tensor zi, Tensor x) -> Tensor");
-    m.def("philtorch::recurN_OMP(Tensor A, Tensor zi, Tensor x) -> Tensor");
-}
-
-TORCH_LIBRARY_IMPL(philtorch, CPU, m) {
-    m.impl("recur2", &mat_recur_second_order_cpu_impl);
 }
