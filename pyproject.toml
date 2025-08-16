@@ -15,7 +15,7 @@ version_file = "philtorch/VERSION.txt"
 count_commits_from_version_file = true    # <--- enable commits tracking
 dev_template = "{tag}.{branch}{ccount}"   # suffix for versions will be .dev
 dirty_template = "{tag}.{branch}{ccount}" # same thing here
-branch_formatter = "_version:format_branch_name"
+branch_formatter = "philtorch._version:format_branch_name"
 
 [tool.setuptools.package-data]
 # include VERSION file to a package

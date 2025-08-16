@@ -11,7 +11,7 @@ def format_branch_name(name):
 
     # function is called even if branch name is not used in a current template
     # just left properly named branches intact
-    if name in ["master", "dev"]:
+    if name in ["master", "dev", "main"]:
         return name
 
     # fail in case of wrong branch names like "bugfix/issue-unknown"
