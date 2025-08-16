@@ -8,6 +8,62 @@ from .ssm import state_space, state_space_recursion, diag_state_space
 from ..mat import companion
 from ..utils import chain_functions
 from ..poly import polydiv
+from .recur import linear_recurrence
+
+
+def comb_filter(
+    a: Tensor, delay: int, x: Tensor, zi: Optional[Tensor] = None, **kwargs
+) -> Tensor:
+    """Apply a comb filter to the input signal.
+    Args:
+        a (Tensor): Coefficients of the all-pole filter, shape (B,) or (1,).
+        delay (int): Delay of the comb filter.
+        x (Tensor): Input signal, shape (B, N).
+        zi (Tensor, optional): Initial conditions for the filter, shape (delay,) or (B, delay).
+        **kwargs: Additional keyword arguments for the linear recurrence.
+    Returns:
+        Tensor: Filtered output signal, shape (B, N).
+    """
+    assert a.dim() <= 1, "Denominator coefficients a must be at most 1D."
+    assert x.dim() == 2, "Input signal x must be 2D."
+    assert delay >= 0, "Delay must be non-negative."
+    if a.dim() == 1:
+        assert a.size(0) == x.size(
+            0
+        ), "The first dimension of a must match the batch size of x."
+
+    if delay == 1:
+        return linear_recurrence(
+            -a, torch.zeros_like(a) if zi is None else zi.squeeze(-1), x, **kwargs
+        )
+
+    remainder = x.size(1) % delay
+    if remainder != 0:
+        x = F.pad(x, (0, delay - remainder))
+
+    folded_x = x.unflatten(1, (-1, delay)).mT
+    if a.dim() == 1:
+        a = a.repeat_interleave(delay)
+    if zi is not None:
+        return_zf = True
+        if zi.dim() == 1:
+            zi = zi.flip(0).repeat(x.size(0))
+        else:
+            zi = zi.flip(1).flatten()
+    else:
+        return_zf = False
+        zi = torch.zeros_like(a)
+
+    y = (
+        linear_recurrence(-a, zi, folded_x.flatten(0, 1), **kwargs)
+        .unflatten(0, (-1, delay))
+        .mT.flatten(1, 2)
+    )
+    if remainder != 0:
+        y = y[:, : -(delay - remainder)]
+    if return_zf:
+        return y, y[:, -delay:].flip(1)
+    return y
 
 
 def lfiltic(b: Tensor, a: Tensor, y: Tensor, x: Optional[Tensor] = None) -> Tensor:
