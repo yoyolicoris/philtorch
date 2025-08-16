@@ -12,4 +12,5 @@ __all__ = [
     "state_space",
     "fir",
     "linear_recurrence",
+    "comb_filter",
 ]
