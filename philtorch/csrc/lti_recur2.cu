@@ -40,17 +40,19 @@ void lti_batch_mat_recur_second_order(const scalar_t *A, const scalar_t *x,
 
 template <typename scalar_t>
 void lti_share_mat_recur_second_order(const scalar_t *A, const scalar_t *x,
-                                      scalar_t *out, int total_steps)
+                                      scalar_t *out, int n_steps, int n_batches)
 {
+    auto total_steps = n_steps * n_batches;
+    thrust::counting_iterator<int> iter(0);
     auto share_input_op =
-        thrust::make_zip_function(lti_share_A_input_op<scalar_t>{A});
+        thrust::make_zip_function(lti_share_A_input_op<scalar_t>{A, n_steps});
     thrust::inclusive_scan(
         thrust::device,
         thrust::make_transform_iterator(
-            thrust::make_zip_iterator(x, x + total_steps),
+            thrust::make_zip_iterator(iter, x, x + total_steps),
             share_input_op),
         thrust::make_transform_iterator(
-            thrust::make_zip_iterator(x + total_steps, x + total_steps * 2),
+            thrust::make_zip_iterator(iter + total_steps, x + total_steps, x + total_steps * 2),
             share_input_op),
         thrust::make_transform_output_iterator(
             thrust::make_zip_iterator(out, out + total_steps),
@@ -99,7 +101,7 @@ at::Tensor lti_mat_recur_second_order_cuda_impl(const at::Tensor &A,
             { lti_share_mat_recur_second_order<scalar_t>(
                   A_contiguous.const_data_ptr<scalar_t>(),
                   x_contiguous.const_data_ptr<scalar_t>(),
-                  out.mutable_data_ptr<scalar_t>(), n_steps * n_batches); });
+                  out.mutable_data_ptr<scalar_t>(), n_steps, n_batches); });
     }
     return out.t()
         .reshape({n_batches, n_steps, 2})

@@ -53,8 +53,11 @@ struct lti_batch_A_input_op
     __host__ __device__ sqm2_pair<T> operator()(int i, const T &x_0,
                                                 const T &x_1) const
     {
-        int idx = i % n_steps * 4;
-        return thrust::make_tuple(A[idx], A[idx + 1], A[idx + 2], A[idx + 3], x_0, x_1);
+        int idx = i / n_steps * 4;
+        int offset = i % n_steps;
+        if (offset > 0)
+            return thrust::make_tuple(A[idx], A[idx + 1], A[idx + 2], A[idx + 3], x_0, x_1);
+        return thrust::make_tuple(0, 0, 0, 0, x_0, x_1);
     }
 };
 
@@ -62,9 +65,13 @@ template <typename T>
 struct lti_share_A_input_op
 {
     const T *A;
-    __host__ __device__ sqm2_pair<T> operator()(const T &x_0,
+    int n_steps;
+    __host__ __device__ sqm2_pair<T> operator()(int i, const T &x_0,
                                                 const T &x_1) const
     {
-        return thrust::make_tuple(A[0], A[1], A[2], A[3], x_0, x_1);
+        int offset = i % n_steps;
+        if (offset > 0)
+            return thrust::make_tuple(A[0], A[1], A[2], A[3], x_0, x_1);
+        return thrust::make_tuple(0, 0, 0, 0, x_0, x_1);
     }
 };
