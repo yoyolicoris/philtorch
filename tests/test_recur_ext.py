@@ -6,7 +6,7 @@ from .test_lti_lfilter import _generate_random_signal
 from .test_lti_ssm import _generate_random_filter_coeffs
 
 
-@pytest.mark.parametrize("device", ["cpu"])
+@pytest.mark.parametrize("device", ["cpu", "cuda"])
 @pytest.mark.parametrize("batch", [True, False])
 def test_lti_recur2_equiv(device: str, batch: bool):
     B = 3
@@ -28,7 +28,7 @@ def test_lti_recur2_equiv(device: str, batch: bool):
         zi,
         x_torch,
     )
-    assert torch.allclose(lti_y, ltv_y)
+    assert torch.allclose(lti_y, ltv_y), torch.max(torch.abs(lti_y - ltv_y))
 
 
 @pytest.mark.parametrize("device", ["cpu"])
