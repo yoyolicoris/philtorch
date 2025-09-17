@@ -109,5 +109,5 @@ at::Tensor lti_mat_recur_second_order_cuda_impl(const at::Tensor &A,
 
 TORCH_LIBRARY_IMPL(philtorch, CUDA, m)
 {
-    m.impl("recur2", &lti_mat_recur_second_order_cuda_impl);
+    m.impl("lti_recur2", &lti_mat_recur_second_order_cuda_impl);
 }
