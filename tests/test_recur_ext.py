@@ -6,7 +6,18 @@ from .test_lti_lfilter import _generate_random_signal
 from .test_lti_ssm import _generate_random_filter_coeffs
 
 
-@pytest.mark.parametrize("device", ["cpu", "cuda"])
+@pytest.mark.parametrize(
+    "device",
+    [
+        "cpu",
+        pytest.param(
+            "cuda",
+            marks=pytest.mark.skipif(
+                not torch.cuda.is_available(), reason="CUDA not available"
+            ),
+        ),
+    ],
+)
 @pytest.mark.parametrize("batch", [True, False])
 def test_lti_recur2_equiv(device: str, batch: bool):
     B = 3
