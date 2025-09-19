@@ -52,7 +52,7 @@ jobs:
 
   build-macos:
     if: github.event_name == 'pull_request'
-    runs-on: macos-latest
+    runs-on: macos-15
     strategy:
       fail-fast: false
       matrix:
