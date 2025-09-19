@@ -1,11 +1,84 @@
 import torch
 import torch.nn.functional as F
-from typing import Optional, Union, Tuple
 from torch import Tensor
-from torchlpc import sample_wise_lpc
+from torch.autograd import Function
+from typing import Any, List, Optional, Tuple
 
 from ..mat import matrix_power_accumulate, find_eigenvectors
 from .recur import linear_recurrence
+from .. import EXTENSION_LOADED
+
+
+def extension_backend_indicator(x: Tensor, M: int) -> bool:
+    """
+    Check if the extension backend should be used based on the input tensor and its last dimension.
+    """
+    return EXTENSION_LOADED and (M == 2 or (x.is_cpu and M >= 2))
+
+
+class LTIMatrixRecurrence(Function):
+    @staticmethod
+    def forward(A: Tensor, zi: Tensor, x: Tensor) -> Tensor:
+        if x.size(-1) == 2:
+            return torch.ops.philtorch.lti_recur2(A, zi, x)
+        return torch.ops.philtorch.lti_recurN(A, zi, x)
+
+    @staticmethod
+    def setup_context(ctx: Any, inputs: List[Any], output: Any) -> Any:
+        A, zi, _ = inputs
+        y = output
+        ctx.save_for_backward(A, zi, y)
+        ctx.save_for_forward(A, zi, y)
+
+    @staticmethod
+    def backward(
+        ctx: Any, grad_y: torch.Tensor
+    ) -> Tuple[Optional[torch.Tensor], Optional[torch.Tensor], Optional[torch.Tensor]]:
+        A, zi, y = ctx.saved_tensors
+        grad_x = grad_A = grad_zi = None
+
+        AmT = A.mT.conj_physical()
+
+        flipped_grad_x = LTIMatrixRecurrence.apply(
+            AmT, torch.zeros_like(zi), grad_y.flip(1)
+        )
+
+        if ctx.needs_input_grad[1]:
+            grad_zi = (AmT @ flipped_grad_x[:, -1, :, None]).squeeze(-1)
+
+        if ctx.needs_input_grad[2]:
+            grad_x = flipped_grad_x.flip(1)
+
+        if ctx.needs_input_grad[0]:
+            valid_y = y[:, :-1]
+            padded_y = torch.cat([zi.unsqueeze(1), valid_y], dim=1)
+            if A.dim() == 2:
+                grad_A = flipped_grad_x.flip(1).flatten(
+                    0, 1
+                ).T @ padded_y.conj_physical().flatten(0, 1)
+            else:
+                grad_A = flipped_grad_x.flip(1).mT @ padded_y.conj_physical()
+
+        return grad_A, grad_zi, grad_x
+
+    @staticmethod
+    def jvp(
+        ctx: Any, grad_A: torch.Tensor, grad_zi: torch.Tensor, grad_x: torch.Tensor
+    ) -> torch.Tensor:
+        A, zi, y = ctx.saved_tensors
+
+        fwd_zi = grad_zi if grad_zi is not None else torch.zeros_like(zi)
+        fwd_x = grad_x if grad_x is not None else torch.zeros_like(y)
+
+        if grad_A is not None:
+            padded_y = torch.cat([zi.unsqueeze(1), y[:, :-1]], dim=1)
+            fwd_A = (
+                (grad_A if grad_A.dim() == 2 else grad_A.unsqueeze(-3))
+                @ padded_y.unsqueeze(-1)
+            ).squeeze(-1)
+            fwd_x = fwd_x + fwd_A
+
+        return LTIMatrixRecurrence.apply(A, fwd_zi, fwd_x)
 
 
 def _recursion_loop(
@@ -35,6 +108,28 @@ def _recursion_loop(
         output = torch.cat(results, dim=1)
 
     return output
+
+
+def _ext_ss_recur(
+    A: Tensor, zi: Tensor, x: Tensor, *, out_idx: Optional[int] = None, **_
+) -> Tensor:
+    """
+    Extension function for state space recursion.
+    This is a placeholder for the actual extension implementation.
+    """
+    assert (
+        EXTENSION_LOADED
+    ), "Extension not loaded. Please ensure philtorch is built with extensions."
+
+    x = (
+        torch.cat([x.unsqueeze(-1), x.new_zeros(*x.shape, A.size(-1) - 1)], dim=-1)
+        if x.dim() == 2
+        else x
+    )
+    y = LTIMatrixRecurrence.apply(A, zi, x)
+    if out_idx is not None and y.dim() == 3:
+        y = y[:, :, out_idx]
+    return y
 
 
 def state_space_recursion(
@@ -280,8 +375,12 @@ def state_space(
     else:
         Bx = x
 
+    recur_runner = (
+        _ext_ss_recur if extension_backend_indicator(x, M) else state_space_recursion
+    )
+
     if return_zf or out_idx is None:
-        h = state_space_recursion(A, zi, Bx, unroll_factor=unroll_factor, out_idx=None)
+        h = recur_runner(A, zi, Bx, unroll_factor=unroll_factor, out_idx=None)
         zf = h[:, -1, :] if return_zf else None
         h = (
             torch.cat([zi.unsqueeze(1), h[:, :-1]], dim=1)
@@ -290,9 +389,7 @@ def state_space(
         )
     else:
         zf = None
-        h = state_space_recursion(
-            A, zi, Bx, unroll_factor=unroll_factor, out_idx=out_idx
-        )
+        h = recur_runner(A, zi, Bx, unroll_factor=unroll_factor, out_idx=out_idx)
         h = torch.cat([zi[:, None, out_idx], h[:, :-1]], dim=1)
 
     y = _ssm_C_D(h, x, C, D, batch_size, M)
