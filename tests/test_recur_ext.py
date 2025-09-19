@@ -71,7 +71,7 @@ def test_lti_recurN_equiv(device: str, batch: bool, order: int):
 @pytest.mark.parametrize(
     "device",
     [
-        # "cpu",
+        "cpu",
         pytest.param(
             "cuda",
             marks=pytest.mark.skipif(
