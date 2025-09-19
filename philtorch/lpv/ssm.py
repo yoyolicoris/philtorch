@@ -55,11 +55,15 @@ class MatrixRecurrence(Function):
         if ctx.needs_input_grad[0]:
             valid_y = y[:, :-1]
             padded_y = torch.cat([zi.unsqueeze(1), valid_y], dim=1)
-            grad_A = padded_y.conj_physical().unsqueeze(-2) * flipped_grad_x.flip(
-                1
-            ).unsqueeze(-1)
+
             if A.dim() == 3:
-                grad_A = grad_A.sum(0)
+                grad_A = flipped_grad_x.flip(1).permute(
+                    1, 2, 0
+                ) @ padded_y.conj_physical().transpose(0, 1)
+            else:
+                grad_A = padded_y.conj_physical().unsqueeze(-2) * flipped_grad_x.flip(
+                    1
+                ).unsqueeze(-1)
 
         return grad_A, grad_zi, grad_x
 
