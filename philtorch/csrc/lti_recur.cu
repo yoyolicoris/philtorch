@@ -85,9 +85,9 @@ void lti_batch_linear_recurrence(const scalar_t *decays,
 }
 
 template <typename scalar_t>
-void lt_shared_linear_recurrence(const scalar_t decay,
-                                 const scalar_t *impulses,
-                                 scalar_t *out, int n_steps, int n_batches)
+void lti_shared_linear_recurrence(const scalar_t decay,
+                                  const scalar_t *impulses,
+                                  scalar_t *out, int n_steps, int n_batches)
 {
     auto total_steps = n_steps * n_batches;
     thrust::counting_iterator<int> it(0);
@@ -121,7 +121,7 @@ at::Tensor lti_recur_cuda_impl(const at::Tensor &a,
 
     const at::cuda::OptionalCUDAGuard device_guard(device_of(x));
 
-    if (a.numel() == 1)
+    if (a.dim() == 1 && a.numel() == n_batches)
     {
 
         AT_DISPATCH_FLOATING_AND_COMPLEX_TYPES(
@@ -135,8 +135,8 @@ at::Tensor lti_recur_cuda_impl(const at::Tensor &a,
     else
     {
         AT_DISPATCH_FLOATING_AND_COMPLEX_TYPES(
-            x.scalar_type(), "lt_shared_linear_recurrence", [&]
-            { lt_shared_linear_recurrence<scalar_t>(
+            x.scalar_type(), "lti_shared_linear_recurrence", [&]
+            { lti_shared_linear_recurrence<scalar_t>(
                   a_contiguous.item<scalar_t>(),
                   x_contiguous.const_data_ptr<scalar_t>(),
                   output.mutable_data_ptr<scalar_t>(),
