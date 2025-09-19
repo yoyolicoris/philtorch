@@ -2,10 +2,85 @@ import torch
 import torch.nn.functional as F
 from typing import Optional, Union, Tuple
 from torch import Tensor
+from torch.autograd import Function
+from typing import Any, List, Optional, Tuple, Union
 from torchlpc import sample_wise_lpc
 
 from ..mat import matrix_power_accumulate, find_eigenvectors
 from .recur import linear_recurrence
+from .. import EXTENSION_LOADED
+
+
+def extension_backend_indicator(x: Tensor, M: int) -> bool:
+    """
+    Check if the extension backend should be used based on the input tensor and its last dimension.
+    """
+    return EXTENSION_LOADED and (x.is_cpu or (M <= 2))
+
+
+class LTIMatrixRecurrence(Function):
+    @staticmethod
+    def forward(A: Tensor, zi: Tensor, x: Tensor) -> Tensor:
+        if x.size(-1) == 2:
+            return torch.ops.philtorch.lti_recur2(A, zi, x)
+        return torch.ops.philtorch.lti_recurN(A, zi, x)
+
+    @staticmethod
+    def setup_context(ctx: Any, inputs: List[Any], output: Any) -> Any:
+        A, zi, _ = inputs
+        y = output
+        ctx.save_for_backward(A, zi, y)
+        ctx.save_for_forward(A, zi, y)
+
+    @staticmethod
+    def backward(
+        ctx: Any, grad_y: torch.Tensor
+    ) -> Tuple[Optional[torch.Tensor], Optional[torch.Tensor], Optional[torch.Tensor]]:
+        A, zi, y = ctx.saved_tensors
+        grad_x = grad_A = grad_zi = None
+
+        AmT = A.mT.conj_physical()
+
+        flipped_grad_x = LTIMatrixRecurrence.apply(
+            AmT, torch.zeros_like(zi), grad_y.flip(1)
+        )
+
+        if ctx.needs_input_grad[1]:
+            grad_zi = (AmT @ flipped_grad_x[:, -1, :, None]).squeeze(-1)
+
+        if ctx.needs_input_grad[2]:
+            grad_x = flipped_grad_x.flip(1)
+
+        if ctx.needs_input_grad[0]:
+            valid_y = y[:, :-1]
+            padded_y = torch.cat([zi.unsqueeze(1), valid_y], dim=1)
+            if A.dim() == 2:
+                grad_A = flipped_grad_x.flip(1).flatten(
+                    0, 1
+                ).T @ padded_y.conj_physical().flatten(0, 1)
+            else:
+                grad_A = flipped_grad_x.flip(1).mT @ padded_y.conj_physical()
+
+        return grad_A, grad_zi, grad_x
+
+    @staticmethod
+    def jvp(
+        ctx: Any, grad_A: torch.Tensor, grad_zi: torch.Tensor, grad_x: torch.Tensor
+    ) -> torch.Tensor:
+        A, zi, y = ctx.saved_tensors
+
+        fwd_zi = grad_zi if grad_zi is not None else torch.zeros_like(zi)
+        fwd_x = grad_x if grad_x is not None else torch.zeros_like(y)
+
+        if grad_A is not None:
+            padded_y = torch.cat([zi.unsqueeze(1), y[:, :-1]], dim=1)
+            fwd_A = (
+                (grad_A if grad_A.dim() == 2 else grad_A.unsqueeze(-3))
+                @ padded_y.unsqueeze(-1)
+            ).squeeze(-1)
+            fwd_x = fwd_x + fwd_A
+
+        return LTIMatrixRecurrence.apply(A, fwd_zi, fwd_x)
 
 
 def _recursion_loop(
