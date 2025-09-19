@@ -166,4 +166,6 @@ TORCH_LIBRARY(philtorch, m)
 
     m.def("philtorch::lti_recur2(Tensor A, Tensor zi, Tensor x) -> Tensor");
     m.def("philtorch::lti_recurN(Tensor A, Tensor zi, Tensor x) -> Tensor");
+
+    m.def("philtorch::lti_recur(Tensor A, Tensor zi, Tensor x) -> Tensor");
 }
