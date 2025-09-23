@@ -25,7 +25,7 @@ def extension_backend_indicator(x: Tensor, M: int) -> bool:
 
 
 class LTIMatrixRecurrence(Function):
-    """Autograd Function wrapping optimized LTI matrix recurrence ops.
+    """Autograd Function wrapping optimised LTI matrix recurrence ops.
 
     Dispatches to compiled ops for common small-M recurrences and implements
     backward/JVP rules to support autograd and forward-mode.
