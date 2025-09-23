@@ -146,10 +146,10 @@ def lfilter(
 ) -> Union[Tensor, Tuple[Tensor, Tensor]]:
     """Apply a batch of parameter-varying linear filters to input signal.
     Args:
-        b (Tensor): Coefficients of the FIR filters, shape (B, N, M_b) or (N, M_b).
+        b (Tensor): Coefficients of the FIR filters, shape (B, N, M_b + 1) or (N, M_b + 1).
         a (Tensor): Coefficients of the all-pole filters, shape (B, N, M_a) or (N, M_a).
         x (Tensor): Input signal, shape (B, N) or (N).
-        zi (Tensor, optional): Initial conditions for the filter, shape (B, max(M_a, M_b - 1)) or (max(M_a, M_b - 1)).
+        zi (Tensor, optional): Initial conditions for the filter, shape (B, max(M_a, M_b)) or (max(M_a, M_b)).
         form (str): The filter form to use. Options are 'df2', 'tdf2', 'df1', 'tdf1'.
         backend (str): The backend to use for filtering. Options are 'ssm', 'torchlpc'.
         **kwargs: Additional keyword arguments for the backend-specific filtering function.
