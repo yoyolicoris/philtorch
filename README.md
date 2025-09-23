@@ -1,5 +1,6 @@
 # PhilTorch
 [![PyPI version](https://badge.fury.io/py/philtorch.svg)](https://badge.fury.io/py/philtorch)
+[![codecov](https://codecov.io/gh/yoyolicoris/philtorch/branch/dev/graph/badge.svg?token=288BR3PYIX)](https://codecov.io/gh/yoyolicoris/philtorch)
 
 A PyTorch package for fast automatic differentiation of discrete time linear filters.
 
