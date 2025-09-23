@@ -376,7 +376,7 @@ def state_space(
 
     Evaluates the standard state-space equations:
 
-        h_t = A @ h_{t-1} + B x_t
+        h_{t+1} = A @ h_t + B x_t
         y_t = C h_t + D x_t
 
     The function accepts broadcastable shapes for B, C, and D. If ``zi`` is
