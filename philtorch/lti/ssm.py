@@ -5,7 +5,7 @@ from torch.autograd import Function
 from typing import Any, List, Optional, Tuple
 
 from ..mat import matrix_power_accumulate, find_eigenvectors
-from .recur import linear_recurrence
+from .recur import linear_recurrence, LTIRecurrence
 from .. import EXTENSION_LOADED
 
 
@@ -121,12 +121,19 @@ def _ext_ss_recur(
         EXTENSION_LOADED
     ), "Extension not loaded. Please ensure philtorch is built with extensions."
 
-    x = (
-        torch.cat([x.unsqueeze(-1), x.new_zeros(*x.shape, A.size(-1) - 1)], dim=-1)
-        if x.dim() == 2
-        else x
-    )
-    y = LTIMatrixRecurrence.apply(A, zi, x)
+    if x.dim() == 2 and A.size(-1) == 1:
+        y = LTIRecurrence.apply(A[..., 0, 0], zi.squeeze(-1), x).unsqueeze(-1)
+    elif A.size(-1) == 1:
+        y = LTIRecurrence.apply(A[..., 0, 0], zi.squeeze(-1), x.squeeze(-1)).unsqueeze(
+            -1
+        )
+    else:
+        x = (
+            torch.cat([x.unsqueeze(-1), x.new_zeros(*x.shape, A.size(-1) - 1)], dim=-1)
+            if x.dim() == 2
+            else x
+        )
+        y = LTIMatrixRecurrence.apply(A, zi, x)
     if out_idx is not None and y.dim() == 3:
         y = y[:, :, out_idx]
     return y
