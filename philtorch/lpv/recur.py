@@ -20,6 +20,22 @@ def _scalar_recursion_loop(
 def linear_recurrence(
     a: Tensor, init: Tensor, x: Tensor, *, unroll_factor: int = 1
 ) -> Tensor:
+    """A pure-Python implementation of a linear recurrence with time-varying
+    coefficients.
+
+    Implements elementwise recurrence h[t] = a[t] * h[t-1] + x[t] where `a`
+    is a time-varying coefficient sequence. The function supports block
+    unrolling to accelerate long recurrences.
+
+    Args:
+        a (Tensor): Coefficients with shape (N,) or (B, N).
+        init (Tensor): Initial state (scalar or vector matching batch dims).
+        x (Tensor): Input of shape (B, N).
+        unroll_factor (int): Unroll factor for blocked processing.
+
+    Returns:
+        Tensor: Output sequence of shape (B, N).
+    """
     assert x.dim() == 2, f"Input x must be 2D, got {x.shape}"
     assert a.dim() in (1, 2), f"State matrix a must be 1D or 2D, got {a.shape}"
     if a.dim() == 1 and a.size(0) != x.size(1):

@@ -5,6 +5,20 @@ from sympy.ntheory import factorint
 
 
 def find_eigenvectors(A: Tensor, eigenvalues: Tensor) -> Tensor:
+    """Construct normalised eigenvectors for a square matrix from its eigenvalues.
+
+    This solves (A - lambda I) v = 0 for each eigenvalue and returns normalised right-eigenvectors. The output is shaped so that columns correspond to eigenvectors.
+
+    Args:
+        A (Tensor): Square matrix of shape (..., N, N).
+        eigenvalues (Tensor): Eigenvalues of shape (..., N).
+
+    Returns:
+        Tensor: Eigenvectors with shape (..., N, N) where columns are eigenvectors.
+
+    Raises:
+        AssertionError: If inputs are not compatible.
+    """
     assert A.dim() >= 2, "Matrix A must be at least 2D."
     assert eigenvalues.dim() >= 1, "Eigenvalues must be at least 1D."
     assert A.size(-2) == A.size(-1), "Matrix A must be square."
@@ -26,14 +40,17 @@ def find_eigenvectors(A: Tensor, eigenvalues: Tensor) -> Tensor:
 
 
 def companion(a: Tensor) -> Tensor:
-    """
-    Convert all-pole coefficients to companion matrix.
+    """Create the companion matrix from all-pole coefficients.
+
+    The companion matrix is commonly used to convert polynomial coefficients
+    into a state-space representation. Given coefficient vector `a` of length
+    M, the returned matrix has shape (..., M, M).
 
     Args:
-        a (torch.Tensor): All-pole coefficients of shape (..., M).
+        a (Tensor): All-pole coefficients with shape (..., M).
 
     Returns:
-        torch.Tensor: Companion matrix of shape (..., M, M).
+        Tensor: Companion matrix of shape (..., M, M).
     """
     assert a.dim() >= 1, "All-pole coefficients must be at least 1D."
     M = a.size(-1)
@@ -46,14 +63,16 @@ def companion(a: Tensor) -> Tensor:
 
 
 def vandermonde(poles: Tensor) -> Tensor:
-    """
-    Create a Vandermonde matrix from poles.
+    """Return a Vandermonde matrix constructed from input poles.
+
+    For a poles vector p = [p0, p1, ..., p_{M-1}], the Vandermonde matrix
+    returned has columns corresponding to successive powers of the poles.
 
     Args:
-        poles (torch.Tensor): Poles of shape (..., M).
+        poles (Tensor): Poles of shape (..., M).
 
     Returns:
-        torch.Tensor: Vandermonde matrix of shape (..., M, M).
+        Tensor: Vandermonde matrix of shape (..., M, M).
     """
     if poles.size(-1) == 1:
         return torch.ones_like(poles).unsqueeze(-1)
@@ -61,12 +80,17 @@ def vandermonde(poles: Tensor) -> Tensor:
 
 
 def matrix_power_accumulate(A: Tensor, n: int) -> Tensor:
-    """Compute the matrix power of A raised to n, accumulating the result.
+    """Compute and return accumulated matrix powers [A, A^2, ..., A^n].
+
+    If n == 0 the identity is returned (with a singleton -3 dimension).
+    Negative `n` values compute powers of the matrix inverse.
+
     Args:
-        A (Tensor): The input matrix, shape (*, N, N) where * can be any number of batch dimensions.
-        n (int): The exponent to which the matrix A is raised. Could be negative, zero, or positive.
+        A (Tensor): Square matrix of shape (..., N, N).
+        n (int): Exponent (may be negative).
+
     Returns:
-        Tensor: The accumulated result after raising A to the power of n with shape (*, max(n, 1), N, N).
+        Tensor: Accumulated powers with shape (..., K, N, N) where K == max(n, 1).
     """
     assert A.dim() >= 2, "Input matrix A must have at least 2 dimensions."
     assert A.size(-2) == A.size(-1), "Input matrix A must be square."
@@ -107,6 +131,8 @@ def _mat_pwr_accum_runner(A: Tensor, factors: list[int]) -> Tensor:
 
 def matrices_cumdot(A: Tensor) -> Tensor:
     """Compute the cumulative dot product of matrices along the last third dimension.
+    Given a sequence of matrices [A_1, A_2, ..., A_M], this function returns
+    [A_1, A_1 @ A_2, A_1 @ A_2 @ A_3, ..., A_1 @ A_2 @ ... @ A_M].
     Args:
         A (Tensor): Input tensor of shape (..., M, N, N) where ... can be any number of batch dimensions.
     Returns:

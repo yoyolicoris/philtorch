@@ -10,13 +10,27 @@ from .. import EXTENSION_LOADED
 
 
 def extension_backend_indicator(x: Tensor, M: int) -> bool:
-    """
-    Check if the extension backend should be used based on the input tensor and its last dimension.
+    """Decide whether to prefer the compiled extension backend.
+
+    The indicator returns True when a compiled extension is available.
+
+    Args:
+        x (Tensor): Input tensor (used to inspect device/shape).
+        M (int): State dimension.
+
+    Returns:
+        bool: True when the extension backend can be used.
     """
     return EXTENSION_LOADED and (M == 2 or (x.is_cpu and M >= 2))
 
 
 class LTIMatrixRecurrence(Function):
+    """Autograd Function wrapping optimised LTI matrix recurrence ops.
+
+    Dispatches to compiled ops for common small-M recurrences and implements
+    backward/JVP rules to support autograd and forward-mode.
+    """
+
     @staticmethod
     def forward(A: Tensor, zi: Tensor, x: Tensor) -> Tensor:
         if x.size(-1) == 2:
@@ -87,6 +101,21 @@ def _recursion_loop(
     x: Tensor,
     out_idx: Optional[int] = None,
 ) -> Tensor:
+    """Pure-Python recurrence loop for LTI systems.
+
+    Runs h_t = A @ h_{t-1} + x_t for time-invariant or batched A. Supports
+    returning a single output index via ``out_idx``.
+
+    Args:
+        A (Tensor): State matrix of shape (M, M) or (B, M, M).
+        zi (Tensor): Initial state of shape (B, M).
+        x (Tensor): Input sequence of shape (B, T, M) or (B, T).
+        out_idx (int, optional): If provided, return only this state index
+            per timestep.
+
+    Returns:
+        Tensor: State sequence (B, T, M) or (B, T) when ``out_idx`` is set.
+    """
     results = []
     AT = A.mT
     if x.dim() == 2:
@@ -113,9 +142,16 @@ def _recursion_loop(
 def _ext_ss_recur(
     A: Tensor, zi: Tensor, x: Tensor, *, out_idx: Optional[int] = None, **_
 ) -> Tensor:
-    """
-    Extension function for state space recursion.
-    This is a placeholder for the actual extension implementation.
+    """Call the compiled extension for LTI recurrences.
+
+    Args:
+        A (Tensor): State matrix or batch of matrices.
+        zi (Tensor): Initial states.
+        x (Tensor): Input sequence.
+        out_idx (int, optional): Optional index of the state to return.
+
+    Returns:
+        Tensor: Output state sequence (B, T, M) or (B, T) if ``out_idx`` used.
     """
     assert (
         EXTENSION_LOADED
@@ -147,6 +183,22 @@ def state_space_recursion(
     unroll_factor: int = 1,
     out_idx: Optional[int] = None,
 ) -> Tensor:
+    """Compute internal state evolution for an LTI model.
+
+    This is a pure Python-based implementation.
+    Supports block unrolling to accelerate long recurrences. Input A may be
+    batched depending on its dimensionality.
+
+    Args:
+        A (Tensor): State matrices with shape (M, M) or (B, M, M) when batched.
+        zi (Tensor): Initial states with shape (B, M).
+        x (Tensor): Input sequence with shape (B, T, ...) or (B, T).
+        unroll_factor (int): Block size for recursion acceleration (>=1).
+        out_idx (int, optional): If provided, return only this state index.
+
+    Returns:
+        Tensor: State sequence (B, T, M) or (B, T) when ``out_idx`` is used.
+    """
     assert x.dim() in (
         2,
         3,
@@ -320,6 +372,31 @@ def state_space(
     out_idx: Optional[int] = None,
     # **kwargs,
 ):
+    """Compute outputs from a discrete LTI state-space model.
+
+    Evaluates the standard state-space equations:
+
+        h_{t+1} = A @ h_t + B x_t
+        y_t = C h_t + D x_t
+
+    The function accepts broadcastable shapes for B, C, and D. If ``zi`` is
+    provided the function also returns the final state ``zf`` as a second
+    return value: `(y, zf)`.
+
+    Args:
+        A (Tensor): State matrix with shape (M, M) or (B, M, M) for batch.
+        x (Tensor): Input sequence with shape (B, N, ...) or (B, N).
+        B (Tensor, optional): Input matrix (broadcastable).
+        C (Tensor, optional): Output matrix (broadcastable).
+        D (Tensor, optional): Direct feedthrough matrix (broadcastable).
+        zi (Tensor, optional): Initial state (B, M) or (M,) (broadcastable).
+        unroll_factor (int, optional): Block unroll factor to accelerate
+            long recurrences if the pure-Python backend is used.
+        out_idx (int, optional): If provided, return only this state index per timestep.
+
+    Returns:
+        Tensor or 2-tuple with the second Tenosr being the final state `zf` if `zi` is provided.
+    """
     assert x.dim() in (
         2,
         3,
@@ -407,6 +484,21 @@ def state_space(
 
 
 def _ssm_C_D(h, x, C, D, batch_size, M):
+    """Apply output matrix C and feedthrough D to state sequence h.
+
+    Handles many broadcastable shapes for C and D to compute y = C h + D x.
+
+    Args:
+        h (Tensor): State sequence (B, N, M).
+        x (Tensor): Input sequence (B, N, ...) or (B, N).
+        C (Tensor, optional): Output matrix or broadcastable variants.
+        D (Tensor, optional): Direct feedthrough matrix or broadcastable variants.
+        batch_size (int): Batch size B.
+        M (int): State dimension.
+
+    Returns:
+        Tensor: Output sequence y with appropriate broadcasted shape.
+    """
     if x.dim() == 2:
         features = -1
     else:
@@ -483,6 +575,32 @@ def diag_state_space(
     out_idx: Optional[int] = None,
     unroll_factor: Optional[int] = None,
 ):
+    """Compute outputs from a diagonalised (eigen) state-space model.
+
+    Evaluates the state-space equations using the diagonalisation:
+
+        A = V diag(L) V^{-1}
+
+    Accepts either eigenvalues `L` (and optionally `V`/`Vinv`) or a full matrix `A`.
+    Computes the state evolution in the diagonal basis for efficiency.
+
+    Args:
+        x (Tensor): Input sequence with shape (B, N, ...) or (B, N).
+        L (Tensor, optional): Eigenvalues (vector or batch of vectors).
+        V (Tensor, optional): Eigenvector matrix or batch thereof.
+        Vinv (Tensor, optional): Inverse eigenvector matrix or batch thereof.
+        A (Tensor, optional): Full state matrix if eigen-decomposition is not provided.
+        B (Tensor, optional): Input matrix (broadcastable).
+        C (Tensor, optional): Output matrix (broadcastable).
+        D (Tensor, optional): Direct feedthrough matrix (broadcastable).
+        zi (Tensor, optional): Initial state (B, M) or (M,) (broadcastable).
+        out_idx (int, optional): If provided, return only this state index per timestep.
+        unroll_factor (int, optional): Block unroll factor to accelerate
+            long recurrences if the pure-Python backend is used.
+
+    Returns:
+        Tensor or 2-tuple with the second Tensor being the final state `zf` if `zi` is provided.
+    """
     assert x.dim() in (
         2,
         3,
