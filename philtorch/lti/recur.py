@@ -25,10 +25,16 @@ class LTIRecurrence(Function):
         grad_a = grad_x = grad_init = None
 
         bp_init = grad_out[:, -1]
-        flipped_grad_x = LTIRecurrence.apply(
-            a.conj_physical(),
-            bp_init,
-            grad_out[:, :-1].flip(1),
+        flipped_grad_x = torch.cat(
+            [
+                bp_init.unsqueeze(1),
+                LTIRecurrence.apply(
+                    a.conj_physical(),
+                    bp_init,
+                    grad_out[:, :-1].flip(1),
+                ),
+            ],
+            dim=1,
         )
 
         if ctx.needs_input_grad[1]:
