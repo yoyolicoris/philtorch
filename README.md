@@ -97,17 +97,21 @@ If `lfilter` is imported from `philtorch.lpv`, it can also handle parameter-vary
 The function `philtorch.lti.state_space` compute the following recursion:
 
 ```math
-\mathbf{h}_{n+1} = \mathbf{A} \mathbf{h}_n + \mathbf{B} \mathbf{x}_n \\
-\mathbf{y}_n = \mathbf{C} \mathbf{h}_n + \mathbf{D} \mathbf{x}_n
+\begin{aligned}
+\mathbf{h}_{n+1} &= \mathbf{A} \mathbf{h}_n + \mathbf{B} \mathbf{x}_n \\
+\mathbf{y}_n &= \mathbf{C} \mathbf{h}_n + \mathbf{D} \mathbf{x}_n
+\end{aligned}
 ```
 
 We can use it to compute the Fibonacci numbers by setting:
 
 ```math
+\begin{aligned}
 \mathbf{A} = \begin{bmatrix} 1 & 1 \\ 1 & 0 \end{bmatrix}, \quad
 \mathbf{C} = \begin{bmatrix} 1 & 0 \end{bmatrix}, \quad
 \mathbf{B} = \mathbf{D} = 0, \\
 \mathbf{h}_0 = \begin{bmatrix} 1 \\ 0 \end{bmatrix}
+\end{aligned}
 ```
 
 ```python
