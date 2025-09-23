@@ -1,7 +1,70 @@
 import torch
 from torch import Tensor
+from torch.autograd import Function
 from torch.nn import functional as F
-from typing import Optional
+from typing import Optional, Tuple, Any, List
+
+
+class Recurrence(Function):
+    # mostly copied from torchlpc
+    @staticmethod
+    def forward(a: Tensor, init: Tensor, x: Tensor) -> Tensor:
+        return torch.ops.philtorch.lti_recur(a, init, x)
+
+    @staticmethod
+    def setup_context(ctx: Any, inputs: List[Any], output: Any) -> Any:
+        a, init, _ = inputs
+        ctx.save_for_backward(a, init, output)
+        ctx.save_for_forward(a, init, output)
+
+    @staticmethod
+    def backward(
+        ctx: Any, grad_out: Tensor
+    ) -> Tuple[Optional[Tensor], Optional[Tensor], Optional[Tensor]]:
+        a, init, out = ctx.saved_tensors
+        grad_a = grad_x = grad_init = None
+
+        bp_init = grad_out[:, -1]
+        flipped_grad_x = Recurrence.apply(
+            a.conj_physical(),
+            bp_init,
+            grad_out[:, :-1].flip(1),
+        )
+
+        if ctx.needs_input_grad[1]:
+            grad_init = flipped_grad_x[:, -1] * a.conj_physical()
+
+        if ctx.needs_input_grad[2]:
+            grad_x = flipped_grad_x.flip(1)
+
+        if ctx.needs_input_grad[0]:
+            valid_out = out[:, :-1]
+            padded_out = torch.cat([init.unsqueeze(1), valid_out], dim=1)
+            if a.dim() == 1:
+                grad_a = torch.linalg.vecdot(padded_out, flipped_grad_x.flip(1))
+            else:
+                grad_a = padded_out.flatten().conj() @ flipped_grad_x.flip(1).flatten()
+
+        return grad_a, grad_init, grad_x
+
+    @staticmethod
+    def jvp(
+        ctx: Any,
+        grad_a: Optional[Tensor],
+        grad_init: Optional[Tensor],
+        grad_x: Optional[Tensor],
+    ) -> Tensor:
+        a, init, out = ctx.saved_tensors
+
+        fwd_init = grad_init if grad_init is not None else torch.zeros_like(init)
+        fwd_x = grad_x if grad_x is not None else torch.zeros_like(out)
+
+        if grad_a is not None:
+            concat_out = torch.cat([init.unsqueeze(1), out[:, :-1]], dim=1)
+            fwd_a = concat_out * grad_a.view(-1, 1)
+            fwd_x = fwd_x + fwd_a
+
+        return Recurrence.apply(a, fwd_init, fwd_x)
 
 
 def _scalar_recursion_loop(
