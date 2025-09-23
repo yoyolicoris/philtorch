@@ -4,9 +4,20 @@ from typing import Tuple
 
 
 def polydiv(u: Tensor, v: Tensor) -> Tuple[Tensor, Tensor]:
-    """
-    Returns the quotient and remainder of polynomial division.
+    """Divide polynomials and return quotient and remainder.
 
+    Performs polynomial long division of `u` by `v` along the last dimension.
+
+    Args:
+        u (Tensor): Dividend coefficients (..., M+1) where highest-degree
+            coefficient is at index 0.
+        v (Tensor): Divisor coefficients (..., N+1).
+
+    Returns:
+        A 2-tuple where the first element is the quotient coefficients
+        (..., M-N+1) and the second element is the remainder coefficients
+        (..., N) if M >= N, otherwise the quotient is an empty tensor and the
+        remainder is `u`.
     """
     assert u.ndim >= 1 and v.ndim >= 1
 
