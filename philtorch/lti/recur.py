@@ -6,7 +6,12 @@ from typing import Optional, Tuple, Any, List
 
 
 class LTIRecurrence(Function):
-    # mostly copied from torchlpc
+    """Autograd Function for scalar LTI recurrences backed by compiled ops.
+
+    Wraps optimised compiled recurrence kernels and provides backward and
+    JVP implementations to support autograd and forward-mode differentiation.
+    """
+
     @staticmethod
     def forward(a: Tensor, init: Tensor, x: Tensor) -> Tensor:
         return torch.ops.philtorch.lti_recur(a, init, x)
@@ -89,6 +94,21 @@ def _scalar_recursion_loop(
 def linear_recurrence(
     a: Tensor, init: Tensor, x: Tensor, *, unroll_factor: int = 1
 ) -> Tensor:
+    """Compute a batched scalar linear recurrence efficiently in Python.
+
+    Implements h[t] = a * h[t-1] + x[t] for scalar or per-batch coefficients
+    `a`. Supports optional loop unrolling to reduce Python overhead for long
+    sequences.
+
+    Args:
+        a (Tensor): Scalar or 1-D tensor of coefficients (shape () or (B,)).
+        init (Tensor): Initial state (shape () or (B,)).
+        x (Tensor): Input sequence with shape (B, N).
+        unroll_factor (int): Unroll factor for blocked processing.
+
+    Returns:
+        Tensor: Output sequence of shape (B, N).
+    """
     assert x.dim() == 2, f"Input x must be 2D, got {x.shape}"
     assert a.dim() in (0, 1), f"State matrix a must be 1D or 0D, got {a.shape}"
     if a.dim() == 1 and a.size(0) > 1 and a.size(0) != x.size(0):
