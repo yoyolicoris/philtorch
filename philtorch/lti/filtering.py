@@ -456,27 +456,29 @@ def filtfilt(
         edge = padlen
 
     assert (
-        x.size(1) > edge
-    ), f"Input signal length {x.size(1)} must be greater than pad length {edge}."
+        x.size(-1) > edge
+    ), f"Input signal length {x.size(-1)} must be greater than pad length {edge}."
 
     if edge > 0 and padmode is not None:
         ext = F.pad(
-            x,
+            x.view(-1, x.size(-1)),
             (edge, edge),
             mode=padmode,
         )
+        if x.dim() == 1:
+            ext = ext.squeeze(0)
     else:
         ext = x
 
     zi = lfilter_zi(a, b, transpose=(form == "tdf2"))
-    x0 = ext[:, :1]
+    x0 = ext[..., :1]
 
     y, _ = lfilter(b, a, ext, zi=zi * x0, form=form, **kwargs)
-    y0 = y[:, -1:]
+    y0 = y[..., -1:]
 
-    y, _ = lfilter(b, a, y.flip(1), zi=zi * y0, form=form, **kwargs)
+    y, _ = lfilter(b, a, y.flip(-1), zi=zi * y0, form=form, **kwargs)
 
     if edge > 0:
-        y = y[:, edge:-edge]
+        y = y[..., edge:-edge]
 
-    return y.flip(1)
+    return y.flip(-1)
