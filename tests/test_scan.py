@@ -13,9 +13,9 @@ def test_linear_recurrence_equivalence():
     N = 101
     unroll_factor = 5
 
-    a = torch.rand(batch_size) * 2 - 1
-    x = torch.randn(batch_size, N)
-    init = torch.randn(batch_size)
+    a = torch.rand(batch_size).double() * 2 - 1
+    x = torch.randn(batch_size, N).double()
+    init = torch.randn(batch_size).double()
 
     # LPV linear_recurrence
     lpv_output = lpv_linear_recurrence(
@@ -25,7 +25,7 @@ def test_linear_recurrence_equivalence():
     lti_output = lti_linear_recurrence(a, init, x, unroll_factor=unroll_factor)
 
     # Compare outputs
-    assert torch.allclose(lpv_output, lti_output, atol=1e-6), torch.max(
+    assert torch.allclose(lpv_output, lti_output), torch.max(
         torch.abs(lpv_output - lti_output)
     )
 

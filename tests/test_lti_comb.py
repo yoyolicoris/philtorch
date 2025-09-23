@@ -20,11 +20,11 @@ def test_comb_filter(delay, batch_a, zi_shape):
 
     # Generate random coefficients and signal
     if batch_a:
-        a = torch.rand(B) * 2 - 1
+        a = torch.rand(B).double() * 2 - 1
     else:
-        a = torch.rand(1) * 2 - 1
-    x = torch.randn(B, T)
-    zi = torch.randn(*zi_shape) if zi_shape else None
+        a = torch.rand(1).double() * 2 - 1
+    x = torch.randn(B, T).double()
+    zi = torch.randn(*zi_shape).double() if zi_shape else None
 
     if not batch_a:
         padded_a = torch.cat([torch.zeros(delay - 1), a])
@@ -33,14 +33,12 @@ def test_comb_filter(delay, batch_a, zi_shape):
         padded_a = torch.cat([torch.zeros((B, delay - 1)), a.unsqueeze(1)], dim=-1)
 
     comb_y = comb_filter(a, delay, x, zi=zi)
-    lfilter_y = lfilter(torch.ones(B, 1), padded_a, x, zi=zi, form="df2")
+    lfilter_y = lfilter(torch.ones(B, 1).double(), padded_a, x, zi=zi, form="df2")
     if zi is not None:
         lfilter_y, lfilter_zf = lfilter_y
         comb_y, comb_zf = comb_y
-        assert torch.allclose(comb_zf, lfilter_zf, atol=1e-6), torch.max(
+        assert torch.allclose(comb_zf, lfilter_zf), torch.max(
             torch.abs(comb_zf - lfilter_zf)
         )
 
-    assert torch.allclose(comb_y, lfilter_y, atol=1e-6), torch.max(
-        torch.abs(comb_y - lfilter_y)
-    )
+    assert torch.allclose(comb_y, lfilter_y), torch.max(torch.abs(comb_y - lfilter_y))

@@ -32,11 +32,11 @@ def test_ssm_equivalence(device):
     order = 2
 
     _, a = _generate_time_varying_coeffs(1, batch_size, order, order)
-    a = a.squeeze(0)  # Remove batch dimension for scalar case
-    x = _generate_test_signal(batch_size, N, "white_noise").to(device)
+    a = a.squeeze(0).double()  # Remove batch dimension for scalar case
+    x = _generate_test_signal(batch_size, N, "white_noise").to(device).double()
 
     A = companion(a).to(device)
-    zi = torch.randn(batch_size, order).to(device)
+    zi = torch.randn(batch_size, order).to(device).double()
 
     # LPV state_space
     lpv_output = lpv_state_space(
@@ -49,7 +49,7 @@ def test_ssm_equivalence(device):
     # LTI state_space
     lti_output = lti_state_space(A, zi, x, unroll_factor=unroll_factor)
     # Compare outputs
-    assert torch.allclose(lpv_output, lti_output, atol=1e-6), torch.max(
+    assert torch.allclose(lpv_output, lti_output), torch.max(
         torch.abs(lpv_output - lti_output)
     )
 
@@ -74,15 +74,15 @@ def test_recurN_extension(device, order):
 
     _, a = _generate_time_varying_coeffs(batch_size, N, order, order)
     # x = _generate_test_signal(batch_size, N, "white_noise").cuda()
-    x = torch.randn(batch_size, N, order).to(device)  # Simulated input
-    A = companion(a).to(device)
-    zi = torch.randn(batch_size, order).to(device)
+    x = torch.randn(batch_size, N, order).to(device).double()  # Simulated input
+    A = companion(a).to(device).double()
+    zi = torch.randn(batch_size, order).to(device).double()
 
     ext_output = torch.ops.philtorch.recurN(A, zi, x)
     torch_output = lpv_state_space(A, zi, x, unroll_factor=1)
 
     # Compare outputs
-    assert torch.allclose(ext_output, torch_output, atol=1e-6), torch.max(
+    assert torch.allclose(ext_output, torch_output), torch.max(
         torch.abs(ext_output - torch_output)
     )
 
@@ -107,15 +107,15 @@ def test_recur2_extension(device):
 
     _, a = _generate_time_varying_coeffs(batch_size, N, order, order)
     # x = _generate_test_signal(batch_size, N, "white_noise").cuda()
-    x = torch.randn(batch_size, N, 2).to(device)  # Simulated input
-    A = companion(a).to(device)
-    zi = torch.randn(batch_size, order).to(device)
+    x = torch.randn(batch_size, N, 2).to(device).double()  # Simulated input
+    A = companion(a).to(device).double()
+    zi = torch.randn(batch_size, order).to(device).double()
 
     ext_output = torch.ops.philtorch.recur2(A, zi, x)
     torch_output = lpv_state_space(A, zi, x, unroll_factor=1)
 
     # Compare outputs
-    assert torch.allclose(ext_output, torch_output, atol=1e-6), torch.max(
+    assert torch.allclose(ext_output, torch_output), torch.max(
         torch.abs(ext_output - torch_output)
     )
 
@@ -140,9 +140,9 @@ def test_ssm_unrolling(device):
     order = 2
 
     _, a = _generate_time_varying_coeffs(batch_size, N, order, order)
-    x = _generate_test_signal(batch_size, N, "white_noise").to(device)
-    A = companion(a).to(device)
-    zi = torch.randn(batch_size, order).to(device)
+    x = _generate_test_signal(batch_size, N, "white_noise").to(device).double()
+    A = companion(a).to(device).double()
+    zi = torch.randn(batch_size, order).to(device).double()
 
     output_naive = lpv_state_space(
         A, zi, x, unroll_factor=1
@@ -151,7 +151,7 @@ def test_ssm_unrolling(device):
         A, zi, x, unroll_factor=unroll_factor
     )  # Unrolled implementation
     # Check output shape
-    assert torch.allclose(output_naive, output_unrolled, atol=1e-6), torch.max(
+    assert torch.allclose(output_naive, output_unrolled), torch.max(
         torch.abs(output_naive - output_unrolled)
     )
 

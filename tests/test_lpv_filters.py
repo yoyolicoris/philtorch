@@ -13,10 +13,10 @@ from .test_lpv_lfilter import _generate_random_signal
 @pytest.mark.parametrize("order", [1, 2, 4])
 def test_allpole_inverse(B: int, T: int, order: int):
     """Test all-pole filter inverse operation"""
-    a = torch.randn(B, T, order)
+    a = torch.randn(B, T, order).double()
     a = a / a.abs().sum(dim=-1, keepdim=True).clamp(min=1e-6)  # Ensure stability
-    x = torch.randn(B, T)
-    zi = torch.randn(B, order)
+    x = torch.randn(B, T).double()
+    zi = torch.randn(B, order).double()
 
     # Apply all-pole filter
     y, _ = lpv_allpole(a, x, zi=zi)
@@ -26,9 +26,7 @@ def test_allpole_inverse(B: int, T: int, order: int):
     x_reconstructed, _ = lpv_fir(b, y, zi=zi)
 
     assert x.shape == x_reconstructed.shape, "Reconstructed signal shape mismatch"
-    assert torch.allclose(
-        x, x_reconstructed, atol=1e-6
-    ), "Reconstructed signal mismatch"
+    assert torch.allclose(x, x_reconstructed), "Reconstructed signal mismatch"
 
 
 @pytest.mark.parametrize("B", [1, 8])
@@ -36,12 +34,12 @@ def test_allpole_inverse(B: int, T: int, order: int):
 @pytest.mark.parametrize("order", [1, 2, 4])
 def test_fir_inverse(B: int, T: int, order: int):
     """Test FIR filter inverse operation"""
-    a = torch.randn(B, T, order)
+    a = torch.randn(B, T, order).double()
     a = a / a.abs().sum(dim=-1, keepdim=True).clamp(min=1e-6)
-    g0 = torch.randn(B, T, 1)
+    g0 = torch.randn(B, T, 1).double()
     b = torch.cat([g0, a * g0], dim=-1)
-    x = torch.randn(B, T)
-    zi = torch.zeros(B, order)
+    x = torch.randn(B, T).double()
+    zi = torch.zeros(B, order).double()
 
     # Apply FIR filter
     y, _ = lpv_fir(b, x, zi=zi)
@@ -49,9 +47,7 @@ def test_fir_inverse(B: int, T: int, order: int):
     # Inverse FIR filter
     x_reconstructed, _ = lpv_allpole(a, y / g0.squeeze(2), zi=zi)
     assert x.shape == x_reconstructed.shape, "Reconstructed signal shape mismatch"
-    assert torch.allclose(
-        x, x_reconstructed, atol=5e-6
-    ), "Reconstructed signal mismatch"
+    assert torch.allclose(x, x_reconstructed), "Reconstructed signal mismatch"
 
 
 def _generate_time_varying_coeffs(
@@ -139,9 +135,10 @@ def test_linearity_property():
     """Test linearity: filter(a*x1 + b*x2) = a*filter(x1) + b*filter(x2)"""
     B, T = 2, 50
     b, a = _generate_time_varying_coeffs(B, T, 2, 1)
+    b, a = b.double(), a.double()
 
-    x1 = _generate_test_signal(B, T, "white_noise")
-    x2 = _generate_test_signal(B, T, "white_noise")
+    x1 = _generate_test_signal(B, T, "white_noise").double()
+    x2 = _generate_test_signal(B, T, "white_noise").double()
 
     alpha, beta = 0.7, 1.3
     x_combined = alpha * x1 + beta * x2
@@ -161,7 +158,7 @@ def test_linearity_property():
     y_expected = alpha * y1 + beta * y2
 
     # Check linearity within reasonable tolerance
-    assert torch.allclose(y_combined, y_expected, atol=5e-6)
+    assert torch.allclose(y_combined, y_expected)
 
 
 def test_zero_input_zero_output():
@@ -399,14 +396,15 @@ def test_zi_continuation(filt, transpose: bool):
     """Test that final state can be used to continue filtering"""
     B, T = 2, 27
     b, a = _generate_time_varying_coeffs(B, T, 3, 3)
+    b, a = b.double(), a.double()
     if filt == lpv_fir:
         coef = b
     else:
         coef = a
-    x = _generate_test_signal(B, T, "white_noise")
+    x = _generate_test_signal(B, T, "white_noise").double()
 
     # First pass with initial conditions
-    zi = torch.randn(B, 3) * 0.1
+    zi = torch.randn(B, 3).double() * 0.1
     y1, zf1 = filt(coef, x, zi=zi, transpose=transpose)
 
     y2 = []
@@ -417,5 +415,5 @@ def test_zi_continuation(filt, transpose: bool):
     y2 = torch.cat(y2, dim=1)
 
     assert y1.shape == y2.shape, "Output shape mismatch between passes"
-    assert torch.allclose(y1, y2, atol=1e-6), "Output mismatch between passes"
-    assert torch.allclose(zf1, zf, atol=1e-6), "Final state mismatch between passes"
+    assert torch.allclose(y1, y2), "Output mismatch between passes"
+    assert torch.allclose(zf1, zf), "Final state mismatch between passes"
