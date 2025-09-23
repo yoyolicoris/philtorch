@@ -8,7 +8,8 @@ from .ssm import state_space, state_space_recursion, diag_state_space
 from ..mat import companion
 from ..utils import chain_functions
 from ..poly import polydiv
-from .recur import linear_recurrence
+from .recur import linear_recurrence, LTIRecurrence
+from .. import EXTENSION_LOADED
 
 
 def comb_filter(
@@ -20,7 +21,7 @@ def comb_filter(
         delay (int): Delay of the comb filter.
         x (Tensor): Input signal, shape (B, N).
         zi (Tensor, optional): Initial conditions for the filter, shape (delay,) or (B, delay).
-        **kwargs: Additional keyword arguments for the linear recurrence.
+        **kwargs: Additional keyword arguments for `linear_recurrence`.
     Returns:
         Tensor: Filtered output signal, shape (B, N).
     """
@@ -55,7 +56,11 @@ def comb_filter(
         zi = torch.zeros_like(a)
 
     y = (
-        linear_recurrence(-a, zi, folded_x.flatten(0, 1), **kwargs)
+        (
+            linear_recurrence(-a, zi, folded_x.flatten(0, 1), **kwargs)
+            if EXTENSION_LOADED
+            else LTIRecurrence.apply(-a, zi, folded_x.flatten(0, 1))
+        )
         .unflatten(0, (-1, delay))
         .mT.flatten(1, 2)
     )
@@ -104,6 +109,7 @@ def lfilter_zi(a: Tensor, b: Optional[Tensor] = None, transpose: bool = True) ->
     Args:
         b (Tensor): Coefficients of the FIR filter, shape (..., M+1).
         a (Tensor): Coefficients of the all-pole filter, shape (..., M).
+        transpose (bool): When set to `True`, the TDF-II form is used; otherwise it's DF-II. Default to `True`.
     Returns:
         Tensor: Initial conditions for the filter, shape (..., M).
     """
@@ -142,13 +148,21 @@ def fir(
     zi: Optional[Tensor] = None,
     transpose: bool = True,
 ) -> Union[Tensor, Tuple[Tensor, Tensor]]:
-    """Apply a batch of time-invariant FIR filters to input signal
+    """Apply a batch of time-invariant FIR filters.
+
+    This function supports both direct (convolution) and transposed forms via
+    the ``transpose`` flag.  When ``zi`` is provided the function will return
+    final states as a second output.
+
     Args:
-        b (Tensor): Coefficients of the FIR filters, shape (B, M+1).
-        x (Tensor): Input signal, shape (B, N).
-        zi (Tensor, optional): Initial conditions for the filter, shape (B, M).
+        b (Tensor): Filter coefficients of shape (B, M+1) where B is batch size.
+        x (Tensor): Input signal of shape (B, N).
+        zi (Tensor, optional): Initial conditions with shape (B, M).
+        transpose (bool): If True, use the transposed convolution implementation.
+
     Returns:
-        Filtered output signal, shape (B, N), and optionally the final state of the filter.
+        Filtered output of shape (B, N) and,
+        if ``zi`` was provided, a second tensor containing the final state.
     """
     assert b.dim() == 2, "Numerator coefficients b must be 2D."
     assert x.dim() == 2, "Input signal x must be 2D."
@@ -203,15 +217,26 @@ def lfilter(
     backend: str = "ssm",
     **kwargs,
 ) -> Union[Tensor, Tuple[Tensor, Tensor]]:
-    """Apply a batch of time-invariant linear filters to input signal.
+    """Apply a batch of time-invariant IIR filters.
+
+    This is a convenience wrapper that dispatches to different backends
+    (e.g. state-space) and supports several filter structures (direct/transpose
+    forms). If all inputs are 1-D and zi matches that shape, the leading batch
+    dimension is squeezed from the result.
+
     Args:
-        b (Tensor): Coefficients of the FIR filters, shape (B, M+1) or (M+1).
-        a (Tensor): Coefficients of the all-pole filters, shape (B, M) or (M).
-        x (Tensor): Input signal, shape (B, N) or (N).
-        zi (Tensor, optional): Initial conditions for the filter, shape (B, M) or (M).
-        form (str): The filter form to use. Options are 'df2', 'tdf2', 'df1', 'tdf1'.
+        b (Tensor): FIR coefficients with shape (B, M_b+1) or (M_b+1,).
+        a (Tensor): IIR denominator coefficients with shape (B, M_a) or (M_a,).
+        x (Tensor): Input signal with shape (B, N) or (N,).
+        zi (Tensor, optional): Initial conditions with shape (B, M_{zi}) or (M_{zi},).
+                            When `backend` = `ssm`, M_{zi} = `max(M_b, M_a)`.
+                            When `backend` = `diag_ssm`, M_{zi} = M_a.
+                            This parameter has no use when `form` is either `df1` or `tdf1`.
+        form (str): Filter form, one of {'df2','tdf2','df1','tdf1'}. Default is `tdf2`.
+        backend (str): Backend to execute the filter ('ssm', 'diag_ssm', ...). Default is `ssm`.
+
     Returns:
-        Filtered output signal with the same shape as x and optionally the final state of the filter.
+        Filtered output and optionally final state if `zi` is given and `form` is either `tdf2` or `df2`.
     """
 
     squeeze_first = (
@@ -396,19 +421,25 @@ def filtfilt(
     form: str = "tdf2",
     **kwargs,
 ) -> Union[Tensor, Tuple[Tensor, Tensor]]:
-    """Apply a batch of time-invariant linear filters to input signal in both forward and backward directions.
+    """Apply zero-phase filtering by processing the input signal in both forward and backward directions.
+
+    This function uses the `lfilter` function twice: first in the forward direction,
+    then in the reverse direction, to achieve zero-phase distortion. Padding is applied
+    to reduce edge effects.
+
     Args:
-        b (Tensor): Coefficients of the FIR filters, shape (B, M+1) or (M+1).
-        a (Tensor): Coefficients of the all-pole filters, shape (B, M) or (M).
-        x (Tensor): Input signal, shape (B, N) or (N).
-        padmode (str, optional): Padding mode to use. Default is 'replicate'.
-        padlen (int, optional): Length of padding to apply to the input signal. If None, it will be set to 3 times the number of taps.
-        method (str, optional): Method to use for filtering. Options are 'pad' or 'gust'. Default is 'pad'.
-        irlen (int, optional): Length of the impulse response. If provided, it will be used to determine the padding length.
-        form (str): The filter form to use. Options are 'df2', 'tdf2', 'df1', 'tdf1'.
-        **kwargs: Additional keyword arguments to pass to the filtering function.
+        b (Tensor): FIR coefficients with shape (B, M_b+1) or (M_b+1,).
+        a (Tensor): IIR denominator coefficients with shape (B, M_a) or (M_a,).
+        x (Tensor): Input signal with shape (B, N) or (N,).
+        padmode (str, optional): Padding mode for the input signal. Default is 'replicate'.
+        padlen (int, optional): Padding length. If None, set to 3 times the number of taps.
+        method (str, optional): Filtering method, one of {'pad', 'gust'}. Default is 'pad'.
+        irlen (int, optional): Impulse response length (unused). This parameter is copied from SciPy and will be implemented in the future.
+        form (str, optional): Filter form, one of {'df2', 'tdf2', 'df1', 'tdf1'}. Default is 'tdf2'.
+        **kwargs: Additional keyword arguments for `lfilter`.
+
     Returns:
-        Filtered output signal with the same shape as x and optionally the final state of the filter.
+        Tensor: Zero-phase filtered output with the same shape as x.
     """
     assert method in ("pad", "gust"), "Method must be either 'pad' or 'gust'."
 
