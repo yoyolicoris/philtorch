@@ -385,12 +385,13 @@ def state_space(
 
     Args:
         A (Tensor): State matrix with shape (M, M) or (B, M, M) for batch.
-        x (Tensor): Input sequence with shape (B, T, ...) or (B, T).
+        x (Tensor): Input sequence with shape (B, N, ...) or (B, N).
         B (Tensor, optional): Input matrix (broadcastable).
         C (Tensor, optional): Output matrix (broadcastable).
         D (Tensor, optional): Direct feedthrough matrix (broadcastable).
         zi (Tensor, optional): Initial state (B, M) or (M,) (broadcastable).
-        unroll_factor (int, optional): Block unroll factor to accelerate long recurrences.
+        unroll_factor (int, optional): Block unroll factor to accelerate
+            long recurrences if the pure-Python backend is used.
         out_idx (int, optional): If provided, return only this state index per timestep.
 
     Returns:
@@ -488,8 +489,8 @@ def _ssm_C_D(h, x, C, D, batch_size, M):
     Handles many broadcastable shapes for C and D to compute y = C h + D x.
 
     Args:
-        h (Tensor): State sequence (B, T, M) or (B, T).
-        x (Tensor): Input sequence (B, T, ...) or (B, T).
+        h (Tensor): State sequence (B, N, M).
+        x (Tensor): Input sequence (B, N, ...) or (B, N).
         C (Tensor, optional): Output matrix or broadcastable variants.
         D (Tensor, optional): Direct feedthrough matrix or broadcastable variants.
         batch_size (int): Batch size B.
@@ -584,7 +585,7 @@ def diag_state_space(
     Computes the state evolution in the diagonal basis for efficiency.
 
     Args:
-        x (Tensor): Input sequence with shape (B, T, ...) or (B, T).
+        x (Tensor): Input sequence with shape (B, N, ...) or (B, N).
         L (Tensor, optional): Eigenvalues (vector or batch of vectors).
         V (Tensor, optional): Eigenvector matrix or batch thereof.
         Vinv (Tensor, optional): Inverse eigenvector matrix or batch thereof.
@@ -594,7 +595,8 @@ def diag_state_space(
         D (Tensor, optional): Direct feedthrough matrix (broadcastable).
         zi (Tensor, optional): Initial state (B, M) or (M,) (broadcastable).
         out_idx (int, optional): If provided, return only this state index per timestep.
-        unroll_factor (int, optional): Block unroll factor to accelerate long recurrences.
+        unroll_factor (int, optional): Block unroll factor to accelerate
+            long recurrences if the pure-Python backend is used.
 
     Returns:
         Tensor or 2-tuple with the second Tensor being the final state `zf` if `zi` is provided.

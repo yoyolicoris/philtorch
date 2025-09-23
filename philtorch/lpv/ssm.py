@@ -330,7 +330,7 @@ def state_space(
 
     Args:
         A (Tensor): State matrices with shape (N, M, M) or (B, N, M, M).
-        x (Tensor): Input sequence with shape (B, N, F) or (B, N).
+        x (Tensor): Input sequence with shape (B, N, ...) or (B, N).
         B (Tensor, optional): Input matrices with broadcastable shape.
         C (Tensor, optional): Output matrices with broadcastable shape.
         D (Tensor, optional): Feedthrough matrices with broadcastable shape.
@@ -343,8 +343,7 @@ def state_space(
         out_idx (int, optional): If set and the returned y has a state
             dimension, selects the single output index to return.
     Returns:
-        Output sequence (B, N, F) or (B, N) if ``out_idx`` is set.
-        If ``zi`` is provided, also returns the final state (B, M).
+        Tensor or 2-tuple with the second Tenosr being the final state `zf` if `zi` is provided.
     """
     assert x.dim() in (
         2,
