@@ -22,6 +22,9 @@ pip install -i https://test.pypi.org/simple/ philtorch
 # or
 pip install git+https://github.com/yoyolicoris/philtorch.git
 ``` 
+> **_Note:_**
+> - The installation process compiles C++/CUDA extensions, so make sure you have a working C++ compiler and CUDA toolkit (if you want to use GPU acceleration) installed.
+> - We recommend using `--no-build-isolation` flag to avoid potential issues with building the package in an isolated environment, especially when installing with CUDA support.
 
 ## Module overview
 
