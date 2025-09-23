@@ -19,13 +19,20 @@ from .utils import diag_shift
 def fir(
     b: Tensor, x: Tensor, zi: Optional[Tensor] = None, transpose: bool = False
 ) -> Union[Tensor, Tuple[Tensor, Tensor]]:
-    """Apply a batch of parameter-varying FIR filters to input signal
+    """Apply a batch of parameter-varying FIR filters.
+
+    This supports time-varying (parameter-varying) FIR coefficients where the
+    coefficients can change at each time step. The tensors `b` and `x` must
+    share their leading batch/time dimensions.
+
     Args:
-        b (Tensor): Coefficients of the FIR filters, shape (B, T, N+1).
-        x (Tensor): Input signal, shape (B, T).
-        zi (Tensor, optional): Initial conditions for the filter, shape (B, N).
+        b (Tensor): Time-varying FIR coefficients with shape (B, N, M + 1).
+        x (Tensor): Input signal with shape (B, N).
+        zi (Tensor, optional): Initial conditions with shape (B, M).
+        transpose (bool): If True, compute the transpose implementation.
+
     Returns:
-        Filtered output signal, shape (B, T), and optionally the final state of the filter.
+        Filtered output and optionally final state.
     """
     assert b.dim() == 3, "Numerator coefficients b must be 3D."
     assert x.dim() == 2, "Input signal x must be 2D."
@@ -81,13 +88,16 @@ def fir(
 def allpole(
     a: Tensor, x: Tensor, zi: Optional[Tensor] = None, transpose: bool = False
 ) -> Union[Tensor, Tuple[Tensor, Tensor]]:
-    """Apply a batch of parameter-varying all-pole filters to input signal
+    """Apply a batch of parameter-varying all-pole filters.
+
     Args:
-        a (Tensor): Coefficients of the all-pole filters, shape (B, T, N).
-        x (Tensor): Input signal, shape (B, T).
-        zi (Tensor, optional): Initial conditions for the filter, shape (B, N).
+        a (Tensor): Time-varying denominator coefficients with shape (B, N, M).
+        x (Tensor): Input signal with shape (B, N).
+        zi (Tensor, optional): Initial conditions with shape (B, M).
+        transpose (bool): If True, use the transposed implementation.
+
     Returns:
-        Filtered output signal, shape (B, T), and optionally the final state of the filter.
+        Tensor or (Tensor, Tensor): Filtered output and optionally final state.
     """
     assert a.dim() == 3, "Denominator coefficients a must be 3D."
     assert x.dim() == 2, "Input signal x must be 2D."
@@ -136,11 +146,13 @@ def lfilter(
 ) -> Union[Tensor, Tuple[Tensor, Tensor]]:
     """Apply a batch of parameter-varying linear filters to input signal.
     Args:
-        b (Tensor): Coefficients of the FIR filters, shape (B, T, N+1) or (T, N+1).
-        a (Tensor): Coefficients of the all-pole filters, shape (B, T, N) or (T, N).
-        x (Tensor): Input signal, shape (B, T) or (T).
-        zi (Tensor, optional): Initial conditions for the filter, shape (B, N) or (N).
+        b (Tensor): Coefficients of the FIR filters, shape (B, N, M_b) or (N, M_b).
+        a (Tensor): Coefficients of the all-pole filters, shape (B, N, M_a) or (N, M_a).
+        x (Tensor): Input signal, shape (B, N) or (N).
+        zi (Tensor, optional): Initial conditions for the filter, shape (B, max(M_a, M_b - 1)) or (max(M_a, M_b - 1)).
         form (str): The filter form to use. Options are 'df2', 'tdf2', 'df1', 'tdf1'.
+        backend (str): The backend to use for filtering. Options are 'ssm', 'torchlpc'.
+        **kwargs: Additional keyword arguments for the backend-specific filtering function.
     Returns:
         Filtered output signal with the same time steps as x and optionally the final state of the filter.
     """
@@ -189,7 +201,6 @@ def _torchlpc_lfilter(
     zi: Optional[Tensor] = None,
     form: str = "df2",
 ) -> Union[Tensor, Tuple[Tensor, Tensor]]:
-    """Apply a batch of parameter-varying linear filters using torchlpc's sample_wise_lpc."""
 
     _, T = x.shape
 
