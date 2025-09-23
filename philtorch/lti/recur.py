@@ -5,7 +5,7 @@ from torch.nn import functional as F
 from typing import Optional, Tuple, Any, List
 
 
-class Recurrence(Function):
+class LTIRecurrence(Function):
     # mostly copied from torchlpc
     @staticmethod
     def forward(a: Tensor, init: Tensor, x: Tensor) -> Tensor:
@@ -25,7 +25,7 @@ class Recurrence(Function):
         grad_a = grad_x = grad_init = None
 
         bp_init = grad_out[:, -1]
-        flipped_grad_x = Recurrence.apply(
+        flipped_grad_x = LTIRecurrence.apply(
             a.conj_physical(),
             bp_init,
             grad_out[:, :-1].flip(1),
@@ -64,7 +64,7 @@ class Recurrence(Function):
             fwd_a = concat_out * grad_a.view(-1, 1)
             fwd_x = fwd_x + fwd_a
 
-        return Recurrence.apply(a, fwd_init, fwd_x)
+        return LTIRecurrence.apply(a, fwd_init, fwd_x)
 
 
 def _scalar_recursion_loop(
