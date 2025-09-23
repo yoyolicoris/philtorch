@@ -92,7 +92,7 @@ z2 = filtfilt(b, a, x)
 
 If `lfilter` is imported from `philtorch.lpv`, it can also handle parameter-varying filters, where `a` and `b` are at least 2D tensors with an additional time dimension.
 
-### Computing the first 10 Febnacci numbers using `state_space`
+### Computing the first 10 Fibonacci numbers using `state_space`
 
 The function `philtorch.lti.state_space` compute the following recursion:
 
