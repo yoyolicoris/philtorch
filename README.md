@@ -69,6 +69,24 @@ pip install git+https://github.com/yoyolicoris/philtorch.git
 
 For detailed API reference, please refer to the docstring of each function.
 
+## Performance Guide
+
+Digital filters like IIR filters are recursively defined and thus hard to parallelise in PyTorch.
+PhilTorch implements custom C++/CUDA extensions to achieve high performance.
+Currently, we have full support for first and second order filters, and we plan to have fast kernel for higher order filters in the future.
+Thus, we recommend composing first and second order sections (SOS), either cascaded or parallel form, if possible.
+
+In the worst case when the extension is not compiled, we also provide a fallback implementation using PyTorch operations.
+This implementation computes parallel associative scans using just matrix multiplications.
+It divides the input sequence into blocks recursively, and computes the output for each block in parallel.
+For more details, please refer to the this [blog post](https://iamycy.github.io/posts/2025/06/28/unroll-ssm/).
+
+The size of the blocks can greatly affect the performance.
+To control the block size, we provide a `unroll_factor` argument in most of the filter functions.
+By default, it is set to 1, which means no unrolling.
+The optimal value depends on the filter order, input length, and hardware.
+In general, we recommend setting it to 8 when the Tensors are on CPU, and 16 to 32 when they are on GPU.
+Though it's at least 10 times slower than the custom extension, the fallback implementation is still much faster than naive for-loop.
 
 
 ## Examples
