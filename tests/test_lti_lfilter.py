@@ -423,3 +423,35 @@ def test_diag_ssm_backend(
     assert np.allclose(y_torch.numpy(), y_scipy), np.max(
         np.abs(y_torch.numpy() - y_scipy)
     )
+
+
+def test_fs_backend():
+    B = 1
+    T = 97
+    num_order = 5
+    den_order = 3
+
+    b, a = _generate_random_filter_coeffs(num_order, den_order, B)
+    x = _generate_random_signal(B, T)
+    # x = np.zeros_like(x)
+    # x[:, 30:] = 1.0
+
+    # Convert to torch tensors
+    b_torch = torch.from_numpy(b).double()
+    x_torch = torch.from_numpy(x).double()
+    a_torch = torch.from_numpy(a).double()
+
+    # Apply philtorch filter
+    y_torch = lfilter(b_torch, a_torch, x_torch, form="df2", backend="fs")
+
+    # Apply scipy filter
+    y_scipy = np.stack(
+        [signal.lfilter(b[i], [1.0] + a[i].tolist(), x[i]) for i in range(B)], axis=0
+    )
+    print(f"y_torch: {y_torch.numpy() - y_scipy}")
+
+    # Compare outputs
+    # assert False
+    assert np.allclose(y_torch.numpy(), y_scipy), np.max(
+        np.abs(y_torch.numpy() - y_scipy)
+    )
