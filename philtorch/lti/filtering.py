@@ -258,6 +258,8 @@ def lfilter(
             y = _ssm_lfilter(b, a, x, zi, form=form, **kwargs)
         case "diag_ssm":
             y = _diag_ssm_lfilter(b, a, x, zi, form=form, **kwargs)
+        case "fs":
+            y = _fs_lfilter(b, a, x, zi, **kwargs)
         case _:
             raise ValueError(f"Unknown backend: {backend}")
 
@@ -407,6 +409,64 @@ def _diag_ssm_lfilter(
     if direct_filt is not None:
         y = y + direct_filt(x)
 
+    return y
+
+
+def _fs_lfilter(
+    b: Tensor,
+    a: Tensor,
+    x: Tensor,
+    zi: Optional[Tensor] = None,
+    **kwargs,
+) -> Union[Tensor, Tuple[Tensor, Tensor]]:
+    if b.size(-1) > a.size(-1) + 1:
+        rev_q, rev_r = polydiv(b.flip(-1), F.pad(a.flip(-1), (0, 1), value=1.0))
+        direct_filt = partial(fir, rev_q.flip(-1))
+        b = rev_r.flip(-1)
+    else:
+        direct_filt = None
+
+    if b.size(-1) < a.size(-1) + 1:
+        b = F.pad(b, (0, a.size(-1) + 1 - b.size(-1)))
+
+    C = b[..., 1:] - b[..., :1] * a
+    D = b[..., :1]
+
+    A = companion(a)
+    Apower = torch.linalg.matrix_power(A, x.size(-1))
+    # C = C - C @ Apower
+    Chat = (C.unsqueeze(1) @ Apower).squeeze(1)
+
+    B_transfer = torch.fft.rfft(F.pad(C - Chat, (1, 0), value=0.0), n=x.size(-1))
+    A_transfer = torch.fft.rfft(F.pad(a, (1, 0), value=1.0), n=x.size(-1))
+
+    # A_transfer = A_transfer.abs().clamp_min(1e-7) * torch.exp(1j * A_transfer.angle())
+
+    # B_hat_transfer = torch.fft.rfft(F.pad(Chat, (1, 0), value=0.0), n=x.size(-1) * 2)
+    # signs = torch.tensor([1.0, -1.0] * x.size(-1), device=x.device, dtype=x.dtype)[
+    # : x.size(-1) + 1
+    # ]
+    # H = (B_transfer - B_hat_transfer * signs) / A_transfer
+    # y = (
+    #     torch.fft.irfft(torch.fft.rfft(x, n=x.size(-1) * 2) * H, n=x.size(-1) * 2)[
+    #         ..., : x.size(-1)
+    #     ]
+    #     + D * x
+    # )
+
+    H = B_transfer / A_transfer
+    h = torch.fft.irfft(H, n=x.size(-1))
+    y = (
+        torch.fft.irfft(
+            torch.fft.rfft(x, n=x.size(-1) * 2 - 1)
+            * torch.fft.rfft(h, n=x.size(-1) * 2 - 1),
+            n=x.size(-1) * 2 - 1,
+        )[..., : x.size(-1)]
+        + D * x
+    )
+
+    if direct_filt is not None:
+        y = y + direct_filt(x)
     return y
 
 
