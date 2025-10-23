@@ -14,6 +14,8 @@
 #include <torch/script.h>
 #include <torch/torch.h>
 
+#include "recur2.cuh"
+
 template <typename T>
 struct recur_binary_op
 {
@@ -69,36 +71,42 @@ struct lti_shared_recur_input_op
 template <typename scalar_t>
 void lti_batch_linear_recurrence(const scalar_t *decays,
                                  const scalar_t *impulses,
-                                 scalar_t *out, int n_steps, int n_batches)
+                                 scalar_t *out, int n_steps, int total_steps)
 {
-    auto total_steps = n_steps * n_batches;
     thrust::counting_iterator<int> it(0);
     auto batch_input_op = thrust::make_zip_function(lti_batch_recur_input_op<scalar_t>{decays, n_steps});
-    thrust::inclusive_scan(
+    index2key key_op{n_steps};
+    ::cuda::std::equal_to<int> binary_pred;
+
+    thrust::inclusive_scan_by_key(
         thrust::device,
+        thrust::make_transform_iterator(it, key_op),
+        thrust::make_transform_iterator(it + total_steps, key_op),
         thrust::make_transform_iterator(
             thrust::make_zip_iterator(it, impulses), batch_input_op),
-        thrust::make_transform_iterator(
-            thrust::make_zip_iterator(it + total_steps, impulses + total_steps), batch_input_op),
         thrust::make_transform_output_iterator(out, take_second<scalar_t>()),
+        binary_pred,
         recur_binary_op<scalar_t>());
 }
 
 template <typename scalar_t>
 void lti_shared_linear_recurrence(const scalar_t decay,
                                   const scalar_t *impulses,
-                                  scalar_t *out, int n_steps, int n_batches)
+                                  scalar_t *out, int n_steps, int total_steps)
 {
-    auto total_steps = n_steps * n_batches;
     thrust::counting_iterator<int> it(0);
     auto shared_input_op = thrust::make_zip_function(lti_shared_recur_input_op<scalar_t>{decay, n_steps});
-    thrust::inclusive_scan(
+    index2key key_op{n_steps};
+    ::cuda::std::equal_to<int> binary_pred;
+
+    thrust::inclusive_scan_by_key(
         thrust::device,
+        thrust::make_transform_iterator(it, key_op),
+        thrust::make_transform_iterator(it + total_steps, key_op),
         thrust::make_transform_iterator(
             thrust::make_zip_iterator(it, impulses), shared_input_op),
-        thrust::make_transform_iterator(
-            thrust::make_zip_iterator(it + total_steps, impulses + total_steps), shared_input_op),
         thrust::make_transform_output_iterator(out, take_second<scalar_t>()),
+        binary_pred,
         recur_binary_op<scalar_t>());
 }
 
@@ -130,7 +138,7 @@ at::Tensor lti_recur_cuda_impl(const at::Tensor &a,
                   a_contiguous.const_data_ptr<scalar_t>(),
                   x_contiguous.const_data_ptr<scalar_t>(),
                   output.mutable_data_ptr<scalar_t>(),
-                  n_steps, n_batches); });
+                  n_steps, n_batches * n_steps); });
     }
     else
     {
@@ -140,7 +148,7 @@ at::Tensor lti_recur_cuda_impl(const at::Tensor &a,
                   a_contiguous.item<scalar_t>(),
                   x_contiguous.const_data_ptr<scalar_t>(),
                   output.mutable_data_ptr<scalar_t>(),
-                  n_steps, n_batches); });
+                  n_steps, n_batches * n_steps); });
     }
 
     return output.slice(1, 1, output.size(1))
