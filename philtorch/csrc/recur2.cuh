@@ -75,3 +75,9 @@ struct lti_share_A_input_op
         return thrust::make_tuple(0, 0, 0, 0, x_0, x_1);
     }
 };
+
+struct index2key
+{
+    int n_steps;
+    __host__ __device__ int operator()(int i) const { return i / n_steps; }
+};
