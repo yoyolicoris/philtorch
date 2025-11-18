@@ -11,6 +11,10 @@ Our principle design goals are:
 - Support batch processing, parameter-varying filters, and GPU acceleration.
 - Pure functional implementation and no stateful objects.
 
+## News
+
+- **2025-10-10**: PhilTorch was first presented at the [Audio Developer Conference (ADC) 2025](https://conference.audio.dev/session/2025/philtorch/)! The presentation slides are available [here](https://github.com/yoyolicoris/presentations/blob/main/slides/2025/adc25.pdf).
+
 ## Installation
 
 ### Stable release
