@@ -1,6 +1,7 @@
 # PhilTorch $\Huge \overset{🔥}{\Phi}$
 [![PyPI version](https://badge.fury.io/py/philtorch.svg)](https://badge.fury.io/py/philtorch)
 [![codecov](https://codecov.io/gh/yoyolicoris/philtorch/branch/dev/graph/badge.svg?token=288BR3PYIX)](https://codecov.io/gh/yoyolicoris/philtorch)
+[![arXiv](https://img.shields.io/badge/arXiv-2511.14390-b31b1b.svg)](https://arxiv.org/abs/2511.14390)
 
 A PyTorch package for fast automatic differentiation of discrete time linear filters.
 
@@ -13,7 +14,8 @@ Our principle design goals are:
 
 ## News
 
-- **2025-10-10**: PhilTorch was first presented at the [Audio Developer Conference (ADC) 2025](https://conference.audio.dev/session/2025/philtorch/)! The presentation slides are available [here](https://github.com/yoyolicoris/presentations/blob/main/slides/2025/adc25.pdf).
+- **2025-11-10**: PhilTorch was first presented at the [Audio Developer Conference (ADC) 2025](https://conference.audio.dev/session/2025/philtorch/)! The presentation slides are available [here](https://github.com/yoyolicoris/presentations/blob/main/slides/2025/adc25.pdf).
+- **2025-10-31**: Our short paper describing the LTI filter implementation in PhilTorch has been accepted by the [DiffSys Workshop @ Eurips 2025](https://differentiable-systems.github.io/workshop-eurips-2025/)! The preprint is available [here](https://arxiv.org/abs/2511.14390).
 
 ## Installation
 
