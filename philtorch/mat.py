@@ -76,7 +76,7 @@ def vandermonde(poles: Tensor) -> Tensor:
     """
     if poles.size(-1) == 1:
         return torch.ones_like(poles).unsqueeze(-1)
-    return torch.linalg.vander(poles).flip(-1).mT
+    return torch.vander(poles).mT
 
 
 def matrix_power_accumulate(A: Tensor, n: int) -> Tensor:
