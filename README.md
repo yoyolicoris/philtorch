@@ -14,7 +14,7 @@ Our principle design goals are:
 
 ## News
 
-- **2025-12--06**: We presented our paper, [Accelerating Automatic Differentiation of Direct Form Digital Filters](https://openreview.net/forum?id=ZhwIyvtBNB), at the [Differentiable Systems and Scientific Machine Learning Workshop](https://differentiable-systems.github.io/workshop-eurips-2025/) @ EurIPS 2025! You can check the poster [here](https://github.com/yoyolicoris/presentations/blob/main/posters/2025/DiffSys_Eurips.pdf).
+- **2025-12-06**: We presented our paper, [Accelerating Automatic Differentiation of Direct Form Digital Filters](https://openreview.net/forum?id=ZhwIyvtBNB), at the [Differentiable Systems and Scientific Machine Learning Workshop](https://differentiable-systems.github.io/workshop-eurips-2025/) @ EurIPS 2025! You can check the poster [here](https://github.com/yoyolicoris/presentations/blob/main/posters/2025/DiffSys_Eurips.pdf).
 - **2025-11-10**: PhilTorch was first presented at the [Audio Developer Conference (ADC) 2025](https://conference.audio.dev/session/2025/philtorch/)! The presentation slides are available [here](https://github.com/yoyolicoris/presentations/blob/main/slides/2025/adc25.pdf).
 - **2025-10-31**: Our short paper describing the LTI filter implementation in PhilTorch has been accepted by the [DiffSys Workshop @ EurIPSs 2025](https://differentiable-systems.github.io/workshop-eurips-2025/)! The preprint is available [here](https://arxiv.org/abs/2511.14390).
 
