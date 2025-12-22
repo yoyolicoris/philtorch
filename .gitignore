@@ -4,3 +4,7 @@
 *.egg-info/
 dist/
 build/
+
+# pixi environments
+.pixi/*
+!.pixi/config.toml
