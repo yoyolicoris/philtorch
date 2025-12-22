@@ -28,7 +28,6 @@ exclude = ["tests", "tests.*"]
 [tool.setuptools]
 # this package will read some included files in runtime, avoid installing it as .zip
 zip-safe = false
-license-files = ["LICENSE"]
 
 [project]
 dynamic = ["version"]
