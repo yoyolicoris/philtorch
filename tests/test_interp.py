@@ -19,11 +19,12 @@ from philtorch.lti.interp import cubic_spline
         ),
     ],
 )
-def test_cubic_spline(n, m, device):
+@pytest.mark.parametrize("pfe", [True, False])
+def test_cubic_spline(n, m, device, pfe):
     x = torch.randn(n, device=device).double()
     x = torch.cat([x, x.flip(0)[1:]])  # make it periodic
 
-    y_philtorch = cubic_spline(x.unsqueeze(0), m, parallel_form=False).squeeze().cpu()
+    y_philtorch = cubic_spline(x.unsqueeze(0), m, parallel_form=pfe).squeeze().cpu()
 
     t = torch.arange(len(x)).double()
     cs = CubicSpline(t.cpu().numpy(), x.cpu().numpy(), bc_type="periodic")
