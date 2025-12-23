@@ -37,14 +37,18 @@ def _cubic_spline_kernel(x: Tensor) -> Tensor:
 
 def cubic_spline(x: Tensor, m: int, parallel_form: bool = True, **kwargs) -> Tensor:
     r"""
-    Cubic spline interpolation kernel.
+    Upsample the input tensor `x` by a factor of `m` using cubic spline interpolation.
 
     Args:
-        x: Input tensor.
-        m: Interpolation factor.
+        x (Tensor): Input tensor of shape (..., L).
+        parallel_form (bool): If True, use the partial fraction expansion form for
+            cubic spline interpolation. If False, use cascaded form. Default is True.
+        m (int): Interpolation factor (must be an integer >= 1).
+        **kwargs: Additional keyword arguments passed to the underlying ```linear_recurrence```
+            function for inverse filtering.
 
     Returns:
-        Interpolated tensor.
+        Tensor: Upsampled tensor of shape (..., (L - 1) * m + 1).
     """
     assert m >= 1 and isinstance(
         m, int
@@ -61,29 +65,6 @@ def cubic_spline(x: Tensor, m: int, parallel_form: bool = True, **kwargs) -> Ten
 
         h = _first_order_filt(mirrored_x, r, causal_zi, **kwargs)
         causal_h, anticausal_h = h[..., : x.shape[-1]], h[..., -x.shape[-1] :].flip(-1)
-
-        # causal_h = _first_order_filt(x, r.broadcast_to(x.shape[0]), causal_zi, **kwargs)
-        # anticausal_zi = causal_h[..., -1]
-        # anticausal_h = torch.cat(
-        #     [
-        #         _first_order_filt(
-        #             x.flip(-1)[..., 1:],
-        #             r.broadcast_to(x.shape[0]),
-        #             anticausal_zi,
-        #             **kwargs,
-        #         ).flip(-1),
-        #         anticausal_zi.unsqueeze(-1),
-        #     ],
-        #     dim=-1,
-        # )
-        # anticausal_zi = -r * x[..., -k_0 - 1 : -1] @ powers.flip(0)
-
-        # causal_h, anticausal_h = _first_order_filt(
-        #     torch.cat([x, x.flip(-1)], dim=0),
-        #     r.broadcast_to(x.shape[0] * 2),
-        #     torch.cat([causal_zi, anticausal_zi], dim=0),
-        #     **kwargs,
-        # ).chunk(2, dim=0)
         c = -6 * r / (1 - r * r) * (causal_h + anticausal_h - x)
     else:
         # causal inverse filtering
