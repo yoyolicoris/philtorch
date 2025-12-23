@@ -37,10 +37,12 @@ def _cubic_spline_kernel(x: Tensor) -> Tensor:
 
 def cubic_spline(x: Tensor, m: int, parallel_form: bool = True, **kwargs) -> Tensor:
     r"""
-    Upsample the input tensor `x` by a factor of `m` using cubic spline interpolation.
+    Upsample the input tensor `x` by a factor of `m` using cubic spline interpolation
+    based on the method described in "B-Spline Signal Processing: Part II: Efficient Design
+    and Applications" by M. Unser.
 
     Args:
-        x (Tensor): Input tensor of shape (..., L).
+        x (Tensor): Input tensor of shape (B, L).
         parallel_form (bool): If True, use the partial fraction expansion form for
             cubic spline interpolation. If False, use cascaded form. Default is True.
         m (int): Interpolation factor (must be an integer >= 1).
@@ -48,7 +50,7 @@ def cubic_spline(x: Tensor, m: int, parallel_form: bool = True, **kwargs) -> Ten
             function for inverse filtering.
 
     Returns:
-        Tensor: Upsampled tensor of shape (..., (L - 1) * m + 1).
+        Tensor: Upsampled tensor of shape (B, (L - 1) * m + 1).
     """
     assert m >= 1 and isinstance(
         m, int
@@ -70,23 +72,10 @@ def cubic_spline(x: Tensor, m: int, parallel_form: bool = True, **kwargs) -> Ten
         # causal inverse filtering
         h = _first_order_filt(x, r, causal_zi, **kwargs)
         zi = -r / (1 - r * r) * (2 * h[..., -1] - x[..., -1])
+
+        # anticausal inverse filtering
         c_flip = _first_order_filt(h[..., :-1].flip(-1), r, zi, -r, **kwargs).flip(-1)
         c = torch.cat([c_flip, zi.unsqueeze(-1)], dim=-1) * 6
-
-        # zi = x[..., 1 : k_0 + 1] @ r ** torch.arange(
-        #     k_0, device=x.device, dtype=x.dtype
-        # )
-        # h = _first_order_filt(x, r.broadcast_to(x.shape[0]), zi, **kwargs)
-
-        # # anticausal inverse filtering
-        # r2 = r * r
-        # zi = (2 - r2) / (1 - r2) * h[..., -1] + r / (1 - r2) * h[..., -2]
-        # c = (
-        #     _first_order_filt(
-        #         h.flip(-1), r.broadcast_to(x.shape[0]), zi, -r, **kwargs
-        #     ).flip(-1)
-        #     * 6
-        # )
 
     kernel_idx = torch.arange(-2, 2, 1 / m, device=x.device, dtype=x.dtype).reshape(
         4, m
