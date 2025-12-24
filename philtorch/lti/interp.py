@@ -43,10 +43,10 @@ def cubic_spline(x: Tensor, m: int, parallel_form: bool = True, **kwargs) -> Ten
 
     Args:
         x (Tensor): Input tensor of shape (B, L).
+        m (int): Interpolation factor (must be an integer >= 1).
         parallel_form (bool): If True, use the partial fraction expansion form for
             cubic spline interpolation. If False, use cascaded form. Default is True.
-        m (int): Interpolation factor (must be an integer >= 1).
-        **kwargs: Additional keyword arguments passed to the underlying ```linear_recurrence```
+        **kwargs: Additional keyword arguments passed to the underlying `linear_recurrence`
             function for inverse filtering.
 
     Returns:
