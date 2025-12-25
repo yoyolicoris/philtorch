@@ -403,6 +403,8 @@ environments:
       - conda: https://prefix.dev/conda-forge/noarch/zipp-3.23.0-pyhcf101f3_1.conda
       - conda: https://prefix.dev/conda-forge/linux-64/zlib-ng-2.3.2-hceb46e0_1.conda
       - conda: https://prefix.dev/conda-forge/linux-64/zstd-1.5.7-hb78ec9c_6.conda
+      - pypi: https://files.pythonhosted.org/packages/00/b7/6924c4a40bc74f643dc74d274344b737adceb574bcd6ec46819ce4567f80/kazane-1.0.4-py3-none-any.whl
+      - pypi: https://files.pythonhosted.org/packages/c0/ba/daf16c2d1965bf6237fb696639e3e93645ac6801f7dcaf9ec694a74e9326/setuptools_git_versioning-2.1.0-py3-none-any.whl
       - pypi: https://files.pythonhosted.org/packages/c6/7c/c9771f9cb770b3ec60e71d239a8bdd9cf62f89693f7398535df37f343076/torchlpc-0.7.2.tar.gz
       - pypi: ./
 packages:
@@ -2448,6 +2450,12 @@ packages:
   - pkg:pypi/jupyterlab-widgets?source=hash-mapping
   size: 216779
   timestamp: 1762267481404
+- pypi: https://files.pythonhosted.org/packages/00/b7/6924c4a40bc74f643dc74d274344b737adceb574bcd6ec46819ce4567f80/kazane-1.0.4-py3-none-any.whl
+  name: kazane
+  version: 1.0.4
+  sha256: efef842e95fee87255574891970344662708e9d9f3a9720d1c06e376ecc9bce5
+  requires_dist:
+  - torch
 - conda: https://prefix.dev/conda-forge/noarch/kernel-headers_linux-64-4.18.0-he073ed8_9.conda
   sha256: 41557eeadf641de6aeae49486cef30d02a6912d8da98585d687894afd65b356a
   md5: 86d9cba083cd041bfbf242a01a7a1999
@@ -4360,7 +4368,7 @@ packages:
   timestamp: 1733302019362
 - pypi: ./
   name: philtorch
-  version: 0.2.dev0+feat.pixi16
+  version: 0.3.dev1
   sha256: 8895bd9992bcd99deb6996b2b7b7f72dff7277dea57b9747332e91c46a4c82de
   requires_dist:
   - torch>=2.0.0
@@ -5097,6 +5105,15 @@ packages:
   - pkg:pypi/setuptools?source=hash-mapping
   size: 748788
   timestamp: 1748804951958
+- pypi: https://files.pythonhosted.org/packages/c0/ba/daf16c2d1965bf6237fb696639e3e93645ac6801f7dcaf9ec694a74e9326/setuptools_git_versioning-2.1.0-py3-none-any.whl
+  name: setuptools-git-versioning
+  version: 2.1.0
+  sha256: 09a15cbb9a00884e91a3591a4c9ec1ff93c24b1b4a40de39a44815196beb7ebf
+  requires_dist:
+  - packaging
+  - setuptools
+  - tomli>=2.0.1 ; python_full_version < '3.11'
+  requires_python: '>=3.7'
 - conda: https://prefix.dev/conda-forge/noarch/six-1.17.0-pyhe01879c_1.conda
   sha256: 458227f759d5e3fcec5d9b7acce54e10c9e1f4f4b7ec978f3bfd54ce4ee9853d
   md5: 3339e3b65d58accf4ca4fb8748ab16b3
