@@ -2,7 +2,7 @@ import torch
 from torch import Tensor
 from torch.autograd import Function
 from torch.nn import functional as F
-from typing import Optional, Tuple, Any, List
+from typing import Optional, Any
 
 
 class LTIRecurrence(Function):
@@ -17,7 +17,7 @@ class LTIRecurrence(Function):
         return torch.ops.philtorch.lti_recur(a, init, x)
 
     @staticmethod
-    def setup_context(ctx: Any, inputs: List[Any], output: Any) -> Any:
+    def setup_context(ctx: Any, inputs: list[Any], output: Any) -> Any:
         a, init, _ = inputs
         ctx.save_for_backward(a, init, output)
         ctx.save_for_forward(a, init, output)
@@ -25,7 +25,7 @@ class LTIRecurrence(Function):
     @staticmethod
     def backward(
         ctx: Any, grad_out: Tensor
-    ) -> Tuple[Optional[Tensor], Optional[Tensor], Optional[Tensor]]:
+    ) -> tuple[Optional[Tensor], Optional[Tensor], Optional[Tensor]]:
         a, init, out = ctx.saved_tensors
         grad_a = grad_x = grad_init = None
 

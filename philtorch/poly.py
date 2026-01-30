@@ -1,9 +1,8 @@
 import torch
 from torch import Tensor
-from typing import Tuple
 
 
-def polydiv(u: Tensor, v: Tensor) -> Tuple[Tensor, Tensor]:
+def polydiv(u: Tensor, v: Tensor) -> tuple[Tensor, Tensor]:
     """Divide polynomials and return quotient and remainder.
 
     Performs polynomial long division of `u` by `v` along the last dimension.

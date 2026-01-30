@@ -2,7 +2,7 @@ import torch
 import torch.nn.functional as F
 from torch import Tensor
 from torch.autograd import Function
-from typing import Any, List, Optional, Tuple
+from typing import Any, Optional
 
 from ..mat import matrix_power_accumulate, find_eigenvectors
 from .recur import linear_recurrence, LTIRecurrence
@@ -38,7 +38,7 @@ class LTIMatrixRecurrence(Function):
         return torch.ops.philtorch.lti_recurN(A, zi, x)
 
     @staticmethod
-    def setup_context(ctx: Any, inputs: List[Any], output: Any) -> Any:
+    def setup_context(ctx: Any, inputs: list[Any], output: Any) -> Any:
         A, zi, _ = inputs
         y = output
         ctx.save_for_backward(A, zi, y)
@@ -47,7 +47,7 @@ class LTIMatrixRecurrence(Function):
     @staticmethod
     def backward(
         ctx: Any, grad_y: torch.Tensor
-    ) -> Tuple[Optional[torch.Tensor], Optional[torch.Tensor], Optional[torch.Tensor]]:
+    ) -> tuple[Optional[torch.Tensor], Optional[torch.Tensor], Optional[torch.Tensor]]:
         A, zi, y = ctx.saved_tensors
         grad_x = grad_A = grad_zi = None
 

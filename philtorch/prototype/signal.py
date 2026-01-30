@@ -1,6 +1,6 @@
 import torch
 from torch import Tensor
-from typing import Optional, Tuple, List
+from typing import Optional
 from functools import reduce
 from itertools import chain, starmap
 
@@ -12,7 +12,7 @@ def unique_roots(
     tol: float = 1e-3,
     rtype: str = "min",
     is_complex: Optional[Tensor] = None,
-) -> Tuple[Tensor, Tensor, Tensor]:
+) -> tuple[Tensor, Tensor, Tensor]:
     """Determine unique roots and their multiplicities from a list of roots."""
     match rtype:
         case "max" | "maximum":
@@ -55,7 +55,7 @@ def unique_roots(
 
 def _compute_factors(
     roots: Tensor, multiplicity: Tensor, include_powers: bool = False
-) -> Tuple[List[Tensor], Tensor]:
+) -> tuple[list[Tensor], Tensor]:
     """Compute the total polynomial divided by factors for each root."""
     current = roots.new_ones(1)
     suffixes = [current]
@@ -105,7 +105,7 @@ def _compute_residues(poles: Tensor, multiplicity: Tensor, numerator: Tensor) ->
 
 def residue(
     b: Tensor, a: Tensor, tol: float = 1e-3, rtype: str = "avg"
-) -> Tuple[Tensor, Tensor, Tensor]:
+) -> tuple[Tensor, Tensor, Tensor]:
     """Compute partial-fraction expansion of b(s) / a(s)."""
     assert (
         b.is_floating_point() and a.is_floating_point()
@@ -134,7 +134,7 @@ def residue(
 
 def residuez(
     b: Tensor, a: Tensor, tol: float = 1e-3, rtype: str = "avg"
-) -> Tuple[Tensor, Tensor, Tensor]:
+) -> tuple[Tensor, Tensor, Tensor]:
     """Compute partial-fraction expansion of b(z) / a(z)."""
     assert (
         b.is_floating_point() and a.is_floating_point()
@@ -171,7 +171,7 @@ def residuez(
 
 def sos2pfe(
     sos: Tensor, tol: float = 0.001, rtype: str = "avg"
-) -> Tuple[Tuple[Tensor, Tensor], Tuple[Tensor, Tensor], Tuple[Tensor, Tensor], Tensor]:
+) -> tuple[tuple[Tensor, Tensor], tuple[Tensor, Tensor], tuple[Tensor, Tensor], Tensor]:
     """Convert second-order sections to partial-fraction expansion."""
     assert sos.is_floating_point(), "SOS must be floating point type."
     assert sos.ndim == 2, "SOS must be 2D array."

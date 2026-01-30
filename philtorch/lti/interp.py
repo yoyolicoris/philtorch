@@ -1,7 +1,7 @@
 import torch
 from torch import Tensor
 import torch.nn.functional as F
-from typing import Optional, Union, Tuple
+from typing import Optional, Union
 
 from .recur import linear_recurrence, LTIRecurrence
 from .. import EXTENSION_LOADED

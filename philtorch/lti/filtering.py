@@ -1,7 +1,7 @@
 import torch
 from torch import Tensor
 import torch.nn.functional as F
-from typing import Optional, Union, Tuple
+from typing import Optional, Union
 from functools import partial
 
 from .ssm import state_space, state_space_recursion, diag_state_space
@@ -147,7 +147,7 @@ def fir(
     x: Tensor,
     zi: Optional[Tensor] = None,
     transpose: bool = True,
-) -> Union[Tensor, Tuple[Tensor, Tensor]]:
+) -> Union[Tensor, tuple[Tensor, Tensor]]:
     """Apply a batch of time-invariant FIR filters.
 
     This function supports both direct (convolution) and transposed forms via
@@ -216,7 +216,7 @@ def lfilter(
     form: str = "tdf2",
     backend: str = "ssm",
     **kwargs,
-) -> Union[Tensor, Tuple[Tensor, Tensor]]:
+) -> Union[Tensor, tuple[Tensor, Tensor]]:
     """Apply a batch of time-invariant IIR filters.
 
     This is a convenience wrapper that dispatches to different backends
@@ -277,7 +277,7 @@ def _ssm_lfilter(
     zi: Optional[Tensor] = None,
     form: str = "df2",
     **kwargs,
-) -> Union[Tensor, Tuple[Tensor, Tensor]]:
+) -> Union[Tensor, tuple[Tensor, Tensor]]:
     """Apply a batch of time-invariant linear filters to input signal using state-space model."""
     if b.size(-1) < a.size(-1) + 1:
         b = F.pad(b, (0, a.size(-1) + 1 - b.size(-1)))
@@ -341,7 +341,7 @@ def _diag_ssm_lfilter(
     form: str = "df2",
     delayed_form: bool = False,
     **kwargs,
-) -> Union[Tensor, Tuple[Tensor, Tensor]]:
+) -> Union[Tensor, tuple[Tensor, Tensor]]:
     """Apply a batch of time-invariant linear filters to input signal using state-space model."""
 
     if b.size(-1) > a.size(-1) + 1:
@@ -420,7 +420,7 @@ def filtfilt(
     irlen: Optional[int] = None,
     form: str = "tdf2",
     **kwargs,
-) -> Union[Tensor, Tuple[Tensor, Tensor]]:
+) -> Union[Tensor, tuple[Tensor, Tensor]]:
     """Apply zero-phase filtering by processing the input signal in both forward and backward directions.
 
     This function uses the `lfilter` function twice: first in the forward direction,

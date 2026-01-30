@@ -2,7 +2,7 @@ import pytest
 import numpy as np
 import torch
 from scipy import signal
-from typing import Tuple, Optional
+from typing import Optional
 
 from philtorch.lti import lfilter, fir, lfilter_zi, lfiltic, filtfilt
 from philtorch.mat import companion, vandermonde
@@ -10,7 +10,7 @@ from philtorch.mat import companion, vandermonde
 
 def _generate_random_filter_coeffs(
     num_order: int, den_order: int, B: int
-) -> Tuple[np.ndarray, np.ndarray]:
+) -> tuple[np.ndarray, np.ndarray]:
     """Generate random filter coefficients"""
 
     # Time-invariant coefficients

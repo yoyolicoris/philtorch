@@ -1,7 +1,6 @@
 import torch
 import torch.nn.functional as F
 from torch import Tensor
-from typing import Tuple
 from functools import reduce
 
 
@@ -60,7 +59,7 @@ def roots(p: Tensor) -> Tensor:
     return roots
 
 
-def polydiv(u: Tensor, v: Tensor) -> Tuple[Tensor, Tensor]:
+def polydiv(u: Tensor, v: Tensor) -> tuple[Tensor, Tensor]:
     """
     Returns the quotient and remainder of polynomial division.
 

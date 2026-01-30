@@ -1,7 +1,6 @@
 import pytest
 import numpy as np
 import torch
-from typing import Tuple
 from scipy import signal
 
 from philtorch.lpv import lfilter, allpole as lpv_allpole, fir as lpv_fir
@@ -55,7 +54,7 @@ def _generate_time_varying_coeffs(
     T: int,
     num_order: int,
     den_order: int,
-) -> Tuple[torch.Tensor, torch.Tensor]:
+) -> tuple[torch.Tensor, torch.Tensor]:
     """Generate time-varying filter coefficients"""
     # Generate smooth time-varying coefficients
     b = torch.randn(B, T, num_order + 1)

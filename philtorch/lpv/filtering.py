@@ -1,6 +1,6 @@
 import torch
 from torch import Tensor
-from typing import Optional, Union, Tuple
+from typing import Optional, Union
 from functools import reduce, partial
 from torchlpc import sample_wise_lpc
 import torch.nn.functional as F
@@ -18,7 +18,7 @@ from .utils import diag_shift
 
 def fir(
     b: Tensor, x: Tensor, zi: Optional[Tensor] = None, transpose: bool = False
-) -> Union[Tensor, Tuple[Tensor, Tensor]]:
+) -> Union[Tensor, tuple[Tensor, Tensor]]:
     """Apply a batch of parameter-varying FIR filters.
 
     This supports time-varying (parameter-varying) FIR coefficients where the
@@ -87,7 +87,7 @@ def fir(
 
 def allpole(
     a: Tensor, x: Tensor, zi: Optional[Tensor] = None, transpose: bool = False
-) -> Union[Tensor, Tuple[Tensor, Tensor]]:
+) -> Union[Tensor, tuple[Tensor, Tensor]]:
     """Apply a batch of parameter-varying all-pole filters.
 
     Args:
@@ -143,7 +143,7 @@ def lfilter(
     form: str = "df2",
     backend: str = "ssm",
     **kwargs: Optional[dict],
-) -> Union[Tensor, Tuple[Tensor, Tensor]]:
+) -> Union[Tensor, tuple[Tensor, Tensor]]:
     """Apply a batch of parameter-varying linear filters to input signal.
     Args:
         b (Tensor): Coefficients of the FIR filters, shape (B, N, M_b + 1) or (N, M_b + 1).
@@ -200,7 +200,7 @@ def _torchlpc_lfilter(
     x: Tensor,
     zi: Optional[Tensor] = None,
     form: str = "df2",
-) -> Union[Tensor, Tuple[Tensor, Tensor]]:
+) -> Union[Tensor, tuple[Tensor, Tensor]]:
 
     _, T = x.shape
 
@@ -292,7 +292,7 @@ def _ssm_lfilter(
     zi: Optional[Tensor] = None,
     form: str = "df2",
     **kwargs,
-) -> Union[Tensor, Tuple[Tensor, Tensor]]:
+) -> Union[Tensor, tuple[Tensor, Tensor]]:
     """Apply a batch of time-invariant linear filters to input signal using state-space model."""
     if b.size(-1) < a.size(-1) + 1:
         b = F.pad(b, (0, a.size(-1) + 1 - b.size(-1)))

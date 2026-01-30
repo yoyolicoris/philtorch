@@ -1,5 +1,5 @@
 from functools import reduce
-from typing import Callable, Tuple
+from typing import Callable
 
 
 def chain_functions(*functions: Callable) -> Callable:
@@ -17,7 +17,7 @@ def chain_functions(*functions: Callable) -> Callable:
         Callable: A function that executes the chain when called.
     """
 
-    def closure(*args: Tuple) -> Tuple:
+    def closure(*args: tuple) -> tuple:
         return reduce(
             lambda acc, func: func(*acc) if isinstance(acc, tuple) else func(acc),
             functions,

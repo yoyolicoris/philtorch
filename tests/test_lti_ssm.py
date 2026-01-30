@@ -2,7 +2,7 @@ import pytest
 import numpy as np
 import torch
 from scipy import signal
-from typing import Tuple, Optional
+from typing import Optional
 from itertools import product, chain
 
 from philtorch.lti import state_space_recursion, state_space, diag_state_space

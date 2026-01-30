@@ -1,7 +1,7 @@
 import torch
 import torch.nn.functional as F
 from torch.autograd import Function
-from typing import Optional, Union, Tuple, Any, List
+from typing import Optional, Union, Any
 from torch import Tensor
 from torchlpc import sample_wise_lpc
 
@@ -28,7 +28,7 @@ class MatrixRecurrence(Function):
         return torch.ops.philtorch.recurN(A, zi, x)
 
     @staticmethod
-    def setup_context(ctx: Any, inputs: List[Any], output: Any) -> Any:
+    def setup_context(ctx: Any, inputs: list[Any], output: Any) -> Any:
         A, zi, _ = inputs
         y = output
         ctx.save_for_backward(A, zi, y)
@@ -37,7 +37,7 @@ class MatrixRecurrence(Function):
     @staticmethod
     def backward(
         ctx: Any, grad_y: torch.Tensor
-    ) -> Tuple[Optional[torch.Tensor], Optional[torch.Tensor], Optional[torch.Tensor]]:
+    ) -> tuple[Optional[torch.Tensor], Optional[torch.Tensor], Optional[torch.Tensor]]:
         A, zi, y = ctx.saved_tensors
         grad_x = grad_A = grad_zi = None
 
