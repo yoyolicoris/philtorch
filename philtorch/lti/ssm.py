@@ -3,6 +3,7 @@ import torch.nn.functional as F
 from torch import Tensor
 from torch.autograd import Function
 from typing import Any, Optional
+from functools import partial
 
 from ..mat import matrix_power_accumulate, find_eigenvectors
 from .recur import linear_recurrence, LTIRecurrence
@@ -602,6 +603,9 @@ def diag_state_space(
         out_idx (int, optional): If provided, return only this state index per timestep.
         unroll_factor (int, optional): Block unroll factor to accelerate
             long recurrences if the pure-Python backend is used.
+            Setting it to >1 forces the pure-Python backend even if a compiled
+            extension is available.
+            If ``None``, it is set to ``round(N**0.5)``.
 
     Returns:
         Tensor or 2-tuple with the second Tensor being the final state `zf` if `zi` is provided.
@@ -766,11 +770,16 @@ def diag_state_space(
     else:
         assert False, f"Input signal x must be 2D or 3D, got {x.shape}"
 
-    Vinvh = linear_recurrence(
+    recur_runner = (
+        LTIRecurrence.apply
+        if EXTENSION_LOADED and unroll_factor in (None, 1)
+        else partial(linear_recurrence, unroll_factor=unroll_factor)
+    )
+
+    Vinvh = recur_runner(
         L.broadcast_to((batch_size, M)).flatten(0, 1),
         Vinvzi.flatten(),
         VinvBx.mT.flatten(0, 1),
-        unroll_factor=unroll_factor,
     ).unflatten(0, (batch_size, M))
     if not return_zf and out_idx is not None:
         h = torch.cat(
