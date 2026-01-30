@@ -339,6 +339,8 @@ def state_space(
             ``zf`` is also returned.
         unroll_factor (int, optional): Block unroll factor to accelerate
             long recurrences if the pure-Python backend is used.
+            Setting it to >1 forces the pure-Python backend even if a compiled
+            extension is available.
             If ``None``, it is set to ``round(N**0.5)``.
         out_idx (int, optional): If set and the returned y has a state
             dimension, selects the single output index to return.
@@ -423,7 +425,9 @@ def state_space(
         Bx = x
 
     recur_runner = (
-        _ext_ss_recur if extension_backend_indicator(x, M) else state_space_recursion
+        _ext_ss_recur
+        if extension_backend_indicator(x, M) and unroll_factor in (None, 1)
+        else state_space_recursion
     )
 
     if return_zf or out_idx is None:
