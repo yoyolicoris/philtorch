@@ -89,8 +89,8 @@ at::Tensor lti_mat_recur_second_order_cuda_impl(const at::Tensor &A,
     if (A.dim() == 3)
     {
         // Batch
-        AT_DISPATCH_FLOATING_AND_COMPLEX_TYPES_AND1(
-            at::kLong, x.scalar_type(), "lti_batch_mat_recur_second_order", [&]
+        AT_DISPATCH_FLOATING_AND_COMPLEX_TYPES_AND3(
+            at::kLong, at::kHalf, at::kBFloat16, x.scalar_type(), "lti_batch_mat_recur_second_order", [&]
             { lti_batch_mat_recur_second_order<scalar_t>(
                   A_contiguous.const_data_ptr<scalar_t>(),
                   x_contiguous.const_data_ptr<scalar_t>(),
@@ -99,8 +99,8 @@ at::Tensor lti_mat_recur_second_order_cuda_impl(const at::Tensor &A,
     else
     {
         // Shared
-        AT_DISPATCH_FLOATING_AND_COMPLEX_TYPES_AND1(
-            at::kLong, x.scalar_type(), "lti_share_mat_recur_second_order", [&]
+        AT_DISPATCH_FLOATING_AND_COMPLEX_TYPES_AND3(
+            at::kLong, at::kHalf, at::kBFloat16, x.scalar_type(), "lti_share_mat_recur_second_order", [&]
             { lti_share_mat_recur_second_order<scalar_t>(
                   A_contiguous.const_data_ptr<scalar_t>(),
                   x_contiguous.const_data_ptr<scalar_t>(),

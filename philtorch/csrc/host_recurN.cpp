@@ -211,8 +211,8 @@ at::Tensor mat_recur_N_order_cpu_impl(const at::Tensor &A, const at::Tensor &zi,
         // Batch
         auto Ax = at::cat({A_contiguous, x_contiguous.unsqueeze(-2)}, -2)
                       .contiguous();
-        AT_DISPATCH_FLOATING_AND_COMPLEX_TYPES_AND1(
-            at::kLong, x.scalar_type(), "host_batch_mat_recur_N_order", [&]
+        AT_DISPATCH_FLOATING_AND_COMPLEX_TYPES_AND3(
+            at::kLong, at::kHalf, at::kBFloat16, x.scalar_type(), "host_batch_mat_recur_N_order", [&]
             { host_batch_mat_recur_N_order<scalar_t>(
                   Ax.const_data_ptr<scalar_t>(),
                   out.mutable_data_ptr<scalar_t>(), n_steps * n_batches,
@@ -221,8 +221,8 @@ at::Tensor mat_recur_N_order_cpu_impl(const at::Tensor &A, const at::Tensor &zi,
     else
     {
         // Shared
-        AT_DISPATCH_FLOATING_AND_COMPLEX_TYPES_AND1(
-            at::kLong, x.scalar_type(), "host_share_mat_recur_N_order", [&]
+        AT_DISPATCH_FLOATING_AND_COMPLEX_TYPES_AND3(
+            at::kLong, at::kHalf, at::kBFloat16, x.scalar_type(), "host_share_mat_recur_N_order", [&]
             { host_share_mat_recur_N_order<scalar_t>(
                   A_contiguous.const_data_ptr<scalar_t>(),
                   x_contiguous.const_data_ptr<scalar_t>(),
@@ -256,8 +256,8 @@ at::Tensor mat_recur_N_order_cpu_omp_impl(const at::Tensor &A,
 
     if (A.dim() == 4)
     {
-        AT_DISPATCH_FLOATING_AND_COMPLEX_TYPES_AND1(
-            at::kLong, x.scalar_type(), "host_batch_mat_recur_N_order_omp",
+        AT_DISPATCH_FLOATING_AND_COMPLEX_TYPES_AND3(
+            at::kLong, at::kHalf, at::kBFloat16, x.scalar_type(), "host_batch_mat_recur_N_order_omp",
             [&]
             {
                 host_batch_mat_recur_N_order_omp<scalar_t>(
@@ -269,8 +269,8 @@ at::Tensor mat_recur_N_order_cpu_omp_impl(const at::Tensor &A,
     else
     {
         // Shared
-        AT_DISPATCH_FLOATING_AND_COMPLEX_TYPES_AND1(
-            at::kLong, x.scalar_type(), "host_share_mat_recur_N_order", [&]
+        AT_DISPATCH_FLOATING_AND_COMPLEX_TYPES_AND3(
+            at::kLong, at::kHalf, at::kBFloat16, x.scalar_type(), "host_share_mat_recur_N_order", [&]
             { host_share_mat_recur_N_order_omp<scalar_t>(
                   n_batches, n_steps, order,
                   A_contiguous.const_data_ptr<scalar_t>(),
