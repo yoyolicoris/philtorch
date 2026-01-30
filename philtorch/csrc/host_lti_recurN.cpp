@@ -84,7 +84,7 @@ at::Tensor lti_mat_recur_N_order_cpu_impl(const at::Tensor &A,
     if (A.dim() == 3)
     {
         AT_DISPATCH_FLOATING_AND_COMPLEX_TYPES_AND3(
-            at::kLong, at::kHalf, at::kBFloat16, scalar_type(), "host_lti_batch_mat_recur_N_order",
+            at::kLong, at::kHalf, at::kBFloat16, x.scalar_type(), "host_lti_batch_mat_recur_N_order",
             [&]
             {
                 host_lti_batch_mat_recur_N_order<scalar_t>(
