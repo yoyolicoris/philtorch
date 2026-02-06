@@ -23,14 +23,31 @@ from philtorch.lti.recur import LTIRecurrence
     [11],
 )
 @pytest.mark.parametrize(
-    "cmplx",
-    [True, False],
-)
-@pytest.mark.parametrize(
-    "device",
+    ("cmplx", "order", "device"),
     [
-        "cpu",
+        (True, 2, "cpu"),
+        (False, 2, "cpu"),
+        (True, 3, "cpu"),
+        (False, 3, "cpu"),
         pytest.param(
+            True,
+            2,
+            "cuda",
+            marks=pytest.mark.skipif(
+                not torch.cuda.is_available(), reason="CUDA not available"
+            ),
+        ),
+        pytest.param(
+            False,
+            2,
+            "cuda",
+            marks=pytest.mark.skipif(
+                not torch.cuda.is_available(), reason="CUDA not available"
+            ),
+        ),
+        pytest.param(
+            False,
+            3,
             "cuda",
             marks=pytest.mark.skipif(
                 not torch.cuda.is_available(), reason="CUDA not available"
@@ -42,7 +59,7 @@ from philtorch.lti.recur import LTIRecurrence
     "share_A",
     [True, False],
 )
-def test_second_order(
+def test_N_order(
     x_requires_grad: bool,
     A_requires_grad: bool,
     zi_requires_grad: bool,
@@ -50,16 +67,16 @@ def test_second_order(
     samples: int,
     cmplx: bool,
     device: str,
+    order: int,
 ):
     batch_size = 3
-    order = 2
     x, A, zi = tuple(
         x.to(device)
         for x in [
             torch.randn(
                 batch_size,
                 samples,
-                2,
+                order,
                 dtype=torch.double if not cmplx else torch.complex128,
             ),
             torch.randn(
@@ -70,7 +87,7 @@ def test_second_order(
                 ),
                 dtype=torch.double if not cmplx else torch.complex128,
             )
-            * 0.25,
+            / order**2,
             torch.randn(
                 batch_size, order, dtype=torch.double if not cmplx else torch.complex128
             ),

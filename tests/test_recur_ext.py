@@ -2,9 +2,10 @@ import pytest
 import torch
 from philtorch.mat import companion
 from philtorch.lti import linear_recurrence
+from philtorch.lpv import state_space_recursion as lpv_state_space
 
-from .test_lti_lfilter import _generate_random_signal
 from .test_lti_ssm import _generate_random_filter_coeffs
+from .test_lpv_filters import _generate_time_varying_coeffs
 
 
 @pytest.mark.parametrize(
@@ -93,3 +94,69 @@ def test_lti_recur_equiv(device: str, batch: bool):
     lti_y = torch.ops.philtorch.lti_recur(a_torch, zi, x_torch)
     torch_y = linear_recurrence(a_torch, zi, x_torch)
     assert torch.allclose(lti_y, torch_y), torch.max(torch.abs(lti_y - torch_y))
+
+
+@pytest.mark.parametrize(
+    "device",
+    [
+        "cpu",
+        # pytest.param(
+        #     "cuda",
+        #     marks=pytest.mark.skipif(
+        #         not torch.cuda.is_available(), reason="CUDA not available"
+        #     ),
+        # ),
+    ],
+)
+@pytest.mark.parametrize("order", [2, 3, 5])
+def test_recurN_extension(device, order):
+    """Test that the recur2 extension works correctly."""
+    batch_size = 2
+    N = 37
+
+    _, a = _generate_time_varying_coeffs(batch_size, N, order, order)
+    # x = _generate_test_signal(batch_size, N, "white_noise").cuda()
+    x = torch.randn(batch_size, N, order).to(device).double()  # Simulated input
+    A = companion(a).to(device).double()
+    zi = torch.randn(batch_size, order).to(device).double()
+
+    ext_output = torch.ops.philtorch.recurN(A, zi, x)
+    torch_output = lpv_state_space(A, zi, x, unroll_factor=1)
+
+    # Compare outputs
+    assert torch.allclose(ext_output, torch_output), torch.max(
+        torch.abs(ext_output - torch_output)
+    )
+
+
+@pytest.mark.parametrize(
+    "device",
+    [
+        "cpu",
+        pytest.param(
+            "cuda",
+            marks=pytest.mark.skipif(
+                not torch.cuda.is_available(), reason="CUDA not available"
+            ),
+        ),
+    ],
+)
+def test_recur2_extension(device):
+    """Test that the recur2 extension works correctly."""
+    batch_size = 2
+    N = 17
+    order = 2
+
+    _, a = _generate_time_varying_coeffs(batch_size, N, order, order)
+    # x = _generate_test_signal(batch_size, N, "white_noise").cuda()
+    x = torch.randn(batch_size, N, 2).to(device).double()  # Simulated input
+    A = companion(a).to(device).double()
+    zi = torch.randn(batch_size, order).to(device).double()
+
+    ext_output = torch.ops.philtorch.recur2(A, zi, x)
+    torch_output = lpv_state_space(A, zi, x, unroll_factor=1)
+
+    # Compare outputs
+    assert torch.allclose(ext_output, torch_output), torch.max(
+        torch.abs(ext_output - torch_output)
+    )

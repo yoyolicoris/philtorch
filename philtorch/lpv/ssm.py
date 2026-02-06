@@ -5,6 +5,13 @@ from typing import Optional, Union, Any
 from torch import Tensor
 from torchlpc import sample_wise_lpc
 
+try:
+    import pararnn.parallel_reduction.parallel_reduction
+
+    PARARNN_AVAILABLE = True
+except ImportError:
+    PARARNN_AVAILABLE = False
+
 from ..mat import matrices_cumdot
 from .. import EXTENSION_LOADED
 
@@ -15,7 +22,12 @@ def extension_backend_indicator(x: Tensor, M: int) -> bool:
     The indicator prefers the extension when it is available and when the
     problem size or device favors the extension implementation.
     """
-    return EXTENSION_LOADED and (x.is_cpu or (M <= 2))
+    return (EXTENSION_LOADED and (x.is_cpu or (M <= 2))) or _pararnn_applicable(x, M)
+
+
+def _pararnn_applicable(x: Tensor, M: int) -> bool:
+    """Check if the PararNN backend can be used for the given input."""
+    return PARARNN_AVAILABLE and x.is_cuda and x.is_floating_point() and M in (2, 3)
 
 
 class MatrixRecurrence(Function):
@@ -23,7 +35,17 @@ class MatrixRecurrence(Function):
 
     @staticmethod
     def forward(A: Tensor, zi: Tensor, x: Tensor) -> Tensor:
-        if x.size(-1) == 2:
+        if _pararnn_applicable(x, x.size(-1)):
+            if A.ndim == 3:
+                A = A.repeat(x.size(0), 1, 1, 1)
+            jac = F.pad(-A, (0, 0, 0, 0, 1, 0))
+            rhs = torch.cat([zi.unsqueeze(1), x], dim=1)
+            return (
+                torch.ops.parallel_reduce_cuda.parallel_reduce_block_diag_3x3_cuda
+                if x.size(-1) == 3
+                else torch.ops.parallel_reduce_cuda.parallel_reduce_block_diag_2x2_cuda
+            )(jac, rhs)[:, 1:]
+        elif x.size(-1) == 2:
             return torch.ops.philtorch.recur2(A, zi, x)
         return torch.ops.philtorch.recurN(A, zi, x)
 
