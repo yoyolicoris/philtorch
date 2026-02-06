@@ -405,7 +405,7 @@ environments:
       - conda: https://prefix.dev/conda-forge/linux-64/zlib-ng-2.3.2-hceb46e0_1.conda
       - conda: https://prefix.dev/conda-forge/linux-64/zstd-1.5.7-hb78ec9c_6.conda
       - pypi: https://files.pythonhosted.org/packages/00/b7/6924c4a40bc74f643dc74d274344b737adceb574bcd6ec46819ce4567f80/kazane-1.0.4-py3-none-any.whl
-      - pypi: git+https://github.com/yoyolicoris/ml-pararnn.git#29299d19351f78c470abfe34a8483c6cbfab3303
+      - pypi: git+https://github.com/yoyolicoris/ml-pararnn.git?rev=29299d19351f78c470abfe34a8483c6cbfab3303#29299d19351f78c470abfe34a8483c6cbfab3303
       - pypi: https://files.pythonhosted.org/packages/79/7b/2c79738432f5c924bef5071f933bcc9efd0473bac3b4aa584a6f7c1c8df8/mypy_extensions-1.1.0-py3-none-any.whl
       - pypi: https://files.pythonhosted.org/packages/c0/ba/daf16c2d1965bf6237fb696639e3e93645ac6801f7dcaf9ec694a74e9326/setuptools_git_versioning-2.1.0-py3-none-any.whl
       - pypi: https://files.pythonhosted.org/packages/c6/7c/c9771f9cb770b3ec60e71d239a8bdd9cf62f89693f7398535df37f343076/torchlpc-0.7.2.tar.gz
@@ -4339,7 +4339,7 @@ packages:
   - pkg:pypi/pandocfilters?source=hash-mapping
   size: 11627
   timestamp: 1631603397334
-- pypi: git+https://github.com/yoyolicoris/ml-pararnn.git#29299d19351f78c470abfe34a8483c6cbfab3303
+- pypi: git+https://github.com/yoyolicoris/ml-pararnn.git?rev=29299d19351f78c470abfe34a8483c6cbfab3303#29299d19351f78c470abfe34a8483c6cbfab3303
   name: pararnn
   version: 0.1.0
   requires_dist:
@@ -4386,8 +4386,8 @@ packages:
   timestamp: 1733302019362
 - pypi: ./
   name: philtorch
-  version: 0.3.dev0+feat.pararnn.extra8
-  sha256: 7a40d8b33d8ff4a908f8e1cb52e710486d4dc0c4284d1453b94b67316c013c2d
+  version: 0.3.dev11
+  sha256: d7d81804a3c1904d9baeb25192adb67bfde3170bfd36d37ad9aedbe22a715f9a
   requires_dist:
   - torch>=2.0.0
   - torchlpc>=0.7.2
@@ -4395,7 +4395,6 @@ packages:
   - scipy ; extra == 'dev'
   - numpy ; extra == 'dev'
   - pytest-cov ; extra == 'dev'
-  - pararnn @ git+https://github.com/yoyolicoris/ml-pararnn.git@fix/installable ; extra == 'extra'
   requires_python: '>=3.10'
 - conda: https://prefix.dev/conda-forge/linux-64/pillow-12.0.0-py312h50c33e8_2.conda
   sha256: 58c4589d7dc2d2bf66fc57fc21abd43ca85b23d14b24466d8e8bef60ca51185b

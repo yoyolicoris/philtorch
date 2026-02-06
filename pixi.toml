@@ -21,9 +21,10 @@ platforms = ["linux-64"]
 cuda = "13.0"
 
 [pypi-dependencies]
+pararnn = { git = "https://github.com/yoyolicoris/ml-pararnn.git", rev = "29299d19351f78c470abfe34a8483c6cbfab3303" }
 setuptools-git-versioning = ">=2.1.0, <3"
 torchlpc = ">=0.7.2, <0.8"
-philtorch = { path = ".", editable = true, extras = ["extra"] }
+philtorch = { path = ".", editable = true}
 kazane = ">=1.0.4, <2"
 
 
