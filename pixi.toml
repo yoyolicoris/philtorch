@@ -9,6 +9,7 @@ pytest = ">=9.0.2,<10"
 pytest-cov = ">=7.0.0,<8"
 jupyter = ">=1.1.1,<2"
 matplotlib = ">=3.10.8,<4"
+tqdm = ">=4.67.3,<5"
 
 [workspace]
 authors = ["Chin-Yun Yu <chin-yun.yu@qmul.ac.uk>"]
