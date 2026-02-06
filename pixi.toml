@@ -22,7 +22,7 @@ cuda = "13.0"
 [pypi-dependencies]
 setuptools-git-versioning = ">=2.1.0, <3"
 torchlpc = ">=0.7.2, <0.8"
-philtorch = { path = ".", editable = true }
+philtorch = { path = ".", editable = true, extras = ["extra"] }
 kazane = ">=1.0.4, <2"
 
 
