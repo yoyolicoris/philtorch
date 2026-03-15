@@ -20,45 +20,10 @@ def _first_order_filt(
     return y
 
 
-def _cubic_spline_kernel(x: Tensor) -> Tensor:
-    abs_x = x.abs()
-    mask1 = abs_x <= 1
-    mask2 = ~mask1 & (abs_x < 2)
-    return torch.where(
-        mask1,
-        (4 - 6 * abs_x**2 + 3 * abs_x**3) / 6,
-        torch.where(
-            mask2,
-            (2 - abs_x) ** 3 / 6,
-            0.0,
-        ),
-    )
-
-
-def cubic_spline(x: Tensor, m: int, parallel_form: bool = True, **kwargs) -> Tensor:
-    r"""
-    Upsample the input tensor `x` by a factor of `m` using cubic spline interpolation
-    based on the method described in "B-Spline Signal Processing: Part II: Efficient Design
-    and Applications" by M. Unser.
-
-    Args:
-        x (Tensor): Input tensor of shape (B, L).
-        m (int): Interpolation factor (must be an integer >= 1).
-        parallel_form (bool): If True, use the partial fraction expansion form for
-            cubic spline interpolation. If False, use cascaded form. Default is True.
-        **kwargs: Additional keyword arguments passed to the underlying `linear_recurrence`
-            function for inverse filtering.
-
-    Returns:
-        Tensor: Upsampled tensor of shape (B, (L - 1) * m + 1).
-    """
-    assert m >= 1 and isinstance(
-        m, int
-    ), "Interpolation factor m must be an integer >= 1."
-    if m == 1:
-        return x
+def _cubic_coeff(x: Tensor, parallel_form: bool, **kwargs) -> Tensor:
     r = torch.tensor(3**0.5 - 2, device=x.device, dtype=x.dtype)
-    k_0 = min(14, x.shape[-1] - 1)
+    # k_0 = min(14, x.shape[-1] - 1)
+    k_0 = x.shape[-1] - 1
 
     powers = r ** torch.arange(k_0, device=x.device, dtype=x.dtype)
     causal_zi = x[..., 1 : k_0 + 1] @ powers
@@ -76,6 +41,66 @@ def cubic_spline(x: Tensor, m: int, parallel_form: bool = True, **kwargs) -> Ten
         # anticausal inverse filtering
         c_flip = _first_order_filt(h[..., :-1].flip(-1), r, zi, -r, **kwargs).flip(-1)
         c = torch.cat([c_flip, zi.unsqueeze(-1)], dim=-1) * 6
+    return c
+
+
+def _cubic_spline_kernel(x: Tensor) -> Tensor:
+    abs_x = x.abs()
+    mask1 = abs_x <= 1
+    mask2 = ~mask1 & (abs_x < 2)
+    return torch.where(
+        mask1,
+        (4 - 6 * abs_x**2 + 3 * abs_x**3) / 6,
+        torch.where(
+            mask2,
+            (2 - abs_x) ** 3 / 6,
+            0.0,
+        ),
+    )
+
+
+def cspline(
+    x: Tensor, parallel_form: bool = True, lamb: float = 0.0, **kwargs
+) -> Tensor:
+    r"""
+    Compute the coefficients for cubic spline interpolation of the input tensor `x` using the method described in "B-Spline Signal Processing: Part II: Efficient Design and Applications" by M. Unser.
+
+    Args:
+        x (Tensor): Input tensor of shape (B, L).
+        parallel_form (bool): If True, use the partial fraction expansion form for cubic spline interpolation. If False, use cascaded form. Default is True.
+        lamb (float): Smoothing coefficient. Current implementation only supports `lamb=0.0` (no smoothing). Default is 0.0.
+        **kwargs: Additional keyword arguments passed to the underlying `linear_recurrence` function for inverse filtering.
+    Returns:
+        Tensor: Coefficients for cubic spline interpolation of shape (B, L).
+    """
+    if lamb != 0.0:
+        raise NotImplementedError(
+            "Regularization for cubic spline interpolation is not implemented."
+        )
+    return _cubic_coeff(x, parallel_form, **kwargs)
+
+
+def cubic_spline(x: Tensor, m: int, **kwargs) -> Tensor:
+    r"""
+    Upsample the input tensor `x` by a factor of `m` using cubic spline interpolation
+    based on the method described in "B-Spline Signal Processing: Part II: Efficient Design
+    and Applications" by M. Unser.
+
+    Args:
+        x (Tensor): Input tensor of shape (B, L).
+        m (int): Interpolation factor (must be an integer >= 1).
+        **kwargs: Additional keyword arguments passed to the underlying `cspline` function for coefficient computation.
+
+    Returns:
+        Tensor: Upsampled tensor of shape (B, (L - 1) * m + 1).
+    """
+    assert m >= 1 and isinstance(
+        m, int
+    ), "Interpolation factor m must be an integer >= 1."
+    if m == 1:
+        return x
+
+    c = _cubic_coeff(x, **kwargs)
 
     kernel_idx = torch.arange(-2, 2, 1 / m, device=x.device, dtype=x.dtype).reshape(
         4, m
