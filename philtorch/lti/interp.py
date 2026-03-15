@@ -20,15 +20,25 @@ def _first_order_filt(
     return y
 
 
-def _cubic_coeff(x: Tensor, parallel_form: bool, **kwargs) -> Tensor:
+def _cubic_coeff(
+    x: Tensor, parallel_form: bool, scipy_padding: bool, **kwargs
+) -> Tensor:
     r = torch.tensor(3**0.5 - 2, device=x.device, dtype=x.dtype)
     # k_0 = min(14, x.shape[-1] - 1)
-    k_0 = x.shape[-1] - 1
 
-    powers = r ** torch.arange(k_0, device=x.device, dtype=x.dtype)
-    causal_zi = x[..., 1 : k_0 + 1] @ powers
+    if scipy_padding:
+        # in scipy, a sequence [1, 2, 3] is mirrored to [3, 2, 1, 1, 2, 3, 3, 2, 1]
+        powers = r ** torch.arange(x.shape[-1], device=x.device, dtype=x.dtype)
+        causal_zi = x @ powers
+    else:
+        # while in torch reflect padding, [1, 2, 3] is padded to [2, 1, 2, 3, 2]
+        powers = r ** torch.arange(x.shape[-1] - 1, device=x.device, dtype=x.dtype)
+        causal_zi = x[..., 1:] @ powers
+
     if parallel_form:
-        mirrored_x = torch.cat([x, x.flip(-1)[..., 1:]], dim=-1)
+        mirrored_x = torch.cat(
+            [x, x.flip(-1) if scipy_padding else x[..., :-1].flip(-1)], dim=-1
+        )
 
         h = _first_order_filt(mirrored_x, r, causal_zi, **kwargs)
         causal_h, anticausal_h = h[..., : x.shape[-1]], h[..., -x.shape[-1] :].flip(-1)
@@ -36,7 +46,10 @@ def _cubic_coeff(x: Tensor, parallel_form: bool, **kwargs) -> Tensor:
     else:
         # causal inverse filtering
         h = _first_order_filt(x, r, causal_zi, **kwargs)
-        zi = -r / (1 - r * r) * (2 * h[..., -1] - x[..., -1])
+        if scipy_padding:
+            zi = r / (r - 1) * h[..., -1]
+        else:
+            zi = -r / (1 - r * r) * (2 * h[..., -1] - x[..., -1])
 
         # anticausal inverse filtering
         c_flip = _first_order_filt(h[..., :-1].flip(-1), r, zi, -r, **kwargs).flip(-1)
@@ -60,7 +73,11 @@ def _cubic_spline_kernel(x: Tensor) -> Tensor:
 
 
 def cspline(
-    x: Tensor, parallel_form: bool = True, lamb: float = 0.0, **kwargs
+    x: Tensor,
+    parallel_form: bool = True,
+    scipy_padding: bool = False,
+    lamb: float = 0.0,
+    **kwargs,
 ) -> Tensor:
     r"""
     Compute the coefficients for cubic spline interpolation of the input tensor `x` using the method described in "B-Spline Signal Processing: Part II: Efficient Design and Applications" by M. Unser.
@@ -68,6 +85,7 @@ def cspline(
     Args:
         x (Tensor): Input tensor of shape (B, L).
         parallel_form (bool): If True, use the partial fraction expansion form for cubic spline interpolation. If False, use cascaded form. Default is True.
+        scipy_padding (bool): If True, use the same padding convention as `scipy.signal.cspline1d` (mirrored padding). If False, use PyTorch's reflect padding convention. Default is False.
         lamb (float): Smoothing coefficient. Current implementation only supports `lamb=0.0` (no smoothing). Default is 0.0.
         **kwargs: Additional keyword arguments passed to the underlying `linear_recurrence` function for inverse filtering.
     Returns:
@@ -77,10 +95,10 @@ def cspline(
         raise NotImplementedError(
             "Regularization for cubic spline interpolation is not implemented."
         )
-    return _cubic_coeff(x, parallel_form, **kwargs)
+    return _cubic_coeff(x, parallel_form, scipy_padding, **kwargs)
 
 
-def cubic_spline(x: Tensor, m: int, **kwargs) -> Tensor:
+def cubic_spline(x: Tensor, m: int, scipy_padding: bool = False, **kwargs) -> Tensor:
     r"""
     Upsample the input tensor `x` by a factor of `m` using cubic spline interpolation
     based on the method described in "B-Spline Signal Processing: Part II: Efficient Design
@@ -89,6 +107,7 @@ def cubic_spline(x: Tensor, m: int, **kwargs) -> Tensor:
     Args:
         x (Tensor): Input tensor of shape (B, L).
         m (int): Interpolation factor (must be an integer >= 1).
+        scipy_padding (bool): If True, use the same padding convention as `scipy.signal.cspline1d` (mirrored padding). If False, use PyTorch's reflect padding convention. Default is False.
         **kwargs: Additional keyword arguments passed to the underlying `cspline` function for coefficient computation.
 
     Returns:
@@ -100,7 +119,7 @@ def cubic_spline(x: Tensor, m: int, **kwargs) -> Tensor:
     if m == 1:
         return x
 
-    c = _cubic_coeff(x, **kwargs)
+    c = _cubic_coeff(x, scipy_padding=scipy_padding, **kwargs)
 
     kernel_idx = torch.arange(-2, 2, 1 / m, device=x.device, dtype=x.dtype).reshape(
         4, m
@@ -108,6 +127,11 @@ def cubic_spline(x: Tensor, m: int, **kwargs) -> Tensor:
     kernel = _cubic_spline_kernel(kernel_idx).flip(0).T
 
     interped = F.conv1d(
-        F.pad(c.unsqueeze(1), (1, 2), mode="reflect"), kernel.unsqueeze(1)
+        (
+            torch.cat([c[:, :1], c, c[:, -2:].flip(-1)], dim=1).unsqueeze(1)
+            if scipy_padding
+            else F.pad(c.unsqueeze(1), (1, 2), mode="reflect")
+        ),
+        kernel.unsqueeze(1),
     ).mT.flatten(1, 2)
     return interped[..., : -(m - 1)]
