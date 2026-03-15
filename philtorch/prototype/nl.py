@@ -46,7 +46,6 @@ def newton_solve(
     intermediate = []
     for i in range(max_iter):
         next_y = func(y[:, :-1], x[:, i:])
-        # computed = next_y[:, :1]
         res = next_y - y[:, 1:]
 
         if fprime is not None:
