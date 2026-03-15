@@ -33,14 +33,14 @@ def newton_solve(
     Returns:
         Tensor: Approximation of the root of the function.
     """
-    assert max_iter > x.size(1), "max_iter must be greater than the sequence length."
+    assert max_iter < x.size(1), "max_iter must be less than the sequence length of x"
     M = init.size(-1)
     recur_runner = (
         _ext_ss_recur
         if extension_backend_indicator(x, M) and unroll_factor in (None, 1)
         else partial(state_space_recursion, unroll_factor=unroll_factor)
     )
-    y = torch.cat([init, y0], dim=1)
+    y = torch.cat([init.unsqueeze(1), y0], dim=1)
     computed = []
     for i in range(max_iter):
         next_y = func(y[:, :-1], x[:, i:])
@@ -57,18 +57,18 @@ def newton_solve(
                 create_graph=True,
                 vectorize=True,
             ).permute(1, 2, 0, 3)
-        init = res[:, 0]
         # Solve for the update step
-        # delta = torch.linalg.solve(J, -f_x)
-        delta = recur_runner(Jac, init, res[:, 1:])
-        computed.append(y[:, :1])
+        delta = recur_runner(Jac, res[:, 0], res[:, 1:])
+        # new_y = y[:, 1:] + torch.cat(
+        #     [torch.zeros_like(init).unsqueeze(1), delta], dim=1
+        # )
         new_y = y[:, 1:] + torch.cat(
             [torch.zeros_like(init).unsqueeze(1), delta], dim=1
         )
-
         if torch.allclose(new_y, y[:, 1:], atol=atol, rtol=rtol):
             break
+        computed.append(next_y[:, :1])
         y = new_y
 
-    return torch.cat(computed[1:] + [new_y], dim=1)
+    return torch.cat(computed + [new_y[:, 1:]], dim=1)
     # return
