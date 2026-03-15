@@ -1,7 +1,7 @@
 import torch
 from torch import Tensor
 import torch.nn.functional as F
-from typing import Any, Optional, Callable
+from typing import Any, Optional, Callable, Union
 from functools import partial
 
 from ..lpv.ssm import _ext_ss_recur, state_space_recursion, extension_backend_indicator
@@ -17,7 +17,8 @@ def newton_solve(
     rtol: float = 1e-6,
     fprime: Optional[Callable[[Tensor, Tensor], Tensor]] = None,
     unroll_factor: int = 1,
-) -> Tensor:
+    return_intermediate: bool = False,
+) -> Union[Tensor, tuple[Tensor, list[tuple[Tensor, Tensor]]]]:
     """Solve for the root of a function using Newton's method.
 
     Args:
@@ -42,6 +43,7 @@ def newton_solve(
     )
     y = torch.cat([init.unsqueeze(1), y0], dim=1)
     computed = []
+    intermediate = []
     for i in range(max_iter):
         next_y = func(y[:, :-1], x[:, i:])
         # computed = next_y[:, :1]
@@ -59,9 +61,6 @@ def newton_solve(
             ).permute(1, 2, 0, 3)
         # Solve for the update step
         delta = recur_runner(Jac, res[:, 0], res[:, 1:])
-        # new_y = y[:, 1:] + torch.cat(
-        #     [torch.zeros_like(init).unsqueeze(1), delta], dim=1
-        # )
         new_y = y[:, 1:] + torch.cat(
             [torch.zeros_like(init).unsqueeze(1), delta], dim=1
         )
@@ -70,5 +69,14 @@ def newton_solve(
         computed.append(next_y[:, :1])
         y = new_y
 
-    return torch.cat(computed + [new_y[:, 1:]], dim=1)
-    # return
+        if return_intermediate:
+            intermediate.append(
+                (
+                    torch.cat(computed + [new_y[:, 1:]], dim=1),
+                    res.square().sum(dim=(-1, -2)),
+                )
+            )
+    result = torch.cat(computed + [new_y[:, 1:]], dim=1)
+    if return_intermediate:
+        return result, intermediate
+    return result
