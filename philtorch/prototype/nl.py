@@ -60,9 +60,7 @@ def newton_solve(
             ).permute(1, 2, 0, 3)
         # Solve for the update step
         delta = recur_runner(Jac, res[:, 0], res[:, 1:])
-        new_y = y[:, 1:] + torch.cat(
-            [torch.zeros_like(init).unsqueeze(1), delta], dim=1
-        )
+        new_y = torch.cat([next_y[:, :1], y[:, 2:] + delta], dim=1)
         if torch.allclose(new_y, y[:, 1:], atol=atol, rtol=rtol):
             break
         computed.append(next_y[:, :1])
@@ -75,7 +73,7 @@ def newton_solve(
                     res.square().sum(dim=(-1, -2)),
                 )
             )
-    result = torch.cat(computed + [new_y[:, 1:]], dim=1)
+    result = torch.cat(computed + [new_y], dim=1)
     if return_intermediate:
         return result, intermediate
     return result
