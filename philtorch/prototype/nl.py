@@ -62,18 +62,22 @@ def newton_solve(
         delta = recur_runner(Jac, res[:, 0], res[:, 1:])
         new_y = torch.cat([next_y[:, :1], y[:, 2:] + delta], dim=1)
         if torch.allclose(new_y, y[:, 1:], atol=atol, rtol=rtol):
-            break
-        computed.append(next_y[:, :1])
-        y = new_y
+            result = torch.cat(computed + [new_y], dim=1)
+            if return_intermediate:
+                return result, intermediate
+            return result
 
         if return_intermediate:
             intermediate.append(
                 (
-                    torch.cat(computed + [new_y[:, 1:]], dim=1),
+                    torch.cat(computed + [new_y], dim=1),
                     res.square().sum(dim=(-1, -2)),
                 )
             )
-    result = torch.cat(computed + [new_y], dim=1)
+        computed.append(next_y[:, :1])
+        y = new_y
+
+    result = torch.cat(computed + [new_y[:, 1:]], dim=1)
     if return_intermediate:
         return result, intermediate
     return result
