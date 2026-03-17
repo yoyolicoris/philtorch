@@ -18,7 +18,7 @@ def newton_solve(
     fprime: Optional[Callable[[Tensor, Tensor], Tensor]] = None,
     unroll_factor: int = 1,
     return_intermediate: bool = False,
-) -> Union[Tensor, tuple[Tensor, list[tuple[Tensor, Tensor]]]]:
+) -> Union[tuple[Tensor, int], tuple[Tensor, int, list[tuple[Tensor, Tensor]]]]:
     """Solve for the root of a function using Newton's method.
 
     Args:
@@ -29,7 +29,7 @@ def newton_solve(
         max_iter (int, optional): Maximum number of iterations. Defaults to 3.
         atol (float, optional): Tolerance for convergence. Defaults to 1e-6.
         rtol (float, optional): Relative tolerance for convergence. Defaults to 1e-6.
-        fprime (Optional[Callable[[Tensor], Tensor]], optional): Optional function to compute the Jacobian. If None, the Jacobian will be computed using autograd. Defaults to None.
+        fprime (optional): Optional function to compute the Jacobian. If None, the Jacobian will be computed using autograd. Defaults to None.
 
     Returns:
         Tensor: Approximation of the root of the function.
@@ -61,23 +61,20 @@ def newton_solve(
         # Solve for the update step
         delta = recur_runner(Jac, res[:, 0], res[:, 1:])
         new_y = torch.cat([next_y[:, :1], y[:, 2:] + delta], dim=1)
+        computed.append(next_y[:, :1])
         if torch.allclose(new_y, y[:, 1:], atol=atol, rtol=rtol):
-            result = torch.cat(computed + [new_y], dim=1)
-            if return_intermediate:
-                return result, intermediate
-            return result
+            break
 
         if return_intermediate:
             intermediate.append(
                 (
-                    torch.cat(computed + [new_y], dim=1),
+                    torch.cat(computed + [new_y[:, :1]], dim=1),
                     res.square().sum(dim=(-1, -2)),
                 )
             )
-        computed.append(next_y[:, :1])
         y = new_y
 
     result = torch.cat(computed + [new_y[:, 1:]], dim=1)
     if return_intermediate:
-        return result, intermediate
-    return result
+        return result, i + 1, intermediate
+    return result, i + 1
