@@ -119,7 +119,7 @@ def cubic_spline(x: Tensor, m: int, scipy_padding: bool = False, **kwargs) -> Te
     if m == 1:
         return x
 
-    c = _cubic_coeff(x, scipy_padding=scipy_padding, **kwargs)
+    c = cspline(x, scipy_padding=scipy_padding, **kwargs)
 
     kernel_idx = torch.arange(-2, 2, 1 / m, device=x.device, dtype=x.dtype).reshape(
         4, m
