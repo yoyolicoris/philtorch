@@ -37,11 +37,7 @@ def helion_backend_indicator(x: Tensor) -> bool:
     Returns:
         bool: True when the Helion backend can be used.
     """
-    return (
-        HELION_LOADED
-        and x.is_cuda
-        and x.dtype in (torch.float16, torch.float32, torch.bfloat16)
-    )
+    return HELION_LOADED and x.is_cuda and not x.is_complex()
 
 
 class LTIMatrixRecurrence(Function):

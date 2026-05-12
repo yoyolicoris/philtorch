@@ -33,8 +33,8 @@ def lti_shared_A_recursion_loop(
     for tile_b in hl.tile(batch):
         for t in hl.grid(1, T + 1):
             for tile_m in hl.tile(M):
-                output[tile_b, t, tile_m] = torch.addmm(
-                    output[tile_b, t, tile_m],
+                output[tile_b, t, tile_m] += torch.matmul(
+                    # output[tile_b, t, tile_m],
                     output[tile_b, t - 1, :],
                     AT[:, tile_m],
                 )
@@ -70,8 +70,8 @@ def lti_recursion_loop(
     for tile_b in hl.tile(batch):
         for t in hl.grid(1, T + 1):
             for tile_m in hl.tile(M):
-                output[tile_b, t, tile_m, :] = torch.baddbmm(
-                    output[tile_b, t, tile_m, :],
+                output[tile_b, t, tile_m, :] += torch.bmm(
+                    # output[tile_b, t, tile_m, :],
                     A[tile_b, tile_m, :],
                     output[tile_b, t - 1, :, :],
                 )
@@ -107,8 +107,8 @@ def lpv_shared_A_recursion_loop(
     for tile_b in hl.tile(batch):
         for t in hl.grid(1, T + 1):
             for tile_m in hl.tile(M):
-                output[tile_b, t, tile_m] = torch.addmm(
-                    output[tile_b, t, tile_m],
+                output[tile_b, t, tile_m] += torch.matmul(
+                    # output[tile_b, t, tile_m],
                     output[tile_b, t - 1, :],
                     AT[t - 1, :, tile_m],
                 )
@@ -139,14 +139,14 @@ def lpv_recursion_loop(
     # AT = A.transpose(-2, -1)
     T = x.shape[1]
     M = A.shape[-1]
-    output = torch.cat([zi.unsqueeze(1), x], dim=1)
+    output = torch.cat([zi.unsqueeze(1), x], dim=1).unsqueeze(-1)
 
     for tile_b in hl.tile(batch):
         for t in hl.grid(1, T + 1):
             for tile_m in hl.tile(M):
-                output[tile_b, t, tile_m] = torch.baddbmm(
-                    output[tile_b, t, tile_m].unsqueeze(-1),
+                output[tile_b, t, tile_m, :] += torch.bmm(
+                    # output[tile_b, t, tile_m, :],
                     A[tile_b, t - 1, tile_m, :],
-                    output[tile_b, t - 1, :].unsqueeze(-1),
-                ).squeeze(-1)
-    return output[:, 1:]
+                    output[tile_b, t - 1, :, :],
+                )
+    return output[:, 1:].squeeze(-1)

@@ -59,17 +59,17 @@ def test_hl_lti_recurN_pt2_compatibility(
                 batch_size,
                 samples,
                 order,
-                dtype=torch.float32 if not cmplx else torch.complex128,
+                dtype=torch.double if not cmplx else torch.complex128,
             ),
             torch.randn(
                 *((batch_size, order, order) if not share_A else (order, order)),
-                dtype=torch.float32 if not cmplx else torch.complex128,
+                dtype=torch.double if not cmplx else torch.complex128,
             )
             * 0.25,
             torch.randn(
                 batch_size,
                 order,
-                dtype=torch.float32 if not cmplx else torch.complex128,
+                dtype=torch.double if not cmplx else torch.complex128,
             ),
         ]
     )
@@ -127,7 +127,7 @@ def test_hl_recurN_pt2_compatibility(
                 batch_size,
                 samples,
                 order,
-                dtype=torch.float32 if not cmplx else torch.complex128,
+                dtype=torch.double if not cmplx else torch.complex128,
             ),
             torch.randn(
                 *(
@@ -135,13 +135,13 @@ def test_hl_recurN_pt2_compatibility(
                     if not share_A
                     else (samples, order, order)
                 ),
-                dtype=torch.float32 if not cmplx else torch.complex128,
+                dtype=torch.double if not cmplx else torch.complex128,
             )
             / order**2,
             torch.randn(
                 batch_size,
                 order,
-                dtype=torch.float32 if not cmplx else torch.complex128,
+                dtype=torch.double if not cmplx else torch.complex128,
             ),
         ]
     )
