@@ -31,80 +31,85 @@ else:
 __version__ = Path(__file__).parent.joinpath("VERSION.txt").read_text()
 
 
-def _recurN_backward(
-    ctx: Any, grad_y: torch.Tensor
-) -> tuple[Optional[torch.Tensor], Optional[torch.Tensor], Optional[torch.Tensor]]:
-    A, zi, y = ctx.saved_tensors
-    grad_x = grad_A = grad_zi = None
+def _recurN_backward(f):
+    def closure(
+        ctx: Any, grad_y: torch.Tensor
+    ) -> tuple[Optional[torch.Tensor], Optional[torch.Tensor], Optional[torch.Tensor]]:
+        A, zi, y = ctx.saved_tensors
+        grad_x = grad_A = grad_zi = None
 
-    AmT = A.mT.conj_physical()
-    AmT_rolled = torch.roll(AmT, shifts=-1, dims=-3)
+        AmT = A.mT.conj_physical()
+        AmT_rolled = torch.roll(AmT, shifts=-1, dims=-3)
 
-    runner = (
-        torch.ops.philtorch.recurN if A.shape[-1] != 2 else torch.ops.philtorch.recur2
-    )
+        runner = f if A.shape[-1] != 2 else torch.ops.philtorch.recur2
 
-    flipped_grad_x = runner(
-        AmT_rolled.flip(-3),
-        torch.zeros_like(zi),
-        grad_y.flip(1),
-    )
+        flipped_grad_x = runner(
+            AmT_rolled.flip(-3),
+            torch.zeros_like(zi),
+            grad_y.flip(1),
+        )
 
-    if ctx.needs_input_grad[1]:
-        grad_zi = (AmT[..., 0, :, :] @ flipped_grad_x[:, -1, :, None]).squeeze(-1)
+        if ctx.needs_input_grad[1]:
+            grad_zi = (AmT[..., 0, :, :] @ flipped_grad_x[:, -1, :, None]).squeeze(-1)
 
-    if ctx.needs_input_grad[2]:
-        grad_x = flipped_grad_x.flip(1)
+        if ctx.needs_input_grad[2]:
+            grad_x = flipped_grad_x.flip(1)
 
-    if ctx.needs_input_grad[0]:
-        valid_y = y[:, :-1]
-        padded_y = torch.cat([zi.unsqueeze(1), valid_y], dim=1)
+        if ctx.needs_input_grad[0]:
+            valid_y = y[:, :-1]
+            padded_y = torch.cat([zi.unsqueeze(1), valid_y], dim=1)
 
-        if A.dim() == 3:
-            grad_A = flipped_grad_x.flip(1).permute(
-                1, 2, 0
-            ) @ padded_y.conj_physical().transpose(0, 1)
-        else:
-            grad_A = padded_y.conj_physical().unsqueeze(-2) * flipped_grad_x.flip(
-                1
-            ).unsqueeze(-1)
+            if A.dim() == 3:
+                grad_A = flipped_grad_x.flip(1).permute(
+                    1, 2, 0
+                ) @ padded_y.conj_physical().transpose(0, 1)
+            else:
+                grad_A = padded_y.conj_physical().unsqueeze(-2) * flipped_grad_x.flip(
+                    1
+                ).unsqueeze(-1)
 
-    return grad_A, grad_zi, grad_x
+        return grad_A, grad_zi, grad_x
+
+    return closure
 
 
-def _lti_recurN_backward(
-    ctx: Any, grad_y: torch.Tensor
-) -> tuple[Optional[torch.Tensor], Optional[torch.Tensor], Optional[torch.Tensor]]:
-    A, zi, y = ctx.saved_tensors
-    grad_x = grad_A = grad_zi = None
+def _lti_recurN_backward(f):
+    def closure(
+        ctx: Any, grad_y: torch.Tensor
+    ) -> tuple[Optional[torch.Tensor], Optional[torch.Tensor], Optional[torch.Tensor]]:
+        A, zi, y = ctx.saved_tensors
+        grad_x = grad_A = grad_zi = None
 
-    AmT = A.mT.conj_physical()
+        AmT = A.mT.conj_physical()
 
-    runner = (
-        torch.ops.philtorch.lti_recurN
-        if A.shape[-1] != 2
-        else torch.ops.philtorch.lti_recur2
-    )
+        runner = (
+            # torch.ops.philtorch.lti_recurN
+            f
+            if A.shape[-1] != 2
+            else torch.ops.philtorch.lti_recur2
+        )
 
-    flipped_grad_x = runner(AmT, torch.zeros_like(zi), grad_y.flip(1))
+        flipped_grad_x = runner(AmT, torch.zeros_like(zi), grad_y.flip(1))
 
-    if ctx.needs_input_grad[1]:
-        grad_zi = (AmT @ flipped_grad_x[:, -1, :, None]).squeeze(-1)
+        if ctx.needs_input_grad[1]:
+            grad_zi = (AmT @ flipped_grad_x[:, -1, :, None]).squeeze(-1)
 
-    if ctx.needs_input_grad[2]:
-        grad_x = flipped_grad_x.flip(1)
+        if ctx.needs_input_grad[2]:
+            grad_x = flipped_grad_x.flip(1)
 
-    if ctx.needs_input_grad[0]:
-        valid_y = y[:, :-1]
-        padded_y = torch.cat([zi.unsqueeze(1), valid_y], dim=1)
-        if A.dim() == 2:
-            grad_A = flipped_grad_x.flip(1).flatten(
-                0, 1
-            ).T @ padded_y.conj_physical().flatten(0, 1)
-        else:
-            grad_A = flipped_grad_x.flip(1).mT @ padded_y.conj_physical()
+        if ctx.needs_input_grad[0]:
+            valid_y = y[:, :-1]
+            padded_y = torch.cat([zi.unsqueeze(1), valid_y], dim=1)
+            if A.dim() == 2:
+                grad_A = flipped_grad_x.flip(1).flatten(
+                    0, 1
+                ).T @ padded_y.conj_physical().flatten(0, 1)
+            else:
+                grad_A = flipped_grad_x.flip(1).mT @ padded_y.conj_physical()
 
-    return grad_A, grad_zi, grad_x
+        return grad_A, grad_zi, grad_x
+
+    return closure
 
 
 def _lti_recur_backward(
@@ -239,16 +244,24 @@ if EXTENSION_LOADED:
         return torch.empty_like(x)
 
     torch.library.register_autograd(
-        "philtorch::recur2", _recurN_backward, setup_context=_setup_context
+        "philtorch::recur2",
+        _recurN_backward(torch.ops.philtorch.recur2),
+        setup_context=_setup_context,
     )
     torch.library.register_autograd(
-        "philtorch::recurN", _recurN_backward, setup_context=_setup_context
+        "philtorch::recurN",
+        _recurN_backward(torch.ops.philtorch.recurN),
+        setup_context=_setup_context,
     )
     torch.library.register_autograd(
-        "philtorch::lti_recur2", _lti_recurN_backward, setup_context=_setup_context
+        "philtorch::lti_recur2",
+        _lti_recurN_backward(torch.ops.philtorch.lti_recur2),
+        setup_context=_setup_context,
     )
     torch.library.register_autograd(
-        "philtorch::lti_recurN", _lti_recurN_backward, setup_context=_setup_context
+        "philtorch::lti_recurN",
+        _lti_recurN_backward(torch.ops.philtorch.lti_recurN),
+        setup_context=_setup_context,
     )
     torch.library.register_autograd(
         "philtorch::lti_recur", _lti_recur_backward, setup_context=_setup_context
@@ -285,7 +298,8 @@ if HELION_LOADED:
                 A.shape[0] == x.shape[0],
                 "If A is 3D, its first dimension must match x's batch size.",
             )
-        return torch.empty_like(x)
+        # return torch.empty_like(x)
+        return x.new_empty(x.shape[0], x.shape[1] + 1, x.shape[2])[:, 1:]
 
     @hl_recurN.register_fake
     def _(A, zi, x):
@@ -306,11 +320,16 @@ if HELION_LOADED:
                 A.shape[0] == x.shape[0],
                 "If A is 4D, its first dimension must match x's batch size.",
             )
-        return torch.empty_like(x)
+        # return torch.empty_like(x)
+        return x.new_empty(x.shape[0], x.shape[1] + 1, x.shape[2])[:, 1:]
 
     torch.library.register_autograd(
-        "philtorch::hl_lti_recurN", _lti_recurN_backward, setup_context=_setup_context
+        "philtorch::hl_lti_recurN",
+        _lti_recurN_backward(hl_lti_recurN),
+        setup_context=_setup_context,
     )
     torch.library.register_autograd(
-        "philtorch::hl_recurN", _recurN_backward, setup_context=_setup_context
+        "philtorch::hl_recurN",
+        _recurN_backward(hl_recurN),
+        setup_context=_setup_context,
     )
