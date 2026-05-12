@@ -26,6 +26,7 @@ setuptools-git-versioning = ">=2.1.0, <3"
 torchlpc = ">=0.7.2, <0.8"
 philtorch = { path = ".", editable = true }
 kazane = ">=1.0.4, <2"
+helion = ">=1.0.0, <2"
 
 
 [pypi-options]

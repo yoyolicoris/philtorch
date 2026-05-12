@@ -14,6 +14,7 @@ except ImportError:
 
 from ..mat import matrices_cumdot
 from .. import EXTENSION_LOADED
+from ..lti.ssm import helion_backend_indicator
 
 
 def extension_backend_indicator(x: Tensor, M: int) -> bool:
@@ -47,6 +48,10 @@ class MatrixRecurrence(Function):
             )(jac, rhs)[:, 1:]
         elif x.size(-1) == 2:
             return torch.ops.philtorch.recur2(A, zi, x)
+        elif helion_backend_indicator(x):
+            from .. import hl_recurN
+
+            return hl_recurN(A, zi, x)
         return torch.ops.philtorch.recurN(A, zi, x)
 
     @staticmethod
@@ -263,9 +268,11 @@ def state_space_recursion(
     else:
         block_size = unroll_factor
 
+    looper = _ext_ss_recur if helion_backend_indicator(x) else _recursion_loop
+
     # boundary condition
     if block_size == 1 or block_size >= N:
-        return _recursion_loop(A, zi, x, out_idx=out_idx)
+        return looper(A, zi, x, out_idx=out_idx)
 
     remainder = N % block_size
     if remainder != 0:
@@ -303,7 +310,7 @@ def state_space_recursion(
         dim=1,
     )
 
-    output = _recursion_loop(
+    output = looper(
         (
             unrolled_A[:, :, :-1].flatten(0, 1)
             if unrolled_A.dim() == 5

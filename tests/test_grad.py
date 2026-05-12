@@ -4,6 +4,7 @@ from torch.autograd.gradcheck import gradcheck, gradgradcheck
 from philtorch.lpv.ssm import MatrixRecurrence, PARARNN_AVAILABLE
 from philtorch.lti.ssm import LTIMatrixRecurrence
 from philtorch.lti.recur import LTIRecurrence
+from philtorch import HELION_LOADED
 
 
 @pytest.mark.parametrize(
@@ -53,6 +54,12 @@ from philtorch.lti.recur import LTIRecurrence
                 not torch.cuda.is_available() or not PARARNN_AVAILABLE,
                 reason="CUDA or `pararnn` not available",
             ),
+        ),
+        pytest.param(
+            False,
+            4,
+            "cuda",
+            marks=pytest.mark.skipif(not HELION_LOADED, reason="Helion not available"),
         ),
     ],
 )
