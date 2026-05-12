@@ -1,6 +1,158 @@
 import pytest
 import torch
 
+from philtorch import HELION_LOADED
+
+
+@pytest.mark.parametrize(
+    "x_requires_grad",
+    [True],
+)
+@pytest.mark.parametrize(
+    "A_requires_grad",
+    [True, False],
+)
+@pytest.mark.parametrize(
+    "zi_requires_grad",
+    [True, False],
+)
+@pytest.mark.parametrize(
+    "samples",
+    [11],
+)
+@pytest.mark.parametrize(
+    "cmplx",
+    [False],
+)
+@pytest.mark.parametrize(
+    "device",
+    [
+        "cuda",
+        # pytest.param(
+        #     "cuda",
+        #     marks=pytest.mark.skipif(
+        #         not torch.cuda.is_available(), reason="CUDA not available"
+        #     ),
+        # ),
+    ],
+)
+@pytest.mark.parametrize(
+    "share_A",
+    [True, False],
+)
+@pytest.mark.skipif(not HELION_LOADED, reason="Helion backend not loaded")
+def test_hl_lti_recurN_pt2_compatibility(
+    x_requires_grad: bool,
+    A_requires_grad: bool,
+    zi_requires_grad: bool,
+    samples: int,
+    cmplx: bool,
+    device: str,
+    share_A: bool,
+):
+    batch_size = 3
+    order = 4
+    x, A, zi = tuple(
+        x.to(device)
+        for x in [
+            torch.randn(
+                batch_size,
+                samples,
+                order,
+                dtype=torch.float32 if not cmplx else torch.complex128,
+            ),
+            torch.randn(
+                *((batch_size, order, order) if not share_A else (order, order)),
+                dtype=torch.float32 if not cmplx else torch.complex128,
+            )
+            * 0.25,
+            torch.randn(
+                batch_size,
+                order,
+                dtype=torch.float32 if not cmplx else torch.complex128,
+            ),
+        ]
+    )
+    A.requires_grad = A_requires_grad
+    x.requires_grad = x_requires_grad
+    zi.requires_grad = zi_requires_grad
+
+    from philtorch import hl_lti_recurN
+
+    torch.library.opcheck(hl_lti_recurN, (A, zi, x))
+
+
+@pytest.mark.parametrize(
+    "x_requires_grad",
+    [True],
+)
+@pytest.mark.parametrize(
+    "A_requires_grad",
+    [True, False],
+)
+@pytest.mark.parametrize(
+    "zi_requires_grad",
+    [True, False],
+)
+@pytest.mark.parametrize(
+    "samples",
+    [11],
+)
+@pytest.mark.parametrize(
+    ("cmplx", "order", "device"),
+    [
+        (False, 4, "cuda"),
+    ],
+)
+@pytest.mark.parametrize(
+    "share_A",
+    [True, False],
+)
+@pytest.mark.skipif(not HELION_LOADED, reason="Helion backend not loaded")
+def test_hl_recurN_pt2_compatibility(
+    x_requires_grad: bool,
+    A_requires_grad: bool,
+    zi_requires_grad: bool,
+    share_A: bool,
+    samples: int,
+    cmplx: bool,
+    device: str,
+    order: int,
+):
+    batch_size = 3
+    x, A, zi = tuple(
+        x.to(device)
+        for x in [
+            torch.randn(
+                batch_size,
+                samples,
+                order,
+                dtype=torch.float32 if not cmplx else torch.complex128,
+            ),
+            torch.randn(
+                *(
+                    (batch_size, samples, order, order)
+                    if not share_A
+                    else (samples, order, order)
+                ),
+                dtype=torch.float32 if not cmplx else torch.complex128,
+            )
+            / order**2,
+            torch.randn(
+                batch_size,
+                order,
+                dtype=torch.float32 if not cmplx else torch.complex128,
+            ),
+        ]
+    )
+    A.requires_grad = A_requires_grad
+    x.requires_grad = x_requires_grad
+    zi.requires_grad = zi_requires_grad
+
+    from philtorch import hl_recurN
+
+    torch.library.opcheck(hl_recurN, (A, zi, x))
+
 
 @pytest.mark.parametrize(
     "x_requires_grad",
