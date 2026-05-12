@@ -7,7 +7,7 @@ from functools import partial
 
 from ..mat import matrix_power_accumulate, find_eigenvectors
 from .recur import linear_recurrence, LTIRecurrence
-from .. import EXTENSION_LOADED
+from .. import EXTENSION_LOADED, HELION_LOADED
 
 
 def extension_backend_indicator(x: Tensor, M: int) -> bool:
@@ -25,6 +25,25 @@ def extension_backend_indicator(x: Tensor, M: int) -> bool:
     return EXTENSION_LOADED and (M == 2 or (x.is_cpu and M >= 2))
 
 
+def helion_backend_indicator(x: Tensor) -> bool:
+    """Decide whether to prefer the Helion backend.
+
+    The indicator returns True when Helion is available and the input is on a
+    CUDA device.
+
+    Args:
+        x (Tensor): Input tensor (used to inspect device).
+
+    Returns:
+        bool: True when the Helion backend can be used.
+    """
+    return (
+        HELION_LOADED
+        and x.is_cuda
+        and x.dtype in (torch.float16, torch.float32, torch.bfloat16)
+    )
+
+
 class LTIMatrixRecurrence(Function):
     """Autograd Function wrapping optimised LTI matrix recurrence ops.
 
@@ -36,6 +55,10 @@ class LTIMatrixRecurrence(Function):
     def forward(A: Tensor, zi: Tensor, x: Tensor) -> Tensor:
         if x.size(-1) == 2:
             return torch.ops.philtorch.lti_recur2(A, zi, x)
+        elif helion_backend_indicator(x):
+            from .. import hl_lti_recurN
+
+            return hl_lti_recurN(A, zi, x)
         return torch.ops.philtorch.lti_recurN(A, zi, x)
 
     @staticmethod
@@ -234,6 +257,8 @@ def state_space_recursion(
 
     # boundary condition
     if block_size == 1 or block_size >= N:
+        if helion_backend_indicator(x):
+            return _ext_ss_recur(A, zi, x, out_idx=out_idx)
         return _recursion_loop(A, zi, x, out_idx=out_idx)
 
     remainder = N % block_size
