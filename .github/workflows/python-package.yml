@@ -87,9 +87,9 @@ jobs:
         uname -a
         uname -m
         python -c "import platform, sys; print('python:', sys.version); print('machine:', platform.machine()); print('platform:', platform.platform())"
-        python -m pip show torch philtorch || true
+        python -m pip show torch philtorch
         ls -lh philtorch/
-        find . -maxdepth 4 \( -name '_C*.so' -o -name '_C*.dylib' \) -print
+        find . \( -name '_C*.so' -o -name '_C*.dylib' \) -print
         python - <<'PY'
         import glob
         import os
