@@ -14,6 +14,11 @@ jupyter = ">=1.1.1,<2"
 matplotlib = ">=3.10.8,<4"
 tqdm = ">=4.67.3,<5"
 
+[target.linux-64.dependencies]
+cuda-version = ">=13.0,<14"
+pytorch-gpu = ">=2.9.1,<3"
+cuda = { version = ">=13.0,<14", channel = "nvidia" }
+
 [pypi-dependencies]
 setuptools-git-versioning = ">=2.1.0, <3"
 torchlpc = ">=0.7.2, <0.8"
@@ -21,23 +26,14 @@ philtorch = { path = ".", editable = true }
 kazane = ">=1.0.4, <2"
 helion = ">=1.0.0, <2"
 
-[feature.gpu.dependencies]
-cuda-version = ">=13.0,<14"
-pytorch-gpu = ">=2.9.1,<3"
-cuda = { version = ">=13.0,<14", channel = "nvidia" }
-
-[feature.gpu.pypi-dependencies]
+[target.linux-64.pypi-dependencies]
 pararnn = { git = "https://github.com/yoyolicoris/ml-pararnn.git", rev = "29299d19351f78c470abfe34a8483c6cbfab3303" }
 
-[feature.gpu.system-requirements]
+[system-requirements]
 cuda = "13.0"
 
-[feature.osx.dependencies]
+[target.osx-arm64.dependencies]
 pytorch-cpu = ">=2.9.1,<3"
 
 [pypi-options]
 no-build-isolation = true
-
-[environments]
-default = { features = ["gpu"] }
-osx = { features = ["osx"] }
