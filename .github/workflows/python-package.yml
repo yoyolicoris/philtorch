@@ -81,9 +81,9 @@ jobs:
         export LDFLAGS="-L/opt/homebrew/opt/libomp/lib"
         export CPPFLAGS="-I/opt/homebrew/opt/libomp/include"
         pip install -e .[dev] --no-build-isolation --no-cache-dir
-    - name: Temporary debug info for macOS extension build (remove before merge)
+    - name: Print temporary debug info for macOS extension build (remove before merge)
       run: |
-        echo "TODO(debug): remove this step before merge"
+        echo "TODO: remove this step before merge"
         uname -a
         uname -m
         python -c "import platform, sys; print('python:', sys.version); print('machine:', platform.machine()); print('platform:', platform.platform())"
