@@ -1,6 +1,7 @@
 from setuptools import setup
 import os
 import glob
+import sys
 import torch
 from torch.utils.cpp_extension import (
     CppExtension,
@@ -22,6 +23,13 @@ def get_extensions():
     if use_openmp:
         extra_compile_args["cxx"] = ["-fopenmp"]
         extra_link_args.append("-fopenmp")
+        if sys.platform == "darwin":
+            libomp_prefix = os.environ.get("LIBOMP_PREFIX", "/opt/homebrew/opt/libomp")
+            extra_compile_args["cxx"] += [f"-I{libomp_prefix}/include"]
+            extra_link_args += [
+                f"-L{libomp_prefix}/lib",
+                f"-Wl,-rpath,{libomp_prefix}/lib",
+            ]
 
     this_dir = os.path.abspath(os.path.dirname(__file__))
     extensions_dir = os.path.join(this_dir, library_name, "csrc")
