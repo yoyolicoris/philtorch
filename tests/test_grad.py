@@ -59,7 +59,10 @@ from philtorch import HELION_LOADED
             False,
             4,
             "cuda",
-            marks=pytest.mark.skipif(not HELION_LOADED, reason="Helion not available"),
+            marks=pytest.mark.skipif(
+                not HELION_LOADED or not torch.cuda.is_available(),
+                reason="Helion not available",
+            ),
         ),
     ],
 )

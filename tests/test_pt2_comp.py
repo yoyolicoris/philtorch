@@ -27,11 +27,18 @@ from philtorch import HELION_LOADED
 @pytest.mark.parametrize(
     "device",
     [
-        "cuda",
+        # "cuda",
+        pytest.param(
+            "cuda",
+            marks=pytest.mark.skipif(
+                not torch.cuda.is_available() or not HELION_LOADED,
+                reason="CUDA not available",
+            ),
+        ),
         # pytest.param(
-        #     "cuda",
+        #     "mps",
         #     marks=pytest.mark.skipif(
-        #         not torch.cuda.is_available(), reason="CUDA not available"
+        #         not torch.backends.mps.is_available(), reason="MPS not available"
         #     ),
         # ),
     ],
@@ -40,7 +47,6 @@ from philtorch import HELION_LOADED
     "share_A",
     [True, False],
 )
-@pytest.mark.skipif(not HELION_LOADED, reason="Helion backend not loaded")
 def test_hl_lti_recurN_pt2_compatibility(
     x_requires_grad: bool,
     A_requires_grad: bool,
@@ -52,6 +58,11 @@ def test_hl_lti_recurN_pt2_compatibility(
 ):
     batch_size = 3
     order = 4
+    if device == "mps":
+        dtype = torch.float32
+    else:
+        dtype = torch.double
+
     x, A, zi = tuple(
         x.to(device)
         for x in [
@@ -59,17 +70,17 @@ def test_hl_lti_recurN_pt2_compatibility(
                 batch_size,
                 samples,
                 order,
-                dtype=torch.double if not cmplx else torch.complex128,
+                dtype=dtype,
             ),
             torch.randn(
                 *((batch_size, order, order) if not share_A else (order, order)),
-                dtype=torch.double if not cmplx else torch.complex128,
+                dtype=dtype,
             )
             * 0.25,
             torch.randn(
                 batch_size,
                 order,
-                dtype=torch.double if not cmplx else torch.complex128,
+                dtype=dtype,
             ),
         ]
     )
@@ -101,14 +112,29 @@ def test_hl_lti_recurN_pt2_compatibility(
 @pytest.mark.parametrize(
     ("cmplx", "order", "device"),
     [
-        (False, 4, "cuda"),
+        pytest.param(
+            False,
+            4,
+            "cuda",
+            marks=pytest.mark.skipif(
+                not torch.cuda.is_available() or not HELION_LOADED,
+                reason="CUDA not available",
+            ),
+        ),
+        # pytest.param(
+        #     False,
+        #     4,
+        #     "mps",
+        #     marks=pytest.mark.skipif(
+        #         not torch.backends.mps.is_available(), reason="MPS not available"
+        #     ),
+        # ),
     ],
 )
 @pytest.mark.parametrize(
     "share_A",
     [True, False],
 )
-@pytest.mark.skipif(not HELION_LOADED, reason="Helion backend not loaded")
 def test_hl_recurN_pt2_compatibility(
     x_requires_grad: bool,
     A_requires_grad: bool,
@@ -120,6 +146,7 @@ def test_hl_recurN_pt2_compatibility(
     order: int,
 ):
     batch_size = 3
+    dtype = torch.float32 if device == "mps" else torch.double
     x, A, zi = tuple(
         x.to(device)
         for x in [
@@ -127,7 +154,7 @@ def test_hl_recurN_pt2_compatibility(
                 batch_size,
                 samples,
                 order,
-                dtype=torch.double if not cmplx else torch.complex128,
+                dtype=dtype,
             ),
             torch.randn(
                 *(
@@ -135,13 +162,13 @@ def test_hl_recurN_pt2_compatibility(
                     if not share_A
                     else (samples, order, order)
                 ),
-                dtype=torch.double if not cmplx else torch.complex128,
+                dtype=dtype,
             )
             / order**2,
             torch.randn(
                 batch_size,
                 order,
-                dtype=torch.double if not cmplx else torch.complex128,
+                dtype=dtype,
             ),
         ]
     )
