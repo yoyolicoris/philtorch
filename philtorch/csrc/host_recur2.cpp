@@ -136,8 +136,8 @@ at::Tensor mat_recur_second_order_cpu_impl(const at::Tensor &A,
             [&]
             {
                 host_batch_mat_recur_second_order<scalar_t>(
-                    A_contiguous.const_data_ptr<scalar_t>(),
-                    x_contiguous.const_data_ptr<scalar_t>(),
+                    A_contiguous.data_ptr<scalar_t>(),
+                    x_contiguous.data_ptr<scalar_t>(),
                     out.mutable_data_ptr<scalar_t>(), n_steps * n_batches);
             });
     }
@@ -149,8 +149,8 @@ at::Tensor mat_recur_second_order_cpu_impl(const at::Tensor &A,
             [&]
             {
                 host_share_mat_recur_second_order<scalar_t>(
-                    A_contiguous.const_data_ptr<scalar_t>(),
-                    x_contiguous.const_data_ptr<scalar_t>(),
+                    A_contiguous.data_ptr<scalar_t>(),
+                    x_contiguous.data_ptr<scalar_t>(),
                     out.mutable_data_ptr<scalar_t>(), n_steps, n_batches);
             });
     }

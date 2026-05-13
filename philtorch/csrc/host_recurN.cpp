@@ -214,7 +214,7 @@ at::Tensor mat_recur_N_order_cpu_impl(const at::Tensor &A, const at::Tensor &zi,
         AT_DISPATCH_FLOATING_AND_COMPLEX_TYPES_AND3(
             at::kLong, at::kHalf, at::kBFloat16, x.scalar_type(), "host_batch_mat_recur_N_order", [&]
             { host_batch_mat_recur_N_order<scalar_t>(
-                  Ax.const_data_ptr<scalar_t>(),
+                  Ax.data_ptr<scalar_t>(),
                   out.mutable_data_ptr<scalar_t>(), n_steps * n_batches,
                   order); });
     }
@@ -224,8 +224,8 @@ at::Tensor mat_recur_N_order_cpu_impl(const at::Tensor &A, const at::Tensor &zi,
         AT_DISPATCH_FLOATING_AND_COMPLEX_TYPES_AND3(
             at::kLong, at::kHalf, at::kBFloat16, x.scalar_type(), "host_share_mat_recur_N_order", [&]
             { host_share_mat_recur_N_order<scalar_t>(
-                  A_contiguous.const_data_ptr<scalar_t>(),
-                  x_contiguous.const_data_ptr<scalar_t>(),
+                  A_contiguous.data_ptr<scalar_t>(),
+                  x_contiguous.data_ptr<scalar_t>(),
                   out.mutable_data_ptr<scalar_t>(), n_steps, order,
                   n_batches); });
     }
@@ -262,7 +262,7 @@ at::Tensor mat_recur_N_order_cpu_omp_impl(const at::Tensor &A,
             {
                 host_batch_mat_recur_N_order_omp<scalar_t>(
                     n_batches, n_steps, order,
-                    A_contiguous.const_data_ptr<scalar_t>(),
+                    A_contiguous.data_ptr<scalar_t>(),
                     out.mutable_data_ptr<scalar_t>());
             });
     }
@@ -273,7 +273,7 @@ at::Tensor mat_recur_N_order_cpu_omp_impl(const at::Tensor &A,
             at::kLong, at::kHalf, at::kBFloat16, x.scalar_type(), "host_share_mat_recur_N_order", [&]
             { host_share_mat_recur_N_order_omp<scalar_t>(
                   n_batches, n_steps, order,
-                  A_contiguous.const_data_ptr<scalar_t>(),
+                  A_contiguous.data_ptr<scalar_t>(),
                   out.mutable_data_ptr<scalar_t>()); });
     }
     return out.slice(1, 1, n_steps)

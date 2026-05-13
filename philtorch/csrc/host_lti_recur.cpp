@@ -62,7 +62,7 @@ at::Tensor lti_recur_cpu_impl(const at::Tensor &a,
             at::kHalf, at::kBFloat16, x.scalar_type(), "host_lti_batch_linear_recurrence", [&]
             { host_lti_batch_linear_recurrence<scalar_t>(
                   n_batches, n_steps,
-                  a_contiguous.const_data_ptr<scalar_t>(),
+                  a_contiguous.data_ptr<scalar_t>(),
                   output.mutable_data_ptr<scalar_t>()); });
     }
     else

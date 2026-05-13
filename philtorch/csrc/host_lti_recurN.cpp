@@ -89,7 +89,7 @@ at::Tensor lti_mat_recur_N_order_cpu_impl(const at::Tensor &A,
             {
                 host_lti_batch_mat_recur_N_order<scalar_t>(
                     n_batches, n_steps, order,
-                    A_contiguous.const_data_ptr<scalar_t>(),
+                    A_contiguous.data_ptr<scalar_t>(),
                     out.mutable_data_ptr<scalar_t>());
             });
     }
@@ -100,7 +100,7 @@ at::Tensor lti_mat_recur_N_order_cpu_impl(const at::Tensor &A,
             at::kLong, at::kHalf, at::kBFloat16, x.scalar_type(), "host_lti_share_mat_recur_N_order", [&]
             { host_lti_share_mat_recur_N_order<scalar_t>(
                   n_batches, n_steps, order,
-                  A_contiguous.const_data_ptr<scalar_t>(),
+                  A_contiguous.data_ptr<scalar_t>(),
                   out.mutable_data_ptr<scalar_t>()); });
     }
     return out.slice(1, 1, n_steps)
