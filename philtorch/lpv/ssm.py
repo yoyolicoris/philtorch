@@ -13,7 +13,7 @@ except ImportError:
     PARARNN_AVAILABLE = False
 
 from ..mat import matrices_cumdot
-from .. import EXTENSION_LOADED
+from .. import EXTENSION_LOADED, HELION_LOADED
 from ..lti.ssm import helion_backend_indicator
 
 
@@ -183,8 +183,8 @@ def _ext_ss_recur(
         Tensor: Output states (B, N, M) or (B, N) if ``out_idx`` is set.
     """
     assert (
-        EXTENSION_LOADED
-    ), "Extension not loaded. Please ensure philtorch is built with extensions."
+        EXTENSION_LOADED or HELION_LOADED
+    ), "Compiled extension or the Helion backend is not available"
     if x.dim() == 2 and A.size(-1) == 1:
         y = sample_wise_lpc(x, -A[..., 0].broadcast_to(x.shape + (1,)), zi).unsqueeze(
             -1

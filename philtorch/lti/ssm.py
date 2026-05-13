@@ -174,8 +174,8 @@ def _ext_ss_recur(
         Tensor: Output state sequence (B, T, M) or (B, T) if ``out_idx`` used.
     """
     assert (
-        EXTENSION_LOADED
-    ), "Extension not loaded. Please ensure philtorch is built with extensions."
+        EXTENSION_LOADED or HELION_LOADED
+    ), "Compiled extension or the Helion backend is not available"
 
     if x.dim() == 2 and A.size(-1) == 1:
         y = LTIRecurrence.apply(A[..., 0, 0], zi.squeeze(-1), x).unsqueeze(-1)
