@@ -116,9 +116,6 @@ jobs:
         print("has lti_recurN:", hasattr(torch.ops.philtorch, "lti_recurN"))
         print("has lti_recur2:", hasattr(torch.ops.philtorch, "lti_recur2"))
         print("has lti_recur:", hasattr(torch.ops.philtorch, "lti_recur"))
-        PY
-        python - <<'PY'
-        import glob
         import subprocess
         for path in glob.glob("philtorch/_C*"):
             print("file:", path)
