@@ -49,14 +49,13 @@ def test_newton_solve(use_fprime: bool, device: str):
         ),
     )
 
-    # bug: scan will move the specified dim to the first dim when returning the output, so we need to transpose it back
     target = scan(
         lambda gprev, x: (lambda x: (x, x.clone()))(
             feedforward_comp_func(gprev, x, at=at.squeeze(-2), rt=rt.squeeze(-2))
         ),
         init=init,
-        xs=g,
-        dim=1,
+        xs=g.transpose(0, 1),
+        dim=0,
     )[1].transpose(0, 1)
 
     assert torch.allclose(y, target), (y - target).abs().max()
