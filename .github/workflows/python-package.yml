@@ -77,7 +77,6 @@ jobs:
           echo "PATH=$LLVM_PREFIX/bin:$PATH" >> $GITHUB_ENV
           echo "CC=$LLVM_PREFIX/bin/clang" >> $GITHUB_ENV
           echo "CXX=$LLVM_PREFIX/bin/clang++" >> $GITHUB_ENV
-          echo "LDFLAGS=-L$LIBOMP_PREFIX/lib" >> $GITHUB_ENV
           echo "CPPFLAGS=-I$LIBOMP_PREFIX/include" >> $GITHUB_ENV
       - name: Install dependencies
         run: |
@@ -86,7 +85,29 @@ jobs:
       - name: Install torch and build
         run: |
           pip install torch
+          TORCH_LIB=$(python - <<'PY'
+          import os
+          import torch
+          print(os.path.join(os.path.dirname(torch.__file__), "lib"))
+          PY
+          )
+          export LDFLAGS="-L$TORCH_LIB -Wl,-rpath,$TORCH_LIB"
+          export DYLD_LIBRARY_PATH="$TORCH_LIB:$DYLD_LIBRARY_PATH"
+          echo "LDFLAGS=-L$TORCH_LIB -Wl,-rpath,$TORCH_LIB" >> $GITHUB_ENV
+          echo "DYLD_LIBRARY_PATH=$TORCH_LIB:$DYLD_LIBRARY_PATH" >> $GITHUB_ENV
           pip install -e .[dev] --no-build-isolation
+      - name: Verify extension op dispatch on macOS
+        run: |
+          python - <<'PY'
+          import torch
+          import philtorch
+          A = torch.eye(2, dtype=torch.float64).unsqueeze(0).expand(4, -1, -1).contiguous()
+          zi = torch.zeros(1, 2, dtype=torch.float64)
+          x = torch.randn(1, 3, 2, dtype=torch.float64)
+          y = torch.ops.philtorch.recur2(A, zi, x)
+          assert y.shape == x.shape
+          print("philtorch extension op recur2 works:", y.shape)
+          PY
       - name: Lint with flake8
         run: |
           # stop the build if there are Python syntax errors or undefined names
