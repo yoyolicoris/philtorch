@@ -66,19 +66,26 @@ jobs:
         uses: actions/setup-python@v3
         with:
           python-version: ${{ matrix.python-version }}
-      - name: Install libomp
+      - name: Install libomp and llvm
         run: |
-          brew install libomp
+          brew update
+          brew install llvm libomp
+      - name: Configure compiler for OpenMP
+        run: |
+          LLVM_PREFIX=$(brew --prefix llvm)
+          LIBOMP_PREFIX=$(brew --prefix libomp)
+          echo "PATH=$LLVM_PREFIX/bin:$PATH" >> $GITHUB_ENV
+          echo "CC=$LLVM_PREFIX/bin/clang" >> $GITHUB_ENV
+          echo "CXX=$LLVM_PREFIX/bin/clang++" >> $GITHUB_ENV
+          echo "LDFLAGS=-L$LIBOMP_PREFIX/lib" >> $GITHUB_ENV
+          echo "CPPFLAGS=-I$LIBOMP_PREFIX/include" >> $GITHUB_ENV
       - name: Install dependencies
         run: |
           python -m pip install --upgrade pip
           python -m pip install flake8
-      - name: Install torch
+      - name: Install torch and build
         run: |
           pip install torch
-          export CXX=$(brew --prefix llvm@20)/bin/clang++
-          export LDFLAGS="-L/opt/homebrew/opt/libomp/lib"
-          export CPPFLAGS="-I/opt/homebrew/opt/libomp/include"
           pip install -e .[dev] --no-build-isolation
       - name: Lint with flake8
         run: |
