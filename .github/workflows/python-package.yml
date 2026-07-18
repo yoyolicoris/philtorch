@@ -73,8 +73,6 @@ jobs:
         run: |
           LLVM_PREFIX=$(brew --prefix llvm)
           LIBOMP_PREFIX=$(brew --prefix libomp)
-          echo "PATH=$LLVM_PREFIX/bin:$PATH" >> $GITHUB_ENV
-          echo "CC=$LLVM_PREFIX/bin/clang" >> $GITHUB_ENV
           echo "CXX=$LLVM_PREFIX/bin/clang++" >> $GITHUB_ENV
           echo "CPPFLAGS=-I$LIBOMP_PREFIX/include" >> $GITHUB_ENV
       - name: Install dependencies
