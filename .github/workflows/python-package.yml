@@ -68,16 +68,11 @@ jobs:
           python-version: ${{ matrix.python-version }}
       - name: Install libomp and llvm
         run: |
-          brew update
           brew install llvm libomp
       - name: Configure compiler for OpenMP
         run: |
           LLVM_PREFIX=$(brew --prefix llvm)
-          LIBOMP_PREFIX=$(brew --prefix libomp)
           echo "PATH=$LLVM_PREFIX/bin:$PATH" >> $GITHUB_ENV
-          echo "CC=$LLVM_PREFIX/bin/clang" >> $GITHUB_ENV
-          echo "CXX=$LLVM_PREFIX/bin/clang++" >> $GITHUB_ENV
-          echo "CPPFLAGS=-I$LIBOMP_PREFIX/include" >> $GITHUB_ENV
       - name: Install dependencies
         run: |
           python -m pip install --upgrade pip
@@ -85,16 +80,6 @@ jobs:
       - name: Install torch and build
         run: |
           pip install torch
-          TORCH_LIB=$(python - <<'PY'
-          import os
-          import torch
-          print(os.path.join(os.path.dirname(torch.__file__), "lib"))
-          PY
-          )
-          export LDFLAGS="-L$TORCH_LIB -Wl,-rpath,$TORCH_LIB"
-          export DYLD_LIBRARY_PATH="$TORCH_LIB:$DYLD_LIBRARY_PATH"
-          echo "LDFLAGS=-L$TORCH_LIB -Wl,-rpath,$TORCH_LIB" >> $GITHUB_ENV
-          echo "DYLD_LIBRARY_PATH=$TORCH_LIB:$DYLD_LIBRARY_PATH" >> $GITHUB_ENV
           pip install -e .[dev] --no-build-isolation
       - name: Verify extension op dispatch on macOS
         run: |
