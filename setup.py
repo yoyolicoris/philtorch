@@ -1,6 +1,7 @@
 from setuptools import setup
 import os
 import glob
+import sys
 import torch
 from torch.utils.cpp_extension import (
     CppExtension,
@@ -22,6 +23,15 @@ def get_extensions():
     if use_openmp:
         extra_compile_args["cxx"] = ["-fopenmp"]
         extra_link_args.append("-fopenmp")
+        if sys.platform == "darwin":
+            torch_lib = os.path.join(os.path.dirname(torch.__file__), "lib")
+            if os.path.isdir(torch_lib):
+                extra_link_args.extend(
+                    [
+                        f"-L{torch_lib}",
+                        f"-Wl,-rpath,{torch_lib}",
+                    ]
+                )
 
     this_dir = os.path.abspath(os.path.dirname(__file__))
     extensions_dir = os.path.join(this_dir, library_name, "csrc")
