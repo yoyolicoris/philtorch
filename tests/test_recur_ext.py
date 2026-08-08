@@ -70,6 +70,48 @@ def test_lti_recurN_equiv(device: str, batch: bool, order: int):
 
 
 @pytest.mark.parametrize(
+    "dtype",
+    [
+        torch.float16,
+        torch.bfloat16,
+        torch.float32,
+        torch.float64,
+        torch.complex64,
+        torch.complex128,
+        torch.int64,
+    ],
+)
+@pytest.mark.parametrize("batch", [True, False])
+def test_lti_recurN_cpu_dispatch_equiv(dtype: torch.dtype, batch: bool):
+    batch_size = 3
+    samples = 19
+    order = 17
+    matrix_shape = (batch_size, order, order) if batch else (order, order)
+    if dtype == torch.int64:
+        A = torch.zeros(matrix_shape, dtype=dtype)
+        diagonal = torch.arange(order)
+        A[..., diagonal, diagonal] = 1
+        zi = torch.randint(-2, 3, (batch_size, order), dtype=dtype)
+        x = torch.randint(-2, 3, (batch_size, samples, order), dtype=dtype)
+    else:
+        A = torch.randn(matrix_shape, dtype=dtype) / (2 * order)
+        zi = torch.randn(batch_size, order, dtype=dtype)
+        x = torch.randn(batch_size, samples, order, dtype=dtype)
+
+    expected = torch.ops.philtorch.recurN(
+        (
+            A.unsqueeze(1).expand(-1, samples, -1, -1)
+            if batch
+            else A.expand(samples, -1, -1)
+        ),
+        zi,
+        x,
+    )
+    actual = torch.ops.philtorch.lti_recurN(A, zi, x)
+    torch.testing.assert_close(actual, expected)
+
+
+@pytest.mark.parametrize(
     "device",
     [
         "cpu",
