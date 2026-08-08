@@ -103,10 +103,38 @@ def test_lti_recur_equiv(device: str, batch: bool):
     torch.testing.assert_close(lti_y, torch_y)
 
 
+@pytest.mark.parametrize(
+    "device",
+    [
+        "cpu",
+        "meta",
+        pytest.param(
+            "cuda",
+            marks=pytest.mark.skipif(
+                not torch.cuda.is_available(), reason="CUDA not available"
+            ),
+        ),
+        pytest.param(
+            "mps",
+            marks=pytest.mark.skipif(
+                not torch.backends.mps.is_available(), reason="MPS not available"
+            ),
+        ),
+    ],
+)
+def test_lti_recur_rejects_zero_length(device: str):
+    a = torch.empty(1, device=device)
+    zi = torch.empty(2, device=device)
+    x = torch.empty(2, 0, device=device)
+
+    with pytest.raises(RuntimeError, match="at least one time step"):
+        torch.ops.philtorch.lti_recur(a, zi, x)
+
+
 @pytest.mark.skipif(not torch.backends.mps.is_available(), reason="MPS not available")
 @pytest.mark.parametrize("coefficient_layout", ["scalar", "shared", "batched"])
 @pytest.mark.parametrize(
-    "samples", [0, 1, 2, 3, 7, 8, 15, 16, 17, 257, 511, 512, 513, 1234]
+    "samples", [1, 2, 3, 7, 8, 15, 16, 17, 257, 511, 512, 513, 1234]
 )
 def test_lti_recur_mps_boundaries(coefficient_layout: str, samples: int):
     batch_size = 3

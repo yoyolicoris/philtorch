@@ -231,7 +231,8 @@ The MPS implementations currently require:
 - two-dimensional `x` with shape `(B, T)`; and
 - indexing products that fit in `uint32_t`.
 
-An empty batch or zero-length sequence returns `empty_like(x)` without a Metal dispatch.
+A zero-length sequence is rejected because the custom autograd formula requires a final output state.
+An empty batch with `T > 0` returns `empty_like(x)` without a Metal dispatch.
 Shared and per-batch `a` values use one kernel and a `batched_decay` flag.
 Parallel reassociation can change floating-point rounding relative to a strict serial loop, so tests use explicit `float32` tolerances.
 
@@ -261,7 +262,13 @@ Memory figures exclude inputs and allocator cache but include output and native 
 ## Build and verification
 
 On macOS, `setup.py` adds every `.mm` source to the C++ extension and links the Foundation and Metal frameworks.
-The pixi environment selects Homebrew LLVM and the Homebrew OpenMP headers needed by the other native sources.
+It locates Homebrew LLVM and libomp with `brew --prefix`, selects Homebrew Clang unless `CXX` is already set, and configures the OpenMP include and library paths.
+
+Install the required system packages before creating or rebuilding the environment:
+
+```bash
+brew install llvm libomp
+```
 
 Rebuild the editable extension after changing Objective-C++ or Metal source:
 
@@ -275,7 +282,7 @@ Run focused native recurrence tests with:
 pixi run pytest tests/test_recur_ext.py -q
 ```
 
-The MPS tests cover scalar, shared, and per-batch multipliers, empty sequences, lengths around the 512-element tile boundary, CPU/MPS device dispatch, and gradients against CPU.
+The MPS tests cover scalar, shared, and per-batch multipliers, zero-length rejection, lengths around the 512-element tile boundary, CPU/MPS device dispatch, and gradients against CPU.
 The long replay test uses `T = 512 * 512 + 1`, forcing stage 2 to carry a prefix across more than one 512-total chunk.
 
 ## Invariants to preserve

@@ -1,6 +1,7 @@
 from setuptools import setup
 import os
 import glob
+import subprocess
 import sys
 import torch
 from torch.utils.cpp_extension import (
@@ -11,6 +12,57 @@ from torch.utils.cpp_extension import (
 )
 
 library_name = "philtorch"
+
+
+def get_homebrew_prefix(formula):
+    try:
+        result = subprocess.run(
+            ["brew", "--prefix", formula],
+            check=True,
+            capture_output=True,
+            text=True,
+        )
+    except FileNotFoundError as error:
+        raise RuntimeError(
+            "Homebrew is required for macOS OpenMP builds; "
+            "install Homebrew, then run 'brew install llvm libomp'."
+        ) from error
+    except subprocess.CalledProcessError as error:
+        raise RuntimeError(
+            f"Homebrew formula '{formula}' is required for macOS OpenMP builds; "
+            "install it with 'brew install llvm libomp'."
+        ) from error
+
+    return result.stdout.strip()
+
+
+def configure_macos_openmp(extra_compile_args, extra_link_args):
+    llvm_prefix = get_homebrew_prefix("llvm")
+    libomp_prefix = get_homebrew_prefix("libomp")
+    compiler = os.path.join(llvm_prefix, "bin", "clang++")
+    include_dir = os.path.join(libomp_prefix, "include")
+    library_dir = os.path.join(libomp_prefix, "lib")
+
+    required_paths = (
+        compiler,
+        os.path.join(include_dir, "omp.h"),
+        os.path.join(library_dir, "libomp.dylib"),
+    )
+    missing_paths = [path for path in required_paths if not os.path.isfile(path)]
+    if missing_paths:
+        raise RuntimeError(
+            "Homebrew LLVM/OpenMP installation is incomplete; missing: "
+            + ", ".join(missing_paths)
+        )
+
+    os.environ.setdefault("CXX", compiler)
+    extra_compile_args["cxx"].append(f"-I{include_dir}")
+    extra_link_args.extend(
+        [
+            f"-L{library_dir}",
+            f"-Wl,-rpath,{library_dir}",
+        ]
+    )
 
 
 def get_extensions():
@@ -24,6 +76,7 @@ def get_extensions():
         extra_compile_args["cxx"] = ["-fopenmp"]
         extra_link_args.append("-fopenmp")
         if sys.platform == "darwin":
+            configure_macos_openmp(extra_compile_args, extra_link_args)
             torch_lib = os.path.join(os.path.dirname(torch.__file__), "lib")
             if os.path.isdir(torch_lib):
                 extra_link_args.extend(

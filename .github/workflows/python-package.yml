@@ -66,15 +66,9 @@ jobs:
         uses: actions/setup-python@v3
         with:
           python-version: ${{ matrix.python-version }}
-      - name: Install libomp and llvm
+      - name: Install native build dependencies
         run: |
           brew install llvm libomp
-      - name: Configure compiler for OpenMP
-        run: |
-          LLVM_PREFIX=$(brew --prefix llvm)
-          LIBOMP_PREFIX=$(brew --prefix libomp)
-          echo "CXX=$LLVM_PREFIX/bin/clang++" >> $GITHUB_ENV
-          echo "CPPFLAGS=-I$LIBOMP_PREFIX/include" >> $GITHUB_ENV
       - name: Install dependencies
         run: |
           python -m pip install --upgrade pip

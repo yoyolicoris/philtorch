@@ -387,10 +387,11 @@ at::Tensor lti_recur_mps_impl(const at::Tensor &a, const at::Tensor &zi,
                 "zi and x must have the same batch size");
     TORCH_CHECK(a.numel() == 1 || a.numel() == x.size(0),
                 "a must contain one value or one value per batch");
+    TORCH_CHECK(x.size(1) > 0, "x must contain at least one time step");
 
     const int64_t n_batches_64 = x.size(0);
     const int64_t sequence_length_64 = x.size(1);
-    if (n_batches_64 == 0 || sequence_length_64 == 0)
+    if (n_batches_64 == 0)
     {
         return at::empty_like(x);
     }
