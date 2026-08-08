@@ -71,3 +71,6 @@ markers = [
     "integration: marks tests as integration tests",
     "unit: marks tests as unit tests",
 ]
+
+[tool.black]
+target-version = ["py310"]

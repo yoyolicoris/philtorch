@@ -1,4 +1,5 @@
 recursive-include philtorch *.txt
 recursive-include philtorch *.cuh
 recursive-include philtorch *.cu
+recursive-include philtorch *.mm
 exclude tests/*

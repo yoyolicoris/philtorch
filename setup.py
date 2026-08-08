@@ -38,6 +38,10 @@ def get_extensions():
     sources = list(glob.glob(os.path.join(extensions_dir, "*.cpp")))
     cuda_sources = list(glob.glob(os.path.join(extensions_dir, "*.cu")))
 
+    if sys.platform == "darwin":
+        sources += list(glob.glob(os.path.join(extensions_dir, "*.mm")))
+        extra_link_args.extend(["-framework", "Foundation", "-framework", "Metal"])
+
     if use_cuda:
         sources += cuda_sources
         extra_compile_args["nvcc"] = ["--extended-lambda"]
