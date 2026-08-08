@@ -233,6 +233,8 @@ if EXTENSION_LOADED:
     @torch.library.register_fake("philtorch::lti_recur")
     def _(A, zi, x):
         torch._check(A.ndim <= 1, "A must be 1D or scalar.")
+        torch._check(zi.ndim == 1, "zi must be 1D.")
+        torch._check(x.ndim == 2, "x must be 2D.")
         torch._check(
             zi.shape[0] == x.shape[0], "x and zi must have the same batch size."
         )
