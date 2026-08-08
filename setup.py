@@ -36,7 +36,7 @@ def get_homebrew_prefix(formula):
     return result.stdout.strip()
 
 
-def configure_macos_openmp(extra_compile_args, extra_link_args):
+def get_macos_openmp_config(extra_compile_args, extra_link_args):
     llvm_prefix = get_homebrew_prefix("llvm")
     libomp_prefix = get_homebrew_prefix("libomp")
     compiler = os.path.join(llvm_prefix, "bin", "clang++")
@@ -55,14 +55,16 @@ def configure_macos_openmp(extra_compile_args, extra_link_args):
             + ", ".join(missing_paths)
         )
 
-    os.environ.setdefault("CXX", compiler)
-    extra_compile_args["cxx"].append(f"-I{include_dir}")
-    extra_link_args.extend(
-        [
-            f"-L{library_dir}",
-            f"-Wl,-rpath,{library_dir}",
-        ]
-    )
+    configured_compile_args = {
+        **extra_compile_args,
+        "cxx": [*extra_compile_args.get("cxx", ()), f"-I{include_dir}"],
+    }
+    configured_link_args = [
+        *extra_link_args,
+        f"-L{library_dir}",
+        f"-Wl,-rpath,{library_dir}",
+    ]
+    return compiler, configured_compile_args, configured_link_args
 
 
 def get_extensions():
@@ -76,7 +78,10 @@ def get_extensions():
         extra_compile_args["cxx"] = ["-fopenmp"]
         extra_link_args.append("-fopenmp")
         if sys.platform == "darwin":
-            configure_macos_openmp(extra_compile_args, extra_link_args)
+            compiler, extra_compile_args, extra_link_args = get_macos_openmp_config(
+                extra_compile_args, extra_link_args
+            )
+            os.environ.setdefault("CXX", compiler)
             torch_lib = os.path.join(os.path.dirname(torch.__file__), "lib")
             if os.path.isdir(torch_lib):
                 extra_link_args.extend(
