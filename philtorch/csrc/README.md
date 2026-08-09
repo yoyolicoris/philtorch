@@ -262,7 +262,8 @@ Memory figures exclude inputs and allocator cache but include output and native 
 ## Build and verification
 
 On macOS, `setup.py` adds every `.mm` source to the C++ extension and links the Foundation and Metal frameworks.
-It locates Homebrew LLVM and libomp with `brew --prefix`, selects Homebrew Clang unless `CXX` is already set, and configures the OpenMP include and library paths.
+It locates Homebrew LLVM and libomp with `brew --prefix`, selects Homebrew Clang unless `CXX` is already set, and uses the Homebrew OpenMP headers.
+The extension links `@rpath/libomp.dylib` through PyTorch's library directory so PyTorch and extension modules share one OpenMP runtime.
 
 Install the required system packages before creating or rebuilding the environment:
 

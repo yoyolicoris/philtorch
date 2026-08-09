@@ -36,22 +36,21 @@ def get_homebrew_prefix(formula):
     return result.stdout.strip()
 
 
-def get_macos_openmp_config(extra_compile_args, extra_link_args):
+def get_macos_openmp_config(extra_compile_args, extra_link_args, torch_lib):
     llvm_prefix = get_homebrew_prefix("llvm")
     libomp_prefix = get_homebrew_prefix("libomp")
     compiler = os.path.join(llvm_prefix, "bin", "clang++")
     include_dir = os.path.join(libomp_prefix, "include")
-    library_dir = os.path.join(libomp_prefix, "lib")
 
     required_paths = (
         compiler,
         os.path.join(include_dir, "omp.h"),
-        os.path.join(library_dir, "libomp.dylib"),
+        os.path.join(torch_lib, "libomp.dylib"),
     )
     missing_paths = [path for path in required_paths if not os.path.isfile(path)]
     if missing_paths:
         raise RuntimeError(
-            "Homebrew LLVM/OpenMP installation is incomplete; missing: "
+            "macOS OpenMP build dependencies are incomplete; missing: "
             + ", ".join(missing_paths)
         )
 
@@ -61,8 +60,8 @@ def get_macos_openmp_config(extra_compile_args, extra_link_args):
     }
     configured_link_args = [
         *extra_link_args,
-        f"-L{library_dir}",
-        f"-Wl,-rpath,{library_dir}",
+        f"-L{torch_lib}",
+        f"-Wl,-rpath,{torch_lib}",
     ]
     return compiler, configured_compile_args, configured_link_args
 
@@ -78,18 +77,11 @@ def get_extensions():
         extra_compile_args["cxx"] = ["-fopenmp"]
         extra_link_args.append("-fopenmp")
         if sys.platform == "darwin":
+            torch_lib = os.path.join(os.path.dirname(torch.__file__), "lib")
             compiler, extra_compile_args, extra_link_args = get_macos_openmp_config(
-                extra_compile_args, extra_link_args
+                extra_compile_args, extra_link_args, torch_lib
             )
             os.environ.setdefault("CXX", compiler)
-            torch_lib = os.path.join(os.path.dirname(torch.__file__), "lib")
-            if os.path.isdir(torch_lib):
-                extra_link_args.extend(
-                    [
-                        f"-L{torch_lib}",
-                        f"-Wl,-rpath,{torch_lib}",
-                    ]
-                )
 
     this_dir = os.path.abspath(os.path.dirname(__file__))
     extensions_dir = os.path.join(this_dir, library_name, "csrc")
