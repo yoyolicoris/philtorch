@@ -69,6 +69,13 @@ jobs:
       - name: Install native build dependencies
         run: |
           brew install llvm libomp
+      - name: Configure native build environment
+        run: |
+          LLVM_PREFIX="$(brew --prefix llvm)"
+          LIBOMP_PREFIX="$(brew --prefix libomp)"
+          echo "CXX=$LLVM_PREFIX/bin/clang++" >> "$GITHUB_ENV"
+          echo "CPPFLAGS=-I$LIBOMP_PREFIX/include" >> "$GITHUB_ENV"
+          echo "LDFLAGS=-L$LIBOMP_PREFIX/lib -Wl,-rpath,$LIBOMP_PREFIX/lib" >> "$GITHUB_ENV"
       - name: Install dependencies
         run: |
           python -m pip install --upgrade pip
