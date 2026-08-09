@@ -33,6 +33,7 @@ pararnn = { git = "https://github.com/yoyolicoris/ml-pararnn.git", rev = "29299d
 cuda = "13.0"
 
 [target.osx-arm64.dependencies]
+black = ">=26.1.0,<27"
 pytorch-cpu = ">=2.9.1,<3"
 
 [pypi-options]

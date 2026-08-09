@@ -121,21 +121,117 @@ def test_lti_recurN_cpu_dispatch_equiv(dtype: torch.dtype, batch: bool):
                 not torch.cuda.is_available(), reason="CUDA not available"
             ),
         ),
+        pytest.param(
+            "mps",
+            marks=pytest.mark.skipif(
+                not torch.backends.mps.is_available(), reason="MPS not available"
+            ),
+        ),
     ],
 )
 @pytest.mark.parametrize("batch", [True, False])
 def test_lti_recur_equiv(device: str, batch: bool):
     B = 3
     T = 101
+    dtype = torch.float32 if device == "mps" else torch.float64
 
     # Convert to torch tensors
-    a_torch = torch.rand(B if batch else 1).to(device).double() * 2 - 1
-    x_torch = torch.randn(B, T).to(device).double()
+    a_torch = torch.rand(B if batch else 1, device=device, dtype=dtype) * 2 - 1
+    x_torch = torch.randn(B, T, device=device, dtype=dtype)
     zi = x_torch.new_zeros(B).normal_()
 
     lti_y = torch.ops.philtorch.lti_recur(a_torch, zi, x_torch)
     torch_y = linear_recurrence(a_torch, zi, x_torch)
-    assert torch.allclose(lti_y, torch_y), torch.max(torch.abs(lti_y - torch_y))
+    torch.testing.assert_close(lti_y, torch_y)
+
+
+@pytest.mark.parametrize(
+    "device",
+    [
+        "cpu",
+        "meta",
+        pytest.param(
+            "cuda",
+            marks=pytest.mark.skipif(
+                not torch.cuda.is_available(), reason="CUDA not available"
+            ),
+        ),
+        pytest.param(
+            "mps",
+            marks=pytest.mark.skipif(
+                not torch.backends.mps.is_available(), reason="MPS not available"
+            ),
+        ),
+    ],
+)
+def test_lti_recur_rejects_zero_length(device: str):
+    a = torch.empty(1, device=device)
+    zi = torch.empty(2, device=device)
+    x = torch.empty(2, 0, device=device)
+
+    with pytest.raises(RuntimeError, match="at least one time step"):
+        torch.ops.philtorch.lti_recur(a, zi, x)
+
+
+@pytest.mark.skipif(not torch.backends.mps.is_available(), reason="MPS not available")
+@pytest.mark.parametrize("coefficient_layout", ["scalar", "shared", "batched"])
+@pytest.mark.parametrize(
+    "samples", [1, 2, 3, 7, 8, 15, 16, 17, 257, 511, 512, 513, 1234]
+)
+def test_lti_recur_mps_boundaries(coefficient_layout: str, samples: int):
+    batch_size = 3
+    coefficient_shape = {
+        "scalar": (),
+        "shared": (1,),
+        "batched": (batch_size,),
+    }[coefficient_layout]
+    a = torch.rand(coefficient_shape, dtype=torch.float32) * 1.5 - 0.75
+    zi = torch.randn(batch_size, dtype=torch.float32)
+    x = torch.randn(batch_size, samples, dtype=torch.float32)
+
+    expected = torch.ops.philtorch.lti_recur(a, zi, x)
+    actual = torch.ops.philtorch.lti_recur(a.to("mps"), zi.to("mps"), x.to("mps")).cpu()
+    torch.testing.assert_close(actual, expected, rtol=1e-5, atol=1e-6)
+
+
+@pytest.mark.skipif(not torch.backends.mps.is_available(), reason="MPS not available")
+def test_lti_recur_mps_block_chunks():
+    samples = 512 * 512 + 1
+    a = torch.tensor([0.25], dtype=torch.float32)
+    zi = torch.randn(1, dtype=torch.float32)
+    x = torch.randn(1, samples, dtype=torch.float32)
+
+    expected = torch.ops.philtorch.lti_recur(a, zi, x)
+    actual = torch.ops.philtorch.lti_recur(a.to("mps"), zi.to("mps"), x.to("mps")).cpu()
+    torch.testing.assert_close(actual, expected, rtol=1e-5, atol=1e-6)
+
+
+@pytest.mark.skipif(not torch.backends.mps.is_available(), reason="MPS not available")
+@pytest.mark.parametrize("batch_decay", [True, False])
+def test_lti_recur_mps_grad_equiv(batch_decay: bool):
+    batch_size = 3
+    samples = 17
+    a = torch.rand(batch_size if batch_decay else 1, dtype=torch.float32) * 0.75 - 0.375
+    zi = torch.randn(batch_size, dtype=torch.float32)
+    x = torch.randn(batch_size, samples, dtype=torch.float32)
+    grad_output = torch.randn_like(x)
+
+    def run(device: str):
+        device_inputs = tuple(
+            value.to(device).detach().requires_grad_() for value in (a, zi, x)
+        )
+        output = torch.ops.philtorch.lti_recur(*device_inputs)
+        gradients = torch.autograd.grad(
+            output, device_inputs, grad_outputs=grad_output.to(device)
+        )
+        return output.detach().cpu(), tuple(gradient.cpu() for gradient in gradients)
+
+    expected_output, expected_gradients = run("cpu")
+    actual_output, actual_gradients = run("mps")
+
+    torch.testing.assert_close(actual_output, expected_output, rtol=1e-5, atol=1e-6)
+    for actual, expected in zip(actual_gradients, expected_gradients):
+        torch.testing.assert_close(actual, expected, rtol=1e-4, atol=1e-5)
 
 
 @pytest.mark.parametrize(
