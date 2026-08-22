@@ -79,12 +79,14 @@ jobs:
           pip install torch==${{ inputs.latest_torch }}${{ runner.os != 'macOS' && '+cpu' || '' }} --index-url https://download.pytorch.org/whl/cpu
 
           # philtorch's runtime dependency torchlpc has no prebuilt wheels
-          # either, so pip always builds it from source too. Install it (and
-          # philtorch's other runtime/test deps) with --no-build-isolation
-          # so its build reuses the torch already installed above instead of
-          # resolving an unpinned "latest" torch into a throwaway build env,
-          # mirroring how the pre-cibuildwheel workflow built torchlpc
-          # together with philtorch in one non-isolated environment.
+          # either, so pip always builds it from source too. Install it
+          # explicitly with --no-build-isolation so its build reuses the
+          # torch already installed above instead of resolving an unpinned
+          # "latest" torch into a throwaway isolated build env, mirroring how
+          # the pre-cibuildwheel workflow built torchlpc together with
+          # philtorch in one non-isolated environment. philtorch itself is
+          # then installed with --no-deps since torch and torchlpc (its only
+          # two runtime dependencies) are already installed above.
           if [ "$RUNNER_OS" = "macOS" ]; then
             LLVM_PREFIX="$(brew --prefix llvm)"
             LIBOMP_PREFIX="$(brew --prefix libomp)"
@@ -94,8 +96,9 @@ jobs:
             export LDFLAGS="-L$TORCH_LIB -Wl,-rpath,$TORCH_LIB"
           fi
 
+          pip install --no-build-isolation "torchlpc>=0.7.2"
+          pip install --no-deps "${WHEELS[0]}"
           pip install numpy scipy pytest pytest-cov
-          pip install --no-build-isolation "${WHEELS[0]}"
 
       - name: Test with pytest
         run: pytest --cov-branch --cov-report=xml
