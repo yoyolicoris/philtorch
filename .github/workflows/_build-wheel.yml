@@ -10,8 +10,16 @@ on:
       os:
         required: true
         type: string
-      torch_versions:
-        # JSON array string, e.g. '["2.11.0", "2.12.0", "2.13.0"]'
+      torch_version:
+        # Single version, e.g. '2.13.0'. Only one wheel is built (and
+        # published) per OS/Python: wheel filenames don't encode the Torch
+        # version they were built against, so building one per Torch minor
+        # (as this workflow used to) produces multiple artifacts with
+        # identical filenames that collide when published (PyPI can't host
+        # two files with the same name, and local version identifiers like
+        # `+torch2.7` are rejected by PyPI uploads). The built wheel is
+        # instead verified against every supported Torch minor at test time
+        # (see _test-wheel.yml's compat-test job).
         required: true
         type: string
 
@@ -20,10 +28,6 @@ jobs:
     runs-on: ${{ inputs.os }}
     permissions:
       contents: read
-    strategy:
-      fail-fast: false
-      matrix:
-        torch: ${{ fromJson(inputs.torch_versions) }}
     steps:
       - uses: actions/checkout@v4
         with:
@@ -51,8 +55,13 @@ jobs:
           LIBOMP_PREFIX="$(brew --prefix libomp)"
           echo "CXX=$LLVM_PREFIX/bin/clang++" >> "$GITHUB_ENV"
           echo "CPPFLAGS=-I$LIBOMP_PREFIX/include" >> "$GITHUB_ENV"
-          # lti_recur_mps_replay.mm depends on Metal/MPSGraph APIs only
-          # available starting macOS 14.
+          # lti_recur_mps_replay.mm's Metal kernels use simdgroup permute
+          # functions ([[thread_index_in_simdgroup]]/simd_shuffle_up) and
+          # torch::mps::get_command_buffer()/get_dispatch_queue()/commit(),
+          # which need a newer Metal/MPS runtime than arm64's Big Sur (11.0)
+          # floor. 14.0 is intentional here (not the 11.0 mentioned in this
+          # PR's own description) - see README for the documented macOS
+          # requirement.
           echo "MACOSX_DEPLOYMENT_TARGET=14.0" >> "$GITHUB_ENV"
 
       - name: Install cibuildwheel
@@ -80,7 +89,7 @@ jobs:
           # duplicating this whole command in a CIBW_BEFORE_BUILD_MACOS override.
           CIBW_BEFORE_BUILD: >-
             pip install "setuptools>=77.0.3" "setuptools-git-versioning>=2.0,<3" wheel &&
-            pip install torch==${{ matrix.torch }}${{ runner.os != 'macOS' && '+cpu' || '' }} --index-url https://download.pytorch.org/whl/cpu
+            pip install torch==${{ inputs.torch_version }}${{ runner.os != 'macOS' && '+cpu' || '' }} --index-url https://download.pytorch.org/whl/cpu
           CIBW_TEST_SKIP: "*"
           # torch's own shared libraries are excluded from repair: torch is a
           # separate runtime dependency (installed by users/CI alongside the
@@ -109,5 +118,5 @@ jobs:
 
       - uses: actions/upload-artifact@v4
         with:
-          name: wheels-${{ inputs.os }}-torch${{ matrix.torch }}
+          name: wheels-${{ inputs.os }}
           path: wheelhouse/*.whl

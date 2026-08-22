@@ -126,7 +126,25 @@ def get_extensions():
 try:
     ext_modules = get_extensions()
 except ImportError:
-    ext_modules = []
+    # Metadata-only invocations (e.g. `setup.py egg_info`/`sdist`, which pip
+    # also runs to prepare metadata/sdists in an isolated build environment
+    # populated solely from build-system.requires) don't need torch to be
+    # importable. Let those keep working without torch pre-installed.
+    #
+    # Actually building an extension (bdist_wheel/build_ext/develop/install)
+    # does need torch; failing loudly here instead of silently degrading to
+    # an extension-less wheel avoids shipping a philtorch that's missing
+    # `_C` with no indication anything went wrong.
+    metadata_only_commands = {"egg_info", "sdist", "dist_info"}
+    if metadata_only_commands.intersection(sys.argv):
+        ext_modules = []
+    else:
+        raise RuntimeError(
+            "philtorch could not `import torch` while building its "
+            "C++/CUDA extension. Install torch first (see README), then "
+            "reinstall/rebuild with `--no-build-isolation` so the build "
+            "sees it."
+        )
 
 if not ext_modules:
     setup()

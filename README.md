@@ -26,13 +26,18 @@ pip install philtorch
 ```
 
 Pre-built CPU wheels are available for the **latest 3 stable PyTorch minor
-versions** on Linux (x86\_64), macOS (arm64), and Windows (x86\_64) for
-**Python 3.10–3.13**. For other configurations (CUDA, Linux aarch64), install
-from source:
+versions** on Linux (x86\_64) and macOS 14+ (arm64) for **Python 3.10–3.13**.
+For other configurations (CUDA, Linux aarch64, Windows), install from source:
 
 ```bash
 pip install philtorch --no-binary philtorch
 ```
+
+> **_Note:_** Windows wheels aren't published yet: philtorch's mandatory
+> `torchlpc` dependency currently fails to build there (an
+> [upstream](https://github.com/DiffAPF/torchlpc) MSVC incompatibility), so a
+> normal `pip install philtorch` would install successfully and then fail on
+> that dependency. Windows users should track that issue upstream.
 
 ### Development version
 ```bash
