@@ -127,6 +127,19 @@ jobs:
             pip install "setuptools>=77.0.3" "setuptools-git-versioning>=2.0,<3" wheel &&
             pip install torch==${{ matrix.torch }}${{ runner.os != 'macOS' && '+cpu' || '' }} --index-url https://download.pytorch.org/whl/cpu
           CIBW_TEST_SKIP: "*"
+          # torch's own shared libraries are excluded from repair: torch is a
+          # separate runtime dependency (installed by users/CI alongside the
+          # wheel, never vendored), and `import torch` already loads these
+          # libraries into the process with global symbol visibility before
+          # `philtorch._C` is imported, so the extension's references to them
+          # resolve without needing a bundled copy. Without excluding them,
+          # auditwheel/delocate abort because they can't locate torch's
+          # libraries (which live in the separately-installed torch package,
+          # not on the wheel-building image's linker search path).
+          CIBW_REPAIR_WHEEL_COMMAND_LINUX: >-
+            auditwheel repair --exclude 'libtorch*.so*' --exclude 'libc10*.so*' -w {dest_dir} {wheel}
+          CIBW_REPAIR_WHEEL_COMMAND_MACOS: >-
+            delocate-wheel --require-archs {delocate_archs} -e libtorch -e libc10 -w {dest_dir} -v {wheel}
 
       - uses: actions/upload-artifact@v4
         with:
