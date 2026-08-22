@@ -59,103 +59,40 @@ jobs:
               f.write(f"matrix={matrix}\n")
           EOF
 
-  build-wheels:
+  # build-wheels is split into one job per OS (each calling the same
+  # reusable workflow) instead of a single job matrixed over os x torch.
+  # A matrixed job reports one aggregated conclusion for all its legs, so a
+  # single OS/torch combination failing would mark the whole job "failure"
+  # and (by default) skip every downstream `needs:` consumer, even for OSes
+  # that built fine. Separate job ids give each OS its own conclusion, so
+  # test-<os> below only ever depends on, and is skipped by, its own OS's
+  # build - no `if: ${{ !cancelled() }}` workaround required.
+  build-wheels-ubuntu:
     needs: resolve-torch-versions
-    runs-on: ${{ matrix.os }}
     permissions:
       contents: read
-    strategy:
-      fail-fast: false
-      matrix:
-        os: [ubuntu-latest, macos-latest, windows-latest]
-        torch: ${{ fromJson(needs.resolve-torch-versions.outputs.matrix) }}
-    steps:
-      - uses: actions/checkout@v4
-        with:
-          fetch-depth: 0
-          # fetch-depth: 0 required so setuptools-git-versioning can read full
-          # git history and tags to derive the package version number.
+    uses: ./.github/workflows/_build-wheel.yml
+    with:
+      os: ubuntu-latest
+      torch_versions: ${{ needs.resolve-torch-versions.outputs.matrix }}
 
-      - uses: actions/setup-python@v5
-        with:
-          python-version: "3.x"
+  build-wheels-macos:
+    needs: resolve-torch-versions
+    permissions:
+      contents: read
+    uses: ./.github/workflows/_build-wheel.yml
+    with:
+      os: macos-latest
+      torch_versions: ${{ needs.resolve-torch-versions.outputs.matrix }}
 
-      - name: Install Homebrew dependencies for OpenMP (macOS)
-        if: runner.os == 'macOS'
-        run: brew install llvm libomp
-
-      - name: Configure native build environment (macOS)
-        # cibuildwheel builds macOS wheels directly on the runner (no
-        # container), so env vars exported here are inherited by the build
-        # subprocess. setup.py's get_macos_openmp_config() also configures
-        # these via extra_compile_args/extra_link_args; this step is a
-        # belt-and-suspenders safety net.
-        if: runner.os == 'macOS'
-        run: |
-          LLVM_PREFIX="$(brew --prefix llvm)"
-          LIBOMP_PREFIX="$(brew --prefix libomp)"
-          echo "CXX=$LLVM_PREFIX/bin/clang++" >> "$GITHUB_ENV"
-          echo "CPPFLAGS=-I$LIBOMP_PREFIX/include" >> "$GITHUB_ENV"
-          # lti_recur_mps_replay.mm depends on Metal/MPSGraph APIs only
-          # available starting macOS 14.
-          echo "MACOSX_DEPLOYMENT_TARGET=14.0" >> "$GITHUB_ENV"
-
-      - name: Install cibuildwheel
-        run: pip install cibuildwheel==2.23.3
-
-      - name: Build wheels
-        run: cibuildwheel --output-dir wheelhouse
-        env:
-          # PRs only need a quick sanity check against the latest stable
-          # Python; other events (push/tag/release/dispatch) build the full
-          # supported range.
-          CIBW_BUILD: ${{ github.event_name == 'pull_request' && 'cp313-*' || 'cp310-* cp311-* cp312-* cp313-*' }}
-          CIBW_SKIP: "*-musllinux_*"
-          CIBW_ARCHS_LINUX: x86_64
-          CIBW_ARCHS_MACOS: arm64
-          CIBW_ARCHS_WINDOWS: AMD64
-          CIBW_MANYLINUX_X86_64_IMAGE: manylinux_2_28
-          # Build deps (torch, setuptools) are installed by CIBW_BEFORE_BUILD
-          # into the same env cibuildwheel builds in, so disable build
-          # isolation; otherwise setup.py can't `import torch` and silently
-          # produces a pure-Python (extension-less) wheel.
-          CIBW_BUILD_FRONTEND: "pip; args: --no-build-isolation"
-          # macOS CPU wheels on the PyTorch index aren't `+cpu`-suffixed, so
-          # the suffix is resolved once here (via runner.os) instead of
-          # duplicating this whole command in a CIBW_BEFORE_BUILD_MACOS override.
-          CIBW_BEFORE_BUILD: >-
-            pip install "setuptools>=77.0.3" "setuptools-git-versioning>=2.0,<3" wheel &&
-            pip install torch==${{ matrix.torch }}${{ runner.os != 'macOS' && '+cpu' || '' }} --index-url https://download.pytorch.org/whl/cpu
-          CIBW_TEST_SKIP: "*"
-          # torch's own shared libraries are excluded from repair: torch is a
-          # separate runtime dependency (installed by users/CI alongside the
-          # wheel, never vendored), and `import torch` already loads these
-          # libraries into the process with global symbol visibility before
-          # `philtorch._C` is imported, so the extension's references to them
-          # resolve without needing a bundled copy. Without excluding them,
-          # auditwheel/delocate abort because they can't locate torch's
-          # libraries (which live in the separately-installed torch package,
-          # not on the wheel-building image's linker search path).
-          CIBW_REPAIR_WHEEL_COMMAND_LINUX: >-
-            auditwheel repair --exclude 'libtorch*.so*' --exclude 'libc10*.so*' -w {dest_dir} {wheel}
-          # --ignore-missing-dependencies works around a similar issue for
-          # libomp.dylib specifically: official PyTorch macOS wheels bundle a
-          # libomp.dylib whose install name is an absolute path baked in by
-          # PyTorch's own build environment (e.g. /opt/llvm-openmp/lib/...),
-          # which doesn't exist on the wheel-building runner, so delocate
-          # can't locate a real file for it (unlike libtorch/libc10, which -e
-          # excludes by matching a real, found file). This reference still
-          # resolves fine at runtime: dyld reuses the already-loaded image
-          # from torch's own libomp.dylib (loaded when `import torch` runs
-          # before `philtorch._C`) because it matches that same install-name
-          # string, so no bundled copy is needed here either.
-          CIBW_REPAIR_WHEEL_COMMAND_MACOS: >-
-            delocate-wheel --require-archs {delocate_archs} -e libtorch -e libc10 --ignore-missing-dependencies -w {dest_dir} -v {wheel}
-
-      - uses: actions/upload-artifact@v4
-        with:
-          name: wheels-${{ matrix.os }}-torch${{ matrix.torch }}
-          path: wheelhouse/*.whl
+  build-wheels-windows:
+    needs: resolve-torch-versions
+    permissions:
+      contents: read
+    uses: ./.github/workflows/_build-wheel.yml
+    with:
+      os: windows-latest
+      torch_versions: ${{ needs.resolve-torch-versions.outputs.matrix }}
 
   lint:
     runs-on: ubuntu-latest
@@ -179,78 +116,58 @@ jobs:
           # exit-zero treats all errors as warnings. The GitHub editor is 127 chars wide
           flake8 . --count --exit-zero --max-complexity=10 --max-line-length=127 --statistics
 
-  test:
-    # Reuses the wheels already produced by build-wheels instead of
-    # recompiling the C++ extension from source, to save CI compute/runtime.
-    # Only tests against the latest resolved torch version (not every torch
-    # in build-wheels's matrix); the extension is compiled straight against
-    # torch's C++ ABI, so a passing test on the latest torch is a reliable
-    # proxy for the older, already-published torch minors.
-    #
-    # build-wheels is a single matrixed job, so if any one of its OS/torch
-    # combinations fails, its overall job conclusion is "failure" and (by
-    # default) every matrix leg here would be skipped entirely, even for
-    # OSes whose wheel built successfully. `if: ${{ !cancelled() }}` lets
-    # this job run regardless; legs whose wheel wasn't produced simply fail
-    # at the download-artifact step instead of masking the other OSes.
-    needs: [resolve-torch-versions, build-wheels]
-    if: ${{ !cancelled() }}
-    runs-on: ${{ matrix.os }}
+  # test is likewise split into one job per OS (see the comment on
+  # build-wheels-ubuntu above): test-<os> only needs its own OS's build job,
+  # so a build/test failure on one OS never skips the others.
+  test-ubuntu:
+    needs: [resolve-torch-versions, build-wheels-ubuntu]
     permissions:
       contents: read
-    env:
-      LATEST_TORCH: ${{ fromJson(needs.resolve-torch-versions.outputs.matrix)[0] }}
-    strategy:
-      fail-fast: false
-      matrix:
-        # macOS runners are expensive, so macOS is only tested on pull_request;
-        # other events (push/tag/release/dispatch) skip straight to ubuntu/windows.
-        os: ${{ fromJson(github.event_name == 'pull_request' && '["ubuntu-latest", "macos-latest", "windows-latest"]' || '["ubuntu-latest", "windows-latest"]') }}
-        # Mirrors the CIBW_BUILD selection in build-wheels: PRs only get a
-        # wheel for the latest Python, other events build/test the full range.
-        python-version: ${{ fromJson(github.event_name == 'pull_request' && '["3.13"]' || '["3.10", "3.11", "3.12", "3.13"]') }}
-    steps:
-      - uses: actions/checkout@v4
+    uses: ./.github/workflows/_test-wheel.yml
+    with:
+      os: ubuntu-latest
+      # Mirrors the CIBW_BUILD selection in _build-wheel.yml: PRs only get a
+      # wheel for the latest Python, other events build/test the full range.
+      python_versions: ${{ github.event_name == 'pull_request' && '["3.13"]' || '["3.10", "3.11", "3.12", "3.13"]' }}
+      latest_torch: ${{ fromJson(needs.resolve-torch-versions.outputs.matrix)[0] }}
+    secrets:
+      codecov_token: ${{ secrets.CODECOV_TOKEN }}
 
-      - uses: actions/setup-python@v5
-        with:
-          python-version: ${{ matrix.python-version }}
+  # macOS runners are expensive, so macOS is only tested on pull_request;
+  # other events (push/tag/release/dispatch) skip straight to ubuntu/windows.
+  test-macos:
+    if: github.event_name == 'pull_request'
+    needs: [resolve-torch-versions, build-wheels-macos]
+    permissions:
+      contents: read
+    uses: ./.github/workflows/_test-wheel.yml
+    with:
+      os: macos-latest
+      python_versions: '["3.13"]'
+      latest_torch: ${{ fromJson(needs.resolve-torch-versions.outputs.matrix)[0] }}
+    secrets:
+      codecov_token: ${{ secrets.CODECOV_TOKEN }}
 
-      - uses: actions/download-artifact@v4
-        with:
-          name: wheels-${{ matrix.os }}-torch${{ env.LATEST_TORCH }}
-          path: wheelhouse
-
-      - name: Install wheel and test dependencies
-        # Runs under bash on every OS (including windows-latest's bundled Git
-        # Bash) for a single consistent script. No Homebrew/OpenMP setup is
-        # needed on macOS: the wheel built by build-wheels doesn't bundle its
-        # own libomp (see CIBW_REPAIR_WHEEL_COMMAND_MACOS above); it relies on
-        # torch's own libomp.dylib, which is available once torch is
-        # installed here. Torch is installed without a "+cpu" suffix only on
-        # macOS, since macOS CPU wheels on that index aren't suffixed,
-        # matching CIBW_BEFORE_BUILD in build-wheels.
-        shell: bash
-        run: |
-          shopt -s nullglob
-          PYTAG="cp$(echo "${{ matrix.python-version }}" | tr -d '.')"
-          WHEELS=(wheelhouse/philtorch-*-"$PYTAG"-*.whl)
-          if [ "${#WHEELS[@]}" -ne 1 ]; then
-            echo "Expected exactly one wheel matching $PYTAG in wheelhouse/, found ${#WHEELS[@]}: ${WHEELS[*]}" >&2
-            exit 1
-          fi
-          pip install torch==${{ env.LATEST_TORCH }}${{ runner.os != 'macOS' && '+cpu' || '' }} --index-url https://download.pytorch.org/whl/cpu
-          pip install "${WHEELS[0]}"
-          pip install pytest scipy numpy pytest-cov
-
-      - name: Test with pytest
-        run: pytest --cov-branch --cov-report=xml
-
-      - name: Upload coverage reports to Codecov
-        if: matrix.os == 'ubuntu-latest' && matrix.python-version == '3.13'
-        uses: codecov/codecov-action@v5
-        with:
-          token: ${{ secrets.CODECOV_TOKEN }}
+  # NOTE: torchlpc (a philtorch runtime dependency) currently fails to
+  # compile on Windows/MSVC: its scan_cpu.cpp uses a variable-length array
+  # (`std::pair<scalar_t, scalar_t> buffer[total_size];`), which is a
+  # GCC/Clang extension, not standard C++, and MSVC rejects it with
+  # "error C2131: expression did not evaluate to a constant". This is a bug
+  # in torchlpc itself (unrelated to build isolation) that pre-dates this
+  # workflow: the previous CI (python-package.yml) never had a Windows job,
+  # so this was never previously exercised. Fixing it requires a change in
+  # torchlpc's upstream repository, not this one.
+  test-windows:
+    needs: [resolve-torch-versions, build-wheels-windows]
+    permissions:
+      contents: read
+    uses: ./.github/workflows/_test-wheel.yml
+    with:
+      os: windows-latest
+      python_versions: ${{ github.event_name == 'pull_request' && '["3.13"]' || '["3.10", "3.11", "3.12", "3.13"]' }}
+      latest_torch: ${{ fromJson(needs.resolve-torch-versions.outputs.matrix)[0] }}
+    secrets:
+      codecov_token: ${{ secrets.CODECOV_TOKEN }}
 
   build-sdist:
     runs-on: ubuntu-latest
@@ -281,11 +198,30 @@ jobs:
 
   publish:
     runs-on: ubuntu-latest
-    needs: [build-wheels, build-sdist, lint, test]
+    needs:
+      [
+        build-wheels-ubuntu,
+        build-wheels-macos,
+        build-wheels-windows,
+        build-sdist,
+        lint,
+        test-ubuntu,
+        test-macos,
+        test-windows,
+      ]
+    # test-macos only ever runs for pull_request (see its own `if:` above),
+    # so it's always "skipped" - not "success" - whenever the conditions
+    # below are true (push/tag/release always excludes pull_request). A bare
+    # `needs:` implies an `if: success()` default, which treats a skipped
+    # need as blocking; failure()/cancelled() correctly ignore it instead,
+    # while still blocking on a genuine failure in any other needed job.
     if: >
-      (github.event_name == 'push' && github.ref == 'refs/heads/dev') ||
-      (github.event_name == 'push' && startsWith(github.ref, 'refs/tags/')) ||
-      (github.event_name == 'release' && github.event.action == 'published')
+      !failure() && !cancelled() &&
+      (
+        (github.event_name == 'push' && github.ref == 'refs/heads/dev') ||
+        (github.event_name == 'push' && startsWith(github.ref, 'refs/tags/')) ||
+        (github.event_name == 'release' && github.event.action == 'published')
+      )
     permissions:
       id-token: write
     environment:

@@ -1,0 +1,107 @@
+name: Test wheel (reusable)
+
+# Called once per OS from build-wheels.yml (not matrixed by os in the
+# caller), so each OS gets its own job conclusion, independent of the other
+# OSes' build/test results.
+on:
+  workflow_call:
+    inputs:
+      os:
+        required: true
+        type: string
+      python_versions:
+        # JSON array string, e.g. '["3.10", "3.11", "3.12", "3.13"]'
+        required: true
+        type: string
+      latest_torch:
+        required: true
+        type: string
+    secrets:
+      codecov_token:
+        required: false
+
+jobs:
+  test:
+    # Reuses the wheel already produced by build-wheels instead of
+    # recompiling the C++ extension from source, to save CI compute/runtime.
+    # Only tests against the latest resolved torch version (not every torch
+    # in build-wheels's matrix); the extension is compiled straight against
+    # torch's C++ ABI, so a passing test on the latest torch is a reliable
+    # proxy for the older, already-published torch minors.
+    runs-on: ${{ inputs.os }}
+    permissions:
+      contents: read
+    strategy:
+      fail-fast: false
+      matrix:
+        python-version: ${{ fromJson(inputs.python_versions) }}
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: ${{ matrix.python-version }}
+
+      - uses: actions/download-artifact@v4
+        with:
+          name: wheels-${{ inputs.os }}-torch${{ inputs.latest_torch }}
+          path: wheelhouse
+
+      - name: Install Homebrew dependencies for OpenMP (macOS)
+        # torchlpc (a philtorch runtime dependency, see "Install wheel and
+        # test dependencies" below) has no prebuilt wheels and must compile
+        # its OpenMP C++ extension from source; Apple's default clang++
+        # doesn't support -fopenmp, so the same Homebrew llvm/libomp
+        # toolchain _build-wheel.yml uses is needed here too.
+        if: runner.os == 'macOS'
+        run: brew install llvm libomp
+
+      - name: Install wheel and test dependencies
+        # Runs under bash on every OS (including windows-latest's bundled Git
+        # Bash) for a single consistent script. No Homebrew/OpenMP setup is
+        # needed for philtorch itself on macOS: the wheel built by
+        # build-wheels doesn't bundle its own libomp (see
+        # CIBW_REPAIR_WHEEL_COMMAND_MACOS in _build-wheel.yml); it relies on
+        # torch's own libomp.dylib, which is available once torch is
+        # installed here. Torch is installed without a "+cpu" suffix only on
+        # macOS, since macOS CPU wheels on that index aren't suffixed,
+        # matching CIBW_BEFORE_BUILD in _build-wheel.yml.
+        shell: bash
+        run: |
+          shopt -s nullglob
+          PYTAG="cp$(echo "${{ matrix.python-version }}" | tr -d '.')"
+          WHEELS=(wheelhouse/philtorch-*-"$PYTAG"-*.whl)
+          if [ "${#WHEELS[@]}" -ne 1 ]; then
+            echo "Expected exactly one wheel matching $PYTAG in wheelhouse/, found ${#WHEELS[@]}: ${WHEELS[*]}" >&2
+            exit 1
+          fi
+
+          pip install torch==${{ inputs.latest_torch }}${{ runner.os != 'macOS' && '+cpu' || '' }} --index-url https://download.pytorch.org/whl/cpu
+
+          # philtorch's runtime dependency torchlpc has no prebuilt wheels
+          # either, so pip always builds it from source too. Install it (and
+          # philtorch's other runtime/test deps) with --no-build-isolation
+          # so its build reuses the torch already installed above instead of
+          # resolving an unpinned "latest" torch into a throwaway build env,
+          # mirroring how the pre-cibuildwheel workflow built torchlpc
+          # together with philtorch in one non-isolated environment.
+          if [ "$RUNNER_OS" = "macOS" ]; then
+            LLVM_PREFIX="$(brew --prefix llvm)"
+            LIBOMP_PREFIX="$(brew --prefix libomp)"
+            export CXX="$LLVM_PREFIX/bin/clang++"
+            export CPPFLAGS="-I$LIBOMP_PREFIX/include"
+            TORCH_LIB="$(python -c 'from pathlib import Path; import torch; print(Path(torch.__file__).parent / "lib")')"
+            export LDFLAGS="-L$TORCH_LIB -Wl,-rpath,$TORCH_LIB"
+          fi
+
+          pip install numpy scipy pytest pytest-cov
+          pip install --no-build-isolation "${WHEELS[0]}"
+
+      - name: Test with pytest
+        run: pytest --cov-branch --cov-report=xml
+
+      - name: Upload coverage reports to Codecov
+        if: inputs.os == 'ubuntu-latest' && matrix.python-version == '3.13'
+        uses: codecov/codecov-action@v5
+        with:
+          token: ${{ secrets.codecov_token }}
