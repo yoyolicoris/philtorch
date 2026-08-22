@@ -71,5 +71,13 @@ markers = [
     "unit: marks tests as unit tests",
 ]
 
+[tool.coverage.run]
+relative_files = true
+
+[tool.coverage.paths]
+# CI tests the pre-built wheel (installed into site-packages) instead of an
+# editable checkout, so map both locations to the same source for reporting.
+source = ["philtorch/", "*/site-packages/philtorch/"]
+
 [tool.black]
 target-version = ["py310"]
