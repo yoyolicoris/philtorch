@@ -82,16 +82,20 @@ jobs:
           name: wheels-linux-cp${{ matrix.python }}-torch${{ matrix.torch }}
           path: wheelhouse/*.whl
 
-  build-macos:
+  build-macos-windows:
     needs: resolve-torch-versions
-    runs-on: macos-latest
+    runs-on: ${{ matrix.os }}
     permissions:
       contents: read
     strategy:
       fail-fast: false
       matrix:
+        os: [macos-latest, windows-latest]
         torch: ${{ fromJson(needs.resolve-torch-versions.outputs.matrix) }}
         python: ["3.10", "3.11", "3.12", "3.13"]
+    defaults:
+      run:
+        shell: bash
     steps:
       - uses: actions/checkout@v4
         with:
@@ -101,13 +105,36 @@ jobs:
         with:
           python-version: ${{ matrix.python }}
 
-      - name: Install Homebrew dependencies for OpenMP
+      - name: Install Homebrew dependencies for OpenMP (macOS)
+        if: runner.os == 'macOS'
         run: brew install llvm libomp
 
-      - name: Install torch and build dependencies
+      - name: Configure native build environment (macOS)
+        # Sets CXX/CPPFLAGS so the OpenMP-capable Homebrew clang++ and libomp
+        # headers are used, mirroring the proven config in python-package.yml.
+        # setup.py's get_macos_openmp_config() also configures these via
+        # extra_compile_args/extra_link_args; this step is a belt-and-suspenders
+        # safety net since this workflow path (unlike python-package.yml) had
+        # not previously been exercised in CI.
+        if: runner.os == 'macOS'
         run: |
-          pip install torch==${{ matrix.torch }} --index-url https://download.pytorch.org/whl/cpu
-          pip install "setuptools>=77.0.3" "setuptools-git-versioning>=2.0" wheel build
+          LLVM_PREFIX="$(brew --prefix llvm)"
+          LIBOMP_PREFIX="$(brew --prefix libomp)"
+          echo "CXX=$LLVM_PREFIX/bin/clang++" >> "$GITHUB_ENV"
+          echo "CPPFLAGS=-I$LIBOMP_PREFIX/include" >> "$GITHUB_ENV"
+
+      - name: Install torch
+        run: |
+          if [ "${{ runner.os }}" == "macOS" ]; then
+            pip install torch==${{ matrix.torch }} --index-url https://download.pytorch.org/whl/cpu
+            TORCH_LIB="$(python -c 'from pathlib import Path; import torch; print(Path(torch.__file__).parent / "lib")')"
+            echo "LDFLAGS=-L$TORCH_LIB -Wl,-rpath,$TORCH_LIB" >> "$GITHUB_ENV"
+          else
+            pip install torch==${{ matrix.torch }}+cpu --index-url https://download.pytorch.org/whl/cpu
+          fi
+
+      - name: Install build dependencies
+        run: pip install "setuptools>=77.0.3" "setuptools-git-versioning>=2.0" wheel build
 
       - name: Build wheel
         run: python -m build --wheel --no-isolation
@@ -116,49 +143,17 @@ jobs:
 
       - uses: actions/upload-artifact@v4
         with:
-          name: wheels-macos-${{ matrix.python }}-torch${{ matrix.torch }}
+          name: wheels-${{ contains(matrix.os, 'macos') && 'macos' || 'windows' }}-${{ matrix.python }}-torch${{ matrix.torch }}
           path: dist/*.whl
 
-  build-windows:
-    needs: resolve-torch-versions
-    runs-on: windows-latest
-    permissions:
-      contents: read
-    strategy:
-      fail-fast: false
-      matrix:
-        torch: ${{ fromJson(needs.resolve-torch-versions.outputs.matrix) }}
-        python: ["3.10", "3.11", "3.12", "3.13"]
-    steps:
-      - uses: actions/checkout@v4
-        with:
-          fetch-depth: 0
-
-      - uses: actions/setup-python@v5
-        with:
-          python-version: ${{ matrix.python }}
-
-      - name: Install torch and build dependencies
-        run: |
-          pip install torch==${{ matrix.torch }}+cpu --index-url https://download.pytorch.org/whl/cpu
-          pip install "setuptools>=77.0.3" "setuptools-git-versioning>=2.0" wheel build
-
-      - name: Build wheel
-        run: python -m build --wheel --no-isolation
-
-      - uses: actions/upload-artifact@v4
-        with:
-          name: wheels-windows-${{ matrix.python }}-torch${{ matrix.torch }}
-          path: dist/*.whl
-
-  publish-testpypi:
+  publish:
     runs-on: ubuntu-latest
-    needs: [build-linux, build-macos, build-windows]
-    if: github.event_name == 'push' && github.ref == 'refs/heads/dev'
+    needs: [build-linux, build-macos-windows]
+    if: (github.event_name == 'push' && github.ref == 'refs/heads/dev') || (github.event_name == 'release' && github.event.action == 'published')
     permissions:
       id-token: write
     environment:
-      name: testpypi
+      name: ${{ github.event_name == 'release' && 'pypi' || 'testpypi' }}
     steps:
       - uses: actions/download-artifact@v4
         with:
@@ -166,26 +161,15 @@ jobs:
           path: dist/
           merge-multiple: true
 
-      - uses: pypa/gh-action-pypi-publish@release/v1
+      - name: Publish to TestPyPI
+        if: github.event_name == 'push'
+        uses: pypa/gh-action-pypi-publish@release/v1
         with:
           packages-dir: dist/
           repository-url: https://test.pypi.org/legacy/
 
-  publish-pypi:
-    runs-on: ubuntu-latest
-    needs: [build-linux, build-macos, build-windows]
-    if: github.event_name == 'release' && github.event.action == 'published'
-    permissions:
-      id-token: write
-    environment:
-      name: pypi
-    steps:
-      - uses: actions/download-artifact@v4
-        with:
-          pattern: wheels-*
-          path: dist/
-          merge-multiple: true
-
-      - uses: pypa/gh-action-pypi-publish@release/v1
+      - name: Publish to PyPI
+        if: github.event_name == 'release'
+        uses: pypa/gh-action-pypi-publish@release/v1
         with:
           packages-dir: dist/
