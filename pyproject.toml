@@ -62,6 +62,16 @@ python_functions = ["test_*"]
 addopts = [
     "--tb=short",
     "--strict-markers",
+    # tests/ has an __init__.py (needed so test modules can use relative
+    # imports, e.g. `from .test_lti_ssm import ...`), so pytest's default
+    # "prepend" import mode walks up to the first ancestor without an
+    # __init__.py - the repo root - and inserts *that* into sys.path[0].
+    # That shadows the installed (wheel) "philtorch" package with the local,
+    # uncompiled source checkout, so `torch.ops.philtorch.*` (extension-only,
+    # no pure-Python fallback) breaks in CI, which tests the built wheel
+    # rather than an editable install. "importlib" mode imports test modules
+    # without mutating sys.path, so the installed wheel's philtorch is used.
+    "--import-mode=importlib",
     "--cov=philtorch",
     "--cov-report=term-missing:skip-covered",
 ]

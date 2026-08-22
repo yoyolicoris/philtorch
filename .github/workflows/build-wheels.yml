@@ -76,7 +76,15 @@ jobs:
       os: ubuntu-latest
       torch_versions: ${{ needs.resolve-torch-versions.outputs.matrix }}
 
+  # macOS runners are expensive, so macOS is only built (and tested, see
+  # test-macos below) for pull_request and official-release events (a
+  # v0.*/v1.* tag push, or a published GitHub release); push events to dev
+  # skip straight to ubuntu/windows.
   build-wheels-macos:
+    if: >
+      github.event_name == 'pull_request' ||
+      github.event_name == 'release' ||
+      startsWith(github.ref, 'refs/tags/')
     needs: resolve-torch-versions
     permissions:
       contents: read
@@ -133,10 +141,13 @@ jobs:
     secrets:
       codecov_token: ${{ secrets.CODECOV_TOKEN }}
 
-  # macOS runners are expensive, so macOS is only tested on pull_request;
-  # other events (push/tag/release/dispatch) skip straight to ubuntu/windows.
+  # Mirrors build-wheels-macos's condition above: only pull_request and
+  # official-release events build a macOS wheel to test against.
   test-macos:
-    if: github.event_name == 'pull_request'
+    if: >
+      github.event_name == 'pull_request' ||
+      github.event_name == 'release' ||
+      startsWith(github.ref, 'refs/tags/')
     needs: [resolve-torch-versions, build-wheels-macos]
     permissions:
       contents: read
@@ -156,7 +167,11 @@ jobs:
   # in torchlpc itself (unrelated to build isolation) that pre-dates this
   # workflow: the previous CI (python-package.yml) never had a Windows job,
   # so this was never previously exercised. Fixing it requires a change in
-  # torchlpc's upstream repository, not this one.
+  # torchlpc's upstream repository, not this one. Because it always fails,
+  # this job is intentionally left out of publish's `needs` below (unlike
+  # build-wheels-windows, which does succeed and is required) so it can't
+  # permanently block publishing; it still runs on every trigger so its
+  # (expected) failure stays visible.
   test-windows:
     needs: [resolve-torch-versions, build-wheels-windows]
     permissions:
@@ -207,14 +222,20 @@ jobs:
         lint,
         test-ubuntu,
         test-macos,
-        test-windows,
       ]
-    # test-macos only ever runs for pull_request (see its own `if:` above),
-    # so it's always "skipped" - not "success" - whenever the conditions
-    # below are true (push/tag/release always excludes pull_request). A bare
-    # `needs:` implies an `if: success()` default, which treats a skipped
-    # need as blocking; failure()/cancelled() correctly ignore it instead,
-    # while still blocking on a genuine failure in any other needed job.
+    # test-windows is deliberately absent from `needs` above (see the NOTE on
+    # that job): it always fails on a torchlpc/MSVC bug that can only be
+    # fixed upstream, so requiring its success would permanently block
+    # publish. build-wheels-windows (which does succeed) is still required,
+    # so a real regression in philtorch's own Windows build still blocks.
+    #
+    # build-wheels-macos/test-macos only run for pull_request and
+    # official-release events (tag push or a published GitHub release; see
+    # their own `if:` above), so they're always "skipped" - not "success" -
+    # on a push to dev. A bare `needs:` implies an `if: success()` default,
+    # which treats a skipped need as blocking; failure()/cancelled() correctly
+    # ignore it instead, while still blocking on a genuine failure in any
+    # other needed job.
     if: >
       !failure() && !cancelled() &&
       (
