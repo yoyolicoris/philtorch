@@ -12,6 +12,8 @@ on:
 jobs:
   build-ubuntu:
     runs-on: ubuntu-latest
+    permissions:
+      contents: read
     strategy:
       fail-fast: false
       matrix:
@@ -53,6 +55,8 @@ jobs:
   build-macos:
     if: github.event_name == 'pull_request'
     runs-on: macos-26
+    permissions:
+      contents: read
     strategy:
       fail-fast: false
       matrix:
@@ -63,7 +67,7 @@ jobs:
         with:
           fetch-depth: 0
       - name: Set up Python ${{ matrix.python-version }}
-        uses: actions/setup-python@v3
+        uses: actions/setup-python@v5
         with:
           python-version: ${{ matrix.python-version }}
       - name: Install native build dependencies
