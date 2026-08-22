@@ -158,6 +158,10 @@ jobs:
   test-ubuntu:
     # Reuses the wheels already produced by build-wheels instead of
     # recompiling the C++ extension from source, to save CI compute/runtime.
+    # Only tests against the latest resolved torch version (not every torch
+    # in build-wheels's matrix); the extension is compiled straight against
+    # torch's C++ ABI, so a passing test on the latest torch is a reliable
+    # proxy for the older, already-published torch minors.
     needs: [resolve-torch-versions, build-wheels]
     runs-on: ubuntu-latest
     permissions:
@@ -185,9 +189,13 @@ jobs:
       - name: Install wheel and test dependencies
         run: |
           PYTAG="cp$(echo "${{ matrix.python-version }}" | tr -d '.')"
-          WHEEL=$(ls wheelhouse/philtorch-*-"$PYTAG"-*.whl)
+          mapfile -t WHEELS < <(ls wheelhouse/philtorch-*-"$PYTAG"-*.whl)
+          if [ "${#WHEELS[@]}" -ne 1 ]; then
+            echo "Expected exactly one wheel matching $PYTAG in wheelhouse/, found ${#WHEELS[@]}: ${WHEELS[*]}" >&2
+            exit 1
+          fi
           pip install torch==${{ env.LATEST_TORCH }}+cpu --index-url https://download.pytorch.org/whl/cpu
-          pip install "$WHEEL"
+          pip install "${WHEELS[0]}"
           pip install pytest scipy numpy pytest-cov
 
       - name: Test with pytest
@@ -222,11 +230,17 @@ jobs:
       - name: Install wheel and test dependencies
         # No Homebrew/OpenMP setup needed here: the wheel built by
         # build-wheels is already self-contained (cibuildwheel repairs macOS
-        # wheels with delocate, bundling libomp).
+        # wheels with delocate, bundling libomp). Torch is installed from the
+        # CPU index without a "+cpu" suffix because macOS CPU wheels on that
+        # index aren't suffixed, matching CIBW_BEFORE_BUILD in build-wheels.
         run: |
-          WHEEL=$(ls wheelhouse/philtorch-*-cp313-*.whl)
+          mapfile -t WHEELS < <(ls wheelhouse/philtorch-*-cp313-*.whl)
+          if [ "${#WHEELS[@]}" -ne 1 ]; then
+            echo "Expected exactly one cp313 wheel in wheelhouse/, found ${#WHEELS[@]}: ${WHEELS[*]}" >&2
+            exit 1
+          fi
           pip install torch==${{ env.LATEST_TORCH }} --index-url https://download.pytorch.org/whl/cpu
-          pip install "$WHEEL"
+          pip install "${WHEELS[0]}"
           pip install pytest scipy numpy pytest-cov
 
       - name: Test with pytest
