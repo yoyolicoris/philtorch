@@ -171,7 +171,9 @@ jobs:
     strategy:
       fail-fast: false
       matrix:
-        os: [ubuntu-latest, macos-latest, windows-latest]
+        # macOS runners are expensive, so macOS is only tested on pull_request;
+        # other events (push/tag/release/dispatch) skip straight to ubuntu/windows.
+        os: ${{ fromJson(github.event_name == 'pull_request' && '["ubuntu-latest", "macos-latest", "windows-latest"]' || '["ubuntu-latest", "windows-latest"]') }}
         # Mirrors the CIBW_BUILD selection in build-wheels: PRs only get a
         # wheel for the latest Python, other events build/test the full range.
         python-version: ${{ fromJson(github.event_name == 'pull_request' && '["3.13"]' || '["3.10", "3.11", "3.12", "3.13"]') }}
