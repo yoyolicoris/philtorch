@@ -2,24 +2,58 @@ name: Build CPU wheels
 
 on:
   push:
-    tags:
-      - 'v*'
+    branches: ["dev"]
+  release:
+    types: [published]
   workflow_dispatch:
-    inputs:
-      torch_version:
-        description: 'Torch version to build against (e.g. 2.7.0); leave blank to build full matrix'
-        required: false
-        default: ''
 
 jobs:
+  resolve-torch-versions:
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+    outputs:
+      matrix: ${{ steps.resolve.outputs.matrix }}
+    steps:
+      - name: Resolve latest 3 stable PyTorch minor versions
+        id: resolve
+        run: |
+          python3 - <<'EOF'
+          import os, urllib.request, re, json
+          from packaging.version import Version
+
+          url = "https://download.pytorch.org/whl/cpu/torch/"
+          with urllib.request.urlopen(url) as r:
+              html = r.read().decode()
+
+          # Extract versions like 2.6.0, 2.7.1, etc. from wheel filenames
+          versions = set(re.findall(r'torch-(\d+\.\d+\.\d+)\+cpu-', html))
+
+          parsed = sorted({Version(v) for v in versions}, reverse=True)
+
+          # Pick the latest patch for each minor series, take the 3 most recent minors
+          seen_minor = {}
+          for v in parsed:
+              key = (v.major, v.minor)
+              if key not in seen_minor:
+                  seen_minor[key] = str(v)
+          top3 = [seen_minor[k] for k in sorted(seen_minor, reverse=True)[:3]]
+
+          matrix = json.dumps(top3)
+          print(f"Resolved torch versions: {top3}")
+          with open(os.environ["GITHUB_OUTPUT"], "a") as f:
+              f.write(f"matrix={matrix}\n")
+          EOF
+
   build-linux:
+    needs: resolve-torch-versions
     runs-on: ubuntu-latest
     permissions:
       contents: read
     strategy:
       fail-fast: false
       matrix:
-        torch: ["2.6.0", "2.7.0"]
+        torch: ${{ fromJson(needs.resolve-torch-versions.outputs.matrix) }}
         python: ["310", "311", "312", "313"]
     steps:
       - uses: actions/checkout@v4
@@ -54,13 +88,14 @@ jobs:
           path: wheelhouse/*.whl
 
   build-macos:
+    needs: resolve-torch-versions
     runs-on: macos-latest
     permissions:
       contents: read
     strategy:
       fail-fast: false
       matrix:
-        torch: ["2.6.0", "2.7.0"]
+        torch: ${{ fromJson(needs.resolve-torch-versions.outputs.matrix) }}
         python: ["3.10", "3.11", "3.12", "3.13"]
     steps:
       - uses: actions/checkout@v4
@@ -76,7 +111,7 @@ jobs:
 
       - name: Install torch and build dependencies
         run: |
-          pip install torch==${{ matrix.torch }}+cpu --index-url https://download.pytorch.org/whl/cpu
+          pip install torch==${{ matrix.torch }} --index-url https://download.pytorch.org/whl/cpu
           pip install "setuptools>=77.0.3" "setuptools-git-versioning>=2.0" wheel build
 
       - name: Build wheel
@@ -90,13 +125,14 @@ jobs:
           path: dist/*.whl
 
   build-windows:
+    needs: resolve-torch-versions
     runs-on: windows-latest
     permissions:
       contents: read
     strategy:
       fail-fast: false
       matrix:
-        torch: ["2.6.0", "2.7.0"]
+        torch: ${{ fromJson(needs.resolve-torch-versions.outputs.matrix) }}
         python: ["3.10", "3.11", "3.12", "3.13"]
     steps:
       - uses: actions/checkout@v4
@@ -120,10 +156,30 @@ jobs:
           name: wheels-windows-${{ matrix.python }}-torch${{ matrix.torch }}
           path: dist/*.whl
 
-  publish:
+  publish-testpypi:
     runs-on: ubuntu-latest
     needs: [build-linux, build-macos, build-windows]
-    if: startsWith(github.ref, 'refs/tags/v')
+    if: github.event_name == 'push' && github.ref == 'refs/heads/dev'
+    permissions:
+      id-token: write
+    environment:
+      name: testpypi
+    steps:
+      - uses: actions/download-artifact@v4
+        with:
+          pattern: wheels-*
+          path: dist/
+          merge-multiple: true
+
+      - uses: pypa/gh-action-pypi-publish@release/v1
+        with:
+          packages-dir: dist/
+          repository-url: https://test.pypi.org/legacy/
+
+  publish-pypi:
+    runs-on: ubuntu-latest
+    needs: [build-linux, build-macos, build-windows]
+    if: github.event_name == 'release' && github.event.action == 'published'
     permissions:
       id-token: write
     environment:
@@ -138,3 +194,4 @@ jobs:
       - uses: pypa/gh-action-pypi-publish@release/v1
         with:
           packages-dir: dist/
+
