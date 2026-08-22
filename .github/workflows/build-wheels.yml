@@ -74,12 +74,7 @@ jobs:
         env:
           CIBW_BUILD: "cp${{ matrix.python }}-manylinux_x86_64"
           CIBW_MANYLINUX_X86_64_IMAGE: manylinux_2_28
-          CIBW_BEFORE_BUILD: >
-            pip install torch==${{ matrix.torch }}+cpu
-            --index-url https://download.pytorch.org/whl/cpu &&
-            pip install setuptools>=77.0.3 setuptools-git-versioning>=2.0 wheel
-          CIBW_ENVIRONMENT: >
-            PHILTORCH_DISABLE_OPENMP=0
+          CIBW_BEFORE_BUILD: "pip install torch==${{ matrix.torch }}+cpu --index-url https://download.pytorch.org/whl/cpu && pip install setuptools>=77.0.3 setuptools-git-versioning>=2.0 wheel"
           CIBW_TEST_SKIP: "*"
 
       - uses: actions/upload-artifact@v4
@@ -117,7 +112,7 @@ jobs:
       - name: Build wheel
         run: python -m build --wheel --no-isolation
         env:
-          MACOSX_DEPLOYMENT_TARGET: "11.0"
+          MACOSX_DEPLOYMENT_TARGET: "14.0"
 
       - uses: actions/upload-artifact@v4
         with:
@@ -194,4 +189,3 @@ jobs:
       - uses: pypa/gh-action-pypi-publish@release/v1
         with:
           packages-dir: dist/
-

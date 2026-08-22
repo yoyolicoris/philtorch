@@ -3,13 +3,6 @@ import os
 import glob
 import subprocess
 import sys
-import torch
-from torch.utils.cpp_extension import (
-    CppExtension,
-    CUDAExtension,
-    BuildExtension,
-    CUDA_HOME,
-)
 
 library_name = "philtorch"
 
@@ -67,6 +60,13 @@ def get_macos_openmp_config(extra_compile_args, extra_link_args, torch_lib):
 
 
 def get_extensions():
+    import torch
+    from torch.utils.cpp_extension import (
+        CppExtension,
+        CUDAExtension,
+        CUDA_HOME,
+    )
+
     use_cuda = torch.cuda.is_available() and CUDA_HOME is not None
     use_openmp = (
         torch.backends.openmp.is_available()
@@ -120,11 +120,15 @@ def get_extensions():
     return ext_modules
 
 
-ext_modules = get_extensions()
+try:
+    ext_modules = get_extensions()
+except ImportError:
+    ext_modules = []
 
 if not ext_modules:
     setup()
 else:
+    from torch.utils.cpp_extension import BuildExtension
     setup(
         ext_modules=ext_modules,
         cmdclass={"build_ext": BuildExtension},
