@@ -224,9 +224,10 @@ jobs:
       - name: Install wheel and test dependencies
         # Runs under bash on every OS (including windows-latest's bundled Git
         # Bash) for a single consistent script. No Homebrew/OpenMP setup is
-        # needed on macOS: the wheel built by build-wheels is already
-        # self-contained (cibuildwheel repairs macOS wheels with delocate,
-        # bundling libomp). Torch is installed without a "+cpu" suffix only on
+        # needed on macOS: the wheel built by build-wheels doesn't bundle its
+        # own libomp (see CIBW_REPAIR_WHEEL_COMMAND_MACOS above); it relies on
+        # torch's own libomp.dylib, which is available once torch is
+        # installed here. Torch is installed without a "+cpu" suffix only on
         # macOS, since macOS CPU wheels on that index aren't suffixed,
         # matching CIBW_BEFORE_BUILD in build-wheels.
         shell: bash
