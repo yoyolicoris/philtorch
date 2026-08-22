@@ -120,12 +120,12 @@ jobs:
           # isolation; otherwise setup.py can't `import torch` and silently
           # produces a pure-Python (extension-less) wheel.
           CIBW_BUILD_FRONTEND: "pip; args: --no-build-isolation"
+          # macOS CPU wheels on the PyTorch index aren't `+cpu`-suffixed, so
+          # the suffix is resolved once here (via runner.os) instead of
+          # duplicating this whole command in a CIBW_BEFORE_BUILD_MACOS override.
           CIBW_BEFORE_BUILD: >-
             pip install "setuptools>=77.0.3" "setuptools-git-versioning>=2.0,<3" wheel &&
-            pip install torch==${{ matrix.torch }}+cpu --index-url https://download.pytorch.org/whl/cpu
-          CIBW_BEFORE_BUILD_MACOS: >-
-            pip install "setuptools>=77.0.3" "setuptools-git-versioning>=2.0,<3" wheel &&
-            pip install torch==${{ matrix.torch }} --index-url https://download.pytorch.org/whl/cpu
+            pip install torch==${{ matrix.torch }}${{ runner.os != 'macOS' && '+cpu' || '' }} --index-url https://download.pytorch.org/whl/cpu
           CIBW_TEST_SKIP: "*"
 
       - uses: actions/upload-artifact@v4
