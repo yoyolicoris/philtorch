@@ -59,16 +59,16 @@ jobs:
               f.write(f"matrix={matrix}\n")
           EOF
 
-  build-linux:
+  build-wheels:
     needs: resolve-torch-versions
-    runs-on: ubuntu-latest
+    runs-on: ${{ matrix.os }}
     permissions:
       contents: read
     strategy:
       fail-fast: false
       matrix:
+        os: [ubuntu-latest, macos-latest, windows-latest]
         torch: ${{ fromJson(needs.resolve-torch-versions.outputs.matrix) }}
-        python: ["310", "311", "312", "313"]
     steps:
       - uses: actions/checkout@v4
         with:
@@ -80,85 +80,58 @@ jobs:
         with:
           python-version: "3.x"
 
-      - name: Install cibuildwheel
-        run: pip install cibuildwheel==2.23.3
-
-      - name: Build wheels
-        run: cibuildwheel --output-dir wheelhouse
-        env:
-          CIBW_BUILD: "cp${{ matrix.python }}-manylinux_x86_64"
-          CIBW_MANYLINUX_X86_64_IMAGE: manylinux_2_28
-          CIBW_BEFORE_BUILD: "pip install torch==${{ matrix.torch }}+cpu --index-url https://download.pytorch.org/whl/cpu && pip install setuptools>=77.0.3 \"setuptools-git-versioning>=2.0,<3\" wheel"
-          CIBW_TEST_SKIP: "*"
-
-      - uses: actions/upload-artifact@v4
-        with:
-          name: wheels-linux-cp${{ matrix.python }}-torch${{ matrix.torch }}
-          path: wheelhouse/*.whl
-
-  build-macos-windows:
-    needs: resolve-torch-versions
-    runs-on: ${{ matrix.os }}
-    permissions:
-      contents: read
-    strategy:
-      fail-fast: false
-      matrix:
-        os: [macos-latest, windows-latest]
-        torch: ${{ fromJson(needs.resolve-torch-versions.outputs.matrix) }}
-        python: ["3.10", "3.11", "3.12", "3.13"]
-    defaults:
-      run:
-        shell: bash
-    steps:
-      - uses: actions/checkout@v4
-        with:
-          fetch-depth: 0
-
-      - uses: actions/setup-python@v5
-        with:
-          python-version: ${{ matrix.python }}
-
       - name: Install Homebrew dependencies for OpenMP (macOS)
         if: runner.os == 'macOS'
         run: brew install llvm libomp
 
       - name: Configure native build environment (macOS)
-        # Sets CXX/CPPFLAGS so the OpenMP-capable Homebrew clang++ and libomp
-        # headers are used, mirroring the proven config in python-package.yml.
-        # setup.py's get_macos_openmp_config() also configures these via
-        # extra_compile_args/extra_link_args; this step is a belt-and-suspenders
-        # safety net since this workflow path (unlike python-package.yml) had
-        # not previously been exercised in CI.
+        # cibuildwheel builds macOS wheels directly on the runner (no
+        # container), so env vars exported here are inherited by the build
+        # subprocess. setup.py's get_macos_openmp_config() also configures
+        # these via extra_compile_args/extra_link_args; this step is a
+        # belt-and-suspenders safety net.
         if: runner.os == 'macOS'
         run: |
           LLVM_PREFIX="$(brew --prefix llvm)"
           LIBOMP_PREFIX="$(brew --prefix libomp)"
           echo "CXX=$LLVM_PREFIX/bin/clang++" >> "$GITHUB_ENV"
           echo "CPPFLAGS=-I$LIBOMP_PREFIX/include" >> "$GITHUB_ENV"
+          # lti_recur_mps_replay.mm depends on Metal/MPSGraph APIs only
+          # available starting macOS 14.
+          echo "MACOSX_DEPLOYMENT_TARGET=14.0" >> "$GITHUB_ENV"
 
-      - name: Install torch
-        run: |
-          if [ "${{ runner.os }}" == "macOS" ]; then
-            pip install torch==${{ matrix.torch }} --index-url https://download.pytorch.org/whl/cpu
-            TORCH_LIB="$(python -c 'from pathlib import Path; import torch; print(Path(torch.__file__).parent / "lib")')"
-            echo "LDFLAGS=-L$TORCH_LIB -Wl,-rpath,$TORCH_LIB" >> "$GITHUB_ENV"
-          else
-            pip install torch==${{ matrix.torch }}+cpu --index-url https://download.pytorch.org/whl/cpu
-          fi
+      - name: Install cibuildwheel
+        run: pip install cibuildwheel==2.23.3
 
-      - name: Install build dependencies
-        run: pip install "setuptools>=77.0.3" "setuptools-git-versioning>=2.0,<3" wheel build
-
-      - name: Build wheel
-        run: python -m build --wheel --no-isolation
+      - name: Build wheels
+        run: cibuildwheel --output-dir wheelhouse
         env:
-          MACOSX_DEPLOYMENT_TARGET: "14.0"
+          # PRs only need a quick sanity check against the latest stable
+          # Python; other events (push/tag/release/dispatch) build the full
+          # supported range.
+          CIBW_BUILD: ${{ github.event_name == 'pull_request' && 'cp313-*' || 'cp310-* cp311-* cp312-* cp313-*' }}
+          CIBW_SKIP: "*-musllinux_*"
+          CIBW_ARCHS_LINUX: x86_64
+          CIBW_ARCHS_MACOS: arm64
+          CIBW_ARCHS_WINDOWS: AMD64
+          CIBW_MANYLINUX_X86_64_IMAGE: manylinux_2_28
+          # Build deps (torch, setuptools) are installed by CIBW_BEFORE_BUILD
+          # into the same env cibuildwheel builds in, so disable build
+          # isolation; otherwise setup.py can't `import torch` and silently
+          # produces a pure-Python (extension-less) wheel.
+          CIBW_BUILD_FRONTEND: "pip; args: --no-build-isolation"
+          CIBW_BEFORE_BUILD: >-
+            pip install "setuptools>=77.0.3" "setuptools-git-versioning>=2.0,<3" wheel &&
+            pip install torch==${{ matrix.torch }}+cpu --index-url https://download.pytorch.org/whl/cpu
+          CIBW_BEFORE_BUILD_MACOS: >-
+            pip install "setuptools>=77.0.3" "setuptools-git-versioning>=2.0,<3" wheel &&
+            pip install torch==${{ matrix.torch }} --index-url https://download.pytorch.org/whl/cpu
+          CIBW_TEST_SKIP: "*"
 
       - uses: actions/upload-artifact@v4
         with:
-          name: wheels-${{ contains(matrix.os, 'macos') && 'macos' || 'windows' }}-${{ matrix.python }}-torch${{ matrix.torch }}
-          path: dist/*.whl
+          name: wheels-${{ matrix.os }}-torch${{ matrix.torch }}
+          path: wheelhouse/*.whl
 
   build-sdist:
     runs-on: ubuntu-latest
@@ -189,7 +162,7 @@ jobs:
 
   publish:
     runs-on: ubuntu-latest
-    needs: [build-linux, build-macos-windows, build-sdist]
+    needs: [build-wheels, build-sdist]
     if: >
       (github.event_name == 'push' && github.ref == 'refs/heads/dev') ||
       (github.event_name == 'push' && startsWith(github.ref, 'refs/tags/')) ||
