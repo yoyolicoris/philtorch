@@ -23,8 +23,10 @@ jobs:
       - name: Install packaging
         run: pip install packaging
 
-      - name: Resolve latest 3 stable PyTorch minor versions
+      - name: Resolve stable PyTorch versions to build against
         id: resolve
+        env:
+          GITHUB_EVENT_NAME: ${{ github.event_name }}
         run: |
           python3 - <<'EOF'
           import os, urllib.request, re, json
@@ -47,8 +49,12 @@ jobs:
                   seen_minor[key] = str(v)
           top3 = [seen_minor[k] for k in sorted(seen_minor, reverse=True)[:3]]
 
-          matrix = json.dumps(top3)
-          print(f"Resolved torch versions: {top3}")
+          # Building against every supported minor is expensive; PRs only need
+          # a quick sanity check against the latest stable release.
+          selected = top3[:1] if os.environ["GITHUB_EVENT_NAME"] == "pull_request" else top3
+
+          matrix = json.dumps(selected)
+          print(f"Resolved torch versions: {selected}")
           with open(os.environ["GITHUB_OUTPUT"], "a") as f:
               f.write(f"matrix={matrix}\n")
           EOF
@@ -82,7 +88,7 @@ jobs:
         env:
           CIBW_BUILD: "cp${{ matrix.python }}-manylinux_x86_64"
           CIBW_MANYLINUX_X86_64_IMAGE: manylinux_2_28
-          CIBW_BEFORE_BUILD: "pip install torch==${{ matrix.torch }}+cpu --index-url https://download.pytorch.org/whl/cpu && pip install setuptools>=77.0.3 setuptools-git-versioning>=2.0 wheel"
+          CIBW_BEFORE_BUILD: "pip install torch==${{ matrix.torch }}+cpu --index-url https://download.pytorch.org/whl/cpu && pip install setuptools>=77.0.3 \"setuptools-git-versioning>=2.0,<3\" wheel"
           CIBW_TEST_SKIP: "*"
 
       - uses: actions/upload-artifact@v4
@@ -142,7 +148,7 @@ jobs:
           fi
 
       - name: Install build dependencies
-        run: pip install "setuptools>=77.0.3" "setuptools-git-versioning>=2.0" wheel build
+        run: pip install "setuptools>=77.0.3" "setuptools-git-versioning>=2.0,<3" wheel build
 
       - name: Build wheel
         run: python -m build --wheel --no-isolation

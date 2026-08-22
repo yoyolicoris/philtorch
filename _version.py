@@ -1,3 +1,10 @@
+# Kept at the repo root (not inside the `philtorch` package) so it can be
+# imported by setuptools-git-versioning's `branch_formatter` without
+# triggering `philtorch/__init__.py`, which requires torch to be installed.
+# Isolated build environments (e.g. `python -m build`, cibuildwheel) only
+# install `[build-system] requires`, not torch, so importing this from inside
+# the package would fail and silently fall back to treating the dotted
+# import path itself as a regexp.
 import re
 
 
