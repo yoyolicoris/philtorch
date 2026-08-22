@@ -20,6 +20,9 @@ jobs:
     outputs:
       matrix: ${{ steps.resolve.outputs.matrix }}
     steps:
+      - name: Install packaging
+        run: pip install packaging
+
       - name: Resolve latest 3 stable PyTorch minor versions
         id: resolve
         run: |
@@ -213,3 +216,4 @@ jobs:
         uses: pypa/gh-action-pypi-publish@release/v1
         with:
           packages-dir: dist/
+          skip-existing: true
