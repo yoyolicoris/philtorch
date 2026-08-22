@@ -129,6 +129,7 @@ if not ext_modules:
     setup()
 else:
     from torch.utils.cpp_extension import BuildExtension
+
     setup(
         ext_modules=ext_modules,
         cmdclass={"build_ext": BuildExtension},
