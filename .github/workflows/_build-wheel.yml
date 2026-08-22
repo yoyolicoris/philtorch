@@ -59,8 +59,7 @@ jobs:
           # functions ([[thread_index_in_simdgroup]]/simd_shuffle_up) and
           # torch::mps::get_command_buffer()/get_dispatch_queue()/commit(),
           # which need a newer Metal/MPS runtime than arm64's Big Sur (11.0)
-          # floor. 14.0 is intentional here (not the 11.0 mentioned in this
-          # PR's own description) - see README for the documented macOS
+          # floor. 14.0 is intentional - see README for the documented macOS
           # requirement.
           echo "MACOSX_DEPLOYMENT_TARGET=14.0" >> "$GITHUB_ENV"
 
