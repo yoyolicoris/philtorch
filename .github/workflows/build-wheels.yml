@@ -14,6 +14,8 @@ on:
 jobs:
   build-linux:
     runs-on: ubuntu-latest
+    permissions:
+      contents: read
     strategy:
       fail-fast: false
       matrix:
@@ -53,6 +55,8 @@ jobs:
 
   build-macos:
     runs-on: macos-latest
+    permissions:
+      contents: read
     strategy:
       fail-fast: false
       matrix:
@@ -72,7 +76,7 @@ jobs:
 
       - name: Install torch and build dependencies
         run: |
-          pip install torch==${{ matrix.torch }} --index-url https://download.pytorch.org/whl/cpu
+          pip install torch==${{ matrix.torch }}+cpu --index-url https://download.pytorch.org/whl/cpu
           pip install "setuptools>=77.0.3" "setuptools-git-versioning>=2.0" wheel build
 
       - name: Build wheel
@@ -87,6 +91,8 @@ jobs:
 
   build-windows:
     runs-on: windows-latest
+    permissions:
+      contents: read
     strategy:
       fail-fast: false
       matrix:
