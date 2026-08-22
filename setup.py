@@ -68,14 +68,21 @@ def get_macos_openmp_config(extra_compile_args, extra_link_args, torch_lib):
 
 def get_extensions():
     use_cuda = torch.cuda.is_available() and CUDA_HOME is not None
-    use_openmp = torch.backends.openmp.is_available()
+    use_openmp = (
+        torch.backends.openmp.is_available()
+        and os.environ.get("PHILTORCH_DISABLE_OPENMP", "0") != "1"
+    )
     extension = CUDAExtension if use_cuda else CppExtension
 
     extra_link_args = []
     extra_compile_args = {}
     if use_openmp:
-        extra_compile_args["cxx"] = ["-fopenmp"]
-        extra_link_args.append("-fopenmp")
+        if sys.platform == "win32":
+            extra_compile_args["cxx"] = ["/openmp"]
+            # MSVC links OpenMP automatically — no extra_link_args entry needed
+        else:
+            extra_compile_args["cxx"] = ["-fopenmp"]
+            extra_link_args.append("-fopenmp")
         if sys.platform == "darwin":
             torch_lib = os.path.join(os.path.dirname(torch.__file__), "lib")
             compiler, extra_compile_args, extra_link_args = get_macos_openmp_config(
