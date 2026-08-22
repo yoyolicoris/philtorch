@@ -138,8 +138,19 @@ jobs:
           # not on the wheel-building image's linker search path).
           CIBW_REPAIR_WHEEL_COMMAND_LINUX: >-
             auditwheel repair --exclude 'libtorch*.so*' --exclude 'libc10*.so*' -w {dest_dir} {wheel}
+          # --ignore-missing-dependencies works around a similar issue for
+          # libomp.dylib specifically: official PyTorch macOS wheels bundle a
+          # libomp.dylib whose install name is an absolute path baked in by
+          # PyTorch's own build environment (e.g. /opt/llvm-openmp/lib/...),
+          # which doesn't exist on the wheel-building runner, so delocate
+          # can't locate a real file for it (unlike libtorch/libc10, which -e
+          # excludes by matching a real, found file). This reference still
+          # resolves fine at runtime: dyld reuses the already-loaded image
+          # from torch's own libomp.dylib (loaded when `import torch` runs
+          # before `philtorch._C`) because it matches that same install-name
+          # string, so no bundled copy is needed here either.
           CIBW_REPAIR_WHEEL_COMMAND_MACOS: >-
-            delocate-wheel --require-archs {delocate_archs} -e libtorch -e libc10 -w {dest_dir} -v {wheel}
+            delocate-wheel --require-archs {delocate_archs} -e libtorch -e libc10 --ignore-missing-dependencies -w {dest_dir} -v {wheel}
 
       - uses: actions/upload-artifact@v4
         with:
@@ -175,7 +186,15 @@ jobs:
     # in build-wheels's matrix); the extension is compiled straight against
     # torch's C++ ABI, so a passing test on the latest torch is a reliable
     # proxy for the older, already-published torch minors.
+    #
+    # build-wheels is a single matrixed job, so if any one of its OS/torch
+    # combinations fails, its overall job conclusion is "failure" and (by
+    # default) every matrix leg here would be skipped entirely, even for
+    # OSes whose wheel built successfully. `if: ${{ !cancelled() }}` lets
+    # this job run regardless; legs whose wheel wasn't produced simply fail
+    # at the download-artifact step instead of masking the other OSes.
     needs: [resolve-torch-versions, build-wheels]
+    if: ${{ !cancelled() }}
     runs-on: ${{ matrix.os }}
     permissions:
       contents: read
