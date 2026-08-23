@@ -100,6 +100,22 @@ jobs:
       os: macos-latest
       torch_version: ${{ fromJson(needs.resolve-torch-versions.outputs.matrix)[0] }}
 
+  # NOTE: torchlpc (a philtorch runtime dependency) currently fails to
+  # compile on Windows/MSVC: its scan_cpu.cpp uses a variable-length array
+  # (`std::pair<scalar_t, scalar_t> buffer[total_size];`), which is a
+  # GCC/Clang extension, not standard C++, and MSVC rejects it with
+  # "error C2131: expression did not evaluate to a constant". This is a bug
+  # in torchlpc itself (unrelated to build isolation), and fixing it requires
+  # a change in torchlpc's upstream repository, not this one. Because
+  # `pip install philtorch` on Windows would therefore successfully install
+  # this wheel and then fail entirely trying to build its mandatory
+  # torchlpc dependency, there is deliberately no test-windows job (a Windows
+  # pytest run can never pass) and no Windows wheel is ever published (see
+  # publish's dist/ download steps below) or advertised as supported in
+  # README.md. This build job is kept (and still required by publish) purely
+  # so a philtorch-side regression in the Windows build itself is still
+  # caught; re-enable testing/publishing here once torchlpc is installable
+  # on Windows.
   build-wheels-windows:
     needs: resolve-torch-versions
     permissions:
@@ -171,37 +187,6 @@ jobs:
     secrets:
       codecov_token: ${{ secrets.CODECOV_TOKEN }}
 
-  # NOTE: torchlpc (a philtorch runtime dependency) currently fails to
-  # compile on Windows/MSVC: its scan_cpu.cpp uses a variable-length array
-  # (`std::pair<scalar_t, scalar_t> buffer[total_size];`), which is a
-  # GCC/Clang extension, not standard C++, and MSVC rejects it with
-  # "error C2131: expression did not evaluate to a constant". This is a bug
-  # in torchlpc itself (unrelated to build isolation) that pre-dates this
-  # workflow: the previous CI (python-package.yml) never had a Windows job,
-  # so this was never previously exercised. Fixing it requires a change in
-  # torchlpc's upstream repository, not this one. Because it always fails,
-  # this job is intentionally left out of publish's `needs` below (unlike
-  # build-wheels-windows, which does succeed and is required) so it can't
-  # permanently block publishing; it still runs on every trigger so its
-  # (expected) failure stays visible. The Windows wheel itself is still
-  # built (so a philtorch-side regression there is caught) but is not
-  # included in `publish`'s dist/ below: `pip install philtorch` on Windows
-  # would otherwise successfully install the wheel and then fail entirely
-  # trying to build its mandatory torchlpc dependency, exactly the failure
-  # this job is documenting. Windows is not advertised as a supported wheel
-  # platform in README.md until torchlpc is installable there.
-  test-windows:
-    needs: [resolve-torch-versions, build-wheels-windows]
-    permissions:
-      contents: read
-    uses: ./.github/workflows/_test-wheel.yml
-    with:
-      os: windows-latest
-      python_versions: ${{ github.event_name == 'pull_request' && '["3.13"]' || '["3.10", "3.11", "3.12", "3.13"]' }}
-      latest_torch: ${{ fromJson(needs.resolve-torch-versions.outputs.matrix)[0] }}
-    secrets:
-      codecov_token: ${{ secrets.CODECOV_TOKEN }}
-
   build-sdist:
     runs-on: ubuntu-latest
     permissions:
@@ -231,6 +216,14 @@ jobs:
 
   publish:
     runs-on: ubuntu-latest
+    # test-ubuntu/test-macos are deliberately absent from `needs` above:
+    # publishing and testing are independent, so a wheel that fails its
+    # pytest run (on either OS) must still be publishable - only the builds
+    # themselves (and lint, and the sdist) gate publish. test-windows doesn't
+    # exist at all (see the NOTE on build-wheels-windows above);
+    # build-wheels-windows (which does succeed) is still required, so a real
+    # regression in philtorch's own Windows build still blocks - even though
+    # its wheel is never actually published (see the download steps below).
     needs:
       [
         build-wheels-ubuntu,
@@ -238,24 +231,14 @@ jobs:
         build-wheels-windows,
         build-sdist,
         lint,
-        test-ubuntu,
-        test-macos,
       ]
-    # test-windows is deliberately absent from `needs` above (see the NOTE on
-    # that job): it always fails on a torchlpc/MSVC bug that can only be
-    # fixed upstream, so requiring its success would permanently block
-    # publish. build-wheels-windows (which does succeed) is still required,
-    # so a real regression in philtorch's own Windows build still blocks -
-    # even though its wheel is never actually published (see the download
-    # steps below).
-    #
-    # build-wheels-macos/test-macos only run for pull_request and
-    # official-release events (tag push or a published GitHub release; see
-    # their own `if:` above), so they're always "skipped" - not "success" -
-    # on a push to dev. A bare `needs:` implies an `if: success()` default,
-    # which treats a skipped need as blocking; failure()/cancelled() correctly
-    # ignore it instead, while still blocking on a genuine failure in any
-    # other needed job.
+    # build-wheels-macos only runs for pull_request and official-release
+    # events (tag push or a published GitHub release; see its own `if:`
+    # above), so it's always "skipped" - not "success" - on a push to dev. A
+    # bare `needs:` implies an `if: success()` default, which treats a
+    # skipped need as blocking; failure()/cancelled() correctly ignore it
+    # instead, while still blocking on a genuine failure in any other needed
+    # job.
     #
     # The release branch below additionally requires the release's tag to
     # look like a version tag (v0.*/v1.*): unlike the push-tag branch, whose
@@ -281,10 +264,11 @@ jobs:
       # previous `pattern: wheels-*` + `merge-multiple: true`) so the
       # Windows wheel is never included here: torchlpc (philtorch's
       # mandatory runtime dependency) currently fails to build on Windows
-      # (see the NOTE on test-windows above), so `pip install philtorch`
-      # would succeed at installing this wheel and then fail entirely on
-      # its dependencies. Windows is intentionally not advertised as a
-      # supported wheel platform until that's fixed upstream.
+      # (see the NOTE on build-wheels-windows above), so `pip install
+      # philtorch` would succeed at installing this wheel and then fail
+      # entirely on its dependencies. Windows is intentionally not
+      # advertised as a supported wheel platform until that's fixed
+      # upstream.
       - name: Download Linux wheel
         uses: actions/download-artifact@v4
         with:
