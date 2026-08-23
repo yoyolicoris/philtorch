@@ -72,8 +72,10 @@ jobs:
   # latest resolved Torch minor (matrix[0]). Wheel filenames don't encode
   # the Torch version they were built against, so building one per Torch
   # minor produced multiple artifacts with identical filenames that
-  # collided when published. test-<os> below verifies this one wheel
-  # against every resolved Torch minor instead (see _test-wheel.yml).
+  # collided when published. There's no Torch ABI-stable API in use, so
+  # this one wheel is only tested against the exact Torch minor it was
+  # built with (see _test-wheel.yml); it is not built, nor verified in CI,
+  # against the other Torch minors resolved above.
   build-wheels-ubuntu:
     needs: resolve-torch-versions
     permissions:
@@ -161,11 +163,6 @@ jobs:
       # wheel for the latest Python, other events build/test the full range.
       python_versions: ${{ github.event_name == 'pull_request' && '["3.13"]' || '["3.10", "3.11", "3.12", "3.13"]' }}
       latest_torch: ${{ fromJson(needs.resolve-torch-versions.outputs.matrix)[0] }}
-      # Only ubuntu runs the extra compat-test matrix (see _test-wheel.yml)
-      # that verifies the one published wheel against every resolved Torch
-      # minor, not just the one it was built with; ubuntu runners are the
-      # cheapest, so this is where the extra Torch-version legs are spent.
-      compat_torch_versions: ${{ needs.resolve-torch-versions.outputs.matrix }}
     secrets:
       codecov_token: ${{ secrets.CODECOV_TOKEN }}
 

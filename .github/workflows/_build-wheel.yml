@@ -17,9 +17,10 @@ on:
         # (as this workflow used to) produces multiple artifacts with
         # identical filenames that collide when published (PyPI can't host
         # two files with the same name, and local version identifiers like
-        # `+torch2.7` are rejected by PyPI uploads). The built wheel is
-        # instead verified against every supported Torch minor at test time
-        # (see _test-wheel.yml's compat-test job).
+        # `+torch2.7` are rejected by PyPI uploads). There's no Torch
+        # ABI-stable API in use, so this one wheel is only tested against
+        # this exact version at test time, not the other Torch minors
+        # resolved by build-wheels.yml's resolve-torch-versions job.
         required: true
         type: string
 
