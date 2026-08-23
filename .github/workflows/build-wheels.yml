@@ -13,23 +13,28 @@ on:
   workflow_dispatch:
 
 jobs:
-  resolve-torch-versions:
+  # There's no Torch ABI-stable API in use (that needs a drastic refactor
+  # that's on the roadmap but out of scope here), so a wheel compiled against
+  # one Torch version is not guaranteed to work with any other Torch version
+  # installed at runtime - every (OS, Python, Torch) combination genuinely
+  # needs its own build. Only the single latest stable Torch release is
+  # resolved and built against for now; building/publishing a wheel per
+  # supported Torch minor is future work.
+  resolve-torch-version:
     runs-on: ubuntu-latest
     permissions:
       contents: read
     outputs:
-      matrix: ${{ steps.resolve.outputs.matrix }}
+      version: ${{ steps.resolve.outputs.version }}
     steps:
       - name: Install packaging
         run: pip install packaging
 
-      - name: Resolve stable PyTorch versions to build against
+      - name: Resolve latest stable PyTorch version to build against
         id: resolve
-        env:
-          GITHUB_EVENT_NAME: ${{ github.event_name }}
         run: |
           python3 - <<'EOF'
-          import os, urllib.request, re, json
+          import os, urllib.request, re
           from packaging.version import Version
 
           url = "https://download.pytorch.org/whl/cpu/torch/"
@@ -39,24 +44,11 @@ jobs:
           # Extract versions like 2.6.0, 2.7.1, etc. from wheel filenames
           versions = set(re.findall(r'torch-(\d+\.\d+\.\d+)\+cpu-', html))
 
-          parsed = sorted({Version(v) for v in versions}, reverse=True)
+          latest = str(max(Version(v) for v in versions))
 
-          # Pick the latest patch for each minor series, take the 3 most recent minors
-          seen_minor = {}
-          for v in parsed:
-              key = (v.major, v.minor)
-              if key not in seen_minor:
-                  seen_minor[key] = str(v)
-          top3 = [seen_minor[k] for k in sorted(seen_minor, reverse=True)[:3]]
-
-          # Building against every supported minor is expensive; PRs only need
-          # a quick sanity check against the latest stable release.
-          selected = top3[:1] if os.environ["GITHUB_EVENT_NAME"] == "pull_request" else top3
-
-          matrix = json.dumps(selected)
-          print(f"Resolved torch versions: {selected}")
+          print(f"Resolved torch version: {latest}")
           with open(os.environ["GITHUB_OUTPUT"], "a") as f:
-              f.write(f"matrix={matrix}\n")
+              f.write(f"version={latest}\n")
           EOF
 
   # build-wheels is split into one job per OS (each calling the same
@@ -68,20 +60,21 @@ jobs:
   # test-<os> below only ever depends on, and is skipped by, its own OS's
   # build - no `if: ${{ !cancelled() }}` workaround required.
   #
-  # Each OS builds a single wheel per Python version, against only the
-  # latest resolved Torch minor (matrix[0]). Wheel filenames don't encode
-  # the Torch version they were built against, so building one per Torch
-  # minor produced multiple artifacts with identical filenames that
-  # collided when published. test-<os> below verifies this one wheel
-  # against every resolved Torch minor instead (see _test-wheel.yml).
+  # Each OS builds a single wheel per Python version, against the single
+  # latest stable Torch version resolved above. Only that one wheel is
+  # built (and later tested/published) per OS/Python: there's no Torch
+  # ABI-stable API in use, so a wheel built against one Torch version isn't
+  # guaranteed to work with a different Torch version at runtime - building
+  # (and publishing) a wheel per supported Torch minor is future work once
+  # that refactor lands, not attempted here.
   build-wheels-ubuntu:
-    needs: resolve-torch-versions
+    needs: resolve-torch-version
     permissions:
       contents: read
     uses: ./.github/workflows/_build-wheel.yml
     with:
       os: ubuntu-latest
-      torch_version: ${{ fromJson(needs.resolve-torch-versions.outputs.matrix)[0] }}
+      torch_version: ${{ needs.resolve-torch-version.outputs.version }}
 
   # macOS runners are expensive, so macOS is only built (and tested, see
   # test-macos below) for pull_request and official-release events (a
@@ -92,13 +85,13 @@ jobs:
       github.event_name == 'pull_request' ||
       github.event_name == 'release' ||
       startsWith(github.ref, 'refs/tags/')
-    needs: resolve-torch-versions
+    needs: resolve-torch-version
     permissions:
       contents: read
     uses: ./.github/workflows/_build-wheel.yml
     with:
       os: macos-latest
-      torch_version: ${{ fromJson(needs.resolve-torch-versions.outputs.matrix)[0] }}
+      torch_version: ${{ needs.resolve-torch-version.outputs.version }}
 
   # NOTE: torchlpc (a philtorch runtime dependency) currently fails to
   # compile on Windows/MSVC: its scan_cpu.cpp uses a variable-length array
@@ -117,13 +110,13 @@ jobs:
   # caught; re-enable testing/publishing here once torchlpc is installable
   # on Windows.
   build-wheels-windows:
-    needs: resolve-torch-versions
+    needs: resolve-torch-version
     permissions:
       contents: read
     uses: ./.github/workflows/_build-wheel.yml
     with:
       os: windows-latest
-      torch_version: ${{ fromJson(needs.resolve-torch-versions.outputs.matrix)[0] }}
+      torch_version: ${{ needs.resolve-torch-version.outputs.version }}
 
   lint:
     runs-on: ubuntu-latest
@@ -151,7 +144,7 @@ jobs:
   # build-wheels-ubuntu above): test-<os> only needs its own OS's build job,
   # so a build/test failure on one OS never skips the others.
   test-ubuntu:
-    needs: [resolve-torch-versions, build-wheels-ubuntu]
+    needs: [resolve-torch-version, build-wheels-ubuntu]
     permissions:
       contents: read
     uses: ./.github/workflows/_test-wheel.yml
@@ -160,12 +153,7 @@ jobs:
       # Mirrors the CIBW_BUILD selection in _build-wheel.yml: PRs only get a
       # wheel for the latest Python, other events build/test the full range.
       python_versions: ${{ github.event_name == 'pull_request' && '["3.13"]' || '["3.10", "3.11", "3.12", "3.13"]' }}
-      latest_torch: ${{ fromJson(needs.resolve-torch-versions.outputs.matrix)[0] }}
-      # Only ubuntu runs the extra compat-test matrix (see _test-wheel.yml)
-      # that verifies the one published wheel against every resolved Torch
-      # minor, not just the one it was built with; ubuntu runners are the
-      # cheapest, so this is where the extra Torch-version legs are spent.
-      compat_torch_versions: ${{ needs.resolve-torch-versions.outputs.matrix }}
+      latest_torch: ${{ needs.resolve-torch-version.outputs.version }}
     secrets:
       codecov_token: ${{ secrets.CODECOV_TOKEN }}
 
@@ -176,14 +164,14 @@ jobs:
       github.event_name == 'pull_request' ||
       github.event_name == 'release' ||
       startsWith(github.ref, 'refs/tags/')
-    needs: [resolve-torch-versions, build-wheels-macos]
+    needs: [resolve-torch-version, build-wheels-macos]
     permissions:
       contents: read
     uses: ./.github/workflows/_test-wheel.yml
     with:
       os: macos-latest
       python_versions: '["3.13"]'
-      latest_torch: ${{ fromJson(needs.resolve-torch-versions.outputs.matrix)[0] }}
+      latest_torch: ${{ needs.resolve-torch-version.outputs.version }}
     secrets:
       codecov_token: ${{ secrets.CODECOV_TOKEN }}
 
