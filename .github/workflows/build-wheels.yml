@@ -59,31 +59,13 @@ jobs:
               f.write(f"matrix={matrix}\n")
           EOF
 
-  # build-wheels is split into one job per OS (each calling the same
-  # reusable workflow) instead of a single job matrixed over os x torch.
-  # A matrixed job reports one aggregated conclusion for all its legs, so a
-  # single OS/torch combination failing would mark the whole job "failure"
-  # and (by default) skip every downstream `needs:` consumer, even for OSes
-  # that built fine. Separate job ids give each OS its own conclusion, so
-  # test-<os> below only ever depends on, and is skipped by, its own OS's
-  # build - no `if: ${{ !cancelled() }}` workaround required.
-  #
-  # Within a single OS's job, `strategy.matrix` fans out over every Torch
-  # minor resolve-torch-versions resolved (only the latest on pull_request;
-  # the latest 3 stable minors otherwise) - so on pull_request this is a
-  # single leg, same as before, but on push/tag/release/dispatch every
-  # resolved Torch minor is actually compiled and tested against (see
-  # _test-wheel.yml), not just the latest. This is deliberately about
-  # build/test signal, not about publishing more artifacts: wheel filenames
-  # don't encode the Torch version they were built against, so only the
-  # wheel built against the latest resolved minor (matrix[0]) is ever
-  # downloaded and published (see the publish job below) - PyPI can't host
-  # multiple files with the same name, and local version identifiers like
-  # `+torch2.7` are rejected by PyPI uploads. Building/testing against the
-  # older resolved minors too exists to catch source-level incompatibilities
-  # early (there's no Torch ABI-stable API in use, and `pip install
-  # --no-binary` from-source installs may use an older Torch than the one
-  # published wheels are compiled against).
+  # One job per OS (each calling the reusable _build-wheel.yml) rather than a
+  # single os x torch matrix, so each OS gets its own conclusion and a failure
+  # on one OS doesn't skip the others' downstream test/publish jobs.
+  # Within each OS, strategy.matrix fans out over the resolved Torch minors
+  # (latest only on pull_request; latest 3 otherwise) for build/test signal.
+  # Only the wheel built against the latest minor (matrix[0]) is published; see
+  # the publish job and PR #20 for why wheels can't be published per-minor.
   build-wheels-ubuntu:
     needs: resolve-torch-versions
     permissions:
@@ -97,14 +79,9 @@ jobs:
       os: ubuntu-latest
       torch_version: ${{ matrix.torch-version }}
 
-  # macOS runners are expensive, so macOS is only built (and tested, see
-  # test-macos below) for pull_request and official-release events (a
-  # v0.*/v1.* tag push, or a published GitHub release); push events to dev
-  # skip straight to ubuntu/windows. Unlike build-wheels-ubuntu/-windows
-  # above, macOS is intentionally kept to a single (the latest resolved)
-  # Torch minor rather than matrixed - it's never built on a push to dev at
-  # all, so there's no "check the commit status for every Torch minor"
-  # motivation to extend to macOS the way there is for ubuntu/windows.
+  # macOS runners are expensive: build/test only on pull_request and official
+  # releases (v* tag push or published release), and only against the latest
+  # resolved Torch minor (no matrix) since it never runs on push to dev.
   build-wheels-macos:
     if: >
       github.event_name == 'pull_request' ||
@@ -118,23 +95,10 @@ jobs:
       os: macos-latest
       torch_version: ${{ fromJson(needs.resolve-torch-versions.outputs.matrix)[0] }}
 
-  # NOTE: torchlpc (a philtorch runtime dependency) currently fails to
-  # compile on Windows/MSVC: its scan_cpu.cpp uses a variable-length array
-  # (`std::pair<scalar_t, scalar_t> buffer[total_size];`), which is a
-  # GCC/Clang extension, not standard C++, and MSVC rejects it with
-  # "error C2131: expression did not evaluate to a constant". This is a bug
-  # in torchlpc itself (unrelated to build isolation), and fixing it requires
-  # a change in torchlpc's upstream repository, not this one. Because
-  # `pip install philtorch` on Windows would therefore successfully install
-  # this wheel and then fail entirely trying to build its mandatory
-  # torchlpc dependency, there is deliberately no test-windows job (a Windows
-  # pytest run can never pass) and no Windows wheel is ever published (see
-  # publish's dist/ download steps below) or advertised as supported in
-  # README.md. This build job is kept (and still required by publish) purely
-  # so a philtorch-side regression in the Windows build itself is still
-  # caught; re-enable testing/publishing here once torchlpc is installable
-  # on Windows. Matrixed the same way as build-wheels-ubuntu above, for the
-  # same reason (source-level build signal against every resolved minor).
+  # Windows is built (for regression signal) but never tested or published:
+  # torchlpc, a mandatory runtime dep, fails to compile on MSVC, so a Windows
+  # `pip install philtorch` can't work yet. Re-enable test/publish once
+  # torchlpc builds on Windows. See PR #20 for details. Matrixed like ubuntu.
   build-wheels-windows:
     needs: resolve-torch-versions
     permissions:
@@ -170,13 +134,9 @@ jobs:
           # exit-zero treats all errors as warnings. The GitHub editor is 127 chars wide
           flake8 . --count --exit-zero --max-complexity=10 --max-line-length=127 --statistics
 
-  # test is likewise split into one job per OS (see the comment on
-  # build-wheels-ubuntu above): test-<os> only needs its own OS's build job,
-  # so a build/test failure on one OS never skips the others. Matrixed over
-  # the same resolved Torch versions as build-wheels-ubuntu, so each leg
-  # tests the wheel actually built against that same Torch minor (see
-  # _test-wheel.yml) - a real per-version compatibility check, not a
-  # cross-install of a mismatched wheel/Torch pair.
+  # One test job per OS (see build-wheels-ubuntu comment), matrixed over the
+  # same resolved Torch minors so each leg tests the wheel built against that
+  # minor.
   test-ubuntu:
     needs: [resolve-torch-versions, build-wheels-ubuntu]
     permissions:
@@ -192,17 +152,14 @@ jobs:
       # wheel for the latest Python, other events build/test the full range.
       python_versions: ${{ github.event_name == 'pull_request' && '["3.13"]' || '["3.10", "3.11", "3.12", "3.13"]' }}
       torch_version: ${{ matrix.torch-version }}
-      # Only the leg testing the latest resolved Torch minor (matrix[0])
-      # uploads coverage - otherwise every Torch-version leg's Python 3.13
-      # run would each upload a report for the same commit.
+      # Only the leg for the latest resolved Torch minor (matrix[0]) uploads
+      # coverage, to avoid duplicate reports for the same commit.
       upload_coverage: ${{ matrix.torch-version == fromJson(needs.resolve-torch-versions.outputs.matrix)[0] }}
     secrets:
       codecov_token: ${{ secrets.CODECOV_TOKEN }}
 
-  # Mirrors build-wheels-macos's condition above: only pull_request and
-  # official-release events build a macOS wheel to test against. Not
-  # matrixed over Torch versions, since build-wheels-macos isn't either (see
-  # its own comment above).
+  # Mirrors build-wheels-macos's condition: only pull_request and official
+  # releases build a macOS wheel to test. Not matrixed over Torch versions.
   test-macos:
     if: >
       github.event_name == 'pull_request' ||
@@ -248,14 +205,10 @@ jobs:
 
   publish:
     runs-on: ubuntu-latest
-    # test-ubuntu/test-macos are deliberately absent from `needs` above:
-    # publishing and testing are independent, so a wheel that fails its
-    # pytest run (on either OS) must still be publishable - only the builds
-    # themselves (and lint, and the sdist) gate publish. test-windows doesn't
-    # exist at all (see the NOTE on build-wheels-windows above);
-    # build-wheels-windows (which does succeed) is still required, so a real
-    # regression in philtorch's own Windows build still blocks - even though
-    # its wheel is never actually published (see the download steps below).
+    # Publishing is independent of testing: only the builds, lint and sdist
+    # gate publish, so a wheel that fails pytest is still publishable.
+    # build-wheels-windows is required (to catch build regressions) even
+    # though its wheel is never published.
     needs:
       [
         resolve-torch-versions,
@@ -265,21 +218,11 @@ jobs:
         build-sdist,
         lint,
       ]
-    # build-wheels-macos only runs for pull_request and official-release
-    # events (tag push or a published GitHub release; see its own `if:`
-    # above), so it's always "skipped" - not "success" - on a push to dev. A
-    # bare `needs:` implies an `if: success()` default, which treats a
-    # skipped need as blocking; failure()/cancelled() correctly ignore it
-    # instead, while still blocking on a genuine failure in any other needed
-    # job.
-    #
-    # The release branch below additionally requires the release's tag to
-    # look like a version tag (v0.*/v1.*): unlike the push-tag branch, whose
-    # v0.*/v1.* pattern is already enforced by this workflow's top-level
-    # `on.push.tags` trigger filter, `release: types: [published]` fires for
-    # a GitHub Release against *any* tag, so without this check a release
-    # created against an arbitrary/non-version tag would still publish to
-    # real PyPI.
+    # `!failure() && !cancelled()` instead of the implicit `success()` so the
+    # always-skipped build-wheels-macos (push-to-dev) doesn't block publish,
+    # while a genuine failure in any needed job still does. The release branch
+    # also re-checks the tag pattern because `release: [published]` fires for
+    # any tag, unlike the push-tag trigger which is already filtered.
     if: >
       !failure() && !cancelled() &&
       (
@@ -293,29 +236,17 @@ jobs:
     environment:
       name: ${{ (github.event_name == 'release' || startsWith(github.ref, 'refs/tags/')) && 'pypi' || 'testpypi' }}
     steps:
-      # Downloaded by explicit per-OS artifact name (rather than the
-      # previous `pattern: wheels-*` + `merge-multiple: true`) so the
-      # Windows wheel is never included here: torchlpc (philtorch's
-      # mandatory runtime dependency) currently fails to build on Windows
-      # (see the NOTE on build-wheels-windows above), so `pip install
-      # philtorch` would succeed at installing this wheel and then fail
-      # entirely on its dependencies. Windows is intentionally not
-      # advertised as a supported wheel platform until that's fixed
-      # upstream. Only the wheel built against the latest resolved Torch
-      # minor (matrix[0]) is downloaded here - build-wheels-ubuntu also
-      # built (and test-ubuntu tested) the other resolved minors, but their
-      # artifacts are only signal for that commit's status checks, not
-      # meant to be published (see build-wheels-ubuntu's comment above).
+      # Download wheels by explicit per-OS name (not `pattern: wheels-*`) so
+      # the never-published Windows wheel is excluded, and only the wheel for
+      # the latest resolved Torch minor (matrix[0]) is published.
       - name: Download Linux wheel
         uses: actions/download-artifact@v4
         with:
           name: wheels-ubuntu-latest-torch${{ fromJson(needs.resolve-torch-versions.outputs.matrix)[0] }}
           path: dist/
 
-      # Only downloaded when build-wheels-macos actually ran (see its own
-      # `if:` above); a named download-artifact fails if the artifact
-      # doesn't exist, unlike the previous pattern-based download which
-      # silently matched zero files on a push-to-dev event.
+      # Only present when build-wheels-macos ran; a named download fails if
+      # the artifact is absent, so guard with the same condition.
       - name: Download macOS wheel
         if: github.event_name == 'release' || startsWith(github.ref, 'refs/tags/')
         uses: actions/download-artifact@v4

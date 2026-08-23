@@ -1,13 +1,9 @@
 name: Test wheel (reusable)
 
 # Called once per (OS, Torch version) leg from build-wheels.yml, mirroring
-# _build-wheel.yml's per-leg fan-out (test-ubuntu is matrixed the same way
-# build-wheels-ubuntu/-windows are; test-macos always calls this with a
-# single, latest, Torch version, matching build-wheels-macos - see
-# build-wheels.yml). Each leg tests the wheel that was actually compiled
-# against that same Torch version (see _build-wheel.yml), so this is a real
-# compile+test compatibility check per Torch minor, not a cross-install of a
-# mismatched wheel/Torch pair.
+# _build-wheel.yml's fan-out. Each leg installs and tests the wheel that was
+# compiled against that same Torch version, so it's a real per-minor
+# compatibility check, not a mismatched cross-install.
 on:
   workflow_call:
     inputs:
@@ -19,17 +15,13 @@ on:
         required: true
         type: string
       torch_version:
-        # Torch version the wheel under test was built against (see
-        # _build-wheel.yml's torch_version input) - installed here so the
-        # artifact is always tested against the exact Torch it was compiled
-        # against.
+        # Torch version the wheel under test was built against; installed here
+        # so the artifact is tested against the exact Torch it was built with.
         required: true
         type: string
       upload_coverage:
-        # Only set true by the caller for the single (OS, Torch version)
-        # leg it wants Codecov coverage from (the latest resolved Torch
-        # version on ubuntu) - otherwise every Torch-version leg's Python
-        # 3.13 run would each upload a coverage report for the same commit.
+        # Set true only for the one leg that should upload Codecov coverage
+        # (latest Torch on ubuntu), to avoid duplicate reports per commit.
         required: false
         type: boolean
         default: false
@@ -39,11 +31,8 @@ on:
 
 jobs:
   test:
-    # Reuses the wheel already produced by build-wheels instead of
-    # recompiling the C++ extension from source, to save CI compute/runtime.
-    # `torch_version` is the exact version this leg's wheel was built
-    # against (see _build-wheel.yml), so this is always a same-version
-    # install, never a cross-version one.
+    # Reuses the wheel already built by build-wheels (same Torch version as
+    # this leg) rather than recompiling from source, to save CI time.
     runs-on: ${{ inputs.os }}
     permissions:
       contents: read
@@ -64,24 +53,15 @@ jobs:
           path: wheelhouse
 
       - name: Install Homebrew dependencies for OpenMP (macOS)
-        # torchlpc (a philtorch runtime dependency, see "Install wheel and
-        # test dependencies" below) has no prebuilt wheels and must compile
-        # its OpenMP C++ extension from source; Apple's default clang++
-        # doesn't support -fopenmp, so the same Homebrew llvm/libomp
-        # toolchain _build-wheel.yml uses is needed here too.
+        # torchlpc has no prebuilt wheels and compiles an OpenMP extension from
+        # source; Apple clang++ lacks -fopenmp, so use the Homebrew toolchain.
         if: runner.os == 'macOS'
         run: brew install llvm libomp
 
       - name: Install wheel and test dependencies
-        # Runs under bash on every OS (including windows-latest's bundled Git
-        # Bash) for a single consistent script. No Homebrew/OpenMP setup is
-        # needed for philtorch itself on macOS: the wheel built by
-        # build-wheels doesn't bundle its own libomp (see
-        # CIBW_REPAIR_WHEEL_COMMAND_MACOS in _build-wheel.yml); it relies on
-        # torch's own libomp.dylib, which is available once torch is
-        # installed here. Torch is installed without a "+cpu" suffix only on
-        # macOS, since macOS CPU wheels on that index aren't suffixed,
-        # matching CIBW_BEFORE_BUILD in _build-wheel.yml.
+        # Runs under bash on every OS (Windows uses bundled Git Bash). Torch is
+        # installed without the "+cpu" suffix on macOS, matching
+        # CIBW_BEFORE_BUILD in _build-wheel.yml.
         shell: bash
         run: |
           shopt -s nullglob
@@ -94,15 +74,10 @@ jobs:
 
           pip install torch==${{ inputs.torch_version }}${{ runner.os != 'macOS' && '+cpu' || '' }} --index-url https://download.pytorch.org/whl/cpu
 
-          # philtorch's runtime dependency torchlpc has no prebuilt wheels
-          # either, so pip always builds it from source too. Install it
-          # explicitly with --no-build-isolation so its build reuses the
-          # torch already installed above instead of resolving an unpinned
-          # "latest" torch into a throwaway isolated build env, mirroring how
-          # the pre-cibuildwheel workflow built torchlpc together with
-          # philtorch in one non-isolated environment. philtorch itself is
-          # then installed with --no-deps since torch and torchlpc (its only
-          # two runtime dependencies) are already installed above.
+          # torchlpc has no prebuilt wheels; install it with
+          # --no-build-isolation so its build reuses the torch pinned above
+          # instead of pulling an unpinned latest torch into an isolated env.
+          # philtorch installs with --no-deps since torch/torchlpc are present.
           if [ "$RUNNER_OS" = "macOS" ]; then
             LLVM_PREFIX="$(brew --prefix llvm)"
             LIBOMP_PREFIX="$(brew --prefix libomp)"
