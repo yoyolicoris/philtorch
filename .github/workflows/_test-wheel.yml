@@ -18,6 +18,14 @@ on:
         # _build-wheel.yml's torch_version input).
         required: true
         type: string
+      compat_torch_versions:
+        # JSON array string of every Torch minor the README claims support
+        # for, e.g. '["2.13.0", "2.12.0", "2.11.0"]'. Optional: only pass
+        # this from callers that want the extra compat-test job below (see
+        # its comment for why it isn't run for every OS/python combination).
+        required: false
+        type: string
+        default: "[]"
     secrets:
       codecov_token:
         required: false
@@ -27,10 +35,10 @@ jobs:
     # Reuses the wheel already produced by build-wheels instead of
     # recompiling the C++ extension from source, to save CI compute/runtime.
     # Only one wheel is built per OS (see _build-wheel.yml), against
-    # `latest_torch`; that's the only version installed and tested here.
-    # There's no Torch ABI-stable API in use, so this wheel is not verified
-    # against any other Torch version - each (OS, Python, Torch) combination
-    # would need its own build to test that, which is future work.
+    # `latest_torch`; that's the version installed here so the artifact is
+    # always tested against the exact Torch it was compiled against. The
+    # compat-test job below separately verifies the same wheel against the
+    # other Torch minors the README claims support for.
     runs-on: ${{ inputs.os }}
     permissions:
       contents: read
@@ -111,3 +119,70 @@ jobs:
         uses: codecov/codecov-action@v5
         with:
           token: ${{ secrets.codecov_token }}
+
+  compat-test:
+    # Since only one wheel is built per OS (see _build-wheel.yml), it's the
+    # single artifact that ends up published; the README's claim that it
+    # supports "the latest 3 stable PyTorch minor versions" is only true if
+    # that one wheel actually works when a *different* Torch minor than the
+    # one it was compiled against is installed. This job installs each Torch
+    # version in `compat_torch_versions` against the same already-built
+    # wheel to verify that empirically, instead of assuming Torch's C++ ABI
+    # is compatible across minors.
+    #
+    # Runs against a single fixed Python version (not the full
+    # python_versions matrix) to keep this from multiplying CI cost by
+    # python-version x torch-version; the extension is the same binary
+    # across Python versions modulo the CPython ABI tag, so one Python
+    # version is enough to exercise Torch-ABI compatibility.
+    if: inputs.compat_torch_versions != '[]'
+    runs-on: ${{ inputs.os }}
+    permissions:
+      contents: read
+    strategy:
+      fail-fast: false
+      matrix:
+        torch-version: ${{ fromJson(inputs.compat_torch_versions) }}
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.13"
+
+      - uses: actions/download-artifact@v4
+        with:
+          name: wheels-${{ inputs.os }}
+          path: wheelhouse
+
+      - name: Install Homebrew dependencies for OpenMP (macOS)
+        if: runner.os == 'macOS'
+        run: brew install llvm libomp
+
+      - name: Install wheel and test dependencies
+        shell: bash
+        run: |
+          shopt -s nullglob
+          WHEELS=(wheelhouse/philtorch-*-cp313-*.whl)
+          if [ "${#WHEELS[@]}" -ne 1 ]; then
+            echo "Expected exactly one wheel matching cp313 in wheelhouse/, found ${#WHEELS[@]}: ${WHEELS[*]}" >&2
+            exit 1
+          fi
+
+          pip install torch==${{ matrix.torch-version }}${{ runner.os != 'macOS' && '+cpu' || '' }} --index-url https://download.pytorch.org/whl/cpu
+
+          if [ "$RUNNER_OS" = "macOS" ]; then
+            LLVM_PREFIX="$(brew --prefix llvm)"
+            LIBOMP_PREFIX="$(brew --prefix libomp)"
+            export CXX="$LLVM_PREFIX/bin/clang++"
+            export CPPFLAGS="-I$LIBOMP_PREFIX/include"
+            TORCH_LIB="$(python -c 'from pathlib import Path; import torch; print(Path(torch.__file__).parent / "lib")')"
+            export LDFLAGS="-L$TORCH_LIB -Wl,-rpath,$TORCH_LIB"
+          fi
+
+          pip install --no-build-isolation "torchlpc>=0.7.2"
+          pip install --no-deps "${WHEELS[0]}"
+          pip install numpy scipy pytest
+
+      - name: Test with pytest
+        run: pytest

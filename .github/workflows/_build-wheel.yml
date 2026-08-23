@@ -12,16 +12,14 @@ on:
         type: string
       torch_version:
         # Single version, e.g. '2.13.0'. Only one wheel is built (and
-        # published) per OS/Python, against this single latest stable Torch
-        # release: wheel filenames don't encode the Torch version they were
-        # built against, so building one per Torch minor (as this workflow
-        # used to) produces multiple artifacts with identical filenames
-        # that collide when published (PyPI can't host two files with the
-        # same name, and local version identifiers like `+torch2.7` are
-        # rejected by PyPI uploads). There's no Torch ABI-stable API in use,
-        # so this one wheel is not verified against, nor claimed to work
-        # with, any other Torch version - building (and publishing) a wheel
-        # per supported Torch minor is future work.
+        # published) per OS/Python: wheel filenames don't encode the Torch
+        # version they were built against, so building one per Torch minor
+        # (as this workflow used to) produces multiple artifacts with
+        # identical filenames that collide when published (PyPI can't host
+        # two files with the same name, and local version identifiers like
+        # `+torch2.7` are rejected by PyPI uploads). The built wheel is
+        # instead verified against every supported Torch minor at test time
+        # (see _test-wheel.yml's compat-test job).
         required: true
         type: string
 
