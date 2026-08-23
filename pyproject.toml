@@ -62,17 +62,13 @@ python_functions = ["test_*"]
 addopts = [
     "--tb=short",
     "--strict-markers",
-    # tests/ has an __init__.py (needed so test modules can use relative
-    # imports, e.g. `from .test_lti_ssm import ...`), so pytest's default
-    # "prepend" import mode walks up to the first ancestor without an
-    # __init__.py - the repo root - and inserts *that* into sys.path[0].
-    # That shadows the installed (wheel) "philtorch" package with the local,
-    # uncompiled source checkout, so `torch.ops.philtorch.*` (extension-only,
-    # no pure-Python fallback) breaks in CI, which tests the built wheel
-    # rather than an editable install. "importlib" mode imports test modules
-    # without mutating sys.path, so the installed wheel's philtorch is used.
+    # importlib mode keeps the source checkout off sys.path so CI imports the
+    # installed wheel's philtorch (with its compiled extension), not the local
+    # source. See PR #20 for the full rationale.
     "--import-mode=importlib",
-    "--cov=philtorch",
+    # `--cov` (no target) + [tool.coverage.run] source_pkgs below, so coverage
+    # measures the imported philtorch package instead of the ./philtorch dir.
+    "--cov",
     "--cov-report=term-missing:skip-covered",
 ]
 markers = [
@@ -83,6 +79,10 @@ markers = [
 
 [tool.coverage.run]
 relative_files = true
+# Measure the imported philtorch package (the installed wheel in CI), not the
+# ./philtorch source dir that a bare `--cov=philtorch` would resolve to and
+# report as 0% since the wheel's copy is what actually executes.
+source_pkgs = ["philtorch"]
 
 [tool.coverage.paths]
 # CI tests the pre-built wheel (installed into site-packages) instead of an
