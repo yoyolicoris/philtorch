@@ -25,9 +25,10 @@ Our principle design goals are:
 pip install philtorch
 ```
 
-Pre-built CPU wheels are available for the **latest 3 stable PyTorch minor
-versions** on Linux (x86\_64) and macOS 14+ (arm64) for **Python 3.10–3.13**.
-For other configurations (CUDA, Linux aarch64, Windows), install from source:
+Pre-built CPU wheels are available for the **latest stable PyTorch release**
+on Linux (x86\_64) and macOS 14+ (arm64) for **Python 3.10–3.13**.
+For other configurations (CUDA, Linux aarch64, Windows, or a different PyTorch
+release), install from source:
 
 ```bash
 pip install philtorch --no-binary philtorch
