@@ -1,9 +1,15 @@
 name: Build wheel (reusable)
 
-# Called once per OS from build-wheels.yml (not matrixed by os in the
-# caller), so each OS gets its own job conclusion. This lets downstream jobs
-# depend on a single OS's build without being affected by another OS's
-# failure, avoiding the need for `if: ${{ !cancelled() }}` workarounds.
+# Called once per (OS, Torch version) leg from build-wheels.yml, which
+# matrixes build-wheels-ubuntu/-windows over every Torch minor
+# resolve-torch-versions resolved (only the latest on pull_request; the
+# latest 3 stable minors on push/tag/release/dispatch - see
+# build-wheels.yml). build-wheels-macos is the exception and always calls
+# this with a single (the latest resolved) Torch version - see its own
+# comment in build-wheels.yml. Each OS still gets its own job id so
+# downstream jobs can depend on a single OS's build without being affected
+# by another OS's failure, avoiding the need for `if: ${{ !cancelled() }}`
+# workarounds.
 on:
   workflow_call:
     inputs:
@@ -11,16 +17,22 @@ on:
         required: true
         type: string
       torch_version:
-        # Single version, e.g. '2.13.0'. Only one wheel is built (and
-        # published) per OS/Python: wheel filenames don't encode the Torch
-        # version they were built against, so building one per Torch minor
-        # (as this workflow used to) produces multiple artifacts with
-        # identical filenames that collide when published (PyPI can't host
-        # two files with the same name, and local version identifiers like
-        # `+torch2.7` are rejected by PyPI uploads). There's no Torch
-        # ABI-stable API in use, so this one wheel is only tested against
-        # this exact version at test time, not the other Torch minors
-        # resolved by build-wheels.yml's resolve-torch-versions job.
+        # Single version, e.g. '2.13.0', for the one matrix leg being built.
+        # Wheel filenames don't encode the Torch version they were built
+        # against, so the uploaded artifact name does instead (see the
+        # upload-artifact step below) - otherwise the separate per-Torch-
+        # version builds for the same OS would collide on the same artifact
+        # name. Only the wheel built against the latest resolved version
+        # ends up published to PyPI (see build-wheels.yml's publish job):
+        # PyPI can't host two files with the same name, and local version
+        # identifiers like `+torch2.7` are rejected by PyPI uploads, so
+        # publishing one wheel per Torch minor isn't possible with a single
+        # package version. There's no Torch ABI-stable API in use, so
+        # building (and testing, see _test-wheel.yml) against every
+        # resolved minor isn't about producing installable artifacts for
+        # all of them - it's to catch source-level incompatibilities with
+        # older Torch versions early (relevant to `pip install --no-binary`
+        # from-source installs), even though only the latest is published.
         required: true
         type: string
 
@@ -118,5 +130,5 @@ jobs:
 
       - uses: actions/upload-artifact@v4
         with:
-          name: wheels-${{ inputs.os }}
+          name: wheels-${{ inputs.os }}-torch${{ inputs.torch_version }}
           path: wheelhouse/*.whl

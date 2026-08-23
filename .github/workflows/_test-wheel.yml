@@ -1,8 +1,13 @@
 name: Test wheel (reusable)
 
-# Called once per OS from build-wheels.yml (not matrixed by os in the
-# caller), so each OS gets its own job conclusion, independent of the other
-# OSes' build/test results.
+# Called once per (OS, Torch version) leg from build-wheels.yml, mirroring
+# _build-wheel.yml's per-leg fan-out (test-ubuntu is matrixed the same way
+# build-wheels-ubuntu/-windows are; test-macos always calls this with a
+# single, latest, Torch version, matching build-wheels-macos - see
+# build-wheels.yml). Each leg tests the wheel that was actually compiled
+# against that same Torch version (see _build-wheel.yml), so this is a real
+# compile+test compatibility check per Torch minor, not a cross-install of a
+# mismatched wheel/Torch pair.
 on:
   workflow_call:
     inputs:
@@ -13,11 +18,21 @@ on:
         # JSON array string, e.g. '["3.10", "3.11", "3.12", "3.13"]'
         required: true
         type: string
-      latest_torch:
-        # Torch version the single wheel under test was built against (see
-        # _build-wheel.yml's torch_version input).
+      torch_version:
+        # Torch version the wheel under test was built against (see
+        # _build-wheel.yml's torch_version input) - installed here so the
+        # artifact is always tested against the exact Torch it was compiled
+        # against.
         required: true
         type: string
+      upload_coverage:
+        # Only set true by the caller for the single (OS, Torch version)
+        # leg it wants Codecov coverage from (the latest resolved Torch
+        # version on ubuntu) - otherwise every Torch-version leg's Python
+        # 3.13 run would each upload a coverage report for the same commit.
+        required: false
+        type: boolean
+        default: false
     secrets:
       codecov_token:
         required: false
@@ -26,13 +41,9 @@ jobs:
   test:
     # Reuses the wheel already produced by build-wheels instead of
     # recompiling the C++ extension from source, to save CI compute/runtime.
-    # Only one wheel is built per OS (see _build-wheel.yml), against
-    # `latest_torch`; that's the version installed here so the artifact is
-    # always tested against the exact Torch it was compiled against. There's
-    # no Torch ABI-stable API in use, so this wheel isn't cross-tested
-    # against any other Torch minor: doing so would only prove the wheel
-    # happens to load with a mismatched ABI on whatever inputs CI picks, not
-    # that it's actually safe to use that way.
+    # `torch_version` is the exact version this leg's wheel was built
+    # against (see _build-wheel.yml), so this is always a same-version
+    # install, never a cross-version one.
     runs-on: ${{ inputs.os }}
     permissions:
       contents: read
@@ -49,7 +60,7 @@ jobs:
 
       - uses: actions/download-artifact@v4
         with:
-          name: wheels-${{ inputs.os }}
+          name: wheels-${{ inputs.os }}-torch${{ inputs.torch_version }}
           path: wheelhouse
 
       - name: Install Homebrew dependencies for OpenMP (macOS)
@@ -81,7 +92,7 @@ jobs:
             exit 1
           fi
 
-          pip install torch==${{ inputs.latest_torch }}${{ runner.os != 'macOS' && '+cpu' || '' }} --index-url https://download.pytorch.org/whl/cpu
+          pip install torch==${{ inputs.torch_version }}${{ runner.os != 'macOS' && '+cpu' || '' }} --index-url https://download.pytorch.org/whl/cpu
 
           # philtorch's runtime dependency torchlpc has no prebuilt wheels
           # either, so pip always builds it from source too. Install it
@@ -109,7 +120,7 @@ jobs:
         run: pytest --cov-branch --cov-report=xml
 
       - name: Upload coverage reports to Codecov
-        if: inputs.os == 'ubuntu-latest' && matrix.python-version == '3.13'
+        if: inputs.upload_coverage && matrix.python-version == '3.13'
         uses: codecov/codecov-action@v5
         with:
           token: ${{ secrets.codecov_token }}
