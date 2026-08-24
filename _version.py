@@ -9,7 +9,9 @@ import re
 
 
 def format_branch_name(name):
-    # "(fix|feat|copilot)/issue-name" or CICD's branch "HEAD"
+    # "(fix|feat|copilot)/issue-name" or CICD's branch "HEAD".
+    # "copilot" is a workaround so branches created by the Copilot coding
+    # agent (e.g. "copilot/cpu-builds-for-philtroch") version successfully.
     pattern = re.compile("^((fix|feat|copilot)\/(?P<branch>.+))|((head|HEAD))")
 
     match = pattern.search(name)

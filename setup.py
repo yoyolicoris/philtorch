@@ -126,6 +126,10 @@ def get_extensions():
 try:
     ext_modules = get_extensions()
 except ImportError:
+    # Only torch's absence is treated as "maybe metadata-only"; other errors
+    # from get_extensions() (e.g. missing Homebrew on macOS) propagate as-is,
+    # since those are real build failures rather than a missing-torch case.
+    #
     # Metadata-only invocations (e.g. `setup.py egg_info`/`sdist`, which pip
     # also runs to prepare metadata/sdists in an isolated build environment
     # populated solely from build-system.requires) don't need torch to be

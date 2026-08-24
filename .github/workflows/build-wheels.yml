@@ -29,17 +29,26 @@ jobs:
           GITHUB_EVENT_NAME: ${{ github.event_name }}
         run: |
           python3 - <<'EOF'
-          import os, urllib.request, re, json
+          import os, urllib.request, json
           from packaging.version import Version
 
-          url = "https://download.pytorch.org/whl/cpu/torch/"
-          with urllib.request.urlopen(url) as r:
-              html = r.read().decode()
+          # PyPI's JSON API is a stable, documented contract (unlike scraping
+          # download.pytorch.org's HTML directory listing), and its release
+          # versions match 1:1 with the +cpu builds hosted there, so there's
+          # no need to hit that index at all.
+          url = "https://pypi.org/pypi/torch/json"
+          req = urllib.request.Request(url, headers={"User-Agent": "philtorch-ci"})
+          with urllib.request.urlopen(req) as r:
+              data = json.load(r)
 
-          # Extract versions like 2.6.0, 2.7.1, etc. from wheel filenames
-          versions = set(re.findall(r'torch-(\d+\.\d+\.\d+)\+cpu-', html))
-
-          parsed = sorted({Version(v) for v in versions}, reverse=True)
+          versions = [
+              Version(v)
+              for v, files in data["releases"].items()
+              if files and not Version(v).is_prerelease
+          ]
+          if not versions:
+              raise RuntimeError("No stable torch releases found via PyPI JSON API")
+          parsed = sorted(set(versions), reverse=True)
 
           # Pick the latest patch for each minor series, take the 3 most recent minors
           seen_minor = {}
@@ -80,26 +89,14 @@ jobs:
       torch_version: ${{ matrix.torch-version }}
 
   # macOS runners are expensive: build/test only on pull_request and official
-  # releases (v* tag push or published release), and only against the latest
-  # resolved Torch minor (no matrix) since it never runs on push to dev.
+  # releases (v* tag push or published release). Matrixed over the resolved
+  # Torch versions like ubuntu (1 version on PR, top 3 otherwise) so releases
+  # get full torch x python coverage, not just the latest minor.
   build-wheels-macos:
     if: >
       github.event_name == 'pull_request' ||
       github.event_name == 'release' ||
       startsWith(github.ref, 'refs/tags/')
-    needs: resolve-torch-versions
-    permissions:
-      contents: read
-    uses: ./.github/workflows/_build-wheel.yml
-    with:
-      os: macos-latest
-      torch_version: ${{ fromJson(needs.resolve-torch-versions.outputs.matrix)[0] }}
-
-  # Windows is built (for regression signal) but never tested or published:
-  # torchlpc, a mandatory runtime dep, fails to compile on MSVC, so a Windows
-  # `pip install philtorch` can't work yet. Re-enable test/publish once
-  # torchlpc builds on Windows. See PR #20 for details. Matrixed like ubuntu.
-  build-wheels-windows:
     needs: resolve-torch-versions
     permissions:
       contents: read
@@ -109,8 +106,23 @@ jobs:
         torch-version: ${{ fromJson(needs.resolve-torch-versions.outputs.matrix) }}
     uses: ./.github/workflows/_build-wheel.yml
     with:
-      os: windows-latest
+      os: macos-latest
       torch_version: ${{ matrix.torch-version }}
+
+  # Windows is built (for regression signal) but never tested or published:
+  # torchlpc, a mandatory runtime dep, fails to compile on MSVC, so a Windows
+  # `pip install philtorch` can't work yet. Re-enable test/publish once
+  # torchlpc builds on Windows. See PR #20 for details. Only the latest
+  # resolved Torch minor is built (not matrixed like ubuntu/macos) since it's
+  # purely a build smoke test and Windows runners are comparatively costly.
+  build-wheels-windows:
+    needs: resolve-torch-versions
+    permissions:
+      contents: read
+    uses: ./.github/workflows/_build-wheel.yml
+    with:
+      os: windows-latest
+      torch_version: ${{ fromJson(needs.resolve-torch-versions.outputs.matrix)[0] }}
 
   lint:
     runs-on: ubuntu-latest
@@ -158,8 +170,9 @@ jobs:
     secrets:
       codecov_token: ${{ secrets.CODECOV_TOKEN }}
 
-  # Mirrors build-wheels-macos's condition: only pull_request and official
-  # releases build a macOS wheel to test. Not matrixed over Torch versions.
+  # Mirrors build-wheels-macos: only pull_request and official releases test
+  # a macOS wheel, matrixed over the same resolved Torch versions so releases
+  # get full torch x python coverage, not just the latest minor.
   test-macos:
     if: >
       github.event_name == 'pull_request' ||
@@ -168,11 +181,15 @@ jobs:
     needs: [resolve-torch-versions, build-wheels-macos]
     permissions:
       contents: read
+    strategy:
+      fail-fast: false
+      matrix:
+        torch-version: ${{ fromJson(needs.resolve-torch-versions.outputs.matrix) }}
     uses: ./.github/workflows/_test-wheel.yml
     with:
       os: macos-latest
-      python_versions: '["3.13"]'
-      torch_version: ${{ fromJson(needs.resolve-torch-versions.outputs.matrix)[0] }}
+      python_versions: ${{ github.event_name == 'pull_request' && '["3.13"]' || '["3.10", "3.11", "3.12", "3.13"]' }}
+      torch_version: ${{ matrix.torch-version }}
     secrets:
       codecov_token: ${{ secrets.CODECOV_TOKEN }}
 
@@ -205,10 +222,10 @@ jobs:
 
   publish:
     runs-on: ubuntu-latest
-    # Publishing is independent of testing: only the builds, lint and sdist
-    # gate publish, so a wheel that fails pytest is still publishable.
-    # build-wheels-windows is required (to catch build regressions) even
-    # though its wheel is never published.
+    # Linux build/test + sdist + lint are the only hard requirements: a
+    # macOS-only (or Windows-only) failure no longer blocks publishing the
+    # sdist and Linux wheel. macOS is still listed in `needs` so its result
+    # can be checked per-step below, gating only the macOS wheel download.
     needs:
       [
         resolve-torch-versions,
@@ -217,14 +234,21 @@ jobs:
         build-wheels-windows,
         build-sdist,
         lint,
+        test-ubuntu,
+        test-macos,
       ]
-    # `!failure() && !cancelled()` instead of the implicit `success()` so the
-    # always-skipped build-wheels-macos (push-to-dev) doesn't block publish,
-    # while a genuine failure in any needed job still does. The release branch
-    # also re-checks the tag pattern because `release: [published]` fires for
-    # any tag, unlike the push-tag trigger which is already filtered.
+    # `!cancelled()` (not `!failure()`) plus explicit per-job result checks:
+    # a failed build-wheels-macos/test-macos (or windows, never checked here)
+    # no longer skips this whole job, only the macOS wheel's download step.
+    # The release branch also re-checks the tag pattern because
+    # `release: [published]` fires for any tag, unlike the push-tag trigger
+    # which is already filtered.
     if: >
-      !failure() && !cancelled() &&
+      !cancelled() &&
+      needs.build-wheels-ubuntu.result == 'success' &&
+      needs.test-ubuntu.result == 'success' &&
+      needs.build-sdist.result == 'success' &&
+      needs.lint.result == 'success' &&
       (
         (github.event_name == 'push' && github.ref == 'refs/heads/dev') ||
         (github.event_name == 'push' && startsWith(github.ref, 'refs/tags/')) ||
@@ -245,10 +269,14 @@ jobs:
           name: wheels-ubuntu-latest-torch${{ fromJson(needs.resolve-torch-versions.outputs.matrix)[0] }}
           path: dist/
 
-      # Only present when build-wheels-macos ran; a named download fails if
-      # the artifact is absent, so guard with the same condition.
+      # Only downloaded when build-wheels-macos ran and both it and
+      # test-macos succeeded; a macOS failure just omits this wheel instead
+      # of blocking the whole publish job (see job-level comment above).
       - name: Download macOS wheel
-        if: github.event_name == 'release' || startsWith(github.ref, 'refs/tags/')
+        if: >
+          (github.event_name == 'release' || startsWith(github.ref, 'refs/tags/')) &&
+          needs.build-wheels-macos.result == 'success' &&
+          needs.test-macos.result == 'success'
         uses: actions/download-artifact@v4
         with:
           name: wheels-macos-latest-torch${{ fromJson(needs.resolve-torch-versions.outputs.matrix)[0] }}
