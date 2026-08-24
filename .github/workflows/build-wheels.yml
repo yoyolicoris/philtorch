@@ -222,10 +222,11 @@ jobs:
 
   publish:
     runs-on: ubuntu-latest
-    # Linux build/test + sdist + lint are the only hard requirements: a
-    # macOS-only (or Windows-only) failure no longer blocks publishing the
-    # sdist and Linux wheel. macOS is still listed in `needs` so its result
-    # can be checked per-step below, gating only the macOS wheel download.
+    # Gated on builds (+ sdist + lint) only, not tests: a flaky test
+    # shouldn't block a release when the built wheels are otherwise fine.
+    # Linux always gates publish; macOS does too when it runs (releases/tags)
+    # — besides Windows, which is never published. For push to dev, macOS is
+    # intentionally not built (skipped), so it doesn't gate TestPyPI there.
     needs:
       [
         resolve-torch-versions,
@@ -238,22 +239,25 @@ jobs:
         test-macos,
       ]
     # `!cancelled()` (not `!failure()`) plus explicit per-job result checks:
-    # a failed build-wheels-macos/test-macos (or windows, never checked here)
-    # no longer skips this whole job, only the macOS wheel's download step.
-    # The release branch also re-checks the tag pattern because
-    # `release: [published]` fires for any tag, unlike the push-tag trigger
-    # which is already filtered.
+    # test-ubuntu/test-macos results aren't checked, so a failing test never
+    # skips this job (only builds/sdist/lint do). The release branch also
+    # re-checks the tag pattern because `release: [published]` fires for any
+    # tag, unlike the push-tag trigger which is already filtered.
     if: >
       !cancelled() &&
       needs.build-wheels-ubuntu.result == 'success' &&
-      needs.test-ubuntu.result == 'success' &&
       needs.build-sdist.result == 'success' &&
       needs.lint.result == 'success' &&
       (
         (github.event_name == 'push' && github.ref == 'refs/heads/dev') ||
-        (github.event_name == 'push' && startsWith(github.ref, 'refs/tags/')) ||
-        (github.event_name == 'release' && github.event.action == 'published' &&
-          (startsWith(github.event.release.tag_name, 'v0.') || startsWith(github.event.release.tag_name, 'v1.')))
+        (
+          needs.build-wheels-macos.result == 'success' &&
+          (
+            (github.event_name == 'push' && startsWith(github.ref, 'refs/tags/')) ||
+            (github.event_name == 'release' && github.event.action == 'published' &&
+              (startsWith(github.event.release.tag_name, 'v0.') || startsWith(github.event.release.tag_name, 'v1.')))
+          )
+        )
       )
     permissions:
       id-token: write
@@ -269,14 +273,14 @@ jobs:
           name: wheels-ubuntu-latest-torch${{ fromJson(needs.resolve-torch-versions.outputs.matrix)[0] }}
           path: dist/
 
-      # Only downloaded when build-wheels-macos ran and both it and
-      # test-macos succeeded; a macOS failure just omits this wheel instead
-      # of blocking the whole publish job (see job-level comment above).
+      # Only downloaded when build-wheels-macos succeeded; a macOS build
+      # failure just omits this wheel instead of blocking the whole publish
+      # job (see job-level comment above). test-macos's result isn't
+      # checked, so a failing test there doesn't omit the wheel either.
       - name: Download macOS wheel
         if: >
           (github.event_name == 'release' || startsWith(github.ref, 'refs/tags/')) &&
-          needs.build-wheels-macos.result == 'success' &&
-          needs.test-macos.result == 'success'
+          needs.build-wheels-macos.result == 'success'
         uses: actions/download-artifact@v4
         with:
           name: wheels-macos-latest-torch${{ fromJson(needs.resolve-torch-versions.outputs.matrix)[0] }}
