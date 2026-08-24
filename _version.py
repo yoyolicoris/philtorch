@@ -9,8 +9,8 @@ import re
 
 
 def format_branch_name(name):
-    # "(fix|feat)/issue-name" or CICD's branch "HEAD"
-    pattern = re.compile("^((fix|feat)\/(?P<branch>.+))|((head|HEAD))")
+    # "(fix|feat|copilot)/issue-name" or CICD's branch "HEAD"
+    pattern = re.compile("^((fix|feat|copilot)\/(?P<branch>.+))|((head|HEAD))")
 
     match = pattern.search(name)
     if match:
