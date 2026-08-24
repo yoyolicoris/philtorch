@@ -3,8 +3,6 @@ requires = [
     "setuptools >= 77.0.3",
     "setuptools-git-versioning>=2.0,<3",
     "wheel",
-    "torch",
-    "numpy",
 ]
 build-backend = "setuptools.build_meta:__legacy__"
 
@@ -12,10 +10,10 @@ build-backend = "setuptools.build_meta:__legacy__"
 enabled = true
 # change the file path
 version_file = "philtorch/VERSION.txt"
-count_commits_from_version_file = true                     # <--- enable commits tracking
-dev_template = "{tag}.{branch}{ccount}"                    # suffix for versions will be .dev
-dirty_template = "{tag}.{branch}{ccount}"                  # same thing here
-branch_formatter = "philtorch._version:format_branch_name"
+count_commits_from_version_file = true                # <--- enable commits tracking
+dev_template = "{tag}.{branch}{ccount}"               # suffix for versions will be .dev
+dirty_template = "{tag}.{branch}{ccount}"             # same thing here
+branch_formatter = "build_version:format_branch_name"
 
 [tool.setuptools.package-data]
 # include VERSION file to a package
@@ -46,6 +44,7 @@ classifiers = [
     "Programming Language :: Python :: 3.10",
     "Programming Language :: Python :: 3.11",
     "Programming Language :: Python :: 3.12",
+    "Programming Language :: Python :: 3.13",
 ]
 
 [project.optional-dependencies]
@@ -63,7 +62,13 @@ python_functions = ["test_*"]
 addopts = [
     "--tb=short",
     "--strict-markers",
-    "--cov=philtorch",
+    # importlib mode keeps the source checkout off sys.path so CI imports the
+    # installed wheel's philtorch (with its compiled extension), not the local
+    # source. See PR #20 for the full rationale.
+    "--import-mode=importlib",
+    # `--cov` (no target) + [tool.coverage.run] source_pkgs below, so coverage
+    # measures the imported philtorch package instead of the ./philtorch dir.
+    "--cov",
     "--cov-report=term-missing:skip-covered",
 ]
 markers = [
@@ -71,6 +76,18 @@ markers = [
     "integration: marks tests as integration tests",
     "unit: marks tests as unit tests",
 ]
+
+[tool.coverage.run]
+relative_files = true
+# Measure the imported philtorch package (the installed wheel in CI), not the
+# ./philtorch source dir that a bare `--cov=philtorch` would resolve to and
+# report as 0% since the wheel's copy is what actually executes.
+source_pkgs = ["philtorch"]
+
+[tool.coverage.paths]
+# CI tests the pre-built wheel (installed into site-packages) instead of an
+# editable checkout, so map both locations to the same source for reporting.
+source = ["philtorch/", "*/site-packages/philtorch/"]
 
 [tool.black]
 target-version = ["py310"]

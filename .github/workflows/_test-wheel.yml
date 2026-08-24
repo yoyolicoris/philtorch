@@ -1,0 +1,101 @@
+name: Test wheel (reusable)
+
+# Called once per (OS, Torch version) leg from build-wheels.yml, mirroring
+# _build-wheel.yml's fan-out. Each leg installs and tests the wheel that was
+# compiled against that same Torch version, so it's a real per-minor
+# compatibility check, not a mismatched cross-install.
+on:
+  workflow_call:
+    inputs:
+      os:
+        required: true
+        type: string
+      python_versions:
+        # JSON array string, e.g. '["3.10", "3.11", "3.12", "3.13"]'
+        required: true
+        type: string
+      torch_version:
+        # Torch version the wheel under test was built against; installed here
+        # so the artifact is tested against the exact Torch it was built with.
+        required: true
+        type: string
+      upload_coverage:
+        # Set true only for the one leg that should upload Codecov coverage
+        # (latest Torch on ubuntu), to avoid duplicate reports per commit.
+        required: false
+        type: boolean
+        default: false
+    secrets:
+      codecov_token:
+        required: false
+
+jobs:
+  test:
+    # Reuses the wheel already built by build-wheels (same Torch version as
+    # this leg) rather than recompiling from source, to save CI time.
+    runs-on: ${{ inputs.os }}
+    permissions:
+      contents: read
+    strategy:
+      fail-fast: false
+      matrix:
+        python-version: ${{ fromJson(inputs.python_versions) }}
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: ${{ matrix.python-version }}
+
+      - uses: actions/download-artifact@v4
+        with:
+          name: wheels-${{ inputs.os }}-torch${{ inputs.torch_version }}
+          path: wheelhouse
+
+      - name: Install Homebrew dependencies for OpenMP (macOS)
+        # torchlpc has no prebuilt wheels and compiles an OpenMP extension from
+        # source; Apple clang++ lacks -fopenmp, so use the Homebrew toolchain.
+        if: runner.os == 'macOS'
+        run: brew install llvm libomp
+
+      - name: Install wheel and test dependencies
+        # Runs under bash on every OS (Windows uses bundled Git Bash). Torch is
+        # installed without the "+cpu" suffix on macOS, matching
+        # CIBW_BEFORE_BUILD in _build-wheel.yml.
+        shell: bash
+        run: |
+          shopt -s nullglob
+          PYTAG="cp$(echo "${{ matrix.python-version }}" | tr -d '.')"
+          WHEELS=(wheelhouse/philtorch-*-"$PYTAG"-*.whl)
+          if [ "${#WHEELS[@]}" -ne 1 ]; then
+            echo "Expected exactly one wheel matching $PYTAG in wheelhouse/, found ${#WHEELS[@]}: ${WHEELS[*]}" >&2
+            exit 1
+          fi
+
+          pip install torch==${{ inputs.torch_version }}${{ runner.os != 'macOS' && '+cpu' || '' }} --index-url https://download.pytorch.org/whl/cpu
+
+          # torchlpc has no prebuilt wheels; install it with
+          # --no-build-isolation so its build reuses the torch pinned above
+          # instead of pulling an unpinned latest torch into an isolated env.
+          # philtorch installs with --no-deps since torch/torchlpc are present.
+          if [ "$RUNNER_OS" = "macOS" ]; then
+            LLVM_PREFIX="$(brew --prefix llvm)"
+            LIBOMP_PREFIX="$(brew --prefix libomp)"
+            export CXX="$LLVM_PREFIX/bin/clang++"
+            export CPPFLAGS="-I$LIBOMP_PREFIX/include"
+            TORCH_LIB="$(python -c 'from pathlib import Path; import torch; print(Path(torch.__file__).parent / "lib")')"
+            export LDFLAGS="-L$TORCH_LIB -Wl,-rpath,$TORCH_LIB"
+          fi
+
+          pip install --no-build-isolation "torchlpc>=0.7.2"
+          pip install --no-deps "${WHEELS[0]}"
+          pip install numpy scipy pytest pytest-cov
+
+      - name: Test with pytest
+        run: pytest --cov-branch --cov-report=xml
+
+      - name: Upload coverage reports to Codecov
+        if: inputs.upload_coverage && matrix.python-version == '3.13'
+        uses: codecov/codecov-action@v5
+        with:
+          token: ${{ secrets.codecov_token }}

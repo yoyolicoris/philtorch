@@ -1,0 +1,95 @@
+name: Build wheel (reusable)
+
+# Called once per (OS, Torch version) leg from build-wheels.yml. Each OS has
+# its own job id there so downstream jobs can depend on a single OS's build.
+on:
+  workflow_call:
+    inputs:
+      os:
+        required: true
+        type: string
+      torch_version:
+        # Single version, e.g. '2.7.1', for the one matrix leg being built.
+        # Encoded into the artifact name (below) since wheel filenames don't
+        # record the Torch version, so per-Torch builds for one OS don't
+        # collide. Only the latest-minor wheel is published; the others exist
+        # to catch source-level breakage against older Torch. See PR #20.
+        required: true
+        type: string
+
+jobs:
+  build:
+    runs-on: ${{ inputs.os }}
+    permissions:
+      contents: read
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+          # fetch-depth: 0 required so setuptools-git-versioning can read full
+          # git history and tags to derive the package version number.
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.x"
+
+      - name: Install Homebrew dependencies for OpenMP (macOS)
+        if: runner.os == 'macOS'
+        run: brew install llvm libomp
+
+      - name: Configure native build environment (macOS)
+        # cibuildwheel builds macOS wheels on the runner (no container), so
+        # env vars set here reach the build subprocess. Duplicates setup.py's
+        # get_macos_openmp_config() as a safety net.
+        if: runner.os == 'macOS'
+        run: |
+          LLVM_PREFIX="$(brew --prefix llvm)"
+          LIBOMP_PREFIX="$(brew --prefix libomp)"
+          echo "CXX=$LLVM_PREFIX/bin/clang++" >> "$GITHUB_ENV"
+          echo "CPPFLAGS=-I$LIBOMP_PREFIX/include" >> "$GITHUB_ENV"
+          # 14.0 floor: the MPS Metal kernels need a newer Metal/MPS runtime
+          # than the arm64 Big Sur (11.0) default. See README.
+          echo "MACOSX_DEPLOYMENT_TARGET=14.0" >> "$GITHUB_ENV"
+
+      - name: Install cibuildwheel
+        run: pip install cibuildwheel==2.23.3
+
+      - name: Build wheels
+        run: cibuildwheel --output-dir wheelhouse
+        env:
+          # PRs only need a quick sanity check against the latest stable
+          # Python; other events (push/tag/release/dispatch) build the full
+          # supported range.
+          CIBW_BUILD: ${{ github.event_name == 'pull_request' && 'cp313-*' || 'cp310-* cp311-* cp312-* cp313-*' }}
+          CIBW_SKIP: "*-musllinux_*"
+          CIBW_ARCHS_LINUX: x86_64
+          CIBW_ARCHS_MACOS: arm64
+          CIBW_ARCHS_WINDOWS: AMD64
+          CIBW_MANYLINUX_X86_64_IMAGE: manylinux_2_28
+          # torch (+ setuptools) are installed into the build env by
+          # CIBW_BEFORE_BUILD, so disable build isolation; otherwise setup.py
+          # can't `import torch` and silently builds an extension-less wheel.
+          CIBW_BUILD_FRONTEND: "pip; args: --no-build-isolation"
+          # macOS CPU wheels on the PyTorch index aren't `+cpu`-suffixed, so
+          # add the suffix only off-macOS (resolved via runner.os).
+          CIBW_BEFORE_BUILD: >-
+            pip install "setuptools>=77.0.3" "setuptools-git-versioning>=2.0,<3" wheel &&
+            pip install torch==${{ inputs.torch_version }}${{ runner.os != 'macOS' && '+cpu' || '' }} --index-url https://download.pytorch.org/whl/cpu
+          CIBW_TEST_SKIP: "*"
+          # torch's libs are excluded from repair: torch is a separate runtime
+          # dep (never vendored), and `import torch` loads them globally before
+          # philtorch._C, so the extension resolves them at runtime. Without
+          # -e, auditwheel/delocate abort not finding them on the build image.
+          CIBW_REPAIR_WHEEL_COMMAND_LINUX: >-
+            auditwheel repair --exclude 'libtorch*.so*' --exclude 'libc10*.so*' -w {dest_dir} {wheel}
+          # --ignore-missing-dependencies: torch's bundled libomp.dylib has an
+          # absolute install name that doesn't exist on the runner, so delocate
+          # can't find a file for it; it still resolves at runtime via torch's
+          # already-loaded copy.
+          CIBW_REPAIR_WHEEL_COMMAND_MACOS: >-
+            delocate-wheel --require-archs {delocate_archs} -e libtorch -e libc10 --ignore-missing-dependencies -w {dest_dir} -v {wheel}
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: wheels-${{ inputs.os }}-torch${{ inputs.torch_version }}
+          path: wheelhouse/*.whl

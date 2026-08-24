@@ -1,6 +1,8 @@
 recursive-include philtorch *.txt
 recursive-include philtorch *.h
+recursive-include philtorch *.cpp
 recursive-include philtorch *.cuh
 recursive-include philtorch *.cu
 recursive-include philtorch *.mm
+include build_version.py
 exclude tests/*

@@ -3,13 +3,6 @@ import os
 import glob
 import subprocess
 import sys
-import torch
-from torch.utils.cpp_extension import (
-    CppExtension,
-    CUDAExtension,
-    BuildExtension,
-    CUDA_HOME,
-)
 
 library_name = "philtorch"
 
@@ -67,15 +60,32 @@ def get_macos_openmp_config(extra_compile_args, extra_link_args, torch_lib):
 
 
 def get_extensions():
+    import torch
+    from torch.utils.cpp_extension import (
+        CppExtension,
+        CUDAExtension,
+        CUDA_HOME,
+    )
+
     use_cuda = torch.cuda.is_available() and CUDA_HOME is not None
-    use_openmp = torch.backends.openmp.is_available()
+    use_openmp = (
+        torch.backends.openmp.is_available()
+        and os.environ.get("PHILTORCH_DISABLE_OPENMP", "0") != "1"
+    )
     extension = CUDAExtension if use_cuda else CppExtension
 
     extra_link_args = []
     extra_compile_args = {}
     if use_openmp:
-        extra_compile_args["cxx"] = ["-fopenmp"]
-        extra_link_args.append("-fopenmp")
+        if sys.platform == "win32":
+            # host_dot.h uses `#pragma omp simd`, which requires MSVC's
+            # experimental OpenMP mode; the legacy `/openmp` flag only
+            # supports OpenMP 2.0 constructs (no `simd`) and fails to compile.
+            extra_compile_args["cxx"] = ["/openmp:experimental"]
+            # MSVC links OpenMP automatically — no extra_link_args entry needed
+        else:
+            extra_compile_args["cxx"] = ["-fopenmp"]
+            extra_link_args.append("-fopenmp")
         if sys.platform == "darwin":
             torch_lib = os.path.join(os.path.dirname(torch.__file__), "lib")
             compiler, extra_compile_args, extra_link_args = get_macos_openmp_config(
@@ -113,11 +123,38 @@ def get_extensions():
     return ext_modules
 
 
-ext_modules = get_extensions()
+try:
+    ext_modules = get_extensions()
+except ImportError:
+    # Only torch's absence is treated as "maybe metadata-only"; other errors
+    # from get_extensions() (e.g. missing Homebrew on macOS) propagate as-is,
+    # since those are real build failures rather than a missing-torch case.
+    #
+    # Metadata-only invocations (e.g. `setup.py egg_info`/`sdist`, which pip
+    # also runs to prepare metadata/sdists in an isolated build environment
+    # populated solely from build-system.requires) don't need torch to be
+    # importable. Let those keep working without torch pre-installed.
+    #
+    # Actually building an extension (bdist_wheel/build_ext/develop/install)
+    # does need torch; failing loudly here instead of silently degrading to
+    # an extension-less wheel avoids shipping a philtorch that's missing
+    # `_C` with no indication anything went wrong.
+    metadata_only_commands = {"egg_info", "sdist", "dist_info"}
+    if metadata_only_commands.intersection(sys.argv):
+        ext_modules = []
+    else:
+        raise RuntimeError(
+            "philtorch could not `import torch` while building its "
+            "C++/CUDA extension. Install torch first (see README), then "
+            "reinstall/rebuild with `--no-build-isolation` so the build "
+            "sees it."
+        )
 
 if not ext_modules:
     setup()
 else:
+    from torch.utils.cpp_extension import BuildExtension
+
     setup(
         ext_modules=ext_modules,
         cmdclass={"build_ext": BuildExtension},

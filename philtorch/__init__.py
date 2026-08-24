@@ -7,9 +7,11 @@ try:
     from . import _C
 
     EXTENSION_LOADED = True
-except ImportError:
+except (
+    ImportError
+) as error:  # pragma: no cover - exercised only without the compiled extension
     EXTENSION_LOADED = False
-    warnings.warn("Custom extension not loaded.")
+    warnings.warn(f"Custom extension not loaded: {error}")
 
 
 try:
