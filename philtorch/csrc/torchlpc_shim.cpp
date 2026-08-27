@@ -7,7 +7,11 @@
 #include <utility>
 #include <vector>
 
-#ifdef _OPENMP
+// `#pragma omp declare reduction` is an OpenMP 4.0 construct that MSVC does
+// not support (it only implements OpenMP 2.0 + SIMD). It is only needed to
+// make the `+` reduction below work with c10::complex on GCC/Clang, so guard
+// it out on MSVC (Windows) — where the allpole/scan kernels are not used.
+#if defined(_OPENMP) && !defined(_MSC_VER)
 #pragma omp declare reduction(+ : c10::complex<float> : omp_out += omp_in) initializer(omp_priv = 0)
 #pragma omp declare reduction(+ : c10::complex<double> : omp_out += omp_in) initializer(omp_priv = 0)
 #pragma omp declare reduction(+ : std::complex<float> : omp_out += omp_in) initializer(omp_priv = 0)
