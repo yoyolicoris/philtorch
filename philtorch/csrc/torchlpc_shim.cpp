@@ -1,8 +1,18 @@
 #include <torch/script.h>
 #include <torch/torch.h>
+#include <c10/util/Half.h>
+#include <c10/util/BFloat16.h>
+#include <c10/util/complex.h>
 #include <algorithm>
 #include <utility>
 #include <vector>
+
+#ifdef _OPENMP
+#pragma omp declare reduction(+ : c10::complex<float> : omp_out += omp_in) initializer(omp_priv = 0)
+#pragma omp declare reduction(+ : c10::complex<double> : omp_out += omp_in) initializer(omp_priv = 0)
+#pragma omp declare reduction(+ : std::complex<float> : omp_out += omp_in) initializer(omp_priv = 0)
+#pragma omp declare reduction(+ : std::complex<double> : omp_out += omp_in) initializer(omp_priv = 0)
+#endif
 
 // Vendored torchlpc CPU helpers without its own PyInit.
 // The original torchlpc scan_cpu.cpp defines PyInit__C, which would collide
@@ -30,9 +40,12 @@ void scan_cpu_vendored(const at::Tensor &input, const at::Tensor &weights,
 
     const auto n_batch = input.size(0);
     const auto T = input.size(1);
-    const scalar_t *input_ptr = input.contiguous().const_data_ptr<scalar_t>();
-    const scalar_t *initials_ptr = initials.contiguous().const_data_ptr<scalar_t>();
-    const scalar_t *weights_ptr = weights.contiguous().const_data_ptr<scalar_t>();
+    auto input_contiguous = input.contiguous();
+    auto initials_contiguous = initials.contiguous();
+    auto weights_contiguous = weights.contiguous();
+    const scalar_t *input_ptr = input_contiguous.const_data_ptr<scalar_t>();
+    const scalar_t *initials_ptr = initials_contiguous.const_data_ptr<scalar_t>();
+    const scalar_t *weights_ptr = weights_contiguous.const_data_ptr<scalar_t>();
     scalar_t *output_ptr = output.mutable_data_ptr<scalar_t>();
 
 #pragma omp parallel for
@@ -61,7 +74,10 @@ void allpole_cpu_core(const torch::Tensor &a, const torch::Tensor &padded_out)
     const auto B = a.size(0);
     const auto T = a.size(1);
     const auto order = a.size(2);
-    const scalar_t *a_ptr = a.contiguous().const_data_ptr<scalar_t>();
+    // Negate coefficients once so the inner recurrence is a pure running sum,
+    // which is compatible with `+` reductions and lets the compiler vectorize.
+    auto neg_a = (-a).contiguous();
+    const scalar_t *a_ptr = neg_a.const_data_ptr<scalar_t>();
     scalar_t *out_ptr = padded_out.mutable_data_ptr<scalar_t>();
 
 #pragma omp parallel for
@@ -71,11 +87,12 @@ void allpole_cpu_core(const torch::Tensor &a, const torch::Tensor &padded_out)
         const scalar_t *a_b = a_ptr + b * T * order;
         for (int64_t t = 0; t < T; ++t)
         {
-            scalar_t y = out_b[t];
             const scalar_t *a_bt = a_b + t * order;
+            scalar_t y = 0;
+#pragma omp simd reduction(+ : y)
             for (int64_t i = 0; i < order; ++i)
-                y -= a_bt[i] * out_b[t - i - 1];
-            out_b[t] = y;
+                y += a_bt[i] * out_b[t - i - 1];
+            out_b[t] = out_b[t] + y;
         }
     }
 }
