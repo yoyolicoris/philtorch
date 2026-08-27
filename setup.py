@@ -153,6 +153,10 @@ def get_extensions():
         sources += list(glob.glob(os.path.join(extensions_dir, "*.mm")))
         extra_link_args.extend(["-framework", "Foundation", "-framework", "Metal"])
 
+    # Exclude pararnn_shim for CPU builds (it needs pararnn headers)
+    if not use_cuda:
+        sources = [s for s in sources if "pararnn_shim" not in os.path.basename(s)]
+
     if use_cuda:
         sources += cuda_sources
         sources += torchlpc_cu

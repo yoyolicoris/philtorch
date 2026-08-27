@@ -1,5 +1,9 @@
 #include <torch/extension.h>
+#if __has_include("helpers.h")
 #include "helpers.h"
+#else
+#include "../../third_party/pararnn/pararnn/csrc/helpers.h"
+#endif
 
 // Pararnn shim - vendored kernel registrations without duplicate PyInit
 // Original file third_party/pararnn/pararnn/csrc/parallel_reduction_bindings.cpp
