@@ -36,11 +36,7 @@ pip install torch  # or your CUDA/platform-specific PyTorch build
 pip install philtorch --no-binary philtorch --no-build-isolation
 ```
 
-> **_Note:_** Windows wheels aren't published yet: philtorch's mandatory
-> `torchlpc` dependency currently fails to build there (an
-> [upstream](https://github.com/DiffAPF/torchlpc) MSVC incompatibility), so a
-> normal `pip install philtorch` would install successfully and then fail on
-> that dependency. Windows users should track that issue upstream.
+> **_Note:_** Windows wheels are now published via vendored `torchlpc` (`third_party/torchlpc` at `DiffAPF/torchlpc@1bfde4a`) bundled into `philtorch._C`.
 
 ### Development version
 ```bash

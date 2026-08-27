@@ -2,7 +2,7 @@ import torch
 from torch import Tensor
 from typing import Optional, Union
 from functools import reduce, partial
-from torchlpc import sample_wise_lpc
+from .._torchlpc import sample_wise_lpc
 import torch.nn.functional as F
 
 from ..utils import chain_functions

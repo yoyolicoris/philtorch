@@ -98,13 +98,62 @@ def get_extensions():
     sources = list(glob.glob(os.path.join(extensions_dir, "*.cpp")))
     cuda_sources = list(glob.glob(os.path.join(extensions_dir, "*.cu")))
 
+    # Vendored torchlpc (DiffAPF/torchlpc) — CPU via shim, CUDA via third_party kernels
+    # CPU shim philtorch/csrc/torchlpc_shim.cpp vendors scan + lpc (avoids
+    # duplicate PyInit__C from third_party/.../scan_cpu.cpp, not compiled).
+    torchlpc_root = os.path.join(
+        this_dir, "third_party", "torchlpc", "torchlpc", "csrc"
+    )
+    torchlpc_cu = []
+    if os.path.isdir(torchlpc_root):
+        torchlpc_cu = list(glob.glob(os.path.join(torchlpc_root, "cuda", "*.cu")))
+        extra_compile_args.setdefault("cxx", []).append(f"-I{torchlpc_root}")
+        extra_compile_args.setdefault("cxx", []).append(
+            f"-I{os.path.join(torchlpc_root, 'cuda')}"
+        )
+
+    # Vendored pararnn (apple/ml-pararnn) — CUDA-only
+    pararnn_root = os.path.join(this_dir, "third_party", "pararnn", "pararnn", "csrc")
+    pararnn_sources = []
+    if use_cuda and os.path.isdir(pararnn_root):
+        for name in [
+            "parallel_reduction_bindings.cpp",
+            "parallel_reduce.cu",
+            "fused_gru_diag.cu",
+            "fused_lstm_cifg_diag.cu",
+        ]:
+            p = os.path.join(pararnn_root, name)
+            if os.path.isfile(p):
+                pararnn_sources.append(p)
+        # pararnn needs chunk size flags
+        extra_compile_args.setdefault("cxx", []).extend(
+            ["-DFLOAT64_CHUNK_SIZE_DIAG=4", "-DFLOAT64_CHUNK_SIZE_BLOCK_DIAG_2x2=1"]
+        )
+        extra_compile_args.setdefault("nvcc", []).extend(
+            [
+                "-U__CUDA_NO_HALF_OPERATORS__",
+                "-U__CUDA_NO_HALF_CONVERSIONS__",
+                "-U__CUDA_NO_BFLOAT16_CONVERSIONS__",
+                "-D__CUDA_INCLUDE_HALF_OPERATORS__",
+                "-D__CUDA_INCLUDE_BFLOAT16_OPERATORS__",
+                "-Xcudafe",
+                "--diag_suppress=1886",
+                "-DFLOAT64_CHUNK_SIZE_DIAG=4",
+                "-DFLOAT64_CHUNK_SIZE_BLOCK_DIAG_2x2=1",
+            ]
+        )
+
     if sys.platform == "darwin":
         sources += list(glob.glob(os.path.join(extensions_dir, "*.mm")))
         extra_link_args.extend(["-framework", "Foundation", "-framework", "Metal"])
 
     if use_cuda:
         sources += cuda_sources
-        extra_compile_args["nvcc"] = ["--extended-lambda"]
+        sources += torchlpc_cu
+        sources += pararnn_sources
+        extra_compile_args.setdefault("nvcc", []).append("--extended-lambda")
+    # torchlpc_shim.cpp is part of philtorch/csrc and already included via
+    # extensions_dir glob (no extra handling needed)
 
     if len(sources) == 0:
         return []

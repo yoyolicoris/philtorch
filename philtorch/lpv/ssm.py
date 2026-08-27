@@ -3,14 +3,13 @@ import torch.nn.functional as F
 from torch.autograd import Function
 from typing import Optional, Union, Any
 from torch import Tensor
-from torchlpc import sample_wise_lpc
+from .._torchlpc import sample_wise_lpc
 
-try:
-    import pararnn.parallel_reduction.parallel_reduction
-
-    PARARNN_AVAILABLE = True
-except ImportError:
-    PARARNN_AVAILABLE = False
+# pararnn's CUDA kernels are vendored directly into philtorch._C (see setup.py),
+# registered under torch.ops.parallel_reduce_cuda; no separate pip package needed.
+PARARNN_AVAILABLE = hasattr(torch.ops, "parallel_reduce_cuda") and hasattr(
+    torch.ops.parallel_reduce_cuda, "parallel_reduce_block_diag_2x2_cuda"
+)
 
 from ..mat import matrices_cumdot
 from .. import EXTENSION_LOADED, HELION_LOADED
