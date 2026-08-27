@@ -1,0 +1,6 @@
+[submodule "third_party/torchlpc"]
+	path = third_party/torchlpc
+	url = git@github.com:DiffAPF/torchlpc.git
+[submodule "third_party/pararnn"]
+	path = third_party/pararnn
+	url = git@github.com:apple/ml-pararnn.git
