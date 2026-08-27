@@ -30,7 +30,10 @@ else:
     HELION_LOADED = True
 
 
-__version__ = Path(__file__).parent.joinpath("VERSION.txt").read_text()
+try:
+    from ._version import __version__ as __version__  # type: ignore
+except ImportError:
+    __version__ = Path(__file__).parent.joinpath("VERSION.txt").read_text().strip()
 
 
 def _recurN_backward(f):
