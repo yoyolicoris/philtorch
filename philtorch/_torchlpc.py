@@ -1,4 +1,4 @@
-"""Lightweight vendor shim for the bundled torchlpc operators."""
+"""Lightweight vendor shim for torchlpc ops."""
 
 from typing import Any, List
 
@@ -6,48 +6,20 @@ import torch
 import torch.nn.functional as F
 from torch.autograd import Function
 
-from . import EXTENSION_LOADED
-
-
-def _allpole_fallback(
-    x: torch.Tensor, A: torch.Tensor, zi: torch.Tensor
-) -> torch.Tensor:
-    """Evaluate a time-varying all-pole filter using PyTorch operations."""
-    _, samples, order = A.shape
-    history = zi.flip(1)
-    output = []
-    for t in range(samples):
-        previous = history[:, t : t + order].flip(1)
-        y = x[:, t] - torch.sum(A[:, t] * previous, dim=1)
-        output.append(y)
-        history = torch.cat([history, y.unsqueeze(1)], dim=1)
-    return torch.stack(output, dim=1)
-
-
-def _scan_fallback(
-    impulse: torch.Tensor, decay: torch.Tensor, init: torch.Tensor
-) -> torch.Tensor:
-    """Evaluate ``y[t] = decay[t] * y[t-1] + impulse[t]`` in PyTorch."""
-    output = []
-    state = init
-    for impulse_t, decay_t in zip(impulse.unbind(1), decay.unbind(1)):
-        state = decay_t * state + impulse_t
-        output.append(state)
-    return torch.stack(output, dim=1)
+from . import _C  # noqa: F401
 
 
 class AllPole(Function):
     @staticmethod
     def forward(x: torch.Tensor, A: torch.Tensor, zi: torch.Tensor) -> torch.Tensor:
-        if EXTENSION_LOADED:
-            return torch.ops.torchlpc.lpc(x, A, zi)
-        return _allpole_fallback(x, A, zi)
+        return torch.ops.torchlpc.lpc(x, A, zi)
 
     @staticmethod
     def setup_context(ctx: Any, inputs: List[Any], output: Any) -> Any:
         _, A, zi = inputs
-        ctx.save_for_backward(A, zi, output)
-        ctx.save_for_forward(A, zi, output)
+        y = output
+        ctx.save_for_backward(A, zi, y)
+        ctx.save_for_forward(A, zi, y)
 
     @staticmethod
     def backward(ctx: Any, grad_y: torch.Tensor):  # type: ignore[override]
@@ -100,32 +72,31 @@ class AllPole(Function):
 
     @staticmethod
     def vmap(info, in_dims, *args):
-        def expand(x, dim):
-            if dim is None:
+        def maybe_expand_bdim_at_front(x, x_bdim):
+            if x_bdim is None:
                 return x.expand(info.batch_size, *x.shape)
-            return x.movedim(dim, 0)
+            return x.movedim(x_bdim, 0)
 
         x, A, zi = tuple(
-            value.reshape(-1, *value.shape[2:]) for value in map(expand, args, in_dims)
+            map(
+                lambda x: x.reshape(-1, *x.shape[2:]),
+                map(maybe_expand_bdim_at_front, args, in_dims),
+            )
         )
         y = AllPole.apply(x, A, zi)
         return y.reshape(info.batch_size, -1, *y.shape[1:]), 0
 
 
 class ScanRecurrence(Function):
-    """Recurrence with the argument order ``(impulse, decay, init)``."""
-
     @staticmethod
     def forward(
         impulse: torch.Tensor, decay: torch.Tensor, init: torch.Tensor
     ) -> torch.Tensor:
-        if EXTENSION_LOADED:
-            return torch.ops.torchlpc.scan(impulse, decay, init)
-        return _scan_fallback(impulse, decay, init)
+        return torch.ops.torchlpc.scan(impulse, decay, init)
 
     @staticmethod
     def setup_context(ctx: Any, inputs: List[Any], output: Any) -> Any:
-        _, decay, init = inputs
+        impulse, decay, init = inputs
         ctx.save_for_backward(decay, init, output)
         ctx.save_for_forward(decay, init, output)
 
@@ -164,28 +135,39 @@ class ScanRecurrence(Function):
     ) -> torch.Tensor:
         decay, init, out = ctx.saved_tensors
         fwd_init = grad_init if grad_init is not None else torch.zeros_like(init)
-        fwd_impulse = (
-            grad_impulse if grad_impulse is not None else torch.zeros_like(out)
-        )
+        fwd_imp = grad_impulse if grad_impulse is not None else torch.zeros_like(out)
         if grad_decay is not None:
-            fwd_impulse = (
-                fwd_impulse
+            fwd_imp = (
+                fwd_imp
                 + torch.cat([init.unsqueeze(1), out[:, :-1]], dim=1) * grad_decay
             )
-        return ScanRecurrence.apply(fwd_impulse, decay, fwd_init)
+        return ScanRecurrence.apply(fwd_imp, decay, fwd_init)
 
     @staticmethod
     def vmap(info, in_dims, *args):
-        def expand(x, dim):
-            if dim is None:
-                return x.expand(info.batch_size, *x.shape)
-            return x.movedim(dim, 0)
+        def expand(x, d):
+            return (
+                x
+                if d is None
+                else (
+                    x.movedim(d, 0).expand(info.batch_size, *x.shape[2:])
+                    if x.dim() > 1
+                    else x.movedim(d, 0)
+                )
+            )
 
         impulse, decay, init = tuple(
-            value.reshape(-1, *value.shape[2:]) for value in map(expand, args, in_dims)
+            map(
+                lambda t: t.reshape(-1, *t.shape[2:]) if t.dim() > 1 else t.reshape(-1),
+                map(expand, args, in_dims),
+            )
         )
-        output = ScanRecurrence.apply(impulse, decay, init)
-        return output.reshape(info.batch_size, -1, *output.shape[1:]), 0
+        return (
+            ScanRecurrence.apply(impulse, decay, init).reshape(
+                info.batch_size, -1, *impulse.shape[1:]
+            ),
+            0,
+        )
 
 
 _ScanWrapper = ScanRecurrence
