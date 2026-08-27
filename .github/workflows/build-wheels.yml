@@ -191,7 +191,9 @@ jobs:
       codecov_token: ${{ secrets.CODECOV_TOKEN }}
 
   # Mirrors build-wheels-macos: only pull_request and official releases test
-  # a Windows wheel, matrixed over the same resolved Torch versions.
+  # a Windows wheel. Windows builds only the latest torch version (to save
+  # runner cost), so we constrain this test to that same single version
+  # rather than matrixing over 3 versions which would 404 on missing artifacts.
   test-windows:
     if: >
       github.event_name == 'pull_request' ||
@@ -200,15 +202,11 @@ jobs:
     needs: [resolve-torch-versions, build-wheels-windows]
     permissions:
       contents: read
-    strategy:
-      fail-fast: false
-      matrix:
-        torch-version: ${{ fromJson(needs.resolve-torch-versions.outputs.matrix) }}
     uses: ./.github/workflows/_test-wheel.yml
     with:
       os: windows-latest
       python_versions: ${{ github.event_name == 'pull_request' && '["3.13"]' || '["3.10", "3.11", "3.12", "3.13"]' }}
-      torch_version: ${{ matrix.torch-version }}
+      torch_version: ${{ fromJson(needs.resolve-torch-versions.outputs.matrix)[0] }}
     secrets:
       codecov_token: ${{ secrets.CODECOV_TOKEN }}
 

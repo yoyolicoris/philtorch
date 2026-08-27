@@ -116,8 +116,12 @@ def get_extensions():
     pararnn_root = os.path.join(this_dir, "third_party", "pararnn", "pararnn", "csrc")
     pararnn_sources = []
     if use_cuda and os.path.isdir(pararnn_root):
+        # NOTE: we intentionally do NOT compile parallel_reduction_bindings.cpp
+        # directly because it contains PYBIND11_MODULE(TORCH_EXTENSION_NAME, ...)
+        # which would define a second PyInit__C colliding with host_recur2.cpp.
+        # Instead we use our own shim philtorch/csrc/pararnn_shim.cpp which
+        # keeps the TORCH_LIBRARY registrations but omits the pybind module.
         for name in [
-            "parallel_reduction_bindings.cpp",
             "parallel_reduce.cu",
             "fused_gru_diag.cu",
             "fused_lstm_cifg_diag.cu",
@@ -125,6 +129,8 @@ def get_extensions():
             p = os.path.join(pararnn_root, name)
             if os.path.isfile(p):
                 pararnn_sources.append(p)
+        # Include pararnn headers for our shim (helpers.h)
+        extra_compile_args.setdefault("cxx", []).append(f"-I{pararnn_root}")
         # pararnn needs chunk size flags
         extra_compile_args.setdefault("cxx", []).extend(
             ["-DFLOAT64_CHUNK_SIZE_DIAG=4", "-DFLOAT64_CHUNK_SIZE_BLOCK_DIAG_2x2=1"]

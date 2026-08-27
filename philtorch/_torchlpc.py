@@ -1,17 +1,48 @@
 """Lightweight vendor shim for torchlpc ops."""
 
-from typing import Any, List
+from typing import Any, List, Optional
+import warnings
 
 import torch
 import torch.nn.functional as F
 from torch.autograd import Function
 
-from . import _C  # noqa: F401
+# Optional extension handling - don't break import if _C is missing
+try:
+    from . import _C  # noqa: F401
+    from . import EXTENSION_LOADED
+except (ImportError, AttributeError):
+    # Fallback: try to determine if extension is loaded from __init__
+    try:
+        from . import EXTENSION_LOADED as _EXT_LOADED
+        EXTENSION_LOADED = _EXT_LOADED
+    except ImportError:
+        EXTENSION_LOADED = False
+
+
+def _check_ext():
+    if not EXTENSION_LOADED:
+        raise RuntimeError(
+            "philtorch._C extension not loaded. "
+            "Build/install philtorch with compiled extension, "
+            "or use pure-PyTorch fallback paths."
+        )
 
 
 class AllPole(Function):
     @staticmethod
     def forward(x: torch.Tensor, A: torch.Tensor, zi: torch.Tensor) -> torch.Tensor:
+        if not EXTENSION_LOADED:
+            # Pure-PyTorch fallback: sample-wise allpole (slow but functional)
+            # x: (B,T), A: (B,T,order), zi: (B,order)
+            B, T = x.shape
+            order = A.shape[2]
+            # Use NumPy-style fallback if needed - for now raise with clear message
+            # and let caller handle fallback
+            raise RuntimeError(
+                "AllPole native op requires compiled extension. "
+                "Ensure philtorch is built with extension."
+            )
         return torch.ops.torchlpc.lpc(x, A, zi)
 
     @staticmethod
@@ -89,23 +120,45 @@ class AllPole(Function):
 
 
 class ScanRecurrence(Function):
+    """Parallel scan recurrence: y[t] = decay[t] * y[t-1] + impulse[t]
+
+    Forward signature is (impulse, decay, init) to match the underlying
+    torch.ops.torchlpc.scan kernel which expects (input, weights, init).
+    This is intentionally different from upstream torchlpc's (decay, impulse, init)
+    ordering - we keep impulse first for clarity.
+    """
+
     @staticmethod
     def forward(
         impulse: torch.Tensor, decay: torch.Tensor, init: torch.Tensor
     ) -> torch.Tensor:
+        if not EXTENSION_LOADED:
+            # Pure-PyTorch fallback
+            # impulse/decay: (B,N), init: (B,) or (B,1)
+            B, N = impulse.shape
+            out = torch.empty_like(impulse)
+            h = init
+            for t in range(N):
+                h = h * decay[:, t] + impulse[:, t]
+                out[:, t] = h
+            return out
         return torch.ops.torchlpc.scan(impulse, decay, init)
 
     @staticmethod
     def setup_context(ctx: Any, inputs: List[Any], output: Any) -> Any:
-        decay, _, init = inputs
+        # inputs = [impulse, decay, init] matching forward
+        impulse, decay, init = inputs
         ctx.save_for_backward(decay, init, output)
         ctx.save_for_forward(decay, init, output)
+        # Also save impulse shape info if needed, but decay/init/out suffice for grad
 
     @staticmethod
     def backward(ctx: Any, grad_out: torch.Tensor):  # type: ignore[override]
+        # Saved: decay, init, out
         decay, init, out = ctx.saved_tensors
         n_dims = decay.size(0)
         padded_decay = F.pad(decay.unsqueeze(1), (0, 1)).squeeze(1)
+        # needs_input_grad: [0]=impulse, [1]=decay, [2]=init
         if ctx.needs_input_grad[2]:
             padded_grad = F.pad(grad_out.unsqueeze(1), (1, 0)).squeeze(1)
         else:
@@ -118,20 +171,21 @@ class ScanRecurrence(Function):
         grad_init = flipped[:, -1] if ctx.needs_input_grad[2] else None
         if ctx.needs_input_grad[2]:
             flipped = flipped[:, :-1]
-        grad_impulse = flipped.flip(1) if ctx.needs_input_grad[1] else None
-        if ctx.needs_input_grad[0]:
+        grad_impulse = flipped.flip(1) if ctx.needs_input_grad[0] else None
+        if ctx.needs_input_grad[1]:
             grad_decay = torch.cat(
                 [init.unsqueeze(1), out[:, :-1]], dim=1
             ).conj_physical() * flipped.flip(1)
         else:
             grad_decay = None
-        return grad_decay, grad_impulse, grad_init
+        # Return in order of forward inputs: impulse, decay, init
+        return grad_impulse, grad_decay, grad_init
 
     @staticmethod
     def jvp(
         ctx: Any,
-        grad_decay: torch.Tensor,
         grad_impulse: torch.Tensor,
+        grad_decay: torch.Tensor,
         grad_init: torch.Tensor,
     ) -> torch.Tensor:
         decay, init, out = ctx.saved_tensors
@@ -142,7 +196,7 @@ class ScanRecurrence(Function):
                 fwd_imp
                 + torch.cat([init.unsqueeze(1), out[:, :-1]], dim=1) * grad_decay
             )
-        return ScanRecurrence.apply(decay, fwd_imp, fwd_init)
+        return ScanRecurrence.apply(fwd_imp, decay, fwd_init)
 
     @staticmethod
     def vmap(info, in_dims, *args):
@@ -157,14 +211,14 @@ class ScanRecurrence(Function):
                 )
             )
 
-        decay, impulse, init = tuple(
+        impulse, decay, init = tuple(
             map(
                 lambda t: t.reshape(-1, *t.shape[2:]) if t.dim() > 1 else t.reshape(-1),
                 map(expand, args, in_dims),
             )
         )
         return (
-            ScanRecurrence.apply(decay, impulse, init).reshape(
+            ScanRecurrence.apply(impulse, decay, init).reshape(
                 info.batch_size, -1, *impulse.shape[1:]
             ),
             0,
