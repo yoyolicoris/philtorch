@@ -33,47 +33,13 @@ def linear_recurrence(
         a (Tensor): Coefficients with shape (N,) or (B, N).
         init (Tensor): Initial state (scalar or vector matching batch dims).
         x (Tensor): Input of shape (B, N).
-        unroll_factor (int): Unroll factor for blocked processing. Must be >=1.
-            1 = use native scan kernel when available; >1 = pure-PyTorch unrolled.
+        unroll_factor (int): Unroll factor for blocked processing.
 
     Returns:
         Tensor: Output sequence of shape (B, N).
     """
-    if unroll_factor < 1:
-        raise ValueError(f"Unroll factor must be >= 1, got {unroll_factor}")
 
-    # Validate x early
-    assert x.dim() == 2, f"Input x must be 2D, got {x.shape}"
-    batch_size, N = x.size(0), x.size(1)
-
-    # Normalize a: allow (N,) -> (B,N) broadcast
-    if a.dim() == 1:
-        if a.size(0) != N:
-            raise ValueError(
-                f"State matrix a must be 1D with the same length as x, got a: {a.size(0)}, x: {x.size(1)}"
-            )
-        a = a.expand(batch_size, -1)
-    assert a.dim() == 2, f"State matrix a must be 1D or 2D, got {a.shape}"
-    assert (
-        a.shape == x.shape
-    ), f"a and x must have same shape after normalization, got a: {a.shape}, x: {x.shape}"
-
-    # Normalize init: allow scalar 0-d -> (B,), (1,) -> (B,)
-    if init.dim() == 0:
-        init = init.expand(batch_size)
-    elif init.dim() == 1:
-        if init.size(0) == 1:
-            init = init.expand(batch_size)
-        elif init.size(0) != batch_size:
-            raise ValueError(
-                f"Initial state init must be 1D with the same batch size as x, got init: {init.size(0)}, x: {batch_size}"
-            )
-    else:
-        raise AssertionError(f"Initial state init must be 1D or 0D, got {init.shape}")
-
-    # Only use native scan when unroll_factor == 1 (respects explicit >1 request)
-    if unroll_factor == 1:
-        # ScanRecurrence expects (impulse, decay, init) = (x, a, init)
+    if unroll_factor in (1, 0) or a.numel() > 1024:
         return ScanRecurrence.apply(x, a, init)  # type: ignore[arg-type]
 
     assert x.dim() == 2, f"Input x must be 2D, got {x.shape}"
