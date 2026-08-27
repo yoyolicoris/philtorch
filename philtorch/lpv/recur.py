@@ -54,7 +54,9 @@ def linear_recurrence(
             )
         a = a.expand(batch_size, -1)
     assert a.dim() == 2, f"State matrix a must be 1D or 2D, got {a.shape}"
-    assert a.shape == x.shape, f"a and x must have same shape after normalization, got a: {a.shape}, x: {x.shape}"
+    assert (
+        a.shape == x.shape
+    ), f"a and x must have same shape after normalization, got a: {a.shape}, x: {x.shape}"
 
     # Normalize init: allow scalar 0-d -> (B,), (1,) -> (B,)
     if init.dim() == 0:

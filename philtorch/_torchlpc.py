@@ -15,6 +15,7 @@ except (ImportError, AttributeError):
     # Fallback: try to determine if extension is loaded from __init__
     try:
         from . import EXTENSION_LOADED as _EXT_LOADED
+
         EXTENSION_LOADED = _EXT_LOADED
     except ImportError:
         EXTENSION_LOADED = False
