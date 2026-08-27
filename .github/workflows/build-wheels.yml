@@ -190,8 +190,13 @@ jobs:
     secrets:
       codecov_token: ${{ secrets.CODECOV_TOKEN }}
 
-  # Windows smoke test (CPU) — runs after vendoring; Windows wheels now publishable.
+  # Mirrors build-wheels-macos: only pull_request and official releases test
+  # a Windows wheel, matrixed over the same resolved Torch versions.
   test-windows:
+    if: >
+      github.event_name == 'pull_request' ||
+      github.event_name == 'release' ||
+      startsWith(github.ref, 'refs/tags/')
     needs: [resolve-torch-versions, build-wheels-windows]
     permissions:
       contents: read
@@ -202,7 +207,7 @@ jobs:
     uses: ./.github/workflows/_test-wheel.yml
     with:
       os: windows-latest
-      python_versions: '["3.13"]'
+      python_versions: ${{ github.event_name == 'pull_request' && '["3.13"]' || '["3.10", "3.11", "3.12", "3.13"]' }}
       torch_version: ${{ matrix.torch-version }}
     secrets:
       codecov_token: ${{ secrets.CODECOV_TOKEN }}

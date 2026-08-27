@@ -3,7 +3,7 @@ import torch.nn.functional as F
 from torch.autograd import Function
 from typing import Optional, Union, Any
 from torch import Tensor
-from .._torchlpc import sample_wise_lpc
+from .._torchlpc import AllPole
 
 # pararnn's CUDA kernels are vendored directly into philtorch._C (see setup.py),
 # registered under torch.ops.parallel_reduce_cuda; no separate pip package needed.
@@ -185,11 +185,9 @@ def _ext_ss_recur(
         EXTENSION_LOADED or HELION_LOADED
     ), "Compiled extension or the Helion backend is not available"
     if x.dim() == 2 and A.size(-1) == 1:
-        y = sample_wise_lpc(x, -A[..., 0].broadcast_to(x.shape + (1,)), zi).unsqueeze(
-            -1
-        )
+        y = AllPole.apply(x, -A[..., 0].broadcast_to(x.shape + (1,)), zi).unsqueeze(-1)
     elif A.size(-1) == 1:
-        y = sample_wise_lpc(
+        y = AllPole.apply(
             x.squeeze(-1), -A[..., 0].broadcast_to(x.shape), zi
         ).unsqueeze(-1)
     else:

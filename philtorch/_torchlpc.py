@@ -1,32 +1,17 @@
-"""Minimal vendored torchlpc shim — kernel-only (no numba).
+"""Lightweight vendor shim for torchlpc ops."""
 
-Ops remain torch.ops.torchlpc.lpc/scan via philtorch._C (CPU shim + CUDA
-third_party kernels); Python wrapper is AllPole per philtorch convention.
-"""
-
-from typing import Optional, Tuple, Union, List, Any
+from typing import Any, List
 
 import torch
 import torch.nn.functional as F
 from torch.autograd import Function
 
-try:
-    from . import _C  # noqa: F401
-
-    _ext_available = hasattr(torch.ops, "torchlpc") and hasattr(
-        torch.ops.torchlpc, "lpc"
-    )
-except Exception:
-    _ext_available = False
+from . import _C  # noqa: F401
 
 
 class AllPole(Function):
     @staticmethod
     def forward(x: torch.Tensor, A: torch.Tensor, zi: torch.Tensor) -> torch.Tensor:
-        if not _ext_available:
-            raise RuntimeError(
-                "philtorch._C with vendored torchlpc not loaded — build extension first"
-            )
         return torch.ops.torchlpc.lpc(x, A, zi)
 
     @staticmethod
@@ -37,9 +22,7 @@ class AllPole(Function):
         ctx.save_for_forward(A, zi, y)
 
     @staticmethod
-    def backward(
-        ctx: Any, grad_y: torch.Tensor
-    ) -> Tuple[Optional[torch.Tensor], Optional[torch.Tensor], Optional[torch.Tensor]]:
+    def backward(ctx: Any, grad_y: torch.Tensor):  # type: ignore[override]
         A, zi, y = ctx.saved_tensors
         B, T, order = A.shape
         flipped_A = A.flip(2)
@@ -105,50 +88,11 @@ class AllPole(Function):
         return y.reshape(info.batch_size, -1, *y.shape[1:]), 0
 
 
-def sample_wise_lpc(
-    x: torch.Tensor,
-    a: torch.Tensor,
-    zi: Optional[torch.Tensor] = None,
-    return_zf: bool = False,
-) -> Union[torch.Tensor, Tuple[torch.Tensor, torch.Tensor]]:
-    assert x.shape[0] == a.shape[0]
-    assert x.shape[1] == a.shape[1]
-    assert x.ndim == 2
-    assert a.ndim == 3
-    B, T, order = a.shape
-    if zi is None:
-        zi = a.new_zeros(B, order)
-    else:
-        assert zi.shape == (B, order)
-    y = AllPole.apply(x, a, zi)
-    if return_zf:
-        return y, y[:, -order:].flip(1)
-    return y  # type: ignore[return-value]
-
-
-# Minimal recurrence wrapper for first-order case (uses torchlpc scan if available)
-def _scan_available() -> bool:
-    return _ext_available and hasattr(torch.ops.torchlpc, "scan")
-
-
-class _ScanWrapper(Function):
+class ScanRecurrence(Function):
     @staticmethod
     def forward(
         impulse: torch.Tensor, decay: torch.Tensor, init: torch.Tensor
     ) -> torch.Tensor:
-        if not _scan_available():
-            # Order-1 LPC path: lpc with order 1 achieves same recurrence
-            # impulse: (B,T), decay: (B,T), init: (B,) -> treat as LPC order 1 with a=-decay
-            if (
-                impulse.ndim != 2
-                or decay.shape != impulse.shape
-                or init.shape != (impulse.shape[0],)
-            ):
-                raise RuntimeError("scan fallback shape mismatch")
-            a = -decay.unsqueeze(2)
-            x = impulse
-            zi = init.unsqueeze(1)
-            return AllPole.apply(x, a, zi).reshape(impulse.shape)
         return torch.ops.torchlpc.scan(impulse, decay, init)
 
     @staticmethod
@@ -159,23 +103,75 @@ class _ScanWrapper(Function):
 
     @staticmethod
     def backward(ctx: Any, grad_out: torch.Tensor):  # type: ignore[override]
-        # Use same trick as LPC backward via scan recursion
-        # For minimal shim, reuse forward via _ScanWrapper; full backward mirrors torchlpc/recurrence.py
-        # Simplified: rely on autograd through LPC path when scan unavailable; otherwise delegate
         decay, init, out = ctx.saved_tensors
-        # Fallback uses LPC autograd already correct when scan path not taken
-        return None, None, None
+        n_dims = decay.size(0)
+        padded_decay = F.pad(decay.unsqueeze(1), (0, 1)).squeeze(1)
+        if ctx.needs_input_grad[2]:
+            padded_grad = F.pad(grad_out.unsqueeze(1), (1, 0)).squeeze(1)
+        else:
+            padded_grad, padded_decay = grad_out, padded_decay[:, 1:]
+        flipped = ScanRecurrence.apply(
+            padded_decay.flip(1).conj_physical(),
+            padded_grad.flip(1),
+            padded_grad.new_zeros(n_dims),
+        )
+        grad_init = flipped[:, -1] if ctx.needs_input_grad[2] else None
+        if ctx.needs_input_grad[2]:
+            flipped = flipped[:, :-1]
+        grad_impulse = flipped.flip(1) if ctx.needs_input_grad[1] else None
+        if ctx.needs_input_grad[0]:
+            grad_decay = torch.cat(
+                [init.unsqueeze(1), out[:, :-1]], dim=1
+            ).conj_physical() * flipped.flip(1)
+        else:
+            grad_decay = None
+        return grad_decay, grad_impulse, grad_init
+
+    @staticmethod
+    def jvp(
+        ctx: Any,
+        grad_decay: torch.Tensor,
+        grad_impulse: torch.Tensor,
+        grad_init: torch.Tensor,
+    ) -> torch.Tensor:
+        decay, init, out = ctx.saved_tensors
+        fwd_init = grad_init if grad_init is not None else torch.zeros_like(init)
+        fwd_imp = grad_impulse if grad_impulse is not None else torch.zeros_like(out)
+        if grad_decay is not None:
+            fwd_imp = (
+                fwd_imp
+                + torch.cat([init.unsqueeze(1), out[:, :-1]], dim=1) * grad_decay
+            )
+        return ScanRecurrence.apply(decay, fwd_imp, fwd_init)
+
+    @staticmethod
+    def vmap(info, in_dims, *args):
+        def expand(x, d):
+            return (
+                x
+                if d is None
+                else (
+                    x.movedim(d, 0).expand(info.batch_size, *x.shape[2:])
+                    if x.dim() > 1
+                    else x.movedim(d, 0)
+                )
+            )
+
+        decay, impulse, init = tuple(
+            map(
+                lambda t: t.reshape(-1, *t.shape[2:]) if t.dim() > 1 else t.reshape(-1),
+                map(expand, args, in_dims),
+            )
+        )
+        return (
+            ScanRecurrence.apply(decay, impulse, init).reshape(
+                info.batch_size, -1, *impulse.shape[1:]
+            ),
+            0,
+        )
 
 
-def linear_recurrence(
-    a: torch.Tensor, x: torch.Tensor, zi: Optional[torch.Tensor] = None
-) -> torch.Tensor:
-    assert a.shape == x.shape and a.ndim == 2
-    B, _ = a.shape
-    if zi is None:
-        zi = a.new_zeros(B)
-    # torchlpc scan expects (impulse, decay, init) where decay is a
-    return _ScanWrapper.apply(x, a, zi)  # type: ignore[arg-type]
+_ScanWrapper = ScanRecurrence
 
 
-__all__ = ["sample_wise_lpc", "linear_recurrence", "AllPole"]
+__all__ = ["AllPole", "ScanRecurrence", "_ScanWrapper"]

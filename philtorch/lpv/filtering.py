@@ -2,8 +2,9 @@ import torch
 from torch import Tensor
 from typing import Optional, Union
 from functools import reduce, partial
-from .._torchlpc import sample_wise_lpc
 import torch.nn.functional as F
+
+from .._torchlpc import AllPole
 
 from ..utils import chain_functions
 from ..mat import companion
@@ -121,18 +122,21 @@ def allpole(
         return_zf = True
 
     if transpose:
-        a = diag_shift(a.conj(), offset=1, discard_end=not return_zf)
-        x = torch.cat(
-            [zi + x[:, : a.size(2)], x[:, a.size(2) :]]
+        a_shifted = diag_shift(a.conj(), offset=1, discard_end=not return_zf)
+        x_padded = torch.cat(
+            [zi + x[:, : a_shifted.size(2)], x[:, a_shifted.size(2) :]]
             + ([torch.zeros_like(zi)] if return_zf else []),
             dim=1,
         )
-        y = sample_wise_lpc(x, a)
+        y = AllPole.apply(x_padded, a_shifted, a.new_zeros(a.size(0), a.size(2)))
         if return_zf:
             return torch.split_with_sizes(y, [T, a.size(2)], 1)
         return y
 
-    return sample_wise_lpc(x, a, zi=zi, return_zf=return_zf)
+    y = AllPole.apply(x, a, zi)
+    if return_zf:
+        return y, y[:, -a.size(2) :].flip(1)
+    return y  # type: ignore[return-value]
 
 
 def lfilter(

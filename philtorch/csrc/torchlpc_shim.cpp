@@ -28,34 +28,23 @@ void scan_cpu_vendored(const at::Tensor &input, const at::Tensor &weights,
     TORCH_INTERNAL_ASSERT(output.device().is_cpu(), "Output must be on CPU");
     TORCH_INTERNAL_ASSERT(output.is_contiguous(), "Output must be contiguous");
 
-    auto input_contiguous = input.contiguous();
-    auto weights_contiguous = weights.contiguous();
-    auto initials_contiguous = initials.contiguous();
-
-    auto n_batch = input.size(0);
-    auto T = input.size(1);
-
-    const scalar_t *input_ptr = input_contiguous.const_data_ptr<scalar_t>();
-    const scalar_t *initials_ptr = initials_contiguous.const_data_ptr<scalar_t>();
-    const scalar_t *weights_ptr = weights_contiguous.const_data_ptr<scalar_t>();
+    const auto n_batch = input.size(0);
+    const auto T = input.size(1);
+    const scalar_t *input_ptr = input.contiguous().const_data_ptr<scalar_t>();
+    const scalar_t *initials_ptr = initials.contiguous().const_data_ptr<scalar_t>();
+    const scalar_t *weights_ptr = weights.contiguous().const_data_ptr<scalar_t>();
     scalar_t *output_ptr = output.mutable_data_ptr<scalar_t>();
 
-    at::parallel_for(0, n_batch, 1, [&](int64_t start, int64_t end)
-                     {
-        for (auto b = start; b < end; b++)
-        {
-            auto initial = initials_ptr[b];
-            auto weights_offset = weights_ptr + b * T;
-            auto input_offset = input_ptr + b * T;
-            auto output_offset = output_ptr + b * T;
-            for (int64_t t = 0; t < T; t++)
-            {
-                auto w = weights_offset[t];
-                auto x = input_offset[t];
-                initial = initial * w + x;
-                output_offset[t] = initial;
-            }
-        }; });
+#pragma omp parallel for
+    for (int64_t b = 0; b < n_batch; ++b)
+    {
+        scalar_t h = initials_ptr[b];
+        const scalar_t *w_row = weights_ptr + b * T;
+        const scalar_t *x_row = input_ptr + b * T;
+        scalar_t *y_row = output_ptr + b * T;
+        for (int64_t t = 0; t < T; ++t)
+            y_row[t] = h = h * w_row[t] + x_row[t];
+    }
 }
 
 template <typename scalar_t>
@@ -72,27 +61,23 @@ void allpole_cpu_core(const torch::Tensor &a, const torch::Tensor &padded_out)
     const auto B = a.size(0);
     const auto T = a.size(1);
     const auto order = a.size(2);
-
-    auto a_contiguous = a.contiguous();
-    const scalar_t *a_ptr = a_contiguous.const_data_ptr<scalar_t>();
+    const scalar_t *a_ptr = a.contiguous().const_data_ptr<scalar_t>();
     scalar_t *out_ptr = padded_out.mutable_data_ptr<scalar_t>();
 
-    at::parallel_for(0, B, 1, [&](int64_t start, int64_t end)
-                     {
-        for (auto b = start; b < end; b++)
+#pragma omp parallel for
+    for (int64_t b = 0; b < B; ++b)
+    {
+        scalar_t *out_b = out_ptr + b * (T + order) + order;
+        const scalar_t *a_b = a_ptr + b * T * order;
+        for (int64_t t = 0; t < T; ++t)
         {
-            auto out_offset = out_ptr + b * (T + order) + order;
-            auto a_offset = a_ptr + b * T * order;
-            for (int64_t t = 0; t < T; t++)
-            {
-                scalar_t y = out_offset[t];
-                for (int64_t i = 0; i < order; i++)
-                {
-                    y -= a_offset[t * order + i] * out_offset [t - i - 1];
-                }
-                out_offset[t] = y;
-            }
-        }; });
+            scalar_t y = out_b[t];
+            const scalar_t *a_bt = a_b + t * order;
+            for (int64_t i = 0; i < order; ++i)
+                y -= a_bt[i] * out_b[t - i - 1];
+            out_b[t] = y;
+        }
+    }
 }
 
 at::Tensor scan_cpu_wrapper_vendored(const at::Tensor &input, const at::Tensor &weights,
