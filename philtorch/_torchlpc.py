@@ -145,21 +145,15 @@ class ScanRecurrence(Function):
 
     @staticmethod
     def vmap(info, in_dims, *args):
-        def expand(x, d):
-            return (
-                x
-                if d is None
-                else (
-                    x.movedim(d, 0).expand(info.batch_size, *x.shape[2:])
-                    if x.dim() > 1
-                    else x.movedim(d, 0)
-                )
-            )
+        def maybe_expand_bdim_at_front(x, x_bdim):
+            if x_bdim is None:
+                return x.expand(info.batch_size, *x.shape)
+            return x.movedim(x_bdim, 0)
 
         impulse, decay, init = tuple(
             map(
                 lambda t: t.reshape(-1, *t.shape[2:]) if t.dim() > 1 else t.reshape(-1),
-                map(expand, args, in_dims),
+                map(maybe_expand_bdim_at_front, args, in_dims),
             )
         )
         return (
