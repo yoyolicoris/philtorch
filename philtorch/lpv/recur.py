@@ -39,7 +39,7 @@ def linear_recurrence(
         Tensor: Output sequence of shape (B, N).
     """
 
-    if unroll_factor in (1, 0) or a.numel() > 1024:
+    if unroll_factor == 1:
         return ScanRecurrence.apply(x, a, init)  # type: ignore[arg-type]
 
     assert x.dim() == 2, f"Input x must be 2D, got {x.shape}"
