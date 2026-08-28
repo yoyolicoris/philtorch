@@ -121,15 +121,17 @@ def get_extensions():
         # which would define a second PyInit__C colliding with host_recur2.cpp.
         # Instead we use our own shim philtorch/csrc/pararnn_shim.cpp which
         # keeps the TORCH_LIBRARY registrations but omits the pybind module.
+        # Only parallel_reduce.cu is needed: philtorch uses just the
+        # block-diagonal parallel-reduce kernels (see pararnn_shim.cpp).
+        # The fused GRU/LSTM kernels (fused_gru_diag.cu, fused_lstm_cifg_diag.cu)
+        # are unused and not compiled.
         for name in [
             "parallel_reduce.cu",
-            "fused_gru_diag.cu",
-            "fused_lstm_cifg_diag.cu",
         ]:
             p = os.path.join(pararnn_root, name)
             if os.path.isfile(p):
                 pararnn_sources.append(p)
-        # Include pararnn headers for our shim (helpers.h)
+        # Include pararnn headers (helpers.h etc.) for parallel_reduce.cu
         extra_compile_args.setdefault("cxx", []).append(f"-I{pararnn_root}")
         # pararnn needs chunk size flags
         extra_compile_args.setdefault("cxx", []).extend(
