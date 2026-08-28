@@ -7,9 +7,11 @@
 // TORCH_LIBRARY registrations for the kernels philtorch actually uses,
 // omitting the pybind module and the unused GRU/LSTM/diag kernels.
 
-// Forward declaration - defined in the other pararnn CUDA sources
+// Forward declaration - defined in the other pararnn CUDA sources.
+// Must match helpers.h exactly (tensors by value, not const-ref) or the
+// mangled name won't link against parallel_reduce.cu.
 template <int N>
-at::Tensor parallel_reduce_block_diag_cuda(const at::Tensor &a, const at::Tensor &b);
+at::Tensor parallel_reduce_block_diag_cuda(at::Tensor jac, at::Tensor rhs);
 
 // Only the block-diagonal parallel-reduce kernels are used by philtorch
 // (see philtorch/lpv/ssm.py MatrixRecurrence for M == 2 and M == 3).
