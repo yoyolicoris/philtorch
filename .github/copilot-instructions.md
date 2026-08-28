@@ -27,6 +27,10 @@ pixi run flake8 . --count --select=E9,F63,F7,F82 --show-source --statistics
 pixi run flake8 . --count --exit-zero --max-complexity=10 --max-line-length=127 --statistics
 ```
 
+## Terminal usage (avoid hangs)
+
+- For quick Python checks, use one-liner `pixi run python -c "code"`; avoid `pixi run python - << 'PY'` heredocs and do not add `timeout=15000` wrappers, as they leave the terminal appearing finished without returning.
+
 ## High-level architecture
 
 `philtorch` provides differentiable digital filtering APIs in PyTorch, with backend dispatch to compiled kernels when available.
