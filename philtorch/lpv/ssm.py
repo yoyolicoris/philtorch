@@ -5,12 +5,6 @@ from typing import Optional, Union, Any
 from torch import Tensor
 from .._torchlpc import AllPole
 
-# pararnn's CUDA kernels are vendored directly into philtorch._C (see setup.py),
-# registered under torch.ops.parallel_reduce_cuda; no separate pip package needed.
-PARARNN_AVAILABLE = hasattr(torch.ops, "parallel_reduce_cuda") and hasattr(
-    torch.ops.parallel_reduce_cuda, "parallel_reduce_block_diag_2x2_cuda"
-)
-
 from ..mat import matrices_cumdot
 from .. import EXTENSION_LOADED, HELION_LOADED
 from ..lti.ssm import helion_backend_indicator
@@ -26,8 +20,13 @@ def extension_backend_indicator(x: Tensor, M: int) -> bool:
 
 
 def _pararnn_applicable(x: Tensor, M: int) -> bool:
-    """Check if the PararNN backend can be used for the given input."""
-    return PARARNN_AVAILABLE and x.is_cuda and x.is_floating_point() and M in (2, 3)
+    """Check if the PararNN backend can be used for the given input.
+
+    PararNN's CUDA kernels are vendored directly into philtorch._C (see
+    setup.py), so their availability is fully controlled by EXTENSION_LOADED;
+    no separate import/availability check is needed.
+    """
+    return EXTENSION_LOADED and x.is_cuda and x.is_floating_point() and M in (2, 3)
 
 
 class MatrixRecurrence(Function):
