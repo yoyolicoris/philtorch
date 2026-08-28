@@ -9,6 +9,8 @@ Vendored extensions built as part of `philtorch._C` (single shared library).
 
 - `pararnn` — `git@github.com:apple/ml-pararnn.git` at `dc2647b` (`origin/main`)
   LICENSE: `third_party/pararnn/LICENSE`
-  Sources used (CUDA only): `pararnn/csrc/{parallel_reduction_bindings.cpp,parallel_reduce.cu,fused_gru_diag.cu,fused_lstm_cifg_diag.cu}` with flags `-DFLOAT64_CHUNK_SIZE_DIAG=4 -DFLOAT64_CHUNK_SIZE_BLOCK_DIAG_2x2=1`.
+  Sources used (CUDA only): `pararnn/csrc/parallel_reduce.cu` (only the
+  block-diagonal parallel-reduce kernels philtorch uses; registered via shim
+  `philtorch/csrc/pararnn_shim.cpp`) with flags `-DFLOAT64_CHUNK_SIZE_DIAG=4 -DFLOAT64_CHUNK_SIZE_BLOCK_DIAG_2x2=1`. The fused GRU/LSTM and diag kernels are not compiled.
 
-Build: `setup.py:get_extensions()` compiles them into `philtorch._C`; `TORCH_LIBRARY(torchlpc, ...)` and `TORCH_LIBRARY(parallel_reduce_cuda, ...)` remain as separate namespaces but linked in one `.so`, so `torch.ops.torchlpc.lpc` (all-pole filter) and `torch.ops.torchlpc.scan` (linear recurrence) plus `torch.ops.parallel_reduce_cuda.*` keep working without external pip deps. Note: the operator is `torchlpc::lpc`, not `allpole`.
+Build: `setup.py:get_extensions()` compiles them into `philtorch._C`; `TORCH_LIBRARY(torchlpc, ...)` and `TORCH_LIBRARY(parallel_reduce_cuda, ...)` remain as separate namespaces but linked in one `.so`, so `torch.ops.torchlpc.lpc` (all-pole filter) and `torch.ops.torchlpc.scan` (linear recurrence) plus `torch.ops.parallel_reduce_cuda.parallel_reduce_block_diag_{2x2,3x3}_cuda` keep working without external pip deps. Note: the operator is `torchlpc::lpc`, not `allpole`.

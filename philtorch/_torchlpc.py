@@ -164,7 +164,4 @@ class ScanRecurrence(Function):
         )
 
 
-_ScanWrapper = ScanRecurrence
-
-
-__all__ = ["AllPole", "ScanRecurrence", "_ScanWrapper"]
+__all__ = ["AllPole", "ScanRecurrence"]
