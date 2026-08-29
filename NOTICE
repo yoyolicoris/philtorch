@@ -1,0 +1,10 @@
+=======================================================================
+Software under third_party
+=======================================================================
+Software libraries under `third_party` are provided as git submodule
+links, and their content is not part of the philtorch codebase. Their
+licenses can be found under the respective software repositories and are
+mirrored in `LICENSES/` for redistribution:
+
+- `third_party/torchlpc` — https://github.com/DiffAPF/torchlpc (MIT, Copyright (c) 2023 Chin-Yun Yu)
+- `third_party/pararnn`  — https://github.com/apple/ml-pararnn  (Copyright (C) 2025 Apple Inc.)

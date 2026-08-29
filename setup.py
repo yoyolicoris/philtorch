@@ -211,12 +211,29 @@ except ImportError:
             "sees it."
         )
 
+# Third-party license/notice files to ship in the wheel so the required
+# copyright notices are present in redistributions even when the `third_party`
+# git submodules are not checked out.
+this_dir = os.path.abspath(os.path.dirname(__file__))
+data_files = [
+    (
+        "share/doc/philtorch",
+        [
+            "NOTICE",
+            "LICENSES/README.md",
+            "LICENSES/torchlpc-LICENSE",
+            "LICENSES/pararnn-LICENSE",
+        ],
+    )
+]
+
 if not ext_modules:
-    setup()
+    setup(data_files=data_files)
 else:
     from torch.utils.cpp_extension import BuildExtension
 
     setup(
         ext_modules=ext_modules,
         cmdclass={"build_ext": BuildExtension},
+        data_files=data_files,
     )
