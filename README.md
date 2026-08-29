@@ -180,3 +180,7 @@ The result is the first 10 Fibonacci numbers, which has the following recursion 
 ```math
 F_n = F_{n-1} + F_{n-2}, \quad F_0 = 1, \quad F_1 = 1
 ```
+
+## Contributing
+
+Contributions are welcome. See [CONTRIBUTING.md](CONTRIBUTING.md) for development and pull-request guidance, and check the [PhilTorch Roadmap](https://github.com/users/yoyolicoris/projects/5) for current priorities.

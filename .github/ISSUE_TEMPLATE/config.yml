@@ -1,0 +1,8 @@
+blank_issues_enabled: false
+contact_links:
+  - name: Questions and usage discussions
+    url: https://github.com/yoyolicoris/philtorch/discussions
+    about: Ask for help, share ideas, or discuss usage without opening an issue.
+  - name: PhilTorch roadmap
+    url: https://github.com/users/yoyolicoris/projects/5
+    about: Check planned work and current priorities before proposing a feature.
