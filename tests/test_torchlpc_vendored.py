@@ -22,7 +22,7 @@ from torch.func import jacfwd
 from philtorch._torchlpc import AllPole, ScanRecurrence
 
 
-def test_external_torchlpc_namespace_coexists():
+def test_external_torchlpc_namespace_coexists(tmp_path):
     script = """
 import torch
 
@@ -35,7 +35,7 @@ import philtorch
 assert hasattr(torch.ops.philtorch, "scan")
 assert hasattr(torch.ops.philtorch, "lpc")
 """
-    subprocess.run([sys.executable, "-c", script], check=True)
+    subprocess.run([sys.executable, "-c", script], cwd=tmp_path, check=True)
 
 
 def get_random_biquads(cmplx=False):
