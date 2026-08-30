@@ -98,42 +98,32 @@ def get_extensions():
     sources = list(glob.glob(os.path.join(extensions_dir, "*.cpp")))
     cuda_sources = list(glob.glob(os.path.join(extensions_dir, "*.cu")))
 
-    # Vendored torchlpc (DiffAPF/torchlpc) — CPU via shim, CUDA via third_party kernels
-    # CPU shim philtorch/csrc/torchlpc_shim.cpp vendors scan + lpc (avoids
-    # duplicate PyInit__C from third_party/.../scan_cpu.cpp, not compiled).
     torchlpc_root = os.path.join(
         this_dir, "third_party", "torchlpc", "torchlpc", "csrc"
     )
-    torchlpc_cu = []
-    if os.path.isdir(torchlpc_root):
-        torchlpc_cu = list(glob.glob(os.path.join(torchlpc_root, "cuda", "*.cu")))
+    torchlpc_sources = [
+        os.path.join(torchlpc_root, "cuda", name)
+        for name in ("lpc.cu", "linear_recurrence.cu")
+    ]
+    pararnn_root = os.path.join(this_dir, "third_party", "pararnn", "pararnn", "csrc")
+    pararnn_sources = [os.path.join(pararnn_root, "parallel_reduce.cu")]
+
+    if use_cuda:
+        vendored_sources = [*torchlpc_sources, *pararnn_sources]
+        missing_sources = [path for path in vendored_sources if not os.path.isfile(path)]
+        if missing_sources:
+            relative_paths = [os.path.relpath(path, this_dir) for path in missing_sources]
+            raise RuntimeError(
+                "CUDA builds require initialized third-party submodules. Run "
+                "'git submodule update --init --recursive'. Missing: "
+                + ", ".join(relative_paths)
+            )
+
         extra_compile_args.setdefault("cxx", []).append(f"-I{torchlpc_root}")
         extra_compile_args.setdefault("cxx", []).append(
             f"-I{os.path.join(torchlpc_root, 'cuda')}"
         )
-
-    # Vendored pararnn (apple/ml-pararnn) — CUDA-only
-    pararnn_root = os.path.join(this_dir, "third_party", "pararnn", "pararnn", "csrc")
-    pararnn_sources = []
-    if use_cuda and os.path.isdir(pararnn_root):
-        # NOTE: we intentionally do NOT compile parallel_reduction_bindings.cpp
-        # directly because it contains PYBIND11_MODULE(TORCH_EXTENSION_NAME, ...)
-        # which would define a second PyInit__C colliding with host_recur2.cpp.
-        # Instead we use our own shim philtorch/csrc/pararnn_shim.cpp which
-        # keeps the TORCH_LIBRARY registrations but omits the pybind module.
-        # Only parallel_reduce.cu is needed: philtorch uses just the
-        # block-diagonal parallel-reduce kernels (see pararnn_shim.cpp).
-        # The fused GRU/LSTM kernels (fused_gru_diag.cu, fused_lstm_cifg_diag.cu)
-        # are unused and not compiled.
-        for name in [
-            "parallel_reduce.cu",
-        ]:
-            p = os.path.join(pararnn_root, name)
-            if os.path.isfile(p):
-                pararnn_sources.append(p)
-        # Include pararnn headers (helpers.h etc.) for parallel_reduce.cu
         extra_compile_args.setdefault("cxx", []).append(f"-I{pararnn_root}")
-        # pararnn needs chunk size flags
         extra_compile_args.setdefault("cxx", []).extend(
             ["-DFLOAT64_CHUNK_SIZE_DIAG=4", "-DFLOAT64_CHUNK_SIZE_BLOCK_DIAG_2x2=1"]
         )
@@ -155,17 +145,14 @@ def get_extensions():
         sources += list(glob.glob(os.path.join(extensions_dir, "*.mm")))
         extra_link_args.extend(["-framework", "Foundation", "-framework", "Metal"])
 
-    # Exclude pararnn_shim for CPU builds (it needs pararnn headers)
     if not use_cuda:
         sources = [s for s in sources if "pararnn_shim" not in os.path.basename(s)]
 
     if use_cuda:
         sources += cuda_sources
-        sources += torchlpc_cu
+        sources += torchlpc_sources
         sources += pararnn_sources
         extra_compile_args.setdefault("nvcc", []).append("--extended-lambda")
-    # torchlpc_shim.cpp is part of philtorch/csrc and already included via
-    # extensions_dir glob (no extra handling needed)
 
     if len(sources) == 0:
         return []
@@ -173,9 +160,7 @@ def get_extensions():
     ext_modules = [
         extension(
             f"{library_name}._C",
-            # sources,
             [os.path.relpath(s, this_dir) for s in sources],
-            # ["philtorch/csrc/recur2.cu"],
             extra_compile_args=extra_compile_args,
             extra_link_args=extra_link_args,
         )
@@ -211,10 +196,6 @@ except ImportError:
             "sees it."
         )
 
-# Third-party license/notice files to ship in the wheel so the required
-# copyright notices are present in redistributions even when the `third_party`
-# git submodules are not checked out.
-this_dir = os.path.abspath(os.path.dirname(__file__))
 data_files = [
     (
         "share/doc/philtorch",

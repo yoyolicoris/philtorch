@@ -7,22 +7,13 @@
 #include <utility>
 #include <vector>
 
-// `#pragma omp declare reduction` is an OpenMP 4.0 construct that MSVC does
-// not support (it only implements OpenMP 2.0 + SIMD). It is only needed to
-// make the `+` reduction below work with c10::complex on GCC/Clang, so guard
-// it out on MSVC (Windows) — where the allpole/scan kernels are not used.
+// MSVC does not support OpenMP user-defined reductions.
 #if defined(_OPENMP) && !defined(_MSC_VER)
 #pragma omp declare reduction(+ : c10::complex<float> : omp_out += omp_in) initializer(omp_priv = 0)
 #pragma omp declare reduction(+ : c10::complex<double> : omp_out += omp_in) initializer(omp_priv = 0)
 #pragma omp declare reduction(+ : std::complex<float> : omp_out += omp_in) initializer(omp_priv = 0)
 #pragma omp declare reduction(+ : std::complex<double> : omp_out += omp_in) initializer(omp_priv = 0)
 #endif
-
-// Vendored torchlpc CPU helpers without its own PyInit.
-// The original torchlpc scan_cpu.cpp defines PyInit__C, which would collide
-// with philtorch's PyInit__C (host_recur2.cpp). We include the logic here
-// and register under TORCH_LIBRARY(torchlpc, ...) so existing torch.ops.torchlpc
-// paths keep working, but all ops land in the same shared lib philtorch._C.
 
 template <typename scalar_t>
 void scan_cpu_vendored(const at::Tensor &input, const at::Tensor &weights,
