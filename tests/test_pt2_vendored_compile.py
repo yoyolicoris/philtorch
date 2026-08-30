@@ -1,10 +1,14 @@
 from collections.abc import Callable
+from types import SimpleNamespace
 
 import pytest
 import torch
 from torch import Tensor
 
+from philtorch import _pararnn_backward
+from philtorch._torchlpc import lpc as vendored_lpc, scan as vendored_scan
 from philtorch.lpv import allpole, linear_recurrence, state_space_recursion
+from philtorch.lpv.ssm import MatrixRecurrence, _matrix_recurrence
 
 _TORCHLPC_CUDA_OPS = ("philtorch::scan", "philtorch::lpc")
 _PARARNN_OPS = (
@@ -90,3 +94,62 @@ def test_pararnn_compile_forward_and_backward(state_size: int, share_A: bool) ->
     x = torch.randn(2, 16, state_size, device="cuda")
 
     _assert_compiled_forward_and_backward(state_space_recursion, (A, zi, x))
+
+
+def _serial_pararnn(jac: Tensor, rhs: Tensor) -> Tensor:
+    output = [rhs[:, 0]]
+    for step in range(1, rhs.size(1)):
+        output.append(
+            rhs[:, step] - (jac[:, step] @ output[-1].unsqueeze(-1)).squeeze(-1)
+        )
+    return torch.stack(output, dim=1)
+
+
+@pytest.mark.parametrize("state_size", [2, 3])
+def test_pararnn_registered_backward_formula_on_cpu(state_size: int) -> None:
+    jac = torch.randn(2, 9, state_size, state_size, dtype=torch.double) * 0.03
+    jac[:, 0] = 0
+    rhs = torch.randn(2, 9, state_size, dtype=torch.double)
+    jac.requires_grad_()
+    rhs.requires_grad_()
+
+    output = _serial_pararnn(jac, rhs)
+    grad_output = torch.randn_like(output)
+    expected = torch.autograd.grad(output, (jac, rhs), grad_output)
+
+    ctx = SimpleNamespace(
+        saved_tensors=(jac.detach(), rhs.detach(), output.detach()),
+        needs_input_grad=(True, True),
+    )
+    actual = _pararnn_backward(_serial_pararnn)(ctx, grad_output)
+    torch.testing.assert_close(actual, expected)
+
+    ctx.needs_input_grad = (False, False)
+    assert _pararnn_backward(_serial_pararnn)(ctx, grad_output) == (None, None)
+
+
+def test_compile_dispatch_helpers_call_raw_operators(monkeypatch) -> None:
+    monkeypatch.setattr(torch.compiler, "is_compiling", lambda: True)
+
+    impulse = torch.randn(2, 8)
+    decay = torch.rand(2, 8) * 0.5
+    init = torch.randn(2)
+    torch.testing.assert_close(
+        vendored_scan(impulse, decay, init),
+        torch.ops.philtorch.scan(impulse, decay, init),
+    )
+
+    x = torch.randn(2, 8)
+    A = torch.randn(2, 8, 3) * 0.03
+    zi = torch.randn(2, 3)
+    torch.testing.assert_close(
+        vendored_lpc(x, A, zi), torch.ops.philtorch.lpc(x, A, zi)
+    )
+
+    matrix_x = torch.randn(2, 8, 2)
+    matrix_A = torch.randn(2, 8, 2, 2) * 0.03
+    matrix_zi = torch.randn(2, 2)
+    torch.testing.assert_close(
+        _matrix_recurrence(matrix_A, matrix_zi, matrix_x),
+        MatrixRecurrence.forward(matrix_A, matrix_zi, matrix_x),
+    )
