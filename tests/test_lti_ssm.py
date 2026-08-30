@@ -22,12 +22,14 @@ def _generate_random_filter_coeffs(order: int, B: int) -> np.ndarray:
     return a
 
 
-def _generate_diagonalizable_matrix(
-    shape: tuple[int, ...], generator: torch.Generator
-) -> torch.Tensor:
-    Q, _ = torch.linalg.qr(torch.randn(*shape, generator=generator))
-    eigenvalues = torch.linspace(0.2, 0.8, shape[-1], dtype=Q.dtype)
-    return Q @ torch.diag_embed(eigenvalues.expand(Q.shape[:-1])) @ Q.mT
+def _generate_diagonalizable_matrix(shape: tuple[int, ...]) -> torch.Tensor:
+    order = shape[-1]
+    values = torch.arange(1, order + 1, dtype=torch.get_default_dtype())
+    basis = torch.vander(values, N=order, increasing=True)
+    Q, _ = torch.linalg.qr(basis)
+    eigenvalues = torch.linspace(0.2, 0.8, order, dtype=Q.dtype)
+    A = Q @ torch.diag(eigenvalues) @ Q.mT
+    return A.expand(*shape[:-2], order, order).clone()
 
 
 @pytest.mark.parametrize("B", [1, 8])
@@ -157,20 +159,15 @@ def test_out_idx(order: int, out_idx: int):
 def test_ssm_shape_handling(x_shape, A_shape, B_shape, C_shape, D_shape, zi_shape, ssm):
     unroll_factor = 4
 
-    generator = torch.Generator().manual_seed(0)
-    x = torch.randn(*x_shape, generator=generator)
-    A = _generate_diagonalizable_matrix(A_shape, generator)
-    B = torch.randn(*B_shape, generator=generator) if B_shape is not None else None
-    C = torch.randn(*C_shape, generator=generator) if C_shape is not None else None
+    x = torch.randn(*x_shape)
+    A = _generate_diagonalizable_matrix(A_shape)
+    B = torch.randn(*B_shape) if B_shape is not None else None
+    C = torch.randn(*C_shape) if C_shape is not None else None
     if D_shape is None:
         D = None
     else:
-        D = (
-            torch.randn(*D_shape, generator=generator)
-            if len(D_shape) > 0
-            else torch.randn(1, generator=generator)
-        )
-    zi = torch.randn(*zi_shape, generator=generator) if zi_shape is not None else None
+        D = torch.randn(*D_shape) if len(D_shape) > 0 else torch.randn(1)
+    zi = torch.randn(*zi_shape) if zi_shape is not None else None
 
     result = ssm(A=A, x=x, B=B, C=C, D=D, zi=zi, unroll_factor=unroll_factor)
 
@@ -236,17 +233,12 @@ def test_ssm_D_shape_handling(
 ):
     unroll_factor = 4
 
-    generator = torch.Generator().manual_seed(0)
-    x = torch.randn(*x_shape, generator=generator)
-    A = _generate_diagonalizable_matrix(A_shape, generator)
-    B = torch.randn(*B_shape, generator=generator)
-    C = torch.randn(*C_shape, generator=generator)
-    D = (
-        torch.randn(*D_shape, generator=generator)
-        if len(D_shape) > 0
-        else torch.randn(1, generator=generator)
-    )
-    zi = torch.randn(*zi_shape, generator=generator) if zi_shape is not None else None
+    x = torch.randn(*x_shape)
+    A = _generate_diagonalizable_matrix(A_shape)
+    B = torch.randn(*B_shape)
+    C = torch.randn(*C_shape)
+    D = torch.randn(*D_shape) if len(D_shape) > 0 else torch.randn(1)
+    zi = torch.randn(*zi_shape) if zi_shape is not None else None
 
     result = ssm(A=A, x=x, B=B, C=C, D=D, zi=zi, unroll_factor=unroll_factor)
 
