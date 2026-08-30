@@ -27,7 +27,6 @@ from philtorch import HELION_LOADED
 @pytest.mark.parametrize(
     "device",
     [
-        # "cuda",
         pytest.param(
             "cuda",
             marks=pytest.mark.skipif(
@@ -35,12 +34,6 @@ from philtorch import HELION_LOADED
                 reason="CUDA not available",
             ),
         ),
-        # pytest.param(
-        #     "mps",
-        #     marks=pytest.mark.skipif(
-        #         not torch.backends.mps.is_available(), reason="MPS not available"
-        #     ),
-        # ),
     ],
 )
 @pytest.mark.parametrize(
@@ -121,14 +114,6 @@ def test_hl_lti_recurN_pt2_compatibility(
                 reason="CUDA not available",
             ),
         ),
-        # pytest.param(
-        #     False,
-        #     4,
-        #     "mps",
-        #     marks=pytest.mark.skipif(
-        #         not torch.backends.mps.is_available(), reason="MPS not available"
-        #     ),
-        # ),
     ],
 )
 @pytest.mark.parametrize(
@@ -428,12 +413,6 @@ def test_lti_recur2_pt2_compatibility(
     "device",
     [
         "cpu",
-        # pytest.param(
-        #     "cuda",
-        #     marks=pytest.mark.skipif(
-        #         not torch.cuda.is_available(), reason="CUDA not available"
-        #     ),
-        # ),
     ],
 )
 @pytest.mark.parametrize(

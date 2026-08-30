@@ -1,11 +1,70 @@
+from unittest.mock import Mock
+
 import pytest
 import torch
+import philtorch.lti.ssm as lti_ssm
+import philtorch.lpv.ssm as lpv_ssm
 from philtorch.mat import companion
 from philtorch.lti import linear_recurrence
 from philtorch.lpv import state_space_recursion as lpv_state_space
 
 from .test_lti_ssm import _generate_random_filter_coeffs
 from .test_lpv_filters import _generate_time_varying_coeffs
+
+
+@pytest.fixture(params=[lti_ssm, lpv_ssm], ids=["lti", "lpv"])
+def ssm_case(request):
+    module = request.param
+    x = torch.linspace(-1.0, 1.0, 14).reshape(2, 7)
+    if module is lti_ssm:
+        A = torch.tensor([[0.25]])
+        return module, A, A, torch.zeros(2, 1), x
+
+    state_space_A = torch.tensor([[0.25, 0.1], [-0.1, 0.2]]).expand(7, -1, -1)
+    recursion_A = state_space_A.expand(2, -1, -1, -1)
+    return module, recursion_A, state_space_A, torch.zeros(2, 2), x
+
+
+@pytest.mark.parametrize(
+    "scenario",
+    ["native_and_unrolled", "default_native", "unsupported_fallback"],
+)
+def test_state_space_routing(ssm_case, scenario, monkeypatch):
+    module, recursion_A, state_space_A, zi, x = ssm_case
+    if scenario == "native_and_unrolled":
+        native_runner = Mock(wraps=module._ext_ss_recur)
+        monkeypatch.setattr(module, "_ext_ss_recur", native_runner)
+
+        native_output = module.state_space_recursion(
+            recursion_A, zi, x, unroll_factor=1
+        )
+        native_runner.assert_called_once()
+
+        native_runner.reset_mock()
+        unrolled_output = module.state_space_recursion(
+            recursion_A, zi, x, unroll_factor=2
+        )
+        native_runner.assert_not_called()
+        assert torch.allclose(native_output, unrolled_output)
+    elif scenario == "default_native":
+        native_runner = Mock(wraps=module._ext_ss_recur)
+        monkeypatch.setattr(module, "_ext_ss_recur", native_runner)
+
+        module.state_space(A=state_space_A, x=x)
+
+        native_runner.assert_called_once()
+    else:
+        loop_runner = Mock(wraps=module._recursion_loop)
+        monkeypatch.setattr(
+            module,
+            "extension_backend_indicator",
+            lambda _input, _state_size: False,
+        )
+        monkeypatch.setattr(module, "_recursion_loop", loop_runner)
+
+        module.state_space(A=state_space_A, x=x)
+
+        loop_runner.assert_called_once()
 
 
 @pytest.mark.parametrize(
@@ -234,34 +293,25 @@ def test_lti_recur_mps_grad_equiv(batch_decay: bool):
         torch.testing.assert_close(actual, expected, rtol=1e-4, atol=1e-5)
 
 
-@pytest.mark.parametrize(
-    "device",
-    [
-        "cpu",
-        # pytest.param(
-        #     "cuda",
-        #     marks=pytest.mark.skipif(
-        #         not torch.cuda.is_available(), reason="CUDA not available"
-        #     ),
-        # ),
-    ],
-)
 @pytest.mark.parametrize("order", [2, 3, 5])
-def test_recurN_extension(device, order):
-    """Test that the recur2 extension works correctly."""
+def test_recurN_extension_matches_fallback(order):
+    """Test that the recurN extension matches the independent fallback."""
     batch_size = 2
     N = 37
 
     _, a = _generate_time_varying_coeffs(batch_size, N, order, order)
-    # x = _generate_test_signal(batch_size, N, "white_noise").cuda()
-    x = torch.randn(batch_size, N, order).to(device).double()  # Simulated input
-    A = companion(a).to(device).double()
-    zi = torch.randn(batch_size, order).to(device).double()
+    x = torch.randn(batch_size, N, order).double()
+    A = companion(a).double()
+    zi = torch.randn(batch_size, order).double()
 
     ext_output = torch.ops.philtorch.recurN(A, zi, x)
-    torch_output = lpv_state_space(A, zi, x, unroll_factor=1)
+    native_output = lpv_state_space(A, zi, x, unroll_factor=1)
+    torch_output = lpv_state_space(A, zi, x, unroll_factor=2)
 
     # Compare outputs
+    assert torch.allclose(native_output, torch_output), torch.max(
+        torch.abs(native_output - torch_output)
+    )
     assert torch.allclose(ext_output, torch_output), torch.max(
         torch.abs(ext_output - torch_output)
     )
@@ -279,22 +329,25 @@ def test_recurN_extension(device, order):
         ),
     ],
 )
-def test_recur2_extension(device):
-    """Test that the recur2 extension works correctly."""
+def test_recur2_extension_matches_fallback(device):
+    """Test that the recur2 extension matches the independent fallback."""
     batch_size = 2
     N = 17
     order = 2
 
     _, a = _generate_time_varying_coeffs(batch_size, N, order, order)
-    # x = _generate_test_signal(batch_size, N, "white_noise").cuda()
-    x = torch.randn(batch_size, N, 2).to(device).double()  # Simulated input
+    x = torch.randn(batch_size, N, 2).to(device).double()
     A = companion(a).to(device).double()
     zi = torch.randn(batch_size, order).to(device).double()
 
     ext_output = torch.ops.philtorch.recur2(A, zi, x)
-    torch_output = lpv_state_space(A, zi, x, unroll_factor=1)
+    native_output = lpv_state_space(A, zi, x, unroll_factor=1)
+    torch_output = lpv_state_space(A, zi, x, unroll_factor=2)
 
     # Compare outputs
+    assert torch.allclose(native_output, torch_output), torch.max(
+        torch.abs(native_output - torch_output)
+    )
     assert torch.allclose(ext_output, torch_output), torch.max(
         torch.abs(ext_output - torch_output)
     )
