@@ -1,4 +1,6 @@
 from collections.abc import Callable
+import shutil
+import sys
 from types import SimpleNamespace
 
 import pytest
@@ -10,6 +12,7 @@ from philtorch._torchlpc import lpc as vendored_lpc, scan as vendored_scan
 from philtorch.lpv import allpole, linear_recurrence, state_space_recursion
 from philtorch.lpv.ssm import MatrixRecurrence, _matrix_recurrence
 
+_WINDOWS_INDUCTOR_UNAVAILABLE = sys.platform == "win32" and shutil.which("cl") is None
 _TORCHLPC_CUDA_OPS = ("philtorch::scan", "philtorch::lpc")
 _PARARNN_OPS = (
     "parallel_reduce_cuda::parallel_reduce_block_diag_2x2_cuda",
@@ -24,8 +27,16 @@ def _has_dispatch_kernel(op: str, dispatch_key: str) -> bool:
         return False
 
 
-def _torchlpc_devices() -> list[str]:
-    devices = ["cpu"]
+def _torchlpc_devices() -> list[object]:
+    devices = [
+        pytest.param(
+            "cpu",
+            marks=pytest.mark.skipif(
+                _WINDOWS_INDUCTOR_UNAVAILABLE,
+                reason="PyTorch Inductor requires cl, which is unavailable on Windows CI",
+            ),
+        )
+    ]
     if torch.cuda.is_available() and all(
         _has_dispatch_kernel(op, "CUDA") for op in _TORCHLPC_CUDA_OPS
     ):
