@@ -107,14 +107,20 @@ def _serial_pararnn(jac: Tensor, rhs: Tensor) -> Tensor:
 
 @pytest.mark.parametrize("state_size", [2, 3])
 def test_pararnn_registered_backward_formula_on_cpu(state_size: int) -> None:
-    jac = torch.randn(2, 9, state_size, state_size, dtype=torch.double) * 0.03
+    jac = torch.linspace(
+        -0.03, 0.03, 2 * 9 * state_size * state_size, dtype=torch.double
+    ).reshape(2, 9, state_size, state_size)
     jac[:, 0] = 0
-    rhs = torch.randn(2, 9, state_size, dtype=torch.double)
+    rhs = torch.linspace(-0.8, 0.9, 2 * 9 * state_size, dtype=torch.double).reshape(
+        2, 9, state_size
+    )
     jac.requires_grad_()
     rhs.requires_grad_()
 
     output = _serial_pararnn(jac, rhs)
-    grad_output = torch.randn_like(output)
+    grad_output = torch.linspace(
+        0.9, -0.7, output.numel(), dtype=output.dtype
+    ).reshape_as(output)
     expected = torch.autograd.grad(output, (jac, rhs), grad_output)
 
     ctx = SimpleNamespace(
@@ -131,24 +137,24 @@ def test_pararnn_registered_backward_formula_on_cpu(state_size: int) -> None:
 def test_compile_dispatch_helpers_call_raw_operators(monkeypatch) -> None:
     monkeypatch.setattr(torch.compiler, "is_compiling", lambda: True)
 
-    impulse = torch.randn(2, 8)
-    decay = torch.rand(2, 8) * 0.5
-    init = torch.randn(2)
+    impulse = torch.linspace(-0.8, 0.9, 16).reshape(2, 8)
+    decay = torch.linspace(0.05, 0.45, 16).reshape(2, 8)
+    init = torch.tensor([-0.2, 0.3])
     torch.testing.assert_close(
         vendored_scan(impulse, decay, init),
         torch.ops.philtorch.scan(impulse, decay, init),
     )
 
-    x = torch.randn(2, 8)
-    A = torch.randn(2, 8, 3) * 0.03
-    zi = torch.randn(2, 3)
+    x = torch.linspace(-0.7, 0.8, 16).reshape(2, 8)
+    A = torch.linspace(-0.03, 0.03, 48).reshape(2, 8, 3)
+    zi = torch.linspace(-0.2, 0.3, 6).reshape(2, 3)
     torch.testing.assert_close(
         vendored_lpc(x, A, zi), torch.ops.philtorch.lpc(x, A, zi)
     )
 
-    matrix_x = torch.randn(2, 8, 2)
-    matrix_A = torch.randn(2, 8, 2, 2) * 0.03
-    matrix_zi = torch.randn(2, 2)
+    matrix_x = torch.linspace(-0.6, 0.7, 32).reshape(2, 8, 2)
+    matrix_A = torch.linspace(-0.03, 0.03, 64).reshape(2, 8, 2, 2)
+    matrix_zi = torch.linspace(-0.2, 0.3, 4).reshape(2, 2)
     torch.testing.assert_close(
         _matrix_recurrence(matrix_A, matrix_zi, matrix_x),
         MatrixRecurrence.forward(matrix_A, matrix_zi, matrix_x),
