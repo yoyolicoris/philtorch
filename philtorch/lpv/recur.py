@@ -40,7 +40,9 @@ def linear_recurrence(
     """
 
     if unroll_factor == 1:
-        return ScanRecurrence.apply(x, a, init)  # type: ignore[arg-type]
+        return ScanRecurrence.apply(
+            x, a.broadcast_to(x.shape), init.broadcast_to(x.shape[0])
+        )
 
     assert x.dim() == 2, f"Input x must be 2D, got {x.shape}"
     assert a.dim() in (1, 2), f"State matrix a must be 1D or 2D, got {a.shape}"

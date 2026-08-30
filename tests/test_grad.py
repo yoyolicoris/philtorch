@@ -4,7 +4,7 @@ from torch.autograd.gradcheck import gradcheck, gradgradcheck
 from philtorch.lpv.ssm import MatrixRecurrence
 from philtorch.lti.ssm import LTIMatrixRecurrence
 from philtorch.lti.recur import LTIRecurrence
-from philtorch import EXTENSION_LOADED, HELION_LOADED
+from philtorch import HELION_LOADED
 
 
 @pytest.mark.parametrize(
@@ -51,8 +51,8 @@ from philtorch import EXTENSION_LOADED, HELION_LOADED
             3,
             "cuda",
             marks=pytest.mark.skipif(
-                not torch.cuda.is_available() or not EXTENSION_LOADED,
-                reason="CUDA or extension not available",
+                not torch.cuda.is_available(),
+                reason="CUDA not available",
             ),
         ),
         pytest.param(
