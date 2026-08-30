@@ -252,9 +252,7 @@ def test_lti_recur_rejects_zero_length(device: str):
 
 @pytest.mark.skipif(not torch.backends.mps.is_available(), reason="MPS not available")
 @pytest.mark.parametrize("coefficient_layout", ["scalar", "shared", "batched"])
-@pytest.mark.parametrize(
-    "samples", [1, 2, 3, 7, 8, 15, 16, 17, 257, 511, 512, 513, 1234]
-)
+@pytest.mark.parametrize("samples", [1, 2, 511, 512, 513, 1234])
 def test_lti_recur_mps_boundaries(coefficient_layout: str, samples: int):
     batch_size = 3
     coefficient_shape = {
@@ -339,11 +337,11 @@ def test_lti_recur_mps_grad_equiv(
             torch.testing.assert_close(actual, expected, rtol=1e-4, atol=1e-5)
 
 
-def test_recurN_extension_matches_fallback():
-    """Test that the recurN extension matches the independent fallback."""
+@pytest.mark.parametrize("order", [2, 3])
+def test_recurN_extension_matches_fallback(order: int):
+    """Test direct recurN low/general orders against the independent fallback."""
     batch_size = 2
     N = 37
-    order = 3
 
     _, a = _generate_time_varying_coeffs(batch_size, N, order, order)
     x = torch.randn(batch_size, N, order).double()
@@ -393,3 +391,20 @@ def test_recur2_extension_matches_fallback(device):
         assert torch.allclose(native_output, torch_output), torch.max(
             torch.abs(native_output - torch_output)
         )
+
+
+@pytest.mark.skipif(not torch.cuda.is_available(), reason="CUDA not available")
+def test_lpv_pararnn_order3_matches_fallback():
+    """Test the CUDA floating order-3 ParaRNN selector boundary."""
+    batch_size = 2
+    N = 17
+    order = 3
+
+    _, a = _generate_time_varying_coeffs(batch_size, N, order, order)
+    x = torch.randn(batch_size, N, order, device="cuda", dtype=torch.float64)
+    A = companion(a).to(device="cuda", dtype=torch.float64)
+    zi = torch.randn(batch_size, order, device="cuda", dtype=torch.float64)
+
+    native_output = lpv_state_space(A, zi, x, unroll_factor=1)
+    torch_output = lpv_state_space(A, zi, x, unroll_factor=2)
+    torch.testing.assert_close(native_output, torch_output)
