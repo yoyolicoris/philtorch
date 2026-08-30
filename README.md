@@ -132,6 +132,119 @@ The supported high-level interfaces are exported from [`philtorch.lti`](philtorc
 `philtorch.lpv` exports `lfilter`, `linear_recurrence`, `state_space`, `state_space_recursion`, `allpole`, and `fir`.
 See each function's docstring for its current signature and shape notes.
 
+## `scipy.signal` comparison
+
+This inventory is scoped to the public functions listed in the [SciPy 1.18.0 `scipy.signal` reference](https://docs.scipy.org/doc/scipy/reference/signal.html), including the [`scipy.signal.windows` namespace](https://docs.scipy.org/doc/scipy/reference/signal.windows.html), and PhilTorch v0.5 as documented here.
+It compares functions rather than every option or numerical detail: a check mark means the library provides the named operation, not that the signatures or semantics are interchangeable.
+SciPy classes and non-function objects—`lti`, `dlti`, `StateSpace`, `TransferFunction`, `ZerosPolesGain`, `ShortTimeFFT`, `CZT`, `ZoomFFT`, and `BadCoefficients`—are outside this function inventory.
+PhilTorch callables consume PyTorch tensors and are designed for autograd, batched execution, and tensor device/dtype preservation; the notes below call out narrower shapes, conventions, or routing where those differences matter.
+
+<details open>
+<summary><strong>Filtering, convolution, and resampling</strong></summary>
+
+| SciPy function or tight family | SciPy | PhilTorch | PhilTorch callable | Important differences |
+| --- | :---: | :---: | --- | --- |
+| `lfilter` | ✓ | ✓ | [`philtorch.lti.lfilter`, `philtorch.lti.fir`](philtorch/lti/filtering.py) | PhilTorch filters the last axis of 1-D or batched 2-D tensors, can batch coefficients, supports `df2`, `tdf2`, `df1`, and `tdf1`, and returns final state only when `zi` is supplied on the state-returning forms. PhilTorch omits the normalized `a0=1` term from `a`; SciPy accepts `[a0, a1, ...]`. `fir` is the specialized batched FIR path, and supported shapes may route to native kernels. |
+| `lfiltic` | ✓ | ✓ | [`philtorch.lti.lfiltic`](philtorch/lti/filtering.py) | Both form filter state from prior inputs and outputs, but PhilTorch uses tensors and its implicit-`a0` denominator convention. |
+| `lfilter_zi` | ✓ | ✓ | [`philtorch.lti.lfilter_zi`](philtorch/lti/filtering.py) | PhilTorch's argument order is `lfilter_zi(a, b)`, opposite SciPy's `lfilter_zi(b, a)`, and PhilTorch omits `a0`. |
+| `filtfilt` | ✓ | ✓ | [`philtorch.lti.filtfilt`](philtorch/lti/filtering.py) | PhilTorch filters the last axis, is differentiable, and defaults to `padmode="replicate"`; `padmode=None` disables padding. Its `method="gust"` path is not implemented and `irlen` is currently unused. |
+| `convolve`, `fftconvolve`, `oaconvolve` | ✓ | — | — | PhilTorch has no general N-D convolution API or SciPy-style `mode` selection. `philtorch.lti.fir` is a narrower causal 1-D FIR-filter operation. |
+| `correlate`, `correlation_lags` | ✓ | — | — | No PhilTorch cross-correlation or lag-index helper. |
+| `convolve2d`, `correlate2d`, `sepfir2d` | ✓ | — | — | No PhilTorch 2-D convolution/correlation family. |
+| `choose_conv_method` | ✓ | — | — | No PhilTorch convolution-method estimator. |
+| `order_filter`, `medfilt`, `medfilt2d`, `wiener` | ✓ | — | — | No PhilTorch order-statistic, median, or Wiener image-filter API. |
+| `symiirorder1`, `symiirorder2` | ✓ | — | — | PhilTorch's recurrences do not reproduce these mirror-boundary smoothing APIs. |
+| `savgol_filter` | ✓ | — | — | No PhilTorch Savitzky-Golay filtering API. |
+| `deconvolve` | ✓ | — | — | No PhilTorch inverse-filter deconvolution helper. |
+| `sosfilt`, `sosfilt_zi`, `sosfiltfilt` | ✓ | — | — | PhilTorch recommends composing low-order sections but has no first-class SOS array format or SOS state helpers. |
+| `hilbert`, `hilbert2`, `envelope` | ✓ | — | — | No PhilTorch analytic-signal or envelope API. |
+| `decimate`, `resample`, `resample_poly`, `upfirdn` | ✓ | — | — | No PhilTorch resampling or polyphase API. |
+| `detrend` | ✓ | — | — | No PhilTorch trend-removal helper. |
+
+</details>
+
+<details open>
+<summary><strong>Splines and smoothing</strong></summary>
+
+| SciPy function or tight family | SciPy | PhilTorch | PhilTorch callable | Important differences |
+| --- | :---: | :---: | --- | --- |
+| `cspline1d`, `cspline1d_eval` | ✓ | ✓ | [`philtorch.lti.cubic_spline`](philtorch/lti/interp.py) | PhilTorch combines cubic-coefficient filtering and evaluation for integer upsampling of batched 2-D tensors. It does not accept arbitrary evaluation coordinates, supports no smoothing (`lamb` must remain zero), and uses PyTorch reflect padding unless `scipy_padding=True`. |
+| `qspline1d`, `qspline1d_eval` | ✓ | — | — | PhilTorch provides cubic, not quadratic, spline interpolation. |
+| `cspline2d`, `qspline2d`, `spline_filter` | ✓ | — | — | No PhilTorch 2-D spline-coefficient or spline-smoothing API. |
+| `gauss_spline` | ✓ | — | — | No PhilTorch Gaussian B-spline approximation helper. |
+| `whittaker_henderson` | ✓ | — | — | No PhilTorch Whittaker-Henderson smoother. |
+
+</details>
+
+<details>
+<summary><strong>Filter design, analysis, and representation conversion</strong></summary>
+
+| SciPy function or tight family | SciPy | PhilTorch | PhilTorch callable | Important differences |
+| --- | :---: | :---: | --- | --- |
+| `bilinear`, `bilinear_zpk` | ✓ | — | — | No PhilTorch analog-to-digital bilinear-transform helper. |
+| `findfreqs`, `freqs`, `freqs_zpk` | ✓ | — | — | No PhilTorch analog frequency-grid or analog response API. |
+| `freqz`, `sosfreqz`, `freqz_sos`, `freqz_zpk`, `group_delay` | ✓ | — | — | No PhilTorch frequency-response or group-delay helper. |
+| `firls`, `firwin`, `firwin2`, `firwin_2d`, `remez` | ✓ | — | — | No PhilTorch FIR-coefficient design API. |
+| `minimum_phase`, `savgol_coeffs` | ✓ | — | — | No PhilTorch minimum-phase conversion or Savitzky-Golay coefficient helper. |
+| `gammatone`, `iirdesign`, `iirfilter` | ✓ | — | — | No PhilTorch general IIR/gammatone design API. |
+| `kaiser_atten`, `kaiser_beta`, `kaiserord` | ✓ | — | — | No PhilTorch Kaiser design helpers. |
+| `unique_roots`, `residue`, `residuez`, `invres`, `invresz` | ✓ | — | — | No PhilTorch root grouping or partial-fraction conversion API. |
+| `abcd_normalize`, `band_stop_obj` | ✓ | — | — | No PhilTorch equivalents for these lower-level SciPy design helpers. |
+| `besselap`, `buttap`, `cheb1ap`, `cheb2ap`, `ellipap` | ✓ | — | — | No PhilTorch analog-prototype design functions. |
+| `lp2bp`, `lp2bp_zpk`, `lp2bs`, `lp2bs_zpk`, `lp2hp`, `lp2hp_zpk`, `lp2lp`, `lp2lp_zpk` | ✓ | — | — | No PhilTorch low-pass prototype transformation helpers. |
+| `normalize` | ✓ | — | — | No PhilTorch continuous-time transfer-function normalization helper. |
+| `butter`, `cheby1`, `cheby2`, `ellip`, `bessel` | ✓ | — | — | No PhilTorch named analog/digital IIR design functions. Designed coefficients from another package can be converted to PhilTorch's implicit-`a0` convention before filtering. |
+| `buttord`, `cheb1ord`, `cheb2ord`, `ellipord` | ✓ | — | — | No PhilTorch IIR order-selection helpers. |
+| `iirnotch`, `iirpeak`, `iircomb` | ✓ | — | — | No PhilTorch notch/peak/comb design functions. `philtorch.lti.comb_filter` applies a specific delayed all-pole recurrence; it is not an `iircomb` design equivalent. |
+| `tf2zpk`, `tf2sos`, `tf2ss`, `zpk2tf`, `zpk2sos`, `zpk2ss` | ✓ | — | — | No PhilTorch transfer-function/ZPK/SOS/state-space conversion family. |
+| `ss2tf`, `ss2zpk`, `sos2zpk`, `sos2tf` | ✓ | — | — | No PhilTorch state-space/SOS conversion family. |
+| `cont2discrete`, `place_poles` | ✓ | — | — | No PhilTorch discretization or pole-placement helper. |
+
+</details>
+
+<details>
+<summary><strong>Linear-system simulation</strong></summary>
+
+| SciPy function or tight family | SciPy | PhilTorch | PhilTorch callable | Important differences |
+| --- | :---: | :---: | --- | --- |
+| `dlsim` | ✓ | ✓ | [`philtorch.lti.state_space`](philtorch/lti/ssm.py) | PhilTorch takes tensor `A`, `B`, `C`, and `D` arguments rather than a SciPy system object, supports batched tensors and autograd, and returns `y` plus final state only when `zi` is supplied; it does not return SciPy's time vector or full state trajectory. |
+| `dimpulse`, `dstep` | ✓ | — | — | PhilTorch can simulate explicitly constructed impulse or step inputs, but has no equivalent convenience callable. |
+| `dfreqresp`, `dbode` | ✓ | — | — | No PhilTorch discrete-system frequency-response or Bode helper. |
+| `lsim`, `impulse`, `step`, `freqresp`, `bode` | ✓ | — | — | PhilTorch's state-space APIs are discrete-time only; it has no continuous-time simulation or response family. |
+
+</details>
+
+<details>
+<summary><strong>Waveforms, windows, peaks, spectra, and transforms</strong></summary>
+
+| SciPy function or tight family | SciPy | PhilTorch | PhilTorch callable | Important differences |
+| --- | :---: | :---: | --- | --- |
+| `chirp`, `sweep_poly` | ✓ | — | — | No PhilTorch swept-frequency waveform generator. |
+| `gausspulse`, `max_len_seq`, `sawtooth`, `square`, `unit_impulse` | ✓ | — | — | No PhilTorch public waveform-generator family. |
+| `get_window` | ✓ | — | — | No PhilTorch named-window dispatcher. |
+| `barthann`, `bartlett`, `blackman`, `blackmanharris`, `bohman`, `boxcar`, `chebwin`, `cosine` | ✓ | — | — | No PhilTorch window-generation namespace. |
+| `dpss`, `exponential`, `flattop`, `gaussian`, `general_cosine`, `general_gaussian`, `general_hamming` | ✓ | — | — | No PhilTorch window-generation namespace. |
+| `hamming`, `hann`, `kaiser`, `kaiser_bessel_derived`, `lanczos`, `nuttall`, `parzen`, `taylor`, `triang`, `tukey` | ✓ | — | — | No PhilTorch window-generation namespace. |
+| `argrelmin`, `argrelmax`, `argrelextrema` | ✓ | — | — | No PhilTorch relative-extrema helpers. |
+| `find_peaks`, `find_peaks_cwt`, `peak_prominences`, `peak_widths` | ✓ | — | — | No PhilTorch peak-finding or peak-property API. |
+| `periodogram`, `welch`, `csd`, `coherence`, `spectrogram` | ✓ | — | — | No PhilTorch power/cross-spectral estimation family. |
+| `lombscargle`, `vectorstrength` | ✓ | — | — | No PhilTorch Lomb-Scargle or vector-strength helper. |
+| `closest_STFT_dual_window`, `stft`, `istft`, `check_COLA`, `check_NOLA` | ✓ | — | — | No PhilTorch STFT/window-constraint family. |
+| `czt`, `zoom_fft`, `czt_points` | ✓ | — | — | No PhilTorch chirp-Z or zoom-FFT functions. |
+
+</details>
+
+### PhilTorch functions without a direct `scipy.signal` equivalent
+
+| Capability | SciPy | PhilTorch | PhilTorch callable | Notes |
+| --- | :---: | :---: | --- | --- |
+| Time-varying FIR/IIR/all-pole filtering | — | ✓ | [`philtorch.lpv.fir`, `philtorch.lpv.lfilter`, `philtorch.lpv.allpole`](philtorch/lpv/filtering.py) | Coefficients carry a time dimension and the operations support batched PyTorch tensors and autograd. |
+| Fixed and time-varying linear recurrences | — | ✓ | [`philtorch.lti.linear_recurrence`](philtorch/lti/recur.py), [`philtorch.lpv.linear_recurrence`](philtorch/lpv/recur.py) | These expose differentiable scalar recurrence operations directly. |
+| Fixed and time-varying state recurrences | — | ✓ | [`philtorch.lti.state_space_recursion`](philtorch/lti/ssm.py), [`philtorch.lpv.state_space_recursion`](philtorch/lpv/ssm.py) | These return internal state sequences and may route supported shapes to native or vendored kernels. |
+| Time-varying state-space simulation | — | ✓ | [`philtorch.lpv.state_space`](philtorch/lpv/ssm.py) | `A`, `B`, `C`, and `D` may vary over time and participate in autograd. |
+| Diagonalized discrete state-space execution | — | ✓ | [`philtorch.lti.diag_state_space`](philtorch/lti/ssm.py) | Requires a diagonalisable `A` or supplied eigendecomposition factors; failures propagate. |
+| Delayed all-pole comb recurrence | — | ✓ | [`philtorch.lti.comb_filter`](philtorch/lti/filtering.py) | Applies a provided recurrence coefficient and delay; it does not design a SciPy-style notch or peak comb filter. |
+
 ## Performance and backend selection
 
 Digital filters are recursive, so the best implementation depends on device, dtype, state dimension, sequence length, and whether coefficients vary over time.
@@ -233,7 +346,7 @@ This produces the first ten Fibonacci numbers, where $F_n = F_{n-1} + F_{n-2}$ w
 
 ## Paper and citation
 
-PhilTorch's LTI direct-form filtering work is described in [Accelerating Automatic Differentiation of Direct Form Digital Filters](https://arxiv.org/abs/2511.14390) by Chin-Yun Yu and György Fazekas.
+PhilTorch's LTI direct-form filtering work is described in [Accelerating Automatic Differentiation of Direct Form Digital Filters](https://openreview.net/forum?id=ZhwIyvtBNB) by Chin-Yun Yu and György Fazekas.
 
 ```bibtex
 @article{yu2025accelerating,
