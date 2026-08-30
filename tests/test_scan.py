@@ -1,7 +1,4 @@
 import torch
-from torch import Tensor
-from torch.nn import functional as F
-from typing import Optional
 
 from philtorch.lpv import linear_recurrence as lpv_linear_recurrence
 from philtorch.lti import linear_recurrence as lti_linear_recurrence

@@ -2,10 +2,9 @@ import pytest
 import numpy as np
 import torch
 from scipy import signal
-from typing import Optional
 
 from philtorch.lti import lfilter, fir, lfilter_zi, lfiltic, filtfilt
-from philtorch.mat import companion, vandermonde
+from philtorch.mat import vandermonde
 
 
 def _generate_random_filter_coeffs(
@@ -142,7 +141,6 @@ def test_lfiltic(b_shape, a_shape, y_shape, x_shape):
     # Apply philtorch lfiltic
     zi_torch = lfiltic(b_torch, a_torch, y_torch, x_torch)
 
-    print(f"zi_torch: {zi_torch}, zi_scipy: {zi_scipy}")
     # Compare outputs
     assert np.allclose(zi_torch.numpy(), zi_scipy), np.max(
         np.abs(zi_torch.numpy() - zi_scipy)

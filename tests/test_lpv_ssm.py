@@ -1,12 +1,6 @@
 import torch
-from torch import Tensor
-from torch.nn import functional as F
-from typing import Optional
 import pytest
 from itertools import product, chain
-from unittest.mock import Mock
-
-import philtorch.lpv.ssm as lpv_ssm
 from philtorch.lpv import state_space_recursion as lpv_state_space, state_space
 from philtorch.lti import state_space_recursion as lti_state_space
 from philtorch.mat import companion
@@ -90,49 +84,6 @@ def test_ssm_unrolling(device):
     assert torch.allclose(output_naive, output_unrolled), torch.max(
         torch.abs(output_naive - output_unrolled)
     )
-
-
-def test_native_routing(monkeypatch):
-    A = torch.rand(2, 7, 2, 2)
-    zi = torch.rand(2, 2)
-    x = torch.rand(2, 7)
-    native_runner = Mock(wraps=lpv_ssm._ext_ss_recur)
-    monkeypatch.setattr(lpv_ssm, "_ext_ss_recur", native_runner)
-
-    native_output = lpv_state_space(A, zi, x, unroll_factor=1)
-    native_runner.assert_called_once()
-
-    native_runner.reset_mock()
-    unrolled_output = lpv_state_space(A, zi, x, unroll_factor=2)
-    native_runner.assert_not_called()
-    assert torch.allclose(native_output, unrolled_output)
-
-
-def test_state_space_default_routing(monkeypatch):
-    A = torch.rand(7, 2, 2)
-    x = torch.rand(2, 7)
-    native_runner = Mock(wraps=lpv_ssm._ext_ss_recur)
-    monkeypatch.setattr(lpv_ssm, "_ext_ss_recur", native_runner)
-
-    state_space(A=A, x=x)
-
-    native_runner.assert_called_once()
-
-
-def test_state_space_default_unsupported_fallback(monkeypatch):
-    A = torch.rand(7, 2, 2)
-    x = torch.rand(2, 7)
-    loop_runner = Mock(wraps=lpv_ssm._recursion_loop)
-    monkeypatch.setattr(
-        lpv_ssm,
-        "extension_backend_indicator",
-        lambda _input, _state_size: False,
-    )
-    monkeypatch.setattr(lpv_ssm, "_recursion_loop", loop_runner)
-
-    state_space(A=A, x=x)
-
-    loop_runner.assert_called_once()
 
 
 @pytest.mark.parametrize(

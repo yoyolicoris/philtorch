@@ -3,18 +3,20 @@ import torch
 
 from philtorch import HELION_LOADED
 
+_REQUIRES_GRAD_CASES = [
+    (True, False, False),
+    (False, True, False),
+    (False, False, True),
+    (True, True, False),
+    (True, False, True),
+    (False, True, True),
+    (True, True, True),
+]
+
 
 @pytest.mark.parametrize(
-    "x_requires_grad",
-    [True],
-)
-@pytest.mark.parametrize(
-    "A_requires_grad",
-    [True, False],
-)
-@pytest.mark.parametrize(
-    "zi_requires_grad",
-    [True, False],
+    ("x_requires_grad", "A_requires_grad", "zi_requires_grad"),
+    _REQUIRES_GRAD_CASES,
 )
 @pytest.mark.parametrize(
     "samples",
@@ -27,7 +29,6 @@ from philtorch import HELION_LOADED
 @pytest.mark.parametrize(
     "device",
     [
-        # "cuda",
         pytest.param(
             "cuda",
             marks=pytest.mark.skipif(
@@ -35,12 +36,6 @@ from philtorch import HELION_LOADED
                 reason="CUDA not available",
             ),
         ),
-        # pytest.param(
-        #     "mps",
-        #     marks=pytest.mark.skipif(
-        #         not torch.backends.mps.is_available(), reason="MPS not available"
-        #     ),
-        # ),
     ],
 )
 @pytest.mark.parametrize(
@@ -94,16 +89,8 @@ def test_hl_lti_recurN_pt2_compatibility(
 
 
 @pytest.mark.parametrize(
-    "x_requires_grad",
-    [True],
-)
-@pytest.mark.parametrize(
-    "A_requires_grad",
-    [True, False],
-)
-@pytest.mark.parametrize(
-    "zi_requires_grad",
-    [True, False],
+    ("x_requires_grad", "A_requires_grad", "zi_requires_grad"),
+    _REQUIRES_GRAD_CASES,
 )
 @pytest.mark.parametrize(
     "samples",
@@ -121,14 +108,6 @@ def test_hl_lti_recurN_pt2_compatibility(
                 reason="CUDA not available",
             ),
         ),
-        # pytest.param(
-        #     False,
-        #     4,
-        #     "mps",
-        #     marks=pytest.mark.skipif(
-        #         not torch.backends.mps.is_available(), reason="MPS not available"
-        #     ),
-        # ),
     ],
 )
 @pytest.mark.parametrize(
@@ -182,16 +161,8 @@ def test_hl_recurN_pt2_compatibility(
 
 
 @pytest.mark.parametrize(
-    "x_requires_grad",
-    [True],
-)
-@pytest.mark.parametrize(
-    "A_requires_grad",
-    [True, False],
-)
-@pytest.mark.parametrize(
-    "zi_requires_grad",
-    [True, False],
+    ("x_requires_grad", "A_requires_grad", "zi_requires_grad"),
+    _REQUIRES_GRAD_CASES,
 )
 @pytest.mark.parametrize(
     "samples",
@@ -250,16 +221,8 @@ def test_recurN_pt2_compatibility(
 
 
 @pytest.mark.parametrize(
-    "x_requires_grad",
-    [True],
-)
-@pytest.mark.parametrize(
-    "A_requires_grad",
-    [True, False],
-)
-@pytest.mark.parametrize(
-    "zi_requires_grad",
-    [True, False],
+    ("x_requires_grad", "A_requires_grad", "zi_requires_grad"),
+    _REQUIRES_GRAD_CASES,
 )
 @pytest.mark.parametrize(
     "samples",
@@ -332,16 +295,8 @@ def test_recur2_pt2_compatibility(
 
 
 @pytest.mark.parametrize(
-    "x_requires_grad",
-    [True],
-)
-@pytest.mark.parametrize(
-    "A_requires_grad",
-    [True, False],
-)
-@pytest.mark.parametrize(
-    "zi_requires_grad",
-    [True, False],
+    ("x_requires_grad", "A_requires_grad", "zi_requires_grad"),
+    _REQUIRES_GRAD_CASES,
 )
 @pytest.mark.parametrize(
     "samples",
@@ -405,16 +360,8 @@ def test_lti_recur2_pt2_compatibility(
 
 
 @pytest.mark.parametrize(
-    "x_requires_grad",
-    [True],
-)
-@pytest.mark.parametrize(
-    "A_requires_grad",
-    [True, False],
-)
-@pytest.mark.parametrize(
-    "zi_requires_grad",
-    [True, False],
+    ("x_requires_grad", "A_requires_grad", "zi_requires_grad"),
+    _REQUIRES_GRAD_CASES,
 )
 @pytest.mark.parametrize(
     "samples",
@@ -428,12 +375,6 @@ def test_lti_recur2_pt2_compatibility(
     "device",
     [
         "cpu",
-        # pytest.param(
-        #     "cuda",
-        #     marks=pytest.mark.skipif(
-        #         not torch.cuda.is_available(), reason="CUDA not available"
-        #     ),
-        # ),
     ],
 )
 @pytest.mark.parametrize(
@@ -478,16 +419,8 @@ def test_lti_recurN_pt2_compatibility(
 
 
 @pytest.mark.parametrize(
-    "x_requires_grad",
-    [True],
-)
-@pytest.mark.parametrize(
-    "a_requires_grad",
-    [True, False],
-)
-@pytest.mark.parametrize(
-    "zi_requires_grad",
-    [True, False],
+    ("x_requires_grad", "a_requires_grad", "zi_requires_grad"),
+    _REQUIRES_GRAD_CASES,
 )
 @pytest.mark.parametrize(
     "samples",
