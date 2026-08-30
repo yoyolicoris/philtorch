@@ -18,4 +18,8 @@ wheels even when the submodules are not checked out.
   block-diagonal parallel-reduce kernels philtorch uses; registered via shim
   `philtorch/csrc/pararnn_shim.cpp`) with flags `-DFLOAT64_CHUNK_SIZE_DIAG=4 -DFLOAT64_CHUNK_SIZE_BLOCK_DIAG_2x2=1`. The fused GRU/LSTM and diag kernels are not compiled.
 
-Build: `setup.py:get_extensions()` compiles them into `philtorch._C`; `TORCH_LIBRARY(torchlpc, ...)` and `TORCH_LIBRARY(parallel_reduce_cuda, ...)` remain as separate namespaces but linked in one `.so`, so `torch.ops.torchlpc.lpc` (all-pole filter) and `torch.ops.torchlpc.scan` (linear recurrence) plus `torch.ops.parallel_reduce_cuda.parallel_reduce_block_diag_{2x2,3x3}_cuda` keep working without external pip deps. Note: the operator is `torchlpc::lpc`, not `allpole`.
+Build: `setup.py:get_extensions()` compiles them into `philtorch._C`. The
+torchlpc kernels are registered privately as `philtorch::lpc` and
+`philtorch::scan`, avoiding conflicts with an independently installed torchlpc
+extension. The PararNN kernels remain under
+`parallel_reduce_cuda::parallel_reduce_block_diag_{2x2,3x3}_cuda`.

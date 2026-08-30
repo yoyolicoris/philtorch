@@ -10,6 +10,9 @@ Original sources:
 - third_party/torchlpc/torchlpc/tests/test_vmap.py
 """
 
+import subprocess
+import sys
+
 import pytest
 import torch
 import torch.nn.functional as F
@@ -17,6 +20,22 @@ from torch.autograd.gradcheck import gradcheck, gradgradcheck
 from torch.func import jacfwd
 
 from philtorch._torchlpc import AllPole, ScanRecurrence
+
+
+def test_external_torchlpc_namespace_coexists():
+    script = """
+import torch
+
+library = torch.library.Library("torchlpc", "DEF")
+library.define("scan(Tensor a, Tensor b, Tensor c) -> Tensor")
+library.define("lpc(Tensor a, Tensor b, Tensor c) -> Tensor")
+
+import philtorch
+
+assert hasattr(torch.ops.philtorch, "scan")
+assert hasattr(torch.ops.philtorch, "lpc")
+"""
+    subprocess.run([sys.executable, "-c", script], check=True)
 
 
 def get_random_biquads(cmplx=False):

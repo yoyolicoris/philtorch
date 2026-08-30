@@ -12,7 +12,7 @@ from . import _C  # noqa: F401
 class AllPole(Function):
     @staticmethod
     def forward(x: torch.Tensor, A: torch.Tensor, zi: torch.Tensor) -> torch.Tensor:
-        return torch.ops.torchlpc.lpc(x, A, zi)
+        return torch.ops.philtorch.lpc(x, A, zi)
 
     @staticmethod
     def setup_context(ctx: Any, inputs: List[Any], output: Any) -> Any:
@@ -92,7 +92,7 @@ class ScanRecurrence(Function):
     def forward(
         impulse: torch.Tensor, decay: torch.Tensor, init: torch.Tensor
     ) -> torch.Tensor:
-        return torch.ops.torchlpc.scan(impulse, decay, init)
+        return torch.ops.philtorch.scan(impulse, decay, init)
 
     @staticmethod
     def setup_context(ctx: Any, inputs: List[Any], output: Any) -> Any:

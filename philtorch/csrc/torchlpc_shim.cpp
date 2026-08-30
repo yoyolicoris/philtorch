@@ -121,13 +121,13 @@ at::Tensor allpole_cpu(const at::Tensor &x, const at::Tensor &a, const at::Tenso
     return out.slice(1, zi.size(1), out.size(1)).contiguous();
 }
 
-TORCH_LIBRARY(torchlpc, m)
+TORCH_LIBRARY_FRAGMENT(philtorch, m)
 {
     m.def("scan(Tensor a, Tensor b, Tensor c) -> Tensor");
     m.def("lpc(Tensor a, Tensor b, Tensor c) -> Tensor");
 }
 
-TORCH_LIBRARY_IMPL(torchlpc, CPU, m)
+TORCH_LIBRARY_IMPL(philtorch, CPU, m)
 {
     m.impl("scan", &scan_cpu_wrapper_vendored);
     m.impl("lpc", &allpole_cpu);

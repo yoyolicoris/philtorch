@@ -110,9 +110,13 @@ def get_extensions():
 
     if use_cuda:
         vendored_sources = [*torchlpc_sources, *pararnn_sources]
-        missing_sources = [path for path in vendored_sources if not os.path.isfile(path)]
+        missing_sources = [
+            path for path in vendored_sources if not os.path.isfile(path)
+        ]
         if missing_sources:
-            relative_paths = [os.path.relpath(path, this_dir) for path in missing_sources]
+            relative_paths = [
+                os.path.relpath(path, this_dir) for path in missing_sources
+            ]
             raise RuntimeError(
                 "CUDA builds require initialized third-party submodules. Run "
                 "'git submodule update --init --recursive'. Missing: "
@@ -150,7 +154,6 @@ def get_extensions():
 
     if use_cuda:
         sources += cuda_sources
-        sources += torchlpc_sources
         sources += pararnn_sources
         extra_compile_args.setdefault("nvcc", []).append("--extended-lambda")
 
@@ -196,25 +199,12 @@ except ImportError:
             "sees it."
         )
 
-data_files = [
-    (
-        "share/doc/philtorch",
-        [
-            "NOTICE",
-            "LICENSES/README.md",
-            "LICENSES/torchlpc-LICENSE",
-            "LICENSES/pararnn-LICENSE",
-        ],
-    )
-]
-
 if not ext_modules:
-    setup(data_files=data_files)
+    setup()
 else:
     from torch.utils.cpp_extension import BuildExtension
 
     setup(
         ext_modules=ext_modules,
         cmdclass={"build_ext": BuildExtension},
-        data_files=data_files,
     )

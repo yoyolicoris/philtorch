@@ -27,6 +27,8 @@ pip install philtorch
 
 Pre-built CPU wheels are available for the **latest stable PyTorch release**
 on Linux (x86\_64) and macOS 14+ (arm64) for **Python 3.10–3.13**.
+Windows CPU wheels are also published for the same Python versions, with
+vendored `torchlpc` bundled into `philtorch._C`.
 For other configurations (CUDA, Linux aarch64, or a different PyTorch
 release), install from source. The build imports `torch`, so install your
 desired PyTorch first and pass `--no-build-isolation` so the build can see it:
@@ -35,8 +37,6 @@ desired PyTorch first and pass `--no-build-isolation` so the build can see it:
 pip install torch  # or your CUDA/platform-specific PyTorch build
 pip install philtorch --no-binary philtorch --no-build-isolation
 ```
-
-> **_Note:_** Windows wheels are now published via vendored `torchlpc` (`third_party/torchlpc` at `DiffAPF/torchlpc@1bfde4a`) bundled into `philtorch._C`.
 
 ### Development version
 ```bash

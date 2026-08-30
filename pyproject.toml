@@ -27,7 +27,8 @@ authors = [{ name = "Chin-Yun Yu", email = "chin-yun.yu@qmul.ac.uk" }]
 maintainers = [{ name = "Chin-Yun Yu", email = "chin-yun.yu@qmul.ac.uk" }]
 description = "A PyTorch library for time-varying IIR filters."
 readme = "README.md"
-license = { text = "MIT" }
+license = "MIT"
+license-files = ["LICENSE", "NOTICE", "LICENSES/*"]
 classifiers = [
     "Development Status :: 3 - Alpha",
     "Intended Audience :: Developers",

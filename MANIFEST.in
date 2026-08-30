@@ -6,7 +6,4 @@ recursive-include philtorch *.cu
 recursive-include philtorch *.mm
 recursive-include third_party *
 include README.md
-include LICENSE
-include NOTICE
-recursive-include LICENSES *
 exclude tests/*
