@@ -4,7 +4,7 @@ from typing import Optional, Union
 from functools import reduce, partial
 import torch.nn.functional as F
 
-from .._torchlpc import AllPole
+from .._torchlpc import lpc
 
 from ..utils import chain_functions
 from ..mat import companion
@@ -123,12 +123,12 @@ def allpole(
             + ([torch.zeros_like(zi)] if return_zf else []),
             dim=1,
         )
-        y = AllPole.apply(x, a, a.new_zeros(a.size(0), a.size(2)))
+        y = lpc(x, a, a.new_zeros(a.size(0), a.size(2)))
         if return_zf:
             return torch.split_with_sizes(y, [T, a.size(2)], 1)
         return y
 
-    y = AllPole.apply(x, a, zi)
+    y = lpc(x, a, zi)
     if return_zf:
         return y, y[:, -a.size(2) :].flip(1)
     return y  # type: ignore[return-value]
