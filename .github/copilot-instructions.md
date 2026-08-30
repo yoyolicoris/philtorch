@@ -4,6 +4,17 @@
 
 Use pixi as the source of truth for environment/setup in this repository.
 
+On Linux, run build and test commands through the repository resource limiter:
+
+```bash
+./scripts/run-limited pixi reinstall philtorch
+./scripts/run-limited pixi run pytest
+```
+
+The wrapper defaults to 3 CPUs, 12 GiB RAM, no swap, and two parallel native
+build jobs. Override these with `PHILTORCH_CPU_QUOTA`, `PHILTORCH_MEMORY_MAX`,
+`PHILTORCH_MEMORY_SWAP_MAX`, `MAX_JOBS`, or `OMP_NUM_THREADS`.
+
 ```bash
 # install/build project from pixi.toml instructions
 pixi install philtorch
