@@ -4,7 +4,7 @@
 [![Python versions](https://img.shields.io/pypi/pyversions/philtorch.svg)](https://pypi.org/project/philtorch/)
 [![Build CPU wheels](https://github.com/yoyolicoris/philtorch/actions/workflows/build-wheels.yml/badge.svg?branch=dev)](https://github.com/yoyolicoris/philtorch/actions/workflows/build-wheels.yml)
 [![codecov](https://codecov.io/gh/yoyolicoris/philtorch/branch/dev/graph/badge.svg?token=288BR3PYIX)](https://codecov.io/gh/yoyolicoris/philtorch)
-[![arXiv](https://img.shields.io/badge/arXiv-2511.14390-b31b1b.svg)](https://arxiv.org/abs/2511.14390)
+[![OpenReview](https://img.shields.io/badge/OpenReview-ZhwIyvtBNB-8c1b13.svg)](https://openreview.net/forum?id=ZhwIyvtBNB)
 [![License: MIT](https://img.shields.io/badge/License-MIT-yellow.svg)](LICENSE)
 
 PhilTorch provides differentiable, time-domain linear time-invariant (LTI) and linear parameter-varying (LPV) digital filters and recurrences for PyTorch.
@@ -349,10 +349,11 @@ This produces the first ten Fibonacci numbers, where $F_n = F_{n-1} + F_{n-2}$ w
 PhilTorch's LTI direct-form filtering work is described in [Accelerating Automatic Differentiation of Direct Form Digital Filters](https://openreview.net/forum?id=ZhwIyvtBNB) by Chin-Yun Yu and György Fazekas.
 
 ```bibtex
-@article{yu2025accelerating,
+@inproceedings{yu2025accelerating,
   title={Accelerating Automatic Differentiation of Direct Form Digital Filters},
   author={Yu, Chin-Yun and Fazekas, György},
-  journal={arXiv preprint arXiv:2511.14390},
-  year={2025}
+  booktitle={Differentiable Systems and Scientific Machine Learning Workshop at EurIPS 2025},
+  year={2025},
+  url={https://openreview.net/forum?id=ZhwIyvtBNB}
 }
 ```
