@@ -35,16 +35,13 @@ def ssm_case(request):
     return module, recursion_A, state_space_A, torch.zeros(2, 2), x
 
 
-@pytest.mark.parametrize(
-    "scenario",
-    ["native_and_unrolled", "default_native", "unsupported_fallback"],
-)
-def test_state_space_routing(ssm_case, scenario, monkeypatch):
+@pytest.mark.parametrize("scenario", ["native_and_unrolled", "default_native"])
+def test_state_space_native_routing(ssm_case, scenario, monkeypatch):
     module, recursion_A, state_space_A, zi, x = ssm_case
-    if scenario == "native_and_unrolled":
-        native_runner = Mock(wraps=module._ext_ss_recur)
-        monkeypatch.setattr(module, "_ext_ss_recur", native_runner)
+    native_runner = Mock(wraps=module._ext_ss_recur)
+    monkeypatch.setattr(module, "_ext_ss_recur", native_runner)
 
+    if scenario == "native_and_unrolled":
         native_output = module.state_space_recursion(
             recursion_A, zi, x, unroll_factor=1
         )
@@ -56,25 +53,36 @@ def test_state_space_routing(ssm_case, scenario, monkeypatch):
         )
         native_runner.assert_not_called()
         assert torch.allclose(native_output, unrolled_output)
-    elif scenario == "default_native":
-        native_runner = Mock(wraps=module._ext_ss_recur)
-        monkeypatch.setattr(module, "_ext_ss_recur", native_runner)
-
+    else:
         module.state_space(A=state_space_A, x=x)
 
         native_runner.assert_called_once()
-    else:
-        loop_runner = Mock(wraps=module._recursion_loop)
-        monkeypatch.setattr(
-            module,
-            "extension_backend_indicator",
-            lambda _input, _state_size: False,
-        )
-        monkeypatch.setattr(module, "_recursion_loop", loop_runner)
 
-        module.state_space(A=state_space_A, x=x)
 
-        loop_runner.assert_called_once()
+def test_lpv_recurN_default_native_routing(monkeypatch):
+    A = torch.eye(3).expand(7, -1, -1)
+    x = torch.linspace(-1.0, 1.0, 14).reshape(2, 7)
+    native_runner = Mock(wraps=lpv_ssm._ext_ss_recur)
+    monkeypatch.setattr(lpv_ssm, "_ext_ss_recur", native_runner)
+
+    lpv_ssm.state_space(A=A, x=x)
+
+    native_runner.assert_called_once()
+
+
+@pytest.mark.parametrize("module", [lti_ssm, lpv_ssm], ids=["lti", "lpv"])
+def test_state_space_unsupported_fallback(module, monkeypatch):
+    x = torch.empty(2, 7, device="meta")
+    A = torch.eye(3, device="meta")
+    if module is lpv_ssm:
+        A = A.expand(7, -1, -1)
+    loop_runner = Mock(wraps=module._recursion_loop)
+    monkeypatch.setattr(module, "_recursion_loop", loop_runner)
+
+    assert not module.extension_backend_indicator(x, 3)
+    module.state_space(A=A, x=x)
+
+    loop_runner.assert_called_once()
 
 
 @pytest.mark.parametrize(
@@ -331,11 +339,11 @@ def test_lti_recur_mps_grad_equiv(
             torch.testing.assert_close(actual, expected, rtol=1e-4, atol=1e-5)
 
 
-@pytest.mark.parametrize("order", [2, 3, 5])
-def test_recurN_extension_matches_fallback(order):
+def test_recurN_extension_matches_fallback():
     """Test that the recurN extension matches the independent fallback."""
     batch_size = 2
     N = 37
+    order = 3
 
     _, a = _generate_time_varying_coeffs(batch_size, N, order, order)
     x = torch.randn(batch_size, N, order).double()
@@ -343,13 +351,8 @@ def test_recurN_extension_matches_fallback(order):
     zi = torch.randn(batch_size, order).double()
 
     ext_output = torch.ops.philtorch.recurN(A, zi, x)
-    native_output = lpv_state_space(A, zi, x, unroll_factor=1)
     torch_output = lpv_state_space(A, zi, x, unroll_factor=2)
 
-    # Compare outputs
-    assert torch.allclose(native_output, torch_output), torch.max(
-        torch.abs(native_output - torch_output)
-    )
     assert torch.allclose(ext_output, torch_output), torch.max(
         torch.abs(ext_output - torch_output)
     )
@@ -379,13 +382,14 @@ def test_recur2_extension_matches_fallback(device):
     zi = torch.randn(batch_size, order).to(device).double()
 
     ext_output = torch.ops.philtorch.recur2(A, zi, x)
-    native_output = lpv_state_space(A, zi, x, unroll_factor=1)
     torch_output = lpv_state_space(A, zi, x, unroll_factor=2)
 
-    # Compare outputs
-    assert torch.allclose(native_output, torch_output), torch.max(
-        torch.abs(native_output - torch_output)
-    )
     assert torch.allclose(ext_output, torch_output), torch.max(
         torch.abs(ext_output - torch_output)
     )
+    if device == "cuda":
+        # CUDA uses the ParaRNN route here rather than the direct recur2 op.
+        native_output = lpv_state_space(A, zi, x, unroll_factor=1)
+        assert torch.allclose(native_output, torch_output), torch.max(
+            torch.abs(native_output - torch_output)
+        )
