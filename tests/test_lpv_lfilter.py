@@ -4,7 +4,9 @@ import torch
 from scipy import signal
 from typing import Optional
 from itertools import product, chain
+from unittest.mock import Mock
 
+import philtorch.lpv.filtering as lpv_filtering
 from philtorch.lpv import lfilter
 from .test_lti_lfilter import (
     _generate_random_filter_coeffs,
@@ -56,6 +58,36 @@ def test_against_lti_scipy(
     assert np.allclose(y_torch.numpy(), y_scipy), np.max(
         np.abs(y_torch.numpy() - y_scipy)
     )
+
+
+@pytest.mark.parametrize(
+    ("backend", "expected_form"), [("ssm", "tdf2"), ("torchlpc", "df2")]
+)
+def test_backend_default_form(backend: str, expected_form: str):
+    batch_size, time_steps, order = 2, 17, 2
+    b = torch.randn(batch_size, time_steps, order + 1).double()
+    a = torch.randn(batch_size, time_steps, order).double() * 0.1
+    x = torch.randn(batch_size, time_steps).double()
+
+    actual = lfilter(b, a, x, backend=backend)
+    expected = lfilter(b, a, x, form=expected_form, backend=backend)
+
+    assert torch.allclose(actual, expected)
+
+
+@pytest.mark.parametrize("form", ["df1", "tdf1"])
+def test_direct_form_forwards_unroll_factor(form: str, monkeypatch):
+    batch_size, time_steps, order = 2, 17, 2
+    b = torch.randn(batch_size, time_steps, order + 1)
+    a = torch.randn(batch_size, time_steps, order) * 0.1
+    x = torch.randn(batch_size, time_steps)
+    recursion = Mock(wraps=lpv_filtering.state_space_recursion)
+    monkeypatch.setattr(lpv_filtering, "state_space_recursion", recursion)
+
+    lfilter(b, a, x, form=form, unroll_factor=3)
+
+    recursion.assert_called_once()
+    assert recursion.call_args.kwargs["unroll_factor"] == 3
 
 
 @pytest.mark.parametrize("num_order", [1, 3, 5])

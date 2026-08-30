@@ -1,9 +1,13 @@
 *.pyc
+*.so
+__pycache__/
 .vscode/
 .idea/
 *.egg-info/
 dist/
 build/
+philtorch/_version.py
+.coverage
 
 # pixi environments
 .pixi/*

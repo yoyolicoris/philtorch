@@ -1,0 +1,27 @@
+#!/usr/bin/env bash
+set -euo pipefail
+
+if (($# == 0)); then
+    echo "usage: $0 COMMAND [ARG ...]" >&2
+    exit 2
+fi
+
+if ! command -v systemd-run >/dev/null 2>&1; then
+    echo "error: systemd-run is required to enforce resource limits" >&2
+    exit 1
+fi
+
+repo_root="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
+
+exec systemd-run \
+    --user \
+    --scope \
+    --quiet \
+    --property="CPUQuota=${PHILTORCH_CPU_QUOTA:-300%}" \
+    --property="MemoryMax=${PHILTORCH_MEMORY_MAX:-12G}" \
+    --property="MemorySwapMax=${PHILTORCH_MEMORY_SWAP_MAX:-0}" \
+    env \
+    MAX_JOBS="${MAX_JOBS:-2}" \
+    OMP_NUM_THREADS="${OMP_NUM_THREADS:-3}" \
+    TRITON_PTXAS_PATH="${TRITON_PTXAS_PATH:-$repo_root/.pixi/envs/default/bin/ptxas}" \
+    "$@"

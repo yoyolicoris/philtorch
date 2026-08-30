@@ -26,8 +26,9 @@ jobs:
       - uses: actions/checkout@v4
         with:
           fetch-depth: 0
-          # fetch-depth: 0 required so setuptools-git-versioning can read full
+          # fetch-depth: 0 required so setuptools_scm can read full
           # git history and tags to derive the package version number.
+          submodules: recursive
 
       - uses: actions/setup-python@v5
         with:
@@ -73,7 +74,7 @@ jobs:
           # macOS CPU wheels on the PyTorch index aren't `+cpu`-suffixed, so
           # add the suffix only off-macOS (resolved via runner.os).
           CIBW_BEFORE_BUILD: >-
-            pip install "setuptools>=77.0.3" "setuptools-git-versioning>=2.0,<3" wheel &&
+            pip install "setuptools>=77.0.3" "setuptools_scm>=8" wheel &&
             pip install torch==${{ inputs.torch_version }}${{ runner.os != 'macOS' && '+cpu' || '' }} --index-url https://download.pytorch.org/whl/cpu
           CIBW_TEST_SKIP: "*"
           # torch's libs are excluded from repair: torch is a separate runtime

@@ -7,6 +7,13 @@ from philtorch.lpv import lfilter, allpole as lpv_allpole, fir as lpv_fir
 from .test_lpv_lfilter import _generate_random_signal
 
 
+def test_fir_defaults_to_transposed():
+    b = torch.randn(2, 17, 3)
+    x = torch.randn(2, 17)
+
+    assert torch.allclose(lpv_fir(b, x), lpv_fir(b, x, transpose=True))
+
+
 @pytest.mark.parametrize("B", [1, 8])
 @pytest.mark.parametrize("T", [64])
 @pytest.mark.parametrize("order", [1, 2, 4])
@@ -22,7 +29,7 @@ def test_allpole_inverse(B: int, T: int, order: int):
 
     # Inverse all-pole filter
     b = torch.cat([torch.ones(B, T, 1), a], dim=-1)  # FIR coefficients from all-pole
-    x_reconstructed, _ = lpv_fir(b, y, zi=zi)
+    x_reconstructed, _ = lpv_fir(b, y, zi=zi, transpose=False)
 
     assert x.shape == x_reconstructed.shape, "Reconstructed signal shape mismatch"
     assert torch.allclose(x, x_reconstructed), "Reconstructed signal mismatch"
@@ -41,7 +48,7 @@ def test_fir_inverse(B: int, T: int, order: int):
     zi = torch.zeros(B, order).double()
 
     # Apply FIR filter
-    y, _ = lpv_fir(b, x, zi=zi)
+    y, _ = lpv_fir(b, x, zi=zi, transpose=False)
 
     # Inverse FIR filter
     x_reconstructed, _ = lpv_allpole(a, y / g0.squeeze(2), zi=zi)

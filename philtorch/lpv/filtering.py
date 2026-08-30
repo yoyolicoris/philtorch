@@ -2,22 +2,18 @@ import torch
 from torch import Tensor
 from typing import Optional, Union
 from functools import reduce, partial
-from torchlpc import sample_wise_lpc
 import torch.nn.functional as F
+
+from .._torchlpc import AllPole
 
 from ..utils import chain_functions
 from ..mat import companion
-from .ssm import (
-    state_space,
-    state_space_recursion,
-    _ext_ss_recur,
-    extension_backend_indicator,
-)
+from .ssm import state_space, state_space_recursion
 from .utils import diag_shift
 
 
 def fir(
-    b: Tensor, x: Tensor, zi: Optional[Tensor] = None, transpose: bool = False
+    b: Tensor, x: Tensor, zi: Optional[Tensor] = None, transpose: bool = True
 ) -> Union[Tensor, tuple[Tensor, Tensor]]:
     """Apply a batch of parameter-varying FIR filters.
 
@@ -29,7 +25,7 @@ def fir(
         b (Tensor): Time-varying FIR coefficients with shape (B, N, M + 1).
         x (Tensor): Input signal with shape (B, N).
         zi (Tensor, optional): Initial conditions with shape (B, M).
-        transpose (bool): If True, compute the transpose implementation.
+        transpose (bool): If True, compute the transpose implementation. Defaults to True.
 
     Returns:
         Filtered output and optionally final state.
@@ -127,12 +123,15 @@ def allpole(
             + ([torch.zeros_like(zi)] if return_zf else []),
             dim=1,
         )
-        y = sample_wise_lpc(x, a)
+        y = AllPole.apply(x, a, a.new_zeros(a.size(0), a.size(2)))
         if return_zf:
             return torch.split_with_sizes(y, [T, a.size(2)], 1)
         return y
 
-    return sample_wise_lpc(x, a, zi=zi, return_zf=return_zf)
+    y = AllPole.apply(x, a, zi)
+    if return_zf:
+        return y, y[:, -a.size(2) :].flip(1)
+    return y  # type: ignore[return-value]
 
 
 def lfilter(
@@ -140,7 +139,7 @@ def lfilter(
     a: Tensor,
     x: Tensor,
     zi: Optional[Tensor] = None,
-    form: str = "df2",
+    form: Optional[str] = None,
     backend: str = "ssm",
     **kwargs: Optional[dict],
 ) -> Union[Tensor, tuple[Tensor, Tensor]]:
@@ -150,7 +149,9 @@ def lfilter(
         a (Tensor): Coefficients of the all-pole filters, shape (B, N, M_a) or (N, M_a).
         x (Tensor): Input signal, shape (B, N) or (N).
         zi (Tensor, optional): Initial conditions for the filter, shape (B, max(M_a, M_b)) or (max(M_a, M_b)).
-        form (str): The filter form to use. Options are 'df2', 'tdf2', 'df1', 'tdf1'.
+        form (str, optional): The filter form to use. Defaults to 'tdf2' for the
+            SSM backend and 'df2' for torchlpc. Options are 'df2', 'tdf2',
+            'df1', 'tdf1'.
         backend (str): The backend to use for filtering. Options are 'ssm', 'torchlpc'.
         **kwargs: Additional keyword arguments for the backend-specific filtering function.
     Returns:
@@ -171,6 +172,9 @@ def lfilter(
 
     assert b.dim() in (2, 3), "Numerator coefficients b must be 2D or 3D."
     assert a.dim() in (2, 3), "Denominator coefficients a must be 2D or 3D."
+
+    if form is None:
+        form = "df2" if backend == "torchlpc" else "tdf2"
 
     match backend:
         case "ssm":
@@ -246,7 +250,12 @@ def _torchlpc_lfilter(
         case "df2":
             filt = chain_functions(
                 partial(allpole, broadcasted_a, zi=zi[:, : a.shape[2]]),
-                lambda x, a_zf: fir(broadcasted_b, x, zi=zi[:, : b.shape[2] - 1])
+                lambda x, a_zf: fir(
+                    broadcasted_b,
+                    x,
+                    zi=zi[:, : b.shape[2] - 1],
+                    transpose=False,
+                )
                 + (a_zf,),
                 lambda x, b_zf, a_zf: (
                     (
@@ -264,7 +273,7 @@ def _torchlpc_lfilter(
         case "df1":
             # In Direct Form I, the initial conditions are neglected.
             filt = chain_functions(
-                partial(fir, broadcasted_b),
+                partial(fir, broadcasted_b, transpose=False),
                 partial(allpole, broadcasted_a),
             )
         case "tdf1":
@@ -333,13 +342,13 @@ def _ssm_lfilter(
         case "df1":
             zi = x.new_zeros((x.size(0), A.size(-1)))
             filt = chain_functions(
-                partial(fir, b.broadcast_to((x.size(0), -1, -1))),
                 partial(
-                    (
-                        _ext_ss_recur
-                        if extension_backend_indicator(x, A.size(-1))
-                        else state_space_recursion
-                    ),
+                    fir,
+                    b.broadcast_to((x.size(0), -1, -1)),
+                    transpose=False,
+                ),
+                partial(
+                    state_space_recursion,
                     A,
                     zi,
                     out_idx=0,
@@ -350,11 +359,7 @@ def _ssm_lfilter(
             zi = x.new_zeros((x.size(0), A.size(-1)))
             filt = chain_functions(
                 partial(
-                    (
-                        _ext_ss_recur
-                        if extension_backend_indicator(x, A.size(-1))
-                        else state_space_recursion
-                    ),
+                    state_space_recursion,
                     A.mT.conj(),
                     zi,
                     out_idx=0,

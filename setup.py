@@ -98,13 +98,64 @@ def get_extensions():
     sources = list(glob.glob(os.path.join(extensions_dir, "*.cpp")))
     cuda_sources = list(glob.glob(os.path.join(extensions_dir, "*.cu")))
 
+    torchlpc_root = os.path.join(
+        this_dir, "third_party", "torchlpc", "torchlpc", "csrc"
+    )
+    torchlpc_sources = [
+        os.path.join(torchlpc_root, "cuda", name)
+        for name in ("lpc.cu", "linear_recurrence.cu")
+    ]
+    pararnn_root = os.path.join(this_dir, "third_party", "pararnn", "pararnn", "csrc")
+    pararnn_sources = [os.path.join(pararnn_root, "parallel_reduce.cu")]
+
+    if use_cuda:
+        vendored_sources = [*torchlpc_sources, *pararnn_sources]
+        missing_sources = [
+            path for path in vendored_sources if not os.path.isfile(path)
+        ]
+        if missing_sources:
+            relative_paths = [
+                os.path.relpath(path, this_dir) for path in missing_sources
+            ]
+            raise RuntimeError(
+                "CUDA builds require initialized third-party submodules. Run "
+                "'git submodule update --init --recursive'. Missing: "
+                + ", ".join(relative_paths)
+            )
+
+        extra_compile_args.setdefault("cxx", []).append(f"-I{torchlpc_root}")
+        extra_compile_args.setdefault("cxx", []).append(
+            f"-I{os.path.join(torchlpc_root, 'cuda')}"
+        )
+        extra_compile_args.setdefault("cxx", []).append(f"-I{pararnn_root}")
+        extra_compile_args.setdefault("cxx", []).extend(
+            ["-DFLOAT64_CHUNK_SIZE_DIAG=4", "-DFLOAT64_CHUNK_SIZE_BLOCK_DIAG_2x2=1"]
+        )
+        extra_compile_args.setdefault("nvcc", []).extend(
+            [
+                "-U__CUDA_NO_HALF_OPERATORS__",
+                "-U__CUDA_NO_HALF_CONVERSIONS__",
+                "-U__CUDA_NO_BFLOAT16_CONVERSIONS__",
+                "-D__CUDA_INCLUDE_HALF_OPERATORS__",
+                "-D__CUDA_INCLUDE_BFLOAT16_OPERATORS__",
+                "-Xcudafe",
+                "--diag_suppress=1886",
+                "-DFLOAT64_CHUNK_SIZE_DIAG=4",
+                "-DFLOAT64_CHUNK_SIZE_BLOCK_DIAG_2x2=1",
+            ]
+        )
+
     if sys.platform == "darwin":
         sources += list(glob.glob(os.path.join(extensions_dir, "*.mm")))
         extra_link_args.extend(["-framework", "Foundation", "-framework", "Metal"])
 
+    if not use_cuda:
+        sources = [s for s in sources if "pararnn_shim" not in os.path.basename(s)]
+
     if use_cuda:
         sources += cuda_sources
-        extra_compile_args["nvcc"] = ["--extended-lambda"]
+        sources += pararnn_sources
+        extra_compile_args.setdefault("nvcc", []).append("--extended-lambda")
 
     if len(sources) == 0:
         return []
@@ -112,9 +163,7 @@ def get_extensions():
     ext_modules = [
         extension(
             f"{library_name}._C",
-            # sources,
             [os.path.relpath(s, this_dir) for s in sources],
-            # ["philtorch/csrc/recur2.cu"],
             extra_compile_args=extra_compile_args,
             extra_link_args=extra_link_args,
         )

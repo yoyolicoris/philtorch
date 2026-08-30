@@ -4,5 +4,6 @@ recursive-include philtorch *.cpp
 recursive-include philtorch *.cuh
 recursive-include philtorch *.cu
 recursive-include philtorch *.mm
-include build_version.py
+recursive-include third_party *
+include README.md
 exclude tests/*

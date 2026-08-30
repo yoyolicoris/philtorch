@@ -3,16 +3,7 @@ import warnings
 import torch
 from typing import Any, Optional
 
-try:
-    from . import _C
-
-    EXTENSION_LOADED = True
-except (
-    ImportError
-) as error:  # pragma: no cover - exercised only without the compiled extension
-    EXTENSION_LOADED = False
-    warnings.warn(f"Custom extension not loaded: {error}")
-
+from . import _C  # noqa: F401
 
 try:
     from ._helion import (
@@ -30,7 +21,10 @@ else:
     HELION_LOADED = True
 
 
-__version__ = Path(__file__).parent.joinpath("VERSION.txt").read_text()
+try:
+    from ._version import __version__ as __version__  # type: ignore
+except ImportError:
+    __version__ = Path(__file__).parent.joinpath("VERSION.txt").read_text().strip()
 
 
 def _recurN_backward(f):
@@ -156,121 +150,111 @@ def _setup_context(ctx: Any, inputs: list[Any], output: Any) -> Any:
     ctx.save_for_backward(A, zi, y)
 
 
-if EXTENSION_LOADED:
-
-    @torch.library.register_fake("philtorch::recur2")
-    def _(A, zi, x):
-        torch._check(A.shape[-1] == A.shape[-2] == 2, "A must be square.")
-        torch._check(A.ndim in (3, 4), "A must be 3D or 4D.")
-        torch._check(zi.shape[1] == 2, "zi must have last dimension of size 2.")
-        torch._check(x.shape[2] == 2, "x must have last dimension of size 2.")
-        torch._check(
-            x.shape[1] == A.shape[-3],
-            "x's second dimension must match A's last-3 dimension.",
-        )
-        torch._check(
-            x.shape[0] == zi.shape[0], "x and zi must have the same batch size."
-        )
-        if A.ndim == 4:
-            torch._check(
-                A.shape[0] == x.shape[0],
-                "If A is 4D, its first dimension must match x's batch size.",
-            )
-        return torch.empty_like(x)
-
-    @torch.library.register_fake("philtorch::recurN")
-    def _(A, zi, x):
-        torch._check(A.shape[-1] == A.shape[-2] == x.shape[2], "A must be square.")
-        torch._check(A.ndim in (3, 4), "A must be 3D or 4D.")
-        torch._check(
-            zi.shape[1] == x.shape[2], "zi must have last dimension of size 2."
-        )
-        torch._check(
-            x.shape[1] == A.shape[-3],
-            "x's second dimension must match A's last-3 dimension.",
-        )
-        torch._check(
-            x.shape[0] == zi.shape[0], "x and zi must have the same batch size."
-        )
-        if A.ndim == 4:
-            torch._check(
-                A.shape[0] == x.shape[0],
-                "If A is 4D, its first dimension must match x's batch size.",
-            )
-        return torch.empty_like(x)
-
-    @torch.library.register_fake("philtorch::lti_recur2")
-    def _(A, zi, x):
-        torch._check(A.shape[-1] == A.shape[-2] == 2, "A must be square.")
-        torch._check(A.ndim in (2, 3), "A must be 2D or 3D.")
-        torch._check(zi.shape[1] == 2, "zi must have last dimension of size 2.")
-        torch._check(x.shape[2] == 2, "x must have last dimension of size 2.")
-        torch._check(
-            x.shape[0] == zi.shape[0], "x and zi must have the same batch size."
-        )
-        if A.ndim == 3:
-            torch._check(
-                A.shape[0] == x.shape[0],
-                "If A is 3D, its first dimension must match x's batch size.",
-            )
-        return torch.empty_like(x)
-
-    @torch.library.register_fake("philtorch::lti_recurN")
-    def _(A, zi, x):
-        torch._check(A.shape[-1] == A.shape[-2] == x.shape[2], "A must be square.")
-        torch._check(A.ndim in (2, 3), "A must be 2D or 3D.")
-        torch._check(
-            zi.shape[1] == x.shape[2], "zi must have last dimension of size 2."
-        )
-        torch._check(
-            x.shape[0] == zi.shape[0], "x and zi must have the same batch size."
-        )
-        if A.ndim == 3:
-            torch._check(
-                A.shape[0] == x.shape[0],
-                "If A is 3D, its first dimension must match x's batch size.",
-            )
-        return torch.empty_like(x)
-
-    @torch.library.register_fake("philtorch::lti_recur")
-    def _(A, zi, x):
-        torch._check(A.ndim <= 1, "A must be 1D or scalar.")
-        torch._check(zi.ndim == 1, "zi must be 1D.")
-        torch._check(x.ndim == 2, "x must be 2D.")
-        torch._check(x.shape[1] > 0, lambda: "x must contain at least one time step.")
-        torch._check(
-            zi.shape[0] == x.shape[0], "x and zi must have the same batch size."
-        )
-        if A.ndim == 1 and A.shape[0] != 1:
-            torch._check(
-                A.shape[0] == x.shape[0],
-                "If A is 1D, its length must match x's batch size.",
-            )
-        return torch.empty_like(x)
-
-    torch.library.register_autograd(
-        "philtorch::recur2",
-        _recurN_backward(torch.ops.philtorch.recur2),
-        setup_context=_setup_context,
+@torch.library.register_fake("philtorch::recur2")
+def _(A, zi, x):
+    torch._check(A.shape[-1] == A.shape[-2] == 2, "A must be square.")
+    torch._check(A.ndim in (3, 4), "A must be 3D or 4D.")
+    torch._check(zi.shape[1] == 2, "zi must have last dimension of size 2.")
+    torch._check(x.shape[2] == 2, "x must have last dimension of size 2.")
+    torch._check(
+        x.shape[1] == A.shape[-3],
+        "x's second dimension must match A's last-3 dimension.",
     )
-    torch.library.register_autograd(
-        "philtorch::recurN",
-        _recurN_backward(torch.ops.philtorch.recurN),
-        setup_context=_setup_context,
+    torch._check(x.shape[0] == zi.shape[0], "x and zi must have the same batch size.")
+    if A.ndim == 4:
+        torch._check(
+            A.shape[0] == x.shape[0],
+            "If A is 4D, its first dimension must match x's batch size.",
+        )
+    return torch.empty_like(x)
+
+
+@torch.library.register_fake("philtorch::recurN")
+def _(A, zi, x):
+    torch._check(A.shape[-1] == A.shape[-2] == x.shape[2], "A must be square.")
+    torch._check(A.ndim in (3, 4), "A must be 3D or 4D.")
+    torch._check(zi.shape[1] == x.shape[2], "zi must have last dimension of size 2.")
+    torch._check(
+        x.shape[1] == A.shape[-3],
+        "x's second dimension must match A's last-3 dimension.",
     )
-    torch.library.register_autograd(
-        "philtorch::lti_recur2",
-        _lti_recurN_backward(torch.ops.philtorch.lti_recur2),
-        setup_context=_setup_context,
-    )
-    torch.library.register_autograd(
-        "philtorch::lti_recurN",
-        _lti_recurN_backward(torch.ops.philtorch.lti_recurN),
-        setup_context=_setup_context,
-    )
-    torch.library.register_autograd(
-        "philtorch::lti_recur", _lti_recur_backward, setup_context=_setup_context
-    )
+    torch._check(x.shape[0] == zi.shape[0], "x and zi must have the same batch size.")
+    if A.ndim == 4:
+        torch._check(
+            A.shape[0] == x.shape[0],
+            "If A is 4D, its first dimension must match x's batch size.",
+        )
+    return torch.empty_like(x)
+
+
+@torch.library.register_fake("philtorch::lti_recur2")
+def _(A, zi, x):
+    torch._check(A.shape[-1] == A.shape[-2] == 2, "A must be square.")
+    torch._check(A.ndim in (2, 3), "A must be 2D or 3D.")
+    torch._check(zi.shape[1] == 2, "zi must have last dimension of size 2.")
+    torch._check(x.shape[2] == 2, "x must have last dimension of size 2.")
+    torch._check(x.shape[0] == zi.shape[0], "x and zi must have the same batch size.")
+    if A.ndim == 3:
+        torch._check(
+            A.shape[0] == x.shape[0],
+            "If A is 3D, its first dimension must match x's batch size.",
+        )
+    return torch.empty_like(x)
+
+
+@torch.library.register_fake("philtorch::lti_recurN")
+def _(A, zi, x):
+    torch._check(A.shape[-1] == A.shape[-2] == x.shape[2], "A must be square.")
+    torch._check(A.ndim in (2, 3), "A must be 2D or 3D.")
+    torch._check(zi.shape[1] == x.shape[2], "zi must have last dimension of size 2.")
+    torch._check(x.shape[0] == zi.shape[0], "x and zi must have the same batch size.")
+    if A.ndim == 3:
+        torch._check(
+            A.shape[0] == x.shape[0],
+            "If A is 3D, its first dimension must match x's batch size.",
+        )
+    return torch.empty_like(x)
+
+
+@torch.library.register_fake("philtorch::lti_recur")
+def _(A, zi, x):
+    torch._check(A.ndim <= 1, "A must be 1D or scalar.")
+    torch._check(zi.ndim == 1, "zi must be 1D.")
+    torch._check(x.ndim == 2, "x must be 2D.")
+    torch._check(x.shape[1] > 0, lambda: "x must contain at least one time step.")
+    torch._check(x.shape[0] == zi.shape[0], "x and zi must have the same batch size.")
+    if A.ndim == 1 and A.shape[0] != 1:
+        torch._check(
+            A.shape[0] == x.shape[0],
+            "If A is 1D, its length must match x's batch size.",
+        )
+    return torch.empty_like(x)
+
+
+torch.library.register_autograd(
+    "philtorch::recur2",
+    _recurN_backward(torch.ops.philtorch.recur2),
+    setup_context=_setup_context,
+)
+torch.library.register_autograd(
+    "philtorch::recurN",
+    _recurN_backward(torch.ops.philtorch.recurN),
+    setup_context=_setup_context,
+)
+torch.library.register_autograd(
+    "philtorch::lti_recur2",
+    _lti_recurN_backward(torch.ops.philtorch.lti_recur2),
+    setup_context=_setup_context,
+)
+torch.library.register_autograd(
+    "philtorch::lti_recurN",
+    _lti_recurN_backward(torch.ops.philtorch.lti_recurN),
+    setup_context=_setup_context,
+)
+torch.library.register_autograd(
+    "philtorch::lti_recur", _lti_recur_backward, setup_context=_setup_context
+)
+
 
 if HELION_LOADED:
 

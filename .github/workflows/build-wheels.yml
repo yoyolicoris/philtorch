@@ -109,12 +109,9 @@ jobs:
       os: macos-latest
       torch_version: ${{ matrix.torch-version }}
 
-  # Windows is built (for regression signal) but never tested or published:
-  # torchlpc, a mandatory runtime dep, fails to compile on MSVC, so a Windows
-  # `pip install philtorch` can't work yet. Re-enable test/publish once
-  # torchlpc builds on Windows. See PR #20 for details. Only the latest
-  # resolved Torch minor is built (not matrixed like ubuntu/macos) since it's
-  # purely a build smoke test and Windows runners are comparatively costly.
+  # Windows: torchlpc is now vendored (DiffAPF/torchlpc@1bfde4a) and bundled into
+  # philtorch._C, so MSVC no longer needs external torchlpc wheel. Windows is
+  # built and publishable; test-windows runs smoke test.
   build-wheels-windows:
     needs: resolve-torch-versions
     permissions:
@@ -193,6 +190,26 @@ jobs:
     secrets:
       codecov_token: ${{ secrets.CODECOV_TOKEN }}
 
+  # Mirrors build-wheels-macos: only pull_request and official releases test
+  # a Windows wheel. Windows builds only the latest torch version (to save
+  # runner cost), so we constrain this test to that same single version
+  # rather than matrixing over 3 versions which would 404 on missing artifacts.
+  test-windows:
+    if: >
+      github.event_name == 'pull_request' ||
+      github.event_name == 'release' ||
+      startsWith(github.ref, 'refs/tags/')
+    needs: [resolve-torch-versions, build-wheels-windows]
+    permissions:
+      contents: read
+    uses: ./.github/workflows/_test-wheel.yml
+    with:
+      os: windows-latest
+      python_versions: ${{ github.event_name == 'pull_request' && '["3.13"]' || '["3.10", "3.11", "3.12", "3.13"]' }}
+      torch_version: ${{ fromJson(needs.resolve-torch-versions.outputs.matrix)[0] }}
+    secrets:
+      codecov_token: ${{ secrets.CODECOV_TOKEN }}
+
   build-sdist:
     runs-on: ubuntu-latest
     permissions:
@@ -201,8 +218,8 @@ jobs:
       - uses: actions/checkout@v4
         with:
           fetch-depth: 0
-          # fetch-depth: 0 required so setuptools-git-versioning can read full
-          # git history and tags to derive the package version number.
+          submodules: recursive
+          # fetch-depth 0 + submodules required so setuptools_scm sees tags and vendored third_party.
 
       - uses: actions/setup-python@v5
         with:
@@ -210,7 +227,7 @@ jobs:
           cache: "pip"
 
       - name: Install build dependencies
-        run: python -m pip install build
+        run: python -m pip install "setuptools_scm>=8" build
 
       - name: Build sdist
         run: python -m build --sdist
@@ -264,19 +281,12 @@ jobs:
     environment:
       name: ${{ (github.event_name == 'release' || startsWith(github.ref, 'refs/tags/')) && 'pypi' || 'testpypi' }}
     steps:
-      # Download wheels by explicit per-OS name (not `pattern: wheels-*`) so
-      # the never-published Windows wheel is excluded, and only the wheel for
-      # the latest resolved Torch minor (matrix[0]) is published.
       - name: Download Linux wheel
         uses: actions/download-artifact@v4
         with:
           name: wheels-ubuntu-latest-torch${{ fromJson(needs.resolve-torch-versions.outputs.matrix)[0] }}
           path: dist/
 
-      # Only downloaded when build-wheels-macos succeeded; a macOS build
-      # failure just omits this wheel instead of blocking the whole publish
-      # job (see job-level comment above). test-macos's result isn't
-      # checked, so a failing test there doesn't omit the wheel either.
       - name: Download macOS wheel
         if: >
           (github.event_name == 'release' || startsWith(github.ref, 'refs/tags/')) &&
@@ -284,6 +294,12 @@ jobs:
         uses: actions/download-artifact@v4
         with:
           name: wheels-macos-latest-torch${{ fromJson(needs.resolve-torch-versions.outputs.matrix)[0] }}
+          path: dist/
+
+      - name: Download Windows wheel
+        uses: actions/download-artifact@v4
+        with:
+          name: wheels-windows-latest-torch${{ fromJson(needs.resolve-torch-versions.outputs.matrix)[0] }}
           path: dist/
 
       - uses: actions/download-artifact@v4

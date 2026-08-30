@@ -3,6 +3,8 @@ from torch import Tensor
 from torch.nn import functional as F
 from typing import Optional
 
+from .._torchlpc import ScanRecurrence
+
 
 def _scalar_recursion_loop(
     a: Tensor,
@@ -36,6 +38,12 @@ def linear_recurrence(
     Returns:
         Tensor: Output sequence of shape (B, N).
     """
+
+    if unroll_factor == 1:
+        return ScanRecurrence.apply(
+            x, a.broadcast_to(x.shape), init.broadcast_to(x.shape[0])
+        )
+
     assert x.dim() == 2, f"Input x must be 2D, got {x.shape}"
     assert a.dim() in (1, 2), f"State matrix a must be 1D or 2D, got {a.shape}"
     if a.dim() == 1 and a.size(0) != x.size(1):

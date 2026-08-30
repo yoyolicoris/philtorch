@@ -7,13 +7,14 @@ from functools import partial
 
 from ..mat import matrix_power_accumulate, find_eigenvectors
 from .recur import linear_recurrence, LTIRecurrence
-from .. import EXTENSION_LOADED, HELION_LOADED
+from .. import HELION_LOADED
 
 
 def extension_backend_indicator(x: Tensor, M: int) -> bool:
     """Decide whether to prefer the compiled extension backend.
 
-    The indicator returns True when a compiled extension is available.
+    The indicator returns True when the compiled implementation supports the
+    requested device and state dimension.
 
     Args:
         x (Tensor): Input tensor (used to inspect device/shape).
@@ -22,7 +23,7 @@ def extension_backend_indicator(x: Tensor, M: int) -> bool:
     Returns:
         bool: True when the extension backend can be used.
     """
-    return EXTENSION_LOADED and (M == 2 or (x.is_cpu and M >= 2))
+    return M <= 2 or x.is_cpu
 
 
 def helion_backend_indicator(x: Tensor) -> bool:
@@ -173,10 +174,6 @@ def _ext_ss_recur(
     Returns:
         Tensor: Output state sequence (B, T, M) or (B, T) if ``out_idx`` used.
     """
-    assert (
-        EXTENSION_LOADED or HELION_LOADED
-    ), "Compiled extension or the Helion backend is not available"
-
     if x.dim() == 2 and A.size(-1) == 1:
         y = LTIRecurrence.apply(A[..., 0, 0], zi.squeeze(-1), x).unsqueeze(-1)
     elif A.size(-1) == 1:
@@ -193,6 +190,12 @@ def _ext_ss_recur(
     if out_idx is not None and y.dim() == 3:
         y = y[:, :, out_idx]
     return y
+
+
+def _select_recursion_runner(x: Tensor, M: int, unroll_factor: int):
+    if unroll_factor == 1 and extension_backend_indicator(x, M):
+        return _ext_ss_recur
+    return _recursion_loop
 
 
 def state_space_recursion(
@@ -251,11 +254,11 @@ def state_space_recursion(
     else:
         block_size = unroll_factor
 
+    runner = _select_recursion_runner(x, M, block_size)
+
     # boundary condition
     if block_size == 1 or block_size >= N:
-        if helion_backend_indicator(x):
-            return _ext_ss_recur(A, zi, x, out_idx=out_idx)
-        return _recursion_loop(A, zi, x, out_idx=out_idx)
+        return runner(A, zi, x, out_idx=out_idx)
 
     remainder = N % block_size
     if remainder != 0:
@@ -390,7 +393,7 @@ def state_space(
     C: Optional[Tensor] = None,
     D: Optional[Tensor] = None,
     zi: Optional[Tensor] = None,
-    unroll_factor: Optional[int] = None,
+    unroll_factor: int = 1,
     out_idx: Optional[int] = None,
     # **kwargs,
 ):
@@ -412,11 +415,9 @@ def state_space(
         C (Tensor, optional): Output matrix (broadcastable).
         D (Tensor, optional): Direct feedthrough matrix (broadcastable).
         zi (Tensor, optional): Initial state (B, M) or (M,) (broadcastable).
-        unroll_factor (int, optional): Block unroll factor to accelerate
-            long recurrences if the pure-Python backend is used.
-            Setting it to >1 forces the pure-Python backend even if a compiled
-            extension is available.
-            If ``None``, it is set to ``round(N**0.5)``.
+        unroll_factor (int): Recursion block size. The default of 1 selects a
+            compiled kernel when supported and otherwise uses the naive Python
+            loop. Setting it to >1 forces block-unrolled Python recursion.
         out_idx (int, optional): If provided, return only this state index per timestep.
 
     Returns:
@@ -448,9 +449,6 @@ def state_space(
         zi = x.new_zeros(batch_size, M)
     elif zi.dim() == 1:
         zi = zi.unsqueeze(0).expand(batch_size, -1)
-
-    if unroll_factor is None:
-        unroll_factor = round(N**0.5)
 
     if x.dim() == 2:
         features = -1
@@ -484,14 +482,8 @@ def state_space(
     else:
         Bx = x
 
-    recur_runner = (
-        _ext_ss_recur
-        if extension_backend_indicator(x, M) and unroll_factor in (None, 1)
-        else state_space_recursion
-    )
-
     if return_zf or out_idx is None:
-        h = recur_runner(A, zi, Bx, unroll_factor=unroll_factor, out_idx=None)
+        h = state_space_recursion(A, zi, Bx, unroll_factor=unroll_factor, out_idx=None)
         zf = h[:, -1, :] if return_zf else None
         h = (
             torch.cat([zi.unsqueeze(1), h[:, :-1]], dim=1)
@@ -500,7 +492,9 @@ def state_space(
         )
     else:
         zf = None
-        h = recur_runner(A, zi, Bx, unroll_factor=unroll_factor, out_idx=out_idx)
+        h = state_space_recursion(
+            A, zi, Bx, unroll_factor=unroll_factor, out_idx=out_idx
+        )
         h = torch.cat([zi[:, None, out_idx], h[:, :-1]], dim=1)
 
     y = _ssm_C_D(h, x, C, D, batch_size, M)
@@ -600,7 +594,7 @@ def diag_state_space(
     D: Optional[Tensor] = None,
     zi: Optional[Tensor] = None,
     out_idx: Optional[int] = None,
-    unroll_factor: Optional[int] = None,
+    unroll_factor: int = 1,
 ):
     """Compute outputs from a diagonalised (eigen) state-space model.
 
@@ -622,11 +616,9 @@ def diag_state_space(
         D (Tensor, optional): Direct feedthrough matrix (broadcastable).
         zi (Tensor, optional): Initial state (B, M) or (M,) (broadcastable).
         out_idx (int, optional): If provided, return only this state index per timestep.
-        unroll_factor (int, optional): Block unroll factor to accelerate
-            long recurrences if the pure-Python backend is used.
-            Setting it to >1 forces the pure-Python backend even if a compiled
-            extension is available.
-            If ``None``, it is set to ``round(N**0.5)``.
+        unroll_factor (int): Recursion block size. The default of 1 selects the
+            compiled kernel. Setting it to >1 forces block-unrolled Python
+            recursion.
 
     Returns:
         Tensor or 2-tuple with the second Tensor being the final state `zf` if `zi` is provided.
@@ -640,9 +632,7 @@ def diag_state_space(
             "C and out_idx cannot be used together. Use either C or out_idx."
         )
 
-    batch_size, N = x.size(0), x.size(1)
-    if unroll_factor is None:
-        unroll_factor = round(N**0.5)
+    batch_size = x.size(0)
 
     if L is None:
         assert A is not None, "Either L or A must be provided"
@@ -793,7 +783,7 @@ def diag_state_space(
 
     recur_runner = (
         LTIRecurrence.apply
-        if EXTENSION_LOADED and unroll_factor in (None, 1)
+        if unroll_factor == 1
         else partial(linear_recurrence, unroll_factor=unroll_factor)
     )
 

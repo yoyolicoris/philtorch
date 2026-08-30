@@ -109,6 +109,11 @@ def linear_recurrence(
     Returns:
         Tensor: Output sequence of shape (B, N).
     """
+    if unroll_factor == 1:
+        return LTIRecurrence.apply(
+            a.broadcast_to(x.shape[0]), init.broadcast_to(x.shape[0]), x
+        )
+
     assert x.dim() == 2, f"Input x must be 2D, got {x.shape}"
     assert a.dim() in (0, 1), f"State matrix a must be 1D or 0D, got {a.shape}"
     if a.dim() == 1 and a.size(0) > 1 and a.size(0) != x.size(0):

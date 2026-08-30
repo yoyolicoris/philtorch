@@ -52,12 +52,6 @@ jobs:
           name: wheels-${{ inputs.os }}-torch${{ inputs.torch_version }}
           path: wheelhouse
 
-      - name: Install Homebrew dependencies for OpenMP (macOS)
-        # torchlpc has no prebuilt wheels and compiles an OpenMP extension from
-        # source; Apple clang++ lacks -fopenmp, so use the Homebrew toolchain.
-        if: runner.os == 'macOS'
-        run: brew install llvm libomp
-
       - name: Install wheel and test dependencies
         # Runs under bash on every OS (Windows uses bundled Git Bash). Torch is
         # installed without the "+cpu" suffix on macOS, matching
@@ -74,20 +68,8 @@ jobs:
 
           pip install torch==${{ inputs.torch_version }}${{ runner.os != 'macOS' && '+cpu' || '' }} --index-url https://download.pytorch.org/whl/cpu
 
-          # torchlpc has no prebuilt wheels; install it with
-          # --no-build-isolation so its build reuses the torch pinned above
-          # instead of pulling an unpinned latest torch into an isolated env.
-          # philtorch installs with --no-deps since torch/torchlpc are present.
-          if [ "$RUNNER_OS" = "macOS" ]; then
-            LLVM_PREFIX="$(brew --prefix llvm)"
-            LIBOMP_PREFIX="$(brew --prefix libomp)"
-            export CXX="$LLVM_PREFIX/bin/clang++"
-            export CPPFLAGS="-I$LIBOMP_PREFIX/include"
-            TORCH_LIB="$(python -c 'from pathlib import Path; import torch; print(Path(torch.__file__).parent / "lib")')"
-            export LDFLAGS="-L$TORCH_LIB -Wl,-rpath,$TORCH_LIB"
-          fi
-
-          pip install --no-build-isolation "torchlpc>=0.7.2"
+          # Vendored torchlpc is now bundled in philtorch._C; no separate pip install.
+          # Keep --no-deps since torch is already present.
           pip install --no-deps "${WHEELS[0]}"
           pip install numpy scipy pytest pytest-cov
 

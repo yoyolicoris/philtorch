@@ -1,42 +1,34 @@
 [build-system]
-requires = [
-    "setuptools >= 77.0.3",
-    "setuptools-git-versioning>=2.0,<3",
-    "wheel",
-]
+requires = ["setuptools >= 77.0.3", "setuptools_scm >= 8", "wheel"]
 build-backend = "setuptools.build_meta:__legacy__"
 
-[tool.setuptools-git-versioning]
-enabled = true
-# change the file path
-version_file = "philtorch/VERSION.txt"
-count_commits_from_version_file = true                # <--- enable commits tracking
-dev_template = "{tag}.{branch}{ccount}"               # suffix for versions will be .dev
-dirty_template = "{tag}.{branch}{ccount}"             # same thing here
-branch_formatter = "build_version:format_branch_name"
+[tool.setuptools_scm]
+fallback_version = "0.4"
+version_scheme = "guess-next-dev"
+local_scheme = "no-local-version"
+write_to = "philtorch/_version.py"
 
 [tool.setuptools.package-data]
-# include VERSION file to a package
-philtorch = ["VERSION"]
+philtorch = ["VERSION.txt"]
 
 [tool.setuptools.packages.find]
 where = ["."]
 exclude = ["tests", "tests.*"]
 
 [tool.setuptools]
-# this package will read some included files in runtime, avoid installing it as .zip
 zip-safe = false
 
 [project]
 dynamic = ["version"]
 name = "philtorch"
-dependencies = ["torch >= 2.0.0", "torchlpc >= 0.7.2"]
+dependencies = ["torch >= 2.0.0"]
 requires-python = ">=3.10"
 authors = [{ name = "Chin-Yun Yu", email = "chin-yun.yu@qmul.ac.uk" }]
 maintainers = [{ name = "Chin-Yun Yu", email = "chin-yun.yu@qmul.ac.uk" }]
 description = "A PyTorch library for time-varying IIR filters."
 readme = "README.md"
-license = { text = "MIT" }
+license = "MIT"
+license-files = ["LICENSE", "NOTICE", "LICENSES/*"]
 classifiers = [
     "Development Status :: 3 - Alpha",
     "Intended Audience :: Developers",
@@ -49,10 +41,7 @@ classifiers = [
 
 [project.optional-dependencies]
 dev = ["pytest >= 6.0", "scipy", "numpy", "pytest-cov"]
-extra = [
-    "helion>=1.0.0,<2",
-    #    "pararnn @ git+https://github.com/yoyolicoris/ml-pararnn.git@fix/installable",
-]
+extra = ["helion>=1.0.0,<2"]
 
 [tool.pytest.ini_options]
 testpaths = ["tests"]
