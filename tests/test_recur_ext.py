@@ -11,6 +11,16 @@ from philtorch.lpv import state_space_recursion as lpv_state_space
 from .test_lti_ssm import _generate_random_filter_coeffs
 from .test_lpv_filters import _generate_time_varying_coeffs
 
+_REQUIRES_GRAD_CASES = [
+    (True, False, False),
+    (False, True, False),
+    (False, False, True),
+    (True, True, False),
+    (True, False, True),
+    (False, True, True),
+    (True, True, True),
+]
+
 
 @pytest.fixture(params=[lti_ssm, lpv_ssm], ids=["lti", "lpv"])
 def ssm_case(request):
@@ -266,8 +276,17 @@ def test_lti_recur_mps_block_chunks():
 
 
 @pytest.mark.skipif(not torch.backends.mps.is_available(), reason="MPS not available")
+@pytest.mark.parametrize(
+    ("x_requires_grad", "a_requires_grad", "zi_requires_grad"),
+    _REQUIRES_GRAD_CASES,
+)
 @pytest.mark.parametrize("batch_decay", [True, False])
-def test_lti_recur_mps_grad_equiv(batch_decay: bool):
+def test_lti_recur_mps_grad_equiv(
+    x_requires_grad: bool,
+    a_requires_grad: bool,
+    zi_requires_grad: bool,
+    batch_decay: bool,
+):
     batch_size = 3
     samples = 17
     a = torch.rand(batch_size if batch_decay else 1, dtype=torch.float32) * 0.75 - 0.375
@@ -275,22 +294,41 @@ def test_lti_recur_mps_grad_equiv(batch_decay: bool):
     x = torch.randn(batch_size, samples, dtype=torch.float32)
     grad_output = torch.randn_like(x)
 
+    requires_grad = (a_requires_grad, zi_requires_grad, x_requires_grad)
+
     def run(device: str):
         device_inputs = tuple(
-            value.to(device).detach().requires_grad_() for value in (a, zi, x)
+            value.to(device).detach().requires_grad_(input_requires_grad)
+            for value, input_requires_grad in zip((a, zi, x), requires_grad)
+        )
+        differentiable_inputs = tuple(
+            value
+            for value, input_requires_grad in zip(device_inputs, requires_grad)
+            if input_requires_grad
         )
         output = torch.ops.philtorch.lti_recur(*device_inputs)
-        gradients = torch.autograd.grad(
-            output, device_inputs, grad_outputs=grad_output.to(device)
+        computed_gradients = iter(
+            torch.autograd.grad(
+                output,
+                differentiable_inputs,
+                grad_outputs=grad_output.to(device),
+            )
         )
-        return output.detach().cpu(), tuple(gradient.cpu() for gradient in gradients)
+        gradients = tuple(
+            next(computed_gradients).cpu() if input_requires_grad else None
+            for input_requires_grad in requires_grad
+        )
+        return output.detach().cpu(), gradients
 
     expected_output, expected_gradients = run("cpu")
     actual_output, actual_gradients = run("mps")
 
     torch.testing.assert_close(actual_output, expected_output, rtol=1e-5, atol=1e-6)
     for actual, expected in zip(actual_gradients, expected_gradients):
-        torch.testing.assert_close(actual, expected, rtol=1e-4, atol=1e-5)
+        if actual is None or expected is None:
+            assert actual is expected is None
+        else:
+            torch.testing.assert_close(actual, expected, rtol=1e-4, atol=1e-5)
 
 
 @pytest.mark.parametrize("order", [2, 3, 5])

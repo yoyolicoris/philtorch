@@ -30,7 +30,15 @@ _DEVICES = [
         ),
     ),
 ]
-_GRAD_CASES = [(True, True), (True, False), (False, True), (False, False)]
+_REQUIRES_GRAD_CASES = [
+    (True, False, False),
+    (False, True, False),
+    (False, False, True),
+    (True, True, False),
+    (True, False, True),
+    (False, True, True),
+    (True, True, True),
+]
 
 
 def test_external_torchlpc_namespace_coexists(tmp_path):
@@ -82,10 +90,14 @@ def create_test_inputs(batch_size, samples, cmplx=False):
     return x, A, zi
 
 
-@pytest.mark.parametrize(("a_requires_grad", "zi_requires_grad"), _GRAD_CASES)
+@pytest.mark.parametrize(
+    ("x_requires_grad", "a_requires_grad", "zi_requires_grad"),
+    _REQUIRES_GRAD_CASES,
+)
 @pytest.mark.parametrize("cmplx", [True, False])
 @pytest.mark.parametrize("device", _DEVICES)
 def test_allpole(
+    x_requires_grad: bool,
     a_requires_grad: bool,
     zi_requires_grad: bool,
     cmplx: bool,
@@ -97,17 +109,21 @@ def test_allpole(
         x.to(device) for x in create_test_inputs(batch_size, samples, cmplx)
     )
     A.requires_grad = a_requires_grad
-    x.requires_grad = True
+    x.requires_grad = x_requires_grad
     zi.requires_grad = zi_requires_grad
 
     assert gradcheck(AllPole.apply, (x, A, zi), check_forward_ad=True)
     assert gradgradcheck(AllPole.apply, (x, A, zi))
 
 
-@pytest.mark.parametrize(("a_requires_grad", "zi_requires_grad"), _GRAD_CASES)
+@pytest.mark.parametrize(
+    ("x_requires_grad", "a_requires_grad", "zi_requires_grad"),
+    _REQUIRES_GRAD_CASES,
+)
 @pytest.mark.parametrize("cmplx", [True, False])
 @pytest.mark.parametrize("device", _DEVICES)
 def test_scan_recurrence(
+    x_requires_grad: bool,
     a_requires_grad: bool,
     zi_requires_grad: bool,
     cmplx: bool,
@@ -131,7 +147,7 @@ def test_scan_recurrence(
     zi = torch.randn(batch_size, dtype=dtype, device=device)
 
     A.requires_grad = a_requires_grad
-    x.requires_grad = True
+    x.requires_grad = x_requires_grad
     zi.requires_grad = zi_requires_grad
 
     # ScanRecurrence takes (impulse, decay, init), i.e. (x, A, zi).
@@ -160,8 +176,17 @@ def test_allpole_float64_vs_32_cuda():
     )
 
 
+@pytest.mark.parametrize(
+    ("x_requires_grad", "a_requires_grad", "zi_requires_grad"),
+    _REQUIRES_GRAD_CASES,
+)
 @pytest.mark.parametrize("device", _DEVICES)
-def test_allpole_vmap(device: str):
+def test_allpole_vmap(
+    x_requires_grad: bool,
+    a_requires_grad: bool,
+    zi_requires_grad: bool,
+    device: str,
+):
     batch_size = 4
     samples = 40
     x, A, zi = tuple(
@@ -171,27 +196,47 @@ def test_allpole_vmap(device: str):
 
     A = A[:, 0, :].clone()
 
-    A.requires_grad = True
-    zi.requires_grad = True
-    x.requires_grad = True
+    x.requires_grad = x_requires_grad
+    A.requires_grad = a_requires_grad
+    zi.requires_grad = zi_requires_grad
 
     args = (x, A, zi)
+    argnums = tuple(
+        index
+        for index, requires_grad in enumerate(
+            (x_requires_grad, a_requires_grad, zi_requires_grad)
+        )
+        if requires_grad
+    )
 
     def func(x, A, zi):
         return F.mse_loss(
             AllPole.apply(x, A[:, None, :].expand(-1, samples, -1), zi), y
         )
 
-    jacs = jacfwd(func, argnums=tuple(range(len(args))))(*args)
+    jacs = jacfwd(func, argnums=argnums)(*args)
 
     loss = func(*args)
     loss.backward()
-    for jac, arg in zip(jacs, args):
-        assert torch.allclose(jac, arg.grad)
+    jacs_by_argnum = dict(zip(argnums, jacs))
+    for index, arg in enumerate(args):
+        if index in jacs_by_argnum:
+            assert torch.allclose(jacs_by_argnum[index], arg.grad)
+        else:
+            assert arg.grad is None
 
 
+@pytest.mark.parametrize(
+    ("x_requires_grad", "a_requires_grad", "zi_requires_grad"),
+    _REQUIRES_GRAD_CASES,
+)
 @pytest.mark.parametrize("device", _DEVICES)
-def test_scan_recurrence_vmap(device: str):
+def test_scan_recurrence_vmap(
+    x_requires_grad: bool,
+    a_requires_grad: bool,
+    zi_requires_grad: bool,
+    device: str,
+):
     batch_size = 3
     samples = 255
     x = torch.randn(batch_size, samples, dtype=torch.double, device=device)
@@ -199,18 +244,29 @@ def test_scan_recurrence_vmap(device: str):
     zi = torch.randn(batch_size, dtype=torch.double, device=device)
     y = torch.randn(batch_size, samples, dtype=torch.double, device=device)
 
-    A.requires_grad = True
-    x.requires_grad = True
-    zi.requires_grad = True
+    x.requires_grad = x_requires_grad
+    A.requires_grad = a_requires_grad
+    zi.requires_grad = zi_requires_grad
 
     args = (x, A, zi)
+    argnums = tuple(
+        index
+        for index, requires_grad in enumerate(
+            (x_requires_grad, a_requires_grad, zi_requires_grad)
+        )
+        if requires_grad
+    )
 
     def func(x, A, zi):
         return F.mse_loss(ScanRecurrence.apply(x, A, zi), y)
 
-    jacs = jacfwd(func, argnums=tuple(range(len(args))))(*args)
+    jacs = jacfwd(func, argnums=argnums)(*args)
 
     loss = func(*args)
     loss.backward()
-    for jac, arg in zip(jacs, args):
-        assert torch.allclose(jac, arg.grad)
+    jacs_by_argnum = dict(zip(argnums, jacs))
+    for index, arg in enumerate(args):
+        if index in jacs_by_argnum:
+            assert torch.allclose(jacs_by_argnum[index], arg.grad)
+        else:
+            assert arg.grad is None
