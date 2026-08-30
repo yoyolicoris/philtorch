@@ -371,7 +371,9 @@ torch.library.register_autograd(
 )
 
 
-if hasattr(torch.ops.parallel_reduce_cuda, "parallel_reduce_block_diag_2x2_cuda"):
+if hasattr(  # pragma: no cover - CUDA-only schema
+    torch.ops.parallel_reduce_cuda, "parallel_reduce_block_diag_2x2_cuda"
+):
 
     @torch.library.register_fake(
         "parallel_reduce_cuda::parallel_reduce_block_diag_2x2_cuda"
@@ -388,7 +390,9 @@ if hasattr(torch.ops.parallel_reduce_cuda, "parallel_reduce_block_diag_2x2_cuda"
     )
 
 
-if hasattr(torch.ops.parallel_reduce_cuda, "parallel_reduce_block_diag_3x3_cuda"):
+if hasattr(  # pragma: no cover - CUDA-only schema
+    torch.ops.parallel_reduce_cuda, "parallel_reduce_block_diag_3x3_cuda"
+):
 
     @torch.library.register_fake(
         "parallel_reduce_cuda::parallel_reduce_block_diag_3x3_cuda"
