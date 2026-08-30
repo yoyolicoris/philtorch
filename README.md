@@ -14,6 +14,15 @@ PhilTorch provides differentiable, time-domain linear time-invariant (LTI) and l
 - Use native CPU kernels, the supported macOS MPS scalar-LTI kernel, and CUDA recurrence kernels where the selected shape, dtype, backend, and build support them.
 - Compile vendored torchlpc paths exercised by `philtorch.lpv.linear_recurrence` and `philtorch.lpv.allpole`, plus supported CUDA ParaRNN 2×2 and 3×3 state-space paths, with `torch.compile(..., fullgraph=True)` for forward evaluation and ordinary reverse-mode backward.
 
+## News
+
+- **2025-12-06:** We presented our paper, [Accelerating Automatic Differentiation of Direct Form Digital Filters](https://openreview.net/forum?id=ZhwIyvtBNB), at the [Differentiable Systems and Scientific Machine Learning Workshop](https://differentiable-systems.github.io/workshop-eurips-2025/) at EurIPS 2025.
+  The [poster is available here](https://github.com/yoyolicoris/presentations/blob/main/posters/2025/DiffSys_Eurips.pdf).
+- **2025-11-10:** PhilTorch was first presented at the [Audio Developer Conference 2025](https://conference.audio.dev/session/2025/philtorch/).
+  The [presentation slides are available here](https://github.com/yoyolicoris/presentations/blob/main/slides/2025/adc25.pdf).
+- **2025-10-31:** Our short paper describing the LTI filter implementation in PhilTorch was accepted by the [Differentiable Systems and Scientific Machine Learning Workshop at EurIPS 2025](https://differentiable-systems.github.io/workshop-eurips-2025/).
+  The [preprint is available here](https://arxiv.org/abs/2511.14390).
+
 ## Installation
 
 PhilTorch v0.5 requires its compiled `philtorch._C` extension and does not silently fall back when that extension is missing.
@@ -189,6 +198,34 @@ Report the command, environment dictionary, and complete measurement together wh
 
 ## Examples and project links
 
+### Fibonacci numbers with `state_space`
+
+`philtorch.lti.state_space` can express the Fibonacci recurrence with no external input by setting the state matrix and initial state to:
+
+```math
+\mathbf{A} = \begin{bmatrix} 1 & 1 \\ 1 & 0 \end{bmatrix}, \qquad
+\mathbf{h}_0 = \begin{bmatrix} 1 \\ 0 \end{bmatrix}.
+```
+
+```python
+import torch
+
+from philtorch.lti import state_space
+
+A = torch.tensor([[1, 1], [1, 0]])
+C = torch.tensor([1, 0])
+x = torch.zeros(1, 10).long()
+h0 = torch.tensor([1, 0])
+y, _ = state_space(A, x, C=C, zi=h0)
+print(y)
+```
+
+```text
+tensor([[ 1,  1,  2,  3,  5,  8, 13, 21, 34, 55]])
+```
+
+This produces the first ten Fibonacci numbers, where $F_n = F_{n-1} + F_{n-2}$ with $F_0 = F_1 = 1$.
+
 - The [low-pass estimation notebook](examples/estimate_lowpass.ipynb) demonstrates learning filter parameters.
 - The [contribution guide](CONTRIBUTING.md) documents the development and pull-request workflow.
 - The [issue tracker](https://github.com/yoyolicoris/philtorch/issues) is the place for bug reports and feature requests.
@@ -206,12 +243,3 @@ PhilTorch's LTI direct-form filtering work is described in [Accelerating Automat
   year={2025}
 }
 ```
-
-<details>
-<summary>News</summary>
-
-- **2025-12-06:** The paper was presented at the [Differentiable Systems and Scientific Machine Learning Workshop](https://differentiable-systems.github.io/workshop-eurips-2025/) at EurIPS 2025, with the [poster available here](https://github.com/yoyolicoris/presentations/blob/main/posters/2025/DiffSys_Eurips.pdf).
-- **2025-11-10:** PhilTorch was presented at the [Audio Developer Conference 2025](https://conference.audio.dev/session/2025/philtorch/), with the [slides available here](https://github.com/yoyolicoris/presentations/blob/main/slides/2025/adc25.pdf).
-- **2025-10-31:** The PhilTorch paper was accepted by the Differentiable Systems and Scientific Machine Learning Workshop at EurIPS 2025.
-
-</details>
