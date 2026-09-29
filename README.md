@@ -12,7 +12,7 @@ PhilTorch provides differentiable, time-domain linear time-invariant (LTI) and l
 - Differentiate through filter coefficients, inputs, and initial states with PyTorch autograd.
 - Process batched signals and filters whose coefficients vary at every time step.
 - Use native CPU kernels, the supported macOS MPS scalar-LTI kernel, and CUDA recurrence kernels where the selected shape, dtype, backend, and build support them.
-- Compile vendored torchlpc paths exercised by `philtorch.lpv.linear_recurrence` and `philtorch.lpv.allpole`, plus supported CUDA ParaRNN 2×2 and 3×3 state-space paths, with `torch.compile(..., fullgraph=True)` for forward evaluation and ordinary reverse-mode backward.
+- Compile the vendored torchlpc paths exercised by `philtorch.lpv.linear_recurrence`, `philtorch.lpv.allpole`, and `philtorch.lpv.lfilter` with `backend="torchlpc"`, plus the supported CUDA ParaRNN 2×2 and 3×3 state-space paths, with `torch.compile(..., fullgraph=True)` for forward evaluation and ordinary reverse-mode backward.
 
 ## News
 
@@ -108,8 +108,8 @@ Move the tensors to a CUDA device only after installing a CUDA source build.
 
 ## PyTorch 2 transforms
 
-Full-graph [`torch.compile`](https://docs.pytorch.org/docs/stable/generated/torch.compile.html) forward and ordinary reverse-mode backward parity is tested for `philtorch.lpv.linear_recurrence` and `philtorch.lpv.allpole` through the vendored torchlpc operators.
-The same parity is tested conditionally for CUDA ParaRNN-backed `philtorch.lpv.state_space_recursion` with state dimensions two and three when those kernels are available.
+Full-graph [`torch.compile`](https://docs.pytorch.org/docs/stable/generated/torch.compile.html) forward and ordinary reverse-mode backward parity is tested for `philtorch.lpv.linear_recurrence`, `philtorch.lpv.allpole`, and `philtorch.lpv.lfilter` with `backend="torchlpc"` through the vendored torchlpc operators.
+The same parity is tested for `philtorch.lpv.state_space_recursion` with state dimensions one through three on CPU, and conditionally for the CUDA ParaRNN-backed paths with state dimensions two and three when those kernels are available.
 The corresponding differentiable kernels retain eager JVP, `vmap`, `gradcheck`, and `gradgradcheck` support.
 PhilTorch v0.5 does not make a blanket compile guarantee for every public API, backend, device, dtype, optional Helion path, dynamic shape, export workflow, or compile-time performance, and it does not claim compiled JVP, `vmap`, or `jacfwd` support.
 
