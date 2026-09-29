@@ -7,7 +7,7 @@ import pytest
 import torch
 from torch import Tensor
 
-from philtorch import _pararnn_backward
+from philtorch import _pararnn_backward, _pararnn_fake
 from philtorch._torchlpc import lpc as vendored_lpc, scan as vendored_scan
 from philtorch.lpv import allpole, lfilter, linear_recurrence, state_space_recursion
 from philtorch.lpv.ssm import MatrixRecurrence, _matrix_recurrence
@@ -48,12 +48,11 @@ def _pararnn_available() -> bool:
 
 @pytest.fixture
 def isolated_rng():
-    """Seed locally and restore the global RNG so later tests see unchanged state."""
+    """Restore the global RNG afterwards so later tests see unchanged state."""
     devices = (
         list(range(torch.cuda.device_count())) if torch.cuda.is_available() else []
     )
     with torch.random.fork_rng(devices=devices):
-        torch.manual_seed(0)
         yield
 
 
@@ -218,8 +217,29 @@ def test_pararnn_registered_backward_formula_on_cpu(state_size: int) -> None:
     actual = _pararnn_backward(_serial_pararnn)(ctx, grad_output)
     torch.testing.assert_close(actual, expected)
 
-    ctx.needs_input_grad = (False, False)
-    assert _pararnn_backward(_serial_pararnn)(ctx, grad_output) == (None, None)
+    for needs_input_grad in ((True, False), (False, True), (False, False)):
+        ctx.needs_input_grad = needs_input_grad
+        actual = _pararnn_backward(_serial_pararnn)(ctx, grad_output)
+        for needed, grad, reference in zip(needs_input_grad, actual, expected):
+            if needed:
+                torch.testing.assert_close(grad, reference)
+            else:
+                assert grad is None
+
+
+@pytest.mark.parametrize("block_size", [2, 3])
+def test_pararnn_fake_checks_shapes_on_cpu(block_size: int) -> None:
+    fake = _pararnn_fake(block_size)
+    jac = torch.zeros(2, 9, block_size, block_size)
+    rhs = torch.zeros(2, 9, block_size)
+
+    output = fake(jac, rhs)
+    assert output.shape == rhs.shape and output.is_contiguous()
+
+    with pytest.raises(RuntimeError, match="same batch and time"):
+        fake(jac[:, 1:], rhs)
+    with pytest.raises(RuntimeError, match="last dimension"):
+        fake(jac, torch.zeros(2, 9, block_size + 1))
 
 
 def test_compile_dispatch_helpers_call_raw_operators(monkeypatch) -> None:

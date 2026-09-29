@@ -236,24 +236,30 @@ def _(A, zi, x):
 # so their fakes must too; `empty_like` would copy a permuted input's strides.
 @torch.library.register_fake("philtorch::scan")
 def _scan_fake(impulse, decay, init):
-    torch._check(impulse.ndim == 2, "impulse must be 2D.")
-    torch._check(decay.shape == impulse.shape, "decay must match impulse's shape.")
-    torch._check(init.ndim == 1, "init must be 1D.")
+    torch._check(impulse.ndim == 2, lambda: "impulse must be 2D.")
+    torch._check(
+        decay.shape == impulse.shape, lambda: "decay must match impulse's shape."
+    )
+    torch._check(init.ndim == 1, lambda: "init must be 1D.")
     torch._check(
         init.shape[0] == impulse.shape[0],
-        "init and impulse must have the same batch size.",
+        lambda: "init and impulse must have the same batch size.",
     )
     return impulse.new_empty(impulse.shape)
 
 
 @torch.library.register_fake("philtorch::lpc")
 def _lpc_fake(x, A, zi):
-    torch._check(x.ndim == 2, "x must be 2D.")
-    torch._check(A.ndim == 3, "A must be 3D.")
-    torch._check(zi.ndim == 2, "zi must be 2D.")
-    torch._check(A.shape[:2] == x.shape, "A's leading dimensions must match x.")
-    torch._check(A.shape[2] == zi.shape[1], "A and zi must have the same order.")
-    torch._check(x.shape[0] == zi.shape[0], "x and zi must have the same batch size.")
+    torch._check(x.ndim == 2, lambda: "x must be 2D.")
+    torch._check(A.ndim == 3, lambda: "A must be 3D.")
+    torch._check(zi.ndim == 2, lambda: "zi must be 2D.")
+    torch._check(A.shape[:2] == x.shape, lambda: "A's leading dimensions must match x.")
+    torch._check(
+        A.shape[2] == zi.shape[1], lambda: "A and zi must have the same order."
+    )
+    torch._check(
+        x.shape[0] == zi.shape[0], lambda: "x and zi must have the same batch size."
+    )
     return x.new_empty(x.shape)
 
 
@@ -348,21 +354,42 @@ def _pararnn_backward(runner):
             [torch.zeros_like(zi).unsqueeze(1), grad_y.flip(1)], dim=1
         )
         flipped_grad_x = runner(reverse_jac, reverse_rhs)[:, 1:]
-        grad_zi = (AmT[..., 0, :, :] @ flipped_grad_x[:, -1, :, None]).squeeze(-1)
         grad_x = flipped_grad_x.flip(1)
 
-        padded_y = torch.cat([zi.unsqueeze(1), y[:, :-1]], dim=1)
-        grad_A = padded_y.conj_physical().unsqueeze(-2) * grad_x.unsqueeze(-1)
-        grad_jac = torch.cat([torch.zeros_like(jac[:, :1]), -grad_A], dim=1)
-        grad_rhs = torch.cat(
-            [(grad_output[:, 0] + grad_zi).unsqueeze(1), grad_x], dim=1
-        )
-        return (
-            grad_jac if ctx.needs_input_grad[0] else None,
-            grad_rhs if ctx.needs_input_grad[1] else None,
-        )
+        grad_jac = grad_rhs = None
+        if ctx.needs_input_grad[0]:
+            padded_y = torch.cat([zi.unsqueeze(1), y[:, :-1]], dim=1)
+            grad_A = padded_y.conj_physical().unsqueeze(-2) * grad_x.unsqueeze(-1)
+            grad_jac = torch.cat([torch.zeros_like(jac[:, :1]), -grad_A], dim=1)
+        if ctx.needs_input_grad[1]:
+            grad_zi = (AmT[..., 0, :, :] @ flipped_grad_x[:, -1, :, None]).squeeze(-1)
+            grad_rhs = torch.cat(
+                [(grad_output[:, 0] + grad_zi).unsqueeze(1), grad_x], dim=1
+            )
+        return grad_jac, grad_rhs
 
     return closure
+
+
+def _pararnn_fake(block_size):
+    def fake(jac, rhs):
+        torch._check(rhs.ndim == 3, lambda: "rhs must be 3D.")
+        torch._check(jac.ndim == 4, lambda: "jac must be 4D.")
+        torch._check(
+            rhs.shape[2] == block_size,
+            lambda: f"rhs's last dimension must be {block_size}.",
+        )
+        torch._check(
+            jac.shape[2:] == (block_size, block_size),
+            lambda: f"jac's blocks must be {block_size}x{block_size}.",
+        )
+        torch._check(
+            jac.shape[:2] == rhs.shape[:2],
+            lambda: "jac and rhs must have the same batch and time dimensions.",
+        )
+        return rhs.new_empty(rhs.shape)
+
+    return fake
 
 
 torch.library.register_autograd(
@@ -377,11 +404,10 @@ if hasattr(  # pragma: no cover - CUDA-only schema
     torch.ops.parallel_reduce_cuda, "parallel_reduce_block_diag_2x2_cuda"
 ):
 
-    @torch.library.register_fake(
-        "parallel_reduce_cuda::parallel_reduce_block_diag_2x2_cuda"
+    torch.library.register_fake(
+        "parallel_reduce_cuda::parallel_reduce_block_diag_2x2_cuda",
+        _pararnn_fake(2),
     )
-    def _parallel_reduce_block_diag_2x2_fake(jac, rhs):
-        return rhs.new_empty(rhs.shape)
 
     torch.library.register_autograd(
         "parallel_reduce_cuda::parallel_reduce_block_diag_2x2_cuda",
@@ -396,11 +422,10 @@ if hasattr(  # pragma: no cover - CUDA-only schema
     torch.ops.parallel_reduce_cuda, "parallel_reduce_block_diag_3x3_cuda"
 ):
 
-    @torch.library.register_fake(
-        "parallel_reduce_cuda::parallel_reduce_block_diag_3x3_cuda"
+    torch.library.register_fake(
+        "parallel_reduce_cuda::parallel_reduce_block_diag_3x3_cuda",
+        _pararnn_fake(3),
     )
-    def _parallel_reduce_block_diag_3x3_fake(jac, rhs):
-        return rhs.new_empty(rhs.shape)
 
     torch.library.register_autograd(
         "parallel_reduce_cuda::parallel_reduce_block_diag_3x3_cuda",
