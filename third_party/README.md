@@ -12,7 +12,7 @@ wheels even when the submodules are not checked out.
   Sources used: `third_party/torchlpc/torchlpc/csrc/scan_cpu.cpp` (via shim `philtorch/csrc/torchlpc_shim.cpp` to avoid duplicate `PyInit__C`), `third_party/torchlpc/torchlpc/csrc/cuda/{lpc.cu,linear_recurrence.cu}`
   Python wrappers vendored as `philtorch/_torchlpc.py` (mirrors `sample_wise_lpc`).
 
-- `pararnn` — `https://github.com/apple/ml-pararnn.git` at `dc2647b` (`origin/main`)
+- `pararnn` — `https://github.com/apple/ml-pararnn.git` at `513d75d` (`origin/main`)
   LICENSE: `LICENSES/pararnn-LICENSE` (Copyright (C) 2025 Apple Inc.)
   Sources used (CUDA only): `third_party/pararnn/pararnn/csrc/parallel_reduce.cu` (only the
   block-diagonal parallel-reduce kernels philtorch uses; registered via shim
