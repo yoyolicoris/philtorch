@@ -31,7 +31,7 @@ Choose a pre-built CPU wheel only for a supported platform and PyTorch minor; ot
 | Route | Linux | macOS | Windows | Acceleration | Python | PyTorch compatibility |
 | --- | --- | --- | --- | --- | --- | --- |
 | PyPI wheel | manylinux_2_28 x86_64 | 14+ arm64 | AMD64 | Native CPU kernels, plus the float32 scalar-LTI MPS kernel on macOS. | 3.10–3.13 | Published wheel built against the latest patch of the latest stable PyTorch minor available when v0.5 is released; the exact version is listed in the [v0.5 release notes](https://github.com/yoyolicoris/philtorch/releases). |
-| Source build | Toolchain-dependent. | Toolchain-dependent. | Toolchain-dependent. | CPU, supported macOS MPS, or CUDA. | 3.10+ | Builds against the installed PyTorch 2.0 or newer. |
+| Source build | Toolchain-dependent. | Toolchain-dependent. | Toolchain-dependent. | CPU, supported macOS MPS, or CUDA. | 3.10+ | Builds against the installed PyTorch 2.4 or newer. |
 
 ### Pre-built PyPI wheels
 
@@ -134,7 +134,7 @@ See each function's docstring for its current signature and shape notes.
 
 ## `scipy.signal` comparison
 
-This inventory is scoped to the public functions listed in the [SciPy 1.18.0 `scipy.signal` reference](https://docs.scipy.org/doc/scipy/reference/signal.html), including the [`scipy.signal.windows` namespace](https://docs.scipy.org/doc/scipy/reference/signal.windows.html), and PhilTorch v0.5 as documented here.
+This inventory is scoped to the public functions listed in the [SciPy 1.18.0 `scipy.signal` reference](https://docs.scipy.org/doc/scipy-1.18.0/reference/signal.html), including the [`scipy.signal.windows` namespace](https://docs.scipy.org/doc/scipy-1.18.0/reference/signal.windows.html), and PhilTorch v0.5 as documented here.
 It compares functions rather than every option or numerical detail: a check mark means the library provides the named operation, not that the signatures or semantics are interchangeable.
 SciPy classes and non-function objects—`lti`, `dlti`, `StateSpace`, `TransferFunction`, `ZerosPolesGain`, `ShortTimeFFT`, `CZT`, `ZoomFFT`, and `BadCoefficients`—are outside this function inventory.
 PhilTorch callables consume PyTorch tensors and are designed for autograd, batched execution, and tensor device/dtype preservation; the notes below call out narrower shapes, conventions, or routing where those differences matter.
