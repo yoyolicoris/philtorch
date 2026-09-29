@@ -30,7 +30,7 @@ Choose a pre-built CPU wheel only for a supported platform and PyTorch minor; ot
 
 | Route | Linux | macOS | Windows | Acceleration | Python | PyTorch compatibility |
 | --- | --- | --- | --- | --- | --- | --- |
-| PyPI wheel | manylinux_2_28 x86_64 | 14+ arm64 | AMD64 | Native CPU kernels, plus the float32 scalar-LTI MPS kernel on macOS. | 3.10–3.13 | Built and release-tested against the exact latest stable PyTorch patch selected when v0.5 is released. |
+| PyPI wheel | manylinux_2_28 x86_64 | 14+ arm64 | AMD64 | Native CPU kernels, plus the float32 scalar-LTI MPS kernel on macOS. | 3.10–3.13 | Published wheel built against the latest patch of the latest stable PyTorch minor available when v0.5 is released; the exact version is listed in the [v0.5 release notes](https://github.com/yoyolicoris/philtorch/releases). |
 | Source build | Toolchain-dependent. | Toolchain-dependent. | Toolchain-dependent. | CPU, supported macOS MPS, or CUDA. | 3.10+ | Builds against the installed PyTorch 2.0 or newer. |
 
 ### Pre-built PyPI wheels
@@ -110,7 +110,7 @@ Move the tensors to a CUDA device only after installing a CUDA source build.
 
 Full-graph [`torch.compile`](https://docs.pytorch.org/docs/stable/generated/torch.compile.html) forward and ordinary reverse-mode backward parity is tested for `philtorch.lpv.linear_recurrence`, `philtorch.lpv.allpole`, and `philtorch.lpv.lfilter` with `backend="torchlpc"` through the vendored torchlpc operators.
 The same parity is tested for `philtorch.lpv.state_space_recursion` with state dimensions one through three on CPU, and conditionally for the CUDA ParaRNN-backed paths with state dimensions two and three when those kernels are available.
-The corresponding differentiable kernels retain eager JVP, `vmap`, `gradcheck`, and `gradgradcheck` support.
+The corresponding differentiable kernels retain eager JVP, `gradcheck`, and `gradgradcheck` support, and the vendored torchlpc operators additionally retain eager `vmap` support.
 PhilTorch v0.5 does not make a blanket compile guarantee for every public API, backend, device, dtype, optional Helion path, dynamic shape, export workflow, or compile-time performance, and it does not claim compiled JVP, `vmap`, or `jacfwd` support.
 
 ## Choose the right API
