@@ -9,10 +9,14 @@ from torch import Tensor
 
 from philtorch import _pararnn_backward
 from philtorch._torchlpc import lpc as vendored_lpc, scan as vendored_scan
-from philtorch.lpv import allpole, linear_recurrence, state_space_recursion
+from philtorch.lpv import allpole, lfilter, linear_recurrence, state_space_recursion
 from philtorch.lpv.ssm import MatrixRecurrence, _matrix_recurrence
 
 _WINDOWS_INDUCTOR_UNAVAILABLE = sys.platform == "win32" and shutil.which("cl") is None
+_SKIP_WITHOUT_CPU_INDUCTOR = pytest.mark.skipif(
+    _WINDOWS_INDUCTOR_UNAVAILABLE,
+    reason="PyTorch Inductor requires cl, which is unavailable on Windows CI",
+)
 _TORCHLPC_CUDA_OPS = ("philtorch::scan", "philtorch::lpc")
 _PARARNN_OPS = (
     "parallel_reduce_cuda::parallel_reduce_block_diag_2x2_cuda",
@@ -28,15 +32,7 @@ def _has_dispatch_kernel(op: str, dispatch_key: str) -> bool:
 
 
 def _torchlpc_devices() -> list[object]:
-    devices = [
-        pytest.param(
-            "cpu",
-            marks=pytest.mark.skipif(
-                _WINDOWS_INDUCTOR_UNAVAILABLE,
-                reason="PyTorch Inductor requires cl, which is unavailable on Windows CI",
-            ),
-        )
-    ]
+    devices = [pytest.param("cpu", marks=_SKIP_WITHOUT_CPU_INDUCTOR)]
     if torch.cuda.is_available() and all(
         _has_dispatch_kernel(op, "CUDA") for op in _TORCHLPC_CUDA_OPS
     ):
@@ -48,6 +44,17 @@ def _pararnn_available() -> bool:
     if not torch.cuda.is_available():
         return False
     return all(_has_dispatch_kernel(op, "CUDA") for op in _PARARNN_OPS)
+
+
+@pytest.fixture
+def isolated_rng():
+    """Seed locally and restore the global RNG so later tests see unchanged state."""
+    devices = (
+        list(range(torch.cuda.device_count())) if torch.cuda.is_available() else []
+    )
+    with torch.random.fork_rng(devices=devices):
+        torch.manual_seed(0)
+        yield
 
 
 def _assert_compiled_forward_and_backward(
@@ -91,6 +98,76 @@ def test_allpole_compile_forward_and_backward(device: str) -> None:
     x = torch.randn(2, 16, device=device)
 
     _assert_compiled_forward_and_backward(_run_allpole, (a, zi, x))
+
+
+@pytest.mark.usefixtures("isolated_rng")
+@pytest.mark.parametrize("device", _torchlpc_devices())
+@pytest.mark.parametrize(
+    ("with_zi", "transpose", "contiguous_x"),
+    [
+        pytest.param(False, False, True, id="default"),
+        pytest.param(False, True, True, id="transpose"),
+        pytest.param(True, True, True, id="transpose-zi"),
+        pytest.param(True, False, False, id="zi-noncontiguous-x"),
+    ],
+)
+def test_allpole_variants_compile_forward_and_backward(
+    device: str, with_zi: bool, transpose: bool, contiguous_x: bool
+) -> None:
+    a = torch.randn(2, 16, 3, device=device) * 0.05
+    x = (
+        torch.randn(2, 16, device=device)
+        if contiguous_x
+        else torch.randn(16, 2, device=device).t()
+    )
+    if with_zi:
+        zi = torch.randn(2, 3, device=device)
+        _assert_compiled_forward_and_backward(
+            lambda a, zi, x: allpole(a, x, zi, transpose=transpose)[0], (a, zi, x)
+        )
+    else:
+        _assert_compiled_forward_and_backward(
+            lambda a, x: allpole(a, x, transpose=transpose), (a, x)
+        )
+
+
+@pytest.mark.usefixtures("isolated_rng")
+@pytest.mark.parametrize("device", _torchlpc_devices())
+def test_torchlpc_lfilter_compile_forward_and_backward(device: str) -> None:
+    b = torch.randn(2, 16, 3, device=device)
+    a = torch.randn(2, 16, 2, device=device) * 0.05
+    x = torch.randn(2, 16, device=device)
+
+    _assert_compiled_forward_and_backward(
+        lambda b, a, x: lfilter(b, a, x, backend="torchlpc"), (b, a, x)
+    )
+
+
+def _state_space_cases() -> list[object]:
+    # M == 1 routes to the vendored LPC op; M == 2 and 3 exercise the compiled
+    # matrix-recurrence route on CPU (CUDA M == 2 and 3 use ParaRNN, tested below).
+    cases = [
+        pytest.param("cpu", M, marks=_SKIP_WITHOUT_CPU_INDUCTOR) for M in (1, 2, 3)
+    ]
+    if "cuda" in _torchlpc_devices():
+        cases.append(("cuda", 1))
+    return cases
+
+
+@pytest.mark.usefixtures("isolated_rng")
+@pytest.mark.parametrize(("device", "state_size"), _state_space_cases())
+@pytest.mark.parametrize("share_A", [True, False])
+def test_state_space_recursion_compile_forward_and_backward(
+    device: str, state_size: int, share_A: bool
+) -> None:
+    A_shape = (
+        (16, state_size, state_size) if share_A else (2, 16, state_size, state_size)
+    )
+    A = torch.randn(*A_shape, device=device) * 0.05
+    zi = torch.randn(2, state_size, device=device)
+    x = torch.randn(2, 16, state_size, device=device)
+
+    _assert_compiled_forward_and_backward(state_space_recursion, (A, zi, x))
 
 
 @pytest.mark.skipif(not _pararnn_available(), reason="CUDA ParaRNN kernels unavailable")
