@@ -1,6 +1,7 @@
 from pathlib import Path
 import warnings
 import torch
+import torch.nn.functional as F
 from typing import Any, Optional
 
 from . import _C  # noqa: F401
@@ -229,6 +230,210 @@ def _(A, zi, x):
             "If A is 1D, its length must match x's batch size.",
         )
     return torch.empty_like(x)
+
+
+# The vendored scan, LPC, and ParaRNN kernels always return contiguous outputs,
+# so their fakes must too; `empty_like` would copy a permuted input's strides.
+@torch.library.register_fake("philtorch::scan")
+def _scan_fake(impulse, decay, init):
+    torch._check(impulse.ndim == 2, lambda: "impulse must be 2D.")
+    torch._check(
+        decay.shape == impulse.shape, lambda: "decay must match impulse's shape."
+    )
+    torch._check(init.ndim == 1, lambda: "init must be 1D.")
+    torch._check(
+        init.shape[0] == impulse.shape[0],
+        lambda: "init and impulse must have the same batch size.",
+    )
+    return impulse.new_empty(impulse.shape)
+
+
+@torch.library.register_fake("philtorch::lpc")
+def _lpc_fake(x, A, zi):
+    torch._check(x.ndim == 2, lambda: "x must be 2D.")
+    torch._check(A.ndim == 3, lambda: "A must be 3D.")
+    torch._check(zi.ndim == 2, lambda: "zi must be 2D.")
+    torch._check(A.shape[:2] == x.shape, lambda: "A's leading dimensions must match x.")
+    torch._check(
+        A.shape[2] == zi.shape[1], lambda: "A and zi must have the same order."
+    )
+    torch._check(
+        x.shape[0] == zi.shape[0], lambda: "x and zi must have the same batch size."
+    )
+    return x.new_empty(x.shape)
+
+
+def _scan_setup_context(ctx, inputs, output):
+    _, decay, init = inputs
+    ctx.save_for_backward(decay, init, output)
+
+
+def _scan_backward(ctx, grad_out):
+    decay, init, out = ctx.saved_tensors
+    n_dims = decay.size(0)
+    padded_decay = F.pad(decay.unsqueeze(1), (0, 1)).squeeze(1)
+    if ctx.needs_input_grad[2]:
+        padded_grad = F.pad(grad_out.unsqueeze(1), (1, 0)).squeeze(1)
+    else:
+        padded_grad, padded_decay = grad_out, padded_decay[:, 1:]
+    flipped = torch.ops.philtorch.scan(
+        padded_grad.flip(1),
+        padded_decay.flip(1).conj_physical(),
+        padded_grad.new_zeros(n_dims),
+    )
+    grad_init = flipped[:, -1] if ctx.needs_input_grad[2] else None
+    if ctx.needs_input_grad[2]:
+        flipped = flipped[:, :-1]
+    grad_impulse = flipped.flip(1) if ctx.needs_input_grad[0] else None
+    if ctx.needs_input_grad[1]:
+        grad_decay = torch.cat(
+            [init.unsqueeze(1), out[:, :-1]], dim=1
+        ).conj_physical() * flipped.flip(1)
+    else:
+        grad_decay = None
+    return grad_impulse, grad_decay, grad_init
+
+
+def _lpc_setup_context(ctx, inputs, output):
+    _, A, zi = inputs
+    ctx.save_for_backward(A, zi, output)
+
+
+def _lpc_backward(ctx, grad_y):
+    A, zi, y = ctx.saved_tensors
+    B, T, order = A.shape
+    flipped_A = A.flip(2)
+    padded_flipped_A = F.pad(flipped_A.transpose(1, 2), (0, order + 1))
+    shifted_A = (
+        padded_flipped_A.reshape(B, T + order + 1, order)[:, :-1, :]
+        .reshape(B, order, T + order)
+        .transpose(1, 2)
+        .flip(2)
+    )
+    if not ctx.needs_input_grad[2]:
+        shifted_A = shifted_A[:, order:, :]
+        padded_grad_y = grad_y
+    else:
+        padded_grad_y = F.pad(grad_y.unsqueeze(1), (order, 0)).squeeze(1)
+    flipped_grad_x = torch.ops.philtorch.lpc(
+        padded_grad_y.flip(1),
+        shifted_A.flip(1).conj_physical(),
+        torch.zeros_like(zi),
+    )
+    grad_zi = flipped_grad_x[:, -order:] if ctx.needs_input_grad[2] else None
+    if ctx.needs_input_grad[2]:
+        flipped_grad_x = flipped_grad_x[:, :-order]
+    grad_x = flipped_grad_x.flip(1) if ctx.needs_input_grad[0] else None
+    grad_A = None
+    if ctx.needs_input_grad[1]:
+        valid_y = y[:, :-1]
+        padded_y = torch.cat([zi.flip(1), valid_y], dim=1)
+        unfolded_y = padded_y.unfold(1, order, 1).flip(2)
+        grad_A = unfolded_y.conj_physical() * -flipped_grad_x.flip(1).unsqueeze(2)
+    return grad_x, grad_A, grad_zi
+
+
+def _pararnn_setup_context(ctx, inputs, output):
+    jac, rhs = inputs
+    ctx.save_for_backward(jac, rhs, output)
+
+
+def _pararnn_backward(runner):
+    def closure(ctx, grad_output):
+        jac, rhs, output = ctx.saved_tensors
+        A = -jac[:, 1:]
+        zi = rhs[:, 0]
+        y = output[:, 1:]
+        grad_y = grad_output[:, 1:]
+
+        AmT = A.mT.conj_physical()
+        AmT_rolled = torch.roll(AmT, shifts=-1, dims=-3)
+        reverse_A = AmT_rolled.flip(-3)
+        reverse_jac = F.pad(-reverse_A, (0, 0, 0, 0, 1, 0))
+        reverse_rhs = torch.cat(
+            [torch.zeros_like(zi).unsqueeze(1), grad_y.flip(1)], dim=1
+        )
+        flipped_grad_x = runner(reverse_jac, reverse_rhs)[:, 1:]
+        grad_x = flipped_grad_x.flip(1)
+
+        grad_jac = grad_rhs = None
+        if ctx.needs_input_grad[0]:
+            padded_y = torch.cat([zi.unsqueeze(1), y[:, :-1]], dim=1)
+            grad_A = padded_y.conj_physical().unsqueeze(-2) * grad_x.unsqueeze(-1)
+            grad_jac = torch.cat([torch.zeros_like(jac[:, :1]), -grad_A], dim=1)
+        if ctx.needs_input_grad[1]:
+            grad_zi = (AmT[..., 0, :, :] @ flipped_grad_x[:, -1, :, None]).squeeze(-1)
+            grad_rhs = torch.cat(
+                [(grad_output[:, 0] + grad_zi).unsqueeze(1), grad_x], dim=1
+            )
+        return grad_jac, grad_rhs
+
+    return closure
+
+
+def _pararnn_fake(block_size):
+    def fake(jac, rhs):
+        torch._check(rhs.ndim == 3, lambda: "rhs must be 3D.")
+        torch._check(jac.ndim == 4, lambda: "jac must be 4D.")
+        torch._check(
+            rhs.shape[2] == block_size,
+            lambda: f"rhs's last dimension must be {block_size}.",
+        )
+        torch._check(
+            jac.shape[2:] == (block_size, block_size),
+            lambda: f"jac's blocks must be {block_size}x{block_size}.",
+        )
+        torch._check(
+            jac.shape[:2] == rhs.shape[:2],
+            lambda: "jac and rhs must have the same batch and time dimensions.",
+        )
+        return rhs.new_empty(rhs.shape)
+
+    return fake
+
+
+torch.library.register_autograd(
+    "philtorch::scan", _scan_backward, setup_context=_scan_setup_context
+)
+torch.library.register_autograd(
+    "philtorch::lpc", _lpc_backward, setup_context=_lpc_setup_context
+)
+
+
+if hasattr(  # pragma: no cover - CUDA-only schema
+    torch.ops.parallel_reduce_cuda, "parallel_reduce_block_diag_2x2_cuda"
+):
+
+    torch.library.register_fake(
+        "parallel_reduce_cuda::parallel_reduce_block_diag_2x2_cuda",
+        _pararnn_fake(2),
+    )
+
+    torch.library.register_autograd(
+        "parallel_reduce_cuda::parallel_reduce_block_diag_2x2_cuda",
+        _pararnn_backward(
+            torch.ops.parallel_reduce_cuda.parallel_reduce_block_diag_2x2_cuda
+        ),
+        setup_context=_pararnn_setup_context,
+    )
+
+
+if hasattr(  # pragma: no cover - CUDA-only schema
+    torch.ops.parallel_reduce_cuda, "parallel_reduce_block_diag_3x3_cuda"
+):
+
+    torch.library.register_fake(
+        "parallel_reduce_cuda::parallel_reduce_block_diag_3x3_cuda",
+        _pararnn_fake(3),
+    )
+
+    torch.library.register_autograd(
+        "parallel_reduce_cuda::parallel_reduce_block_diag_3x3_cuda",
+        _pararnn_backward(
+            torch.ops.parallel_reduce_cuda.parallel_reduce_block_diag_3x3_cuda
+        ),
+        setup_context=_pararnn_setup_context,
+    )
 
 
 torch.library.register_autograd(
