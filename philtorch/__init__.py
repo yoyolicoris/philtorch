@@ -232,6 +232,8 @@ def _(A, zi, x):
     return torch.empty_like(x)
 
 
+# The vendored scan, LPC, and ParaRNN kernels always return contiguous outputs,
+# so their fakes must too; `empty_like` would copy a permuted input's strides.
 @torch.library.register_fake("philtorch::scan")
 def _scan_fake(impulse, decay, init):
     torch._check(impulse.ndim == 2, "impulse must be 2D.")
@@ -241,7 +243,7 @@ def _scan_fake(impulse, decay, init):
         init.shape[0] == impulse.shape[0],
         "init and impulse must have the same batch size.",
     )
-    return torch.empty_like(impulse)
+    return impulse.new_empty(impulse.shape)
 
 
 @torch.library.register_fake("philtorch::lpc")
@@ -252,7 +254,7 @@ def _lpc_fake(x, A, zi):
     torch._check(A.shape[:2] == x.shape, "A's leading dimensions must match x.")
     torch._check(A.shape[2] == zi.shape[1], "A and zi must have the same order.")
     torch._check(x.shape[0] == zi.shape[0], "x and zi must have the same batch size.")
-    return torch.empty_like(x)
+    return x.new_empty(x.shape)
 
 
 def _scan_setup_context(ctx, inputs, output):
@@ -379,7 +381,7 @@ if hasattr(  # pragma: no cover - CUDA-only schema
         "parallel_reduce_cuda::parallel_reduce_block_diag_2x2_cuda"
     )
     def _parallel_reduce_block_diag_2x2_fake(jac, rhs):
-        return torch.empty_like(rhs)
+        return rhs.new_empty(rhs.shape)
 
     torch.library.register_autograd(
         "parallel_reduce_cuda::parallel_reduce_block_diag_2x2_cuda",
@@ -398,7 +400,7 @@ if hasattr(  # pragma: no cover - CUDA-only schema
         "parallel_reduce_cuda::parallel_reduce_block_diag_3x3_cuda"
     )
     def _parallel_reduce_block_diag_3x3_fake(jac, rhs):
-        return torch.empty_like(rhs)
+        return rhs.new_empty(rhs.shape)
 
     torch.library.register_autograd(
         "parallel_reduce_cuda::parallel_reduce_block_diag_3x3_cuda",
