@@ -1,57 +1,65 @@
+import operator
 from collections.abc import Sequence
-from typing import Optional
+from typing import Any, Optional, Union
 
 import torch
 from torch import Tensor
 
-from .ssm import _ssm_C_D
+from .ssm import _ssm_B, _ssm_C_D
+
+_OUTPUT_CHUNK = 4096
 
 
-def _delay_state_input(B: Optional[Tensor], x: Tensor, batch_size: int, M: int):
-    features = -1 if x.dim() == 2 else x.size(-1)
+def _as_int(value: Any, message: str) -> int:
+    """Convert Python, NumPy, or single-element integer tensor scalars to ``int``."""
+    if isinstance(value, bool) or (
+        isinstance(value, Tensor) and value.dtype == torch.bool
+    ):
+        raise ValueError(message)
+    try:
+        return operator.index(value)
+    except TypeError:
+        raise ValueError(message) from None
 
-    if B is None:
-        if x.dim() == 2:
-            return torch.cat(
-                [x.unsqueeze(-1), x.new_zeros(batch_size, x.size(1), M - 1)],
-                dim=-1,
-            )
-        assert (
-            features == M
-        ), f"Last dimension of x must match the number of delays when B is None, got x: {features}, delays: {M}"
-        return x
 
-    match B.shape:
-        case (BM,) if BM == M:
-            assert (
-                x.dim() == 2
-            ), f"Input signal x must be 2D when B is of shape {M,}, got {x.shape}"
-            return x.unsqueeze(-1) * B
-        case (B_batch, BM) if B_batch == batch_size and BM == M:
-            assert (
-                x.dim() == 2
-            ), f"Input signal x must be 2D when B is of shape {batch_size, M}, got {x.shape}"
-            return x.unsqueeze(-1) * B.unsqueeze(1)
-        case (BM, F) if BM == M and F == features:
-            return x @ B.mT
-        case (B_batch, BM, F) if B_batch == batch_size and BM == M and F == features:
-            return x @ B.mT
-        case _:
-            raise ValueError(
-                f"Input matrix B must be of shape ({M},), ({batch_size, M}), ({M, features}), or ({batch_size, M, features}), got {B.shape}"
-            )
+def _read_delay_line(
+    initial: Tensor,
+    blocks: list[Optional[Tensor]],
+    block_size: int,
+    delay: int,
+    line: int,
+    start: int,
+    stop: int,
+) -> Tensor:
+    """Read positions ``[start, stop)`` of ``initial ++ s_line``.
+
+    Blocks have shape ``(B, M, length)`` and every block except the last has
+    ``block_size`` samples, so position ``p >= delay`` lives at
+    ``divmod(p - delay, block_size)``.
+    """
+    parts = []
+    if start < delay:
+        parts.append(initial[:, start : min(stop, delay)])
+        start = delay
+    while start < stop:
+        block, offset = divmod(start - delay, block_size)
+        length = min(stop - start, block_size - offset)
+        parts.append(blocks[block][:, line, offset : offset + length])
+        start += length
+    return parts[0] if len(parts) == 1 else torch.cat(parts, dim=-1)
 
 
 def delay_state_space(
     A: Tensor,
     x: Tensor,
-    delays: Sequence[int],
+    delays: Union[Sequence[int], Tensor],
     B: Optional[Tensor] = None,
     C: Optional[Tensor] = None,
     D: Optional[Tensor] = None,
     zi: Optional[Sequence[Tensor]] = None,
     block_size: Optional[int] = None,
-) -> tuple[Tensor, tuple[Tensor, ...]]:
+    out_idx: Optional[int] = None,
+):
     """Compute a structured state-space model with explicit delay lines.
 
     For delay lengths ``m_i``, this evaluates
@@ -60,30 +68,36 @@ def delay_state_space(
         s[n] = A @ r[n] + B @ x[n]
         y[n] = C @ r[n] + D @ x[n]
 
-    Each delay state is an output-first queue, so ``zi[i][..., 0]`` is the
-    next value emitted by delay line ``i``. The sequence is processed in
-    blocks no longer than the shortest delay. All queue updates are
-    out-of-place, which keeps the implementation compatible with autograd.
+    With all delays equal to one this is :func:`state_space` with ``h = r``;
+    ``B``, ``C``, ``D``, ``out_idx`` and the return value follow the same
+    conventions. Each delay state is an output-first queue, so
+    ``zi[i][..., 0]`` is the next value emitted by delay line ``i``. The
+    sequence is processed in blocks no longer than the shortest delay, so each
+    block only reads values written by earlier blocks.
 
     Args:
         A (Tensor): Feedback matrix with shape ``(M, M)`` or ``(B, M, M)``.
         x (Tensor): Input sequence with shape ``(B, N)`` or ``(B, N, F)``.
-        delays (Sequence[int]): Positive delay lengths for the ``M`` lines.
-        B (Tensor, optional): Input matrix using the same shape conventions as
+        delays (Sequence[int] or Tensor): Positive integer delay lengths for
+            the ``M`` lines. Python, NumPy, and integer tensor values are
+            accepted.
+        B (Tensor, optional): Input matrix with the same shapes as in
             :func:`state_space`. If omitted, scalar input enters the first
             delay line, or vector input must have ``M`` features.
-        C (Tensor, optional): Output matrix using the same shape conventions as
+        C (Tensor, optional): Output matrix with the same shapes as in
             :func:`state_space`. If omitted, all delay outputs are returned.
-        D (Tensor, optional): Direct matrix using the same shape conventions as
+        D (Tensor, optional): Direct matrix with the same shapes as in
             :func:`state_space`.
         zi (Sequence[Tensor], optional): One initial queue per delay line. Each
-            queue has shape ``(m_i,)`` or ``(B, m_i)``. Missing states are zero.
+            queue has shape ``(m_i,)`` or ``(B, m_i)``. Zero when omitted.
         block_size (int, optional): Processing block length. It must be no
             greater than ``min(delays)`` and defaults to that value.
+        out_idx (int, optional): If provided, return only this delay line's
+            output per timestep. Cannot be combined with ``C``.
 
     Returns:
-        tuple: ``(y, zf)`` where ``zf`` is a tuple containing one final queue
-        per delay line.
+        Tensor or 2-tuple ``(y, zf)`` when ``zi`` is provided, where ``zf``
+        is a tuple containing one final queue per delay line.
     """
     assert x.dim() in (
         2,
@@ -91,14 +105,17 @@ def delay_state_space(
     ), f"Input signal must be 2D or 3D (batch, time, [features]), got {x.shape}"
     assert A.dim() in (2, 3), f"State matrix A must be 2D or 3D, got {A.shape}"
     assert A.size(-2) == A.size(-1), f"State matrix A must be square, got {A.shape}"
+    if not (C is None or out_idx is None):
+        raise ValueError(
+            "C and out_idx cannot be used together. Use either C or out_idx."
+        )
 
-    delays = tuple(delays)
+    delays = tuple(
+        _as_int(delay, "Every delay must be a positive integer") for delay in delays
+    )
     if not delays:
         raise ValueError("delays must contain at least one delay line")
-    if any(
-        not isinstance(delay, int) or isinstance(delay, bool) or delay < 1
-        for delay in delays
-    ):
+    if any(delay < 1 for delay in delays):
         raise ValueError("Every delay must be a positive integer")
 
     batch_size, samples, *_ = x.shape
@@ -113,15 +130,21 @@ def delay_state_space(
 
     if block_size is None:
         block_size = min(delays)
-    if not isinstance(block_size, int) or isinstance(block_size, bool):
-        raise ValueError("block_size must be an integer")
+    block_size = _as_int(block_size, "block_size must be an integer")
     if block_size < 1 or block_size > min(delays):
         raise ValueError("block_size must satisfy 1 <= block_size <= min(delays)")
 
-    Bx = _delay_state_input(B, x, batch_size, M)
+    if B is None and x.dim() == 3:
+        assert (
+            x.size(-1) == M
+        ), f"Last dimension of x must match the number of delays when B is None, got x: {x.size(-1)}, delays: {M}"
+    Bx = _ssm_B(B, x, batch_size, M)
+    if Bx.dim() == 2:
+        Bx = torch.cat([Bx.unsqueeze(-1), Bx.new_zeros(batch_size, samples, M - 1)], -1)
 
+    return_zf = zi is not None
     if zi is None:
-        states = tuple(x.new_zeros(batch_size, delay) for delay in delays)
+        initial = tuple(x.new_zeros(batch_size, delay) for delay in delays)
     else:
         if isinstance(zi, Tensor) or len(zi) != M:
             raise ValueError(f"zi must contain one state for each of the {M} delays")
@@ -143,30 +166,41 @@ def delay_state_space(
                     state.size(0) == batch_size
                 ), f"Batch size of zi[{index}] must match batch size of x, got zi: {state.size(0)}, x: {batch_size}"
             expanded_states.append(state)
-        states = tuple(expanded_states)
+        initial = tuple(expanded_states)
 
-    if samples == 0:
-        delay_outputs = x.new_empty(batch_size, 0, M)
-        return _ssm_C_D(delay_outputs, x, C, D, batch_size, M), states
+    def read(line: int, start: int, stop: int) -> Tensor:
+        return _read_delay_line(
+            initial[line], blocks, block_size, delays[line], line, start, stop
+        )
 
-    outputs = []
+    blocks: list[Optional[Tensor]] = []
+    history = max(delays)
+    outputs, pending, pending_start = [], [], 0
     for start in range(0, samples, block_size):
-        length = min(block_size, samples - start)
-        delay_outputs = torch.stack([state[:, :length] for state in states], dim=-1)
-        delay_inputs = delay_outputs @ A.mT + Bx[:, start : start + length]
-        outputs.append(
-            _ssm_C_D(
-                delay_outputs,
-                x[:, start : start + length],
-                C,
-                D,
-                batch_size,
-                M,
-            )
-        )
-        states = tuple(
-            torch.cat([state[:, length:], delay_inputs[:, :, index]], dim=-1)
-            for index, state in enumerate(states)
-        )
+        stop = min(start + block_size, samples)
+        r = torch.stack([read(line, start, stop) for line in range(M)], dim=-1)
+        blocks.append((r @ A.mT + Bx[:, start:stop]).mT.contiguous())
+        # Release blocks older than the longest delay so their memory is reused.
+        expired = (start - history) // block_size
+        if expired > 0:
+            blocks[expired - 1] = None
+        pending.append(r if out_idx is None else r[..., out_idx])
+        # Map delay outputs to y in chunks: per block is slow for short blocks,
+        # and all at once materialises a (B, N, M) tensor.
+        if stop - pending_start >= _OUTPUT_CHUNK or stop == samples:
+            h = pending[0] if len(pending) == 1 else torch.cat(pending, dim=1)
+            outputs.append(_ssm_C_D(h, x[:, pending_start:stop], C, D, batch_size, M))
+            pending, pending_start = [], stop
 
-    return torch.cat(outputs, dim=1), states
+    if outputs:
+        y = outputs[0] if len(outputs) == 1 else torch.cat(outputs, dim=1)
+    else:
+        h = x.new_empty(batch_size, 0, M)
+        if out_idx is not None:
+            h = h[..., out_idx]
+        y = _ssm_C_D(h, x, C, D, batch_size, M)
+
+    if return_zf:
+        zf = tuple(read(line, samples, samples + delays[line]) for line in range(M))
+        return y, zf
+    return y
