@@ -1,0 +1,54 @@
+name: Feature request
+description: Propose a focused improvement to PhilTorch.
+title: "[Feature]: "
+labels:
+  - enhancement
+body:
+  - type: markdown
+    attributes:
+      value: |
+        Please describe the use case before proposing implementation details. Focused requests are easier to evaluate and schedule.
+
+  - type: textarea
+    id: problem
+    attributes:
+      label: Problem or use case
+      description: What filtering, differentiation, performance, or packaging need is not currently met?
+    validations:
+      required: true
+
+  - type: textarea
+    id: proposal
+    attributes:
+      label: Proposed behavior
+      description: Describe the intended API and observable behavior. Include tensor shapes, dtypes, devices, and numerical expectations when relevant.
+    validations:
+      required: true
+
+  - type: textarea
+    id: alternatives
+    attributes:
+      label: Alternatives considered
+      description: Describe current workarounds or other designs you considered.
+
+  - type: textarea
+    id: scope
+    attributes:
+      label: Scope and compatibility
+      description: Note any expected effects on performance, autograd, CPU/CUDA support, or backward compatibility.
+
+  - type: textarea
+    id: context
+    attributes:
+      label: Additional context
+      description: Add references, pseudocode, benchmarks, or links to related work if useful.
+
+  - type: checkboxes
+    id: checks
+    attributes:
+      label: Checklist
+      options:
+        - label: I searched the existing issues and roadmap for related work.
+          required: true
+        - label: This request describes one focused change.
+          required: true

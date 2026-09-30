@@ -4,7 +4,7 @@ import torch.nn.functional as F
 from typing import Any, Optional, Callable, Union
 from functools import partial
 
-from ..lpv.ssm import _ext_ss_recur, state_space_recursion, extension_backend_indicator
+from ..lpv.ssm import state_space_recursion
 
 
 def newton_solve(
@@ -35,12 +35,7 @@ def newton_solve(
         Tensor: Approximation of the root of the function.
     """
     assert max_iter < x.size(1), "max_iter must be less than the sequence length of x"
-    M = init.size(-1)
-    recur_runner = (
-        _ext_ss_recur
-        if extension_backend_indicator(x, M) and unroll_factor in (None, 1)
-        else partial(state_space_recursion, unroll_factor=unroll_factor)
-    )
+    recur_runner = partial(state_space_recursion, unroll_factor=unroll_factor)
     y = torch.cat([init.unsqueeze(1), y0], dim=1)
     computed = []
     intermediate = []

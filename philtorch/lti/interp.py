@@ -3,21 +3,16 @@ from torch import Tensor
 import torch.nn.functional as F
 from typing import Optional, Union
 
-from .recur import linear_recurrence, LTIRecurrence
-from .. import EXTENSION_LOADED
+from .recur import LTIRecurrence
 
 
 def _first_order_filt(
     x: Tensor, a: Tensor, zi: Tensor, b: Optional[Tensor] = None, **kwargs
 ) -> Tensor:
     xb = x if b is None else x * b
-    if EXTENSION_LOADED:
-        y = LTIRecurrence.apply(
-            a.broadcast_to(x.shape[0]), zi.broadcast_to(x.shape[0]), xb
-        )
-    else:
-        y = linear_recurrence(a.broadcast_to(x.shape[0]), zi, xb, **kwargs)
-    return y
+    return LTIRecurrence.apply(
+        a.broadcast_to(x.shape[0]), zi.broadcast_to(x.shape[0]), xb
+    )
 
 
 def _cubic_coeff(

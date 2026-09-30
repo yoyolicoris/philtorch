@@ -1,151 +1,224 @@
 # PhilTorch $\Huge \overset{🔥}{\Phi}$
-[![PyPI version](https://badge.fury.io/py/philtorch.svg)](https://badge.fury.io/py/philtorch)
+
+[![PyPI version](https://img.shields.io/pypi/v/philtorch.svg)](https://pypi.org/project/philtorch/)
+[![Python versions](https://img.shields.io/pypi/pyversions/philtorch.svg)](https://pypi.org/project/philtorch/)
+[![Build CPU wheels](https://github.com/yoyolicoris/philtorch/actions/workflows/build-wheels.yml/badge.svg?branch=dev)](https://github.com/yoyolicoris/philtorch/actions/workflows/build-wheels.yml)
 [![codecov](https://codecov.io/gh/yoyolicoris/philtorch/branch/dev/graph/badge.svg?token=288BR3PYIX)](https://codecov.io/gh/yoyolicoris/philtorch)
-[![arXiv](https://img.shields.io/badge/arXiv-2511.14390-b31b1b.svg)](https://arxiv.org/abs/2511.14390)
+[![OpenReview](https://img.shields.io/badge/OpenReview-ZhwIyvtBNB-8c1b13.svg)](https://openreview.net/forum?id=ZhwIyvtBNB)
+[![License: MIT](https://img.shields.io/badge/License-MIT-yellow.svg)](LICENSE)
 
-A PyTorch package for fast automatic differentiation of discrete time linear filters.
+PhilTorch provides differentiable, time-domain linear digital filters for PyTorch.
 
-Our principle design goals are:
-
-- Provide fast and differentiable version of `scipy.signal.*` functions.
-- Focus on time-domain implementation without using FFT.
-- Support batch processing, parameter-varying filters, and GPU acceleration.
-- Pure functional implementation and no stateful objects.
+- Differentiate through filter coefficients, inputs, and initial states with PyTorch autograd.
+- Process batched signals and filters whose coefficients vary at every time step.
+- Compute in the time domain without FFTs, through a pure functional API with no stateful objects.
+- Run on native CPU, CUDA, and MPS kernels.
 
 ## News
 
-- **2025-12-06**: We presented our paper, [Accelerating Automatic Differentiation of Direct Form Digital Filters](https://openreview.net/forum?id=ZhwIyvtBNB), at the [Differentiable Systems and Scientific Machine Learning Workshop](https://differentiable-systems.github.io/workshop-eurips-2025/) @ EurIPS 2025! You can check the poster [here](https://github.com/yoyolicoris/presentations/blob/main/posters/2025/DiffSys_Eurips.pdf).
-- **2025-11-10**: PhilTorch was first presented at the [Audio Developer Conference (ADC) 2025](https://conference.audio.dev/session/2025/philtorch/)! The presentation slides are available [here](https://github.com/yoyolicoris/presentations/blob/main/slides/2025/adc25.pdf).
-- **2025-10-31**: Our short paper describing the LTI filter implementation in PhilTorch has been accepted by the [DiffSys Workshop @ EurIPSs 2025](https://differentiable-systems.github.io/workshop-eurips-2025/)! The preprint is available [here](https://arxiv.org/abs/2511.14390).
+- **2025-12-06:** We presented our paper, [Accelerating Automatic Differentiation of Direct Form Digital Filters](https://openreview.net/forum?id=ZhwIyvtBNB), at the [Differentiable Systems and Scientific Machine Learning Workshop](https://differentiable-systems.github.io/workshop-eurips-2025/) at EurIPS 2025.
+  The [poster is available here](https://github.com/yoyolicoris/presentations/blob/main/posters/2025/DiffSys_Eurips.pdf).
+- **2025-11-10:** PhilTorch was first presented at the [Audio Developer Conference 2025](https://conference.audio.dev/session/2025/philtorch/).
+  The [presentation slides are available here](https://github.com/yoyolicoris/presentations/blob/main/slides/2025/adc25.pdf).
+- **2025-10-31:** Our short paper describing the LTI filter implementation in PhilTorch was accepted by the [Differentiable Systems and Scientific Machine Learning Workshop at EurIPS 2025](https://differentiable-systems.github.io/workshop-eurips-2025/).
+  The [preprint is available here](https://arxiv.org/abs/2511.14390).
 
 ## Installation
 
-### Stable release
+PhilTorch requires its compiled `philtorch._C` extension; there is no pure-PyTorch fallback when the extension is missing.
+
+| Route | Platforms | Kernels | Python | PyTorch |
+| --- | --- | --- | --- | --- |
+| PyPI wheel | Linux x86_64 (manylinux_2_28), macOS 14+ arm64, Windows AMD64 | CPU, plus float32 scalar-LTI MPS on macOS | 3.10–3.13 | The latest stable release at publication, listed in the [release notes](https://github.com/yoyolicoris/philtorch/releases) |
+| Source build | Any platform with a C++ toolchain | CPU, MPS, or CUDA | 3.10+ | 2.4 or newer |
+
+### PyPI wheels
+
 ```bash
-pip install philtorch
+python -m pip install philtorch
 ```
 
-### Development version
+Wheels contain no CUDA kernels.
+They are built against one PyTorch minor release and are not guaranteed to work with other minor releases, so build from source if you use CUDA or a different PyTorch minor release.
+
+### Source builds
+
+Install PyTorch first with the [PyTorch installation selector](https://pytorch.org/get-started/locally/), then build PhilTorch against it without build isolation:
+
 ```bash
-pip install -i https://test.pypi.org/simple/ philtorch
-# or
-pip install git+https://github.com/yoyolicoris/philtorch.git
-``` 
-> **_Note:_**
-> - The installation process compiles C++/CUDA extensions, so make sure you have a working C++ compiler and CUDA toolkit (if you want to use GPU acceleration) installed.
-> - We recommend using `--no-build-isolation` flag to avoid potential issues with building the package in an isolated environment, especially when installing with CUDA support.
+python -m pip install "setuptools>=77.0.3" "setuptools_scm>=8" wheel
+python -m pip install --no-binary=philtorch --no-build-isolation philtorch
+```
+
+The build compiles a CUDA extension when `torch.cuda.is_available()` is true and `CUDA_HOME` is set, and a CPU-only C++ extension otherwise.
+On macOS, when the installed PyTorch supports OpenMP, the build also needs Homebrew `llvm` and `libomp`, unless `PHILTORCH_DISABLE_OPENMP=1` is set.
+
+For an editable install from Git, clone with submodules:
+
+```bash
+git clone --branch v0.5 --recurse-submodules https://github.com/yoyolicoris/philtorch.git
+cd philtorch
+python -m pip install torch  # Choose the correct CPU or CUDA build first.
+python -m pip install "setuptools>=77.0.3" "setuptools_scm>=8" wheel
+python -m pip install --editable . --no-build-isolation
+```
+
+Package versions come from Git tags through [`setuptools_scm`](https://setuptools-scm.readthedocs.io/), so keep the tag metadata when building from a checkout.
+
+### Development version
+
+Development builds from `dev` are published to TestPyPI:
+
+```bash
+python -m pip install -i https://test.pypi.org/simple/ philtorch
+```
+
+## Quickstart
+
+### Filtering with SciPy-designed coefficients
+
+```python
+import torch
+from scipy.signal import butter
+
+from philtorch.lti import filtfilt, lfilter, lfilter_zi
+
+x = torch.randn(201, dtype=torch.float64)
+
+b_np, a_np = butter(3, 0.05)
+# Normalize so that a0 = 1, then drop a0 from the denominator.
+b = torch.from_numpy(b_np / a_np[0])
+a = torch.from_numpy(a_np[1:] / a_np[0])
+
+# lfilter_zi takes (a, b), the reverse of SciPy's lfilter_zi(b, a).
+zi = lfilter_zi(a, b)
+
+y, _ = lfilter(b, a, x, zi=zi * x[0])
+y_zero_phase = filtfilt(b, a, x)
+```
 
 ## Module overview
 
 - `philtorch`: Root module.
     - `lpv`: Functions under it are for linear parameter-varying filters.
-        - `fir`: 
+        - `fir`:
             - Finite Impulse Response filters.
-        - `allpole`: 
+        - `allpole`:
             - All-pole filters.
-        - `lfilter`: 
+        - `lfilter`:
             - Parameter-varying version of `scipy.signal.lfilter`. It supports not only transposed direct form II but also transposed direct form I, direct form I, and direct form II structures.
-        - `state_space`: 
+        - `state_space`:
             - Parameter-varying state-space models.
-        - `state_space_recursion`: 
+        - `state_space_recursion`:
             - The core recursion function for state-space models.
-        - `linear_recurrence`: 
+        - `linear_recurrence`:
             - A linear recurrence function with scalar coefficients.
     - `lti`: Functions under it are for linear time-invariant filters.
-        - `fir`: 
+        - `fir`:
             - Finite Impulse Response filters.
-        - `lfilter`: 
+        - `lfilter`:
             - A differentiable version of `scipy.signal.lfilter`. It supports not only transposed direct form II but also transposed direct form I, direct form I, and direct form II structures.
-        - `filtfilt`: 
+        - `filtfilt`:
             - A differentiable version of `scipy.signal.filtfilt`.
-        - `lfilter_zi`: 
+        - `lfilter_zi`:
             - A differentiable version of `scipy.signal.lfilter_zi`.
-        - `lfiltic`: 
+        - `lfiltic`:
             - A differentiable version of `scipy.signal.lfiltic`.
-        - `state_space`: 
+        - `state_space`:
             - State-space models.
-        - `diag_state_space`: 
+        - `diag_state_space`:
             - State-space models with diagonalisable state matrix.
-        - `state_space_recursion`: 
+        - `state_space_recursion`:
             - The core recursion function for state-space models.
-        - `linear_recurrence`: 
+        - `linear_recurrence`:
             - A linear recurrence function with scalar coefficients.
+        - `comb_filter`:
+            - Delayed all-pole comb filters.
+        - `cubic_spline`:
+            - Cubic-spline interpolation for integer upsampling.
     - `utils`: Utility functions.
     - `mat`: Matrix operations.
     - `poly`: Polynomial operations.
 
 For detailed API reference, please refer to the docstring of each function.
 
-## Performance Guide
+## Choose the right API
 
-Digital filters like IIR filters are recursively defined and thus hard to parallelise in PyTorch.
-PhilTorch implements custom C++/CUDA extensions to achieve high performance.
-Currently, we have full support for first and second order filters, and we plan to have fast kernel for higher order filters in the future.
-Thus, we recommend composing first and second order sections (SOS), either cascaded or parallel form, if possible.
+The supported high-level interfaces are exported from [`philtorch.lti`](philtorch/lti/__init__.py) for fixed coefficients and [`philtorch.lpv`](philtorch/lpv/__init__.py) for coefficients that vary over time.
 
-In the worst case when the extension is not compiled, we also provide a fallback implementation using PyTorch operations.
-This implementation computes parallel associative scans using just matrix multiplications.
-It divides the input sequence into blocks recursively, and computes the output for each block in parallel.
-For more details, please refer to the this [blog post](https://iamycy.github.io/posts/2025/06/28/unroll-ssm/).
+| Intent | API | Notes |
+| --- | --- | --- |
+| Apply a fixed-coefficient causal IIR or FIR filter. | `philtorch.lti.lfilter` or `philtorch.lti.fir` | `lfilter` supports `df2`, `tdf2`, `df1`, and `tdf1` forms. |
+| Apply a fixed-coefficient zero-phase filter. | `philtorch.lti.filtfilt` | Runs the LTI filter forward and backward; edge padding is enabled by default and can be disabled with `padmode=None`. |
+| Construct or recover IIR filter state. | `philtorch.lti.lfilter_zi` or `philtorch.lti.lfiltic` | These helpers use the same normalized `a0 = 1` coefficients as `lfilter`. |
+| Apply a time-varying filter. | `philtorch.lpv.lfilter`, `philtorch.lpv.fir`, or `philtorch.lpv.allpole` | Coefficient tensors include a time dimension aligned with the input. `lpv.lfilter` defaults to `backend="ssm"`; `backend="torchlpc"` does not support `form="tdf2"`. |
+| Evaluate a scalar linear recurrence. | `philtorch.lti.linear_recurrence` or `philtorch.lpv.linear_recurrence` | Choose the namespace according to whether the recurrence coefficient is fixed or time-varying. |
+| Evaluate a state-space system. | `philtorch.lti.state_space` or `philtorch.lpv.state_space` | Use `state_space_recursion` directly when only the internal state sequence is needed. |
+| Evaluate an LTI state-space system through eigendecomposition. | `philtorch.lti.diag_state_space` | Requires a diagonalisable `A`, or explicitly supplied `L`, `V`, and/or `Vinv`; diagonalisation failures propagate. |
+| Apply an LTI comb filter or cubic-spline interpolation. | `philtorch.lti.comb_filter` or `philtorch.lti.cubic_spline` | These utilities are also part of the public LTI exports. |
 
-The size of the blocks can greatly affect the performance.
-To control the block size, we provide a `unroll_factor` argument in most of the filter functions.
-By default, it is set to 1, which means no unrolling.
-The optimal value depends on the filter order, input length, and hardware.
-In general, we recommend setting it to 8 when the Tensors are on CPU, and 16 to 32 when they are on GPU.
-Though it's at least 10 times slower than the custom extension, the fallback implementation is still much faster than naive for-loop.
+## Comparison with `scipy.signal`
 
+PhilTorch functions take PyTorch tensors, support autograd and batching, and keep the input dtype and device.
+Coefficients are normalized so that `a0 = 1`: divide SciPy's `b` and `a` by `a[0]`, then pass `a[1:]` as the denominator, as in the [Quickstart](#quickstart) example.
+
+| SciPy | PhilTorch | Differences |
+| --- | --- | --- |
+| `lfilter` | `philtorch.lti.lfilter`, `philtorch.lti.fir` | Filters the last axis of 1-D or batched 2-D tensors, batches coefficients, and supports `df2`, `tdf2`, `df1`, and `tdf1`. `fir` is the batched FIR-only path. |
+| `lfiltic` | `philtorch.lti.lfiltic` | Builds the filter state from past inputs and outputs. |
+| `lfilter_zi` | `philtorch.lti.lfilter_zi` | Takes `(a, b)`, the reverse of SciPy's `(b, a)`. |
+| `filtfilt` | `philtorch.lti.filtfilt` | Defaults to `padmode="replicate"` and disables padding with `padmode=None`; `method="gust"` is not implemented and `irlen` is unused. |
+| `cspline1d`, `cspline1d_eval` | `philtorch.lti.cubic_spline` | Upsamples batched 2-D signals by an integer factor only; no arbitrary evaluation points or smoothing (`lamb` must be zero); uses PyTorch reflect padding unless `scipy_padding=True`. |
+| `dlsim` | `philtorch.lti.state_space` | Takes `A`, `B`, `C`, `D` tensors instead of a system object and returns the output, plus the final state when `zi` is given; no time vector or full state trajectory. `dimpulse` and `dstep` can be reproduced with explicit impulse or step inputs. |
+| — | `philtorch.lpv.lfilter`, `philtorch.lpv.fir`, `philtorch.lpv.allpole`, `philtorch.lpv.state_space` | Time-varying filters and state-space models whose coefficients carry a time dimension. |
+| — | `philtorch.lti.linear_recurrence`, `philtorch.lpv.linear_recurrence`, `state_space_recursion` | Differentiable scalar recurrences and internal state sequences. |
+| — | `philtorch.lti.diag_state_space` | State-space evaluation through the eigendecomposition of a diagonalizable `A`. |
+| — | `philtorch.lti.comb_filter` | Delayed all-pole comb recurrence with a given coefficient and delay; it does not design filters like `iircomb`. |
+
+
+## Performance
+
+Recursive filters are hard to parallelize, so PhilTorch implements custom C++ and CUDA kernels.
+With the default `unroll_factor=1`, the state-space paths (`lfilter`, `state_space`, and `state_space_recursion`) choose a kernel from the device and the filter order, which is the state size `M`:
+
+| Device | LTI, M = 1 | LTI, M = 2 | LTI, M ≥ 3 | LPV, M = 1 | LPV, M = 2 | LPV, M = 3 | LPV, M ≥ 4 |
+| --- | :---: | :---: | :---: | :---: | :---: | :---: | :---: |
+| CPU | ✓ | ✓ | ✓ | ✓ | ✓ | ✓ | ✓ |
+| CUDA (source builds) | ✓ | ✓ | loop | ✓ | ✓ | ✓¹ | loop |
+| MPS | ✓² | ✗ | loop | ✗ | ✗ | loop | loop |
+
+✓ native kernel · loop: PyTorch recurrence loop · ✗ raises an error because no kernel exists for the device; use CPU or `unroll_factor > 1` instead.
+¹ Real dtypes only; complex inputs use the loop. ² float32 only.
+
+Setting `1 < unroll_factor < sequence length` switches to a block-unrolled PyTorch recursion, which computes blocks in parallel with matrix multiplications ([background](https://iamycy.github.io/posts/2025/06/28/unroll-ssm/)); larger values fall back to a plain PyTorch loop.
+It is slower than the native kernels but much faster than a naive loop.
+Good starting points are 8 on CPU and 16–32 on CUDA, but benchmark your own batch size, sequence length, state size, dtype, and device, for example with `torch.utils.benchmark`.
+Native kernels are fastest for first- and second-order filters, so prefer cascades or parallel banks of such sections, especially on CUDA.
 
 ## Examples
 
-### Recreating `scipy.signal.lfilter` example
+### Fibonacci numbers with `state_space`
 
-```python
-import torch
-from philtorch.lti import lfilter, lfilter_zi, filtfilt
-from scipy.signal import butter
-
-x = torch.randn(201)
-
-b_np, a_np = butter(3, 0.05)
-# note that in philtorch a_0 is always 1
-b_np /= a_np[0]
-a_np = a_np[1:] / a_np[0]
-b, a = torch.from_numpy(b_np), torch.from_numpy(a_np)
-
-# note that the position of a and b are swapped compared to scipy
-zi = lfilter_zi(a, b)
-
-z, _ = lfilter(b, a, x, zi=zi * x[0])
-z2 = filtfilt(b, a, x)
-```
-
-If `lfilter` is imported from `philtorch.lpv`, it can also handle parameter-varying filters, where `a` and `b` are at least 2D tensors with an additional time dimension.
-
-### Computing the first 10 Fibonacci numbers using `state_space`
-
-The function `philtorch.lti.state_space` compute the following recursion:
+`philtorch.lti.state_space` computes
 
 ```math
 \begin{aligned}
-\mathbf{h}_{n+1} &= \mathbf{A} \mathbf{h}_n + \mathbf{B} \mathbf{x}_n \\
-\mathbf{y}_n &= \mathbf{C} \mathbf{h}_n + \mathbf{D} \mathbf{x}_n
+\mathbf{h}_{n+1} &= \mathbf{A} \mathbf{h}_n + \mathbf{B} \mathbf{x}_n, \\
+\mathbf{y}_n &= \mathbf{C} \mathbf{h}_n + \mathbf{D} \mathbf{x}_n.
 \end{aligned}
 ```
 
-We can use it to compute the Fibonacci numbers by setting:
+Setting the following, with $\mathbf{B} = \mathbf{D} = 0$ and no input, yields the Fibonacci numbers:
 
 ```math
-\begin{aligned}
-\mathbf{A} = \begin{bmatrix} 1 & 1 \\ 1 & 0 \end{bmatrix}, \quad
-\mathbf{C} = \begin{bmatrix} 1 & 0 \end{bmatrix}, \quad
-\mathbf{B} = \mathbf{D} = 0, \\
-\mathbf{h}_0 = \begin{bmatrix} 1 \\ 0 \end{bmatrix}
-\end{aligned}
+\mathbf{A} = \begin{bmatrix} 1 & 1 \\ 1 & 0 \end{bmatrix}, \qquad
+\mathbf{C} = \begin{bmatrix} 1 & 0 \end{bmatrix}, \qquad
+\mathbf{h}_0 = \begin{bmatrix} 1 \\ 0 \end{bmatrix}.
 ```
 
 ```python
 import torch
+
 from philtorch.lti import state_space
 
 A = torch.tensor([[1, 1], [1, 0]])
@@ -155,11 +228,33 @@ h0 = torch.tensor([1, 0])
 y, _ = state_space(A, x, C=C, zi=h0)
 print(y)
 ```
-```
+
+```text
 tensor([[ 1,  1,  2,  3,  5,  8, 13, 21, 34, 55]])
 ```
-The result is the first 10 Fibonacci numbers, which has the following recursion relation:
 
-```math
-F_n = F_{n-1} + F_{n-2}, \quad F_0 = 1, \quad F_1 = 1
+This produces the first ten Fibonacci numbers, where $F_n = F_{n-1} + F_{n-2}$ with $F_0 = F_1 = 1$.
+
+### Learning filter parameters
+
+The [low-pass estimation notebook](examples/estimate_lowpass.ipynb) demonstrates learning filter parameters by gradient descent.
+
+## Project links
+
+- The [contribution guide](CONTRIBUTING.md) documents the development and pull-request workflow, and the [PhilTorch Roadmap](https://github.com/users/yoyolicoris/projects/5) lists current priorities.
+- The [issue tracker](https://github.com/yoyolicoris/philtorch/issues) is the place for bug reports and feature requests.
+- PhilTorch is distributed under the [MIT License](LICENSE); third-party notices are in [`LICENSES`](LICENSES/README.md).
+
+## Paper and citation
+
+PhilTorch's LTI direct-form filtering work is described in [Accelerating Automatic Differentiation of Direct Form Digital Filters](https://openreview.net/forum?id=ZhwIyvtBNB) by Chin-Yun Yu and György Fazekas.
+
+```bibtex
+@inproceedings{yu2025accelerating,
+  title={Accelerating Automatic Differentiation of Direct Form Digital Filters},
+  author={Yu, Chin-Yun and Fazekas, György},
+  booktitle={Differentiable Systems and Scientific Machine Learning Workshop at EurIPS 2025},
+  year={2025},
+  url={https://openreview.net/forum?id=ZhwIyvtBNB}
+}
 ```

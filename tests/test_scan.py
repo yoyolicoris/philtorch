@@ -1,7 +1,4 @@
 import torch
-from torch import Tensor
-from torch.nn import functional as F
-from typing import Optional
 
 from philtorch.lpv import linear_recurrence as lpv_linear_recurrence
 from philtorch.lti import linear_recurrence as lti_linear_recurrence
@@ -50,3 +47,16 @@ def test_linear_recurrence_unrolling():
     assert torch.allclose(output_naive, output_unrolled), torch.max(
         torch.abs(output_naive - output_unrolled)
     )
+
+
+def test_linear_recurrence_native_broadcasting():
+    x = torch.randn(2, 7)
+    a = torch.rand(7)
+    init = torch.tensor(0.5)
+
+    actual = lpv_linear_recurrence(a, init, x)
+    expected = lpv_linear_recurrence(
+        a.expand_as(x), init.expand(x.size(0)), x, unroll_factor=2
+    )
+
+    assert torch.allclose(actual, expected)

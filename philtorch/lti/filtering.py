@@ -8,8 +8,7 @@ from .ssm import state_space, state_space_recursion, diag_state_space
 from ..mat import companion
 from ..utils import chain_functions
 from ..poly import polydiv
-from .recur import linear_recurrence, LTIRecurrence
-from .. import EXTENSION_LOADED
+from .recur import linear_recurrence
 
 
 def comb_filter(
@@ -56,11 +55,7 @@ def comb_filter(
         zi = torch.zeros_like(a)
 
     y = (
-        (
-            linear_recurrence(-a, zi, folded_x.flatten(0, 1), **kwargs)
-            if EXTENSION_LOADED
-            else LTIRecurrence.apply(-a, zi, folded_x.flatten(0, 1))
-        )
+        linear_recurrence(-a, zi, folded_x.flatten(0, 1), **kwargs)
         .unflatten(0, (-1, delay))
         .mT.flatten(1, 2)
     )

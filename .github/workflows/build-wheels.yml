@@ -1,0 +1,316 @@
+name: Build CPU wheels
+
+on:
+  push:
+    branches: ["dev"]
+  pull_request:
+    branches: ["dev"]
+  release:
+    types: [published]
+  workflow_dispatch:
+
+jobs:
+  resolve-torch-versions:
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+    outputs:
+      matrix: ${{ steps.resolve.outputs.matrix }}
+    steps:
+      - name: Install packaging
+        run: pip install packaging
+
+      - name: Resolve stable PyTorch versions to build against
+        id: resolve
+        env:
+          GITHUB_EVENT_NAME: ${{ github.event_name }}
+        run: |
+          python3 - <<'EOF'
+          import os, urllib.request, json
+          from packaging.version import Version
+
+          # PyPI's JSON API is a stable, documented contract (unlike scraping
+          # download.pytorch.org's HTML directory listing), and its release
+          # versions match 1:1 with the +cpu builds hosted there, so there's
+          # no need to hit that index at all.
+          url = "https://pypi.org/pypi/torch/json"
+          req = urllib.request.Request(url, headers={"User-Agent": "philtorch-ci"})
+          with urllib.request.urlopen(req) as r:
+              data = json.load(r)
+
+          versions = [
+              Version(v)
+              for v, files in data["releases"].items()
+              if files and not Version(v).is_prerelease
+          ]
+          if not versions:
+              raise RuntimeError("No stable torch releases found via PyPI JSON API")
+          parsed = sorted(set(versions), reverse=True)
+
+          # Pick the latest patch for each minor series, take the 3 most recent minors
+          seen_minor = {}
+          for v in parsed:
+              key = (v.major, v.minor)
+              if key not in seen_minor:
+                  seen_minor[key] = str(v)
+          top3 = [seen_minor[k] for k in sorted(seen_minor, reverse=True)[:3]]
+
+          # Building against every supported minor is expensive; PRs only need
+          # a quick sanity check against the latest stable release.
+          selected = top3[:1] if os.environ["GITHUB_EVENT_NAME"] == "pull_request" else top3
+
+          matrix = json.dumps(selected)
+          print(f"Resolved torch versions: {selected}")
+          with open(os.environ["GITHUB_OUTPUT"], "a") as f:
+              f.write(f"matrix={matrix}\n")
+          EOF
+
+  # One job per OS (each calling the reusable _build-wheel.yml) rather than a
+  # single os x torch matrix, so each OS gets its own conclusion and a failure
+  # on one OS doesn't skip the others' downstream test/publish jobs.
+  # Within each OS, strategy.matrix fans out over the resolved Torch minors
+  # (latest only on pull_request; latest 3 otherwise) for build/test signal.
+  # Only the wheel built against the latest minor (matrix[0]) is published; see
+  # the publish job and PR #20 for why wheels can't be published per-minor.
+  build-wheels-ubuntu:
+    needs: resolve-torch-versions
+    permissions:
+      contents: read
+    strategy:
+      fail-fast: false
+      matrix:
+        torch-version: ${{ fromJson(needs.resolve-torch-versions.outputs.matrix) }}
+    uses: ./.github/workflows/_build-wheel.yml
+    with:
+      os: ubuntu-latest
+      torch_version: ${{ matrix.torch-version }}
+
+  # macOS runners are expensive: build/test only on pull requests and
+  # published releases. Matrixed over the resolved
+  # Torch versions like ubuntu (1 version on PR, top 3 otherwise) so releases
+  # get full torch x python coverage, not just the latest minor.
+  build-wheels-macos:
+    if: >
+      github.event_name == 'pull_request' ||
+      github.event_name == 'release'
+    needs: resolve-torch-versions
+    permissions:
+      contents: read
+    strategy:
+      fail-fast: false
+      matrix:
+        torch-version: ${{ fromJson(needs.resolve-torch-versions.outputs.matrix) }}
+    uses: ./.github/workflows/_build-wheel.yml
+    with:
+      os: macos-latest
+      torch_version: ${{ matrix.torch-version }}
+
+  # Windows: torchlpc is now vendored (DiffAPF/torchlpc@1bfde4a) and bundled into
+  # philtorch._C, so MSVC no longer needs external torchlpc wheel. Windows is
+  # built and publishable; test-windows runs smoke test.
+  build-wheels-windows:
+    needs: resolve-torch-versions
+    permissions:
+      contents: read
+    uses: ./.github/workflows/_build-wheel.yml
+    with:
+      os: windows-latest
+      torch_version: ${{ fromJson(needs.resolve-torch-versions.outputs.matrix)[0] }}
+
+  lint:
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.x"
+          cache: "pip"
+
+      - name: Install flake8
+        run: python -m pip install flake8
+
+      - name: Lint with flake8
+        run: |
+          # stop the build if there are Python syntax errors or undefined names
+          flake8 . --count --select=E9,F63,F7,F82 --show-source --statistics
+          # exit-zero treats all errors as warnings. The GitHub editor is 127 chars wide
+          flake8 . --count --exit-zero --max-complexity=10 --max-line-length=127 --statistics
+
+  # One test job per OS (see build-wheels-ubuntu comment), matrixed over the
+  # same resolved Torch minors so each leg tests the wheel built against that
+  # minor.
+  test-ubuntu:
+    needs: [resolve-torch-versions, build-wheels-ubuntu]
+    permissions:
+      contents: read
+    strategy:
+      fail-fast: false
+      matrix:
+        torch-version: ${{ fromJson(needs.resolve-torch-versions.outputs.matrix) }}
+    uses: ./.github/workflows/_test-wheel.yml
+    with:
+      os: ubuntu-latest
+      # Mirrors the CIBW_BUILD selection in _build-wheel.yml: PRs only get a
+      # wheel for the latest Python, other events build/test the full range.
+      python_versions: ${{ github.event_name == 'pull_request' && '["3.13"]' || '["3.10", "3.11", "3.12", "3.13"]' }}
+      torch_version: ${{ matrix.torch-version }}
+      # Only the leg for the latest resolved Torch minor (matrix[0]) uploads
+      # coverage, to avoid duplicate reports for the same commit.
+      upload_coverage: ${{ matrix.torch-version == fromJson(needs.resolve-torch-versions.outputs.matrix)[0] }}
+    secrets:
+      codecov_token: ${{ secrets.CODECOV_TOKEN }}
+
+  # Mirrors build-wheels-macos: only pull_request and official releases test
+  # a macOS wheel, matrixed over the same resolved Torch versions so releases
+  # get full torch x python coverage, not just the latest minor.
+  test-macos:
+    if: >
+      github.event_name == 'pull_request' ||
+      github.event_name == 'release'
+    needs: [resolve-torch-versions, build-wheels-macos]
+    permissions:
+      contents: read
+    strategy:
+      fail-fast: false
+      matrix:
+        torch-version: ${{ fromJson(needs.resolve-torch-versions.outputs.matrix) }}
+    uses: ./.github/workflows/_test-wheel.yml
+    with:
+      os: macos-latest
+      python_versions: ${{ github.event_name == 'pull_request' && '["3.13"]' || '["3.10", "3.11", "3.12", "3.13"]' }}
+      torch_version: ${{ matrix.torch-version }}
+    secrets:
+      codecov_token: ${{ secrets.CODECOV_TOKEN }}
+
+  # Mirrors build-wheels-macos: only pull_request and official releases test
+  # a Windows wheel. Windows builds only the latest torch version (to save
+  # runner cost), so we constrain this test to that same single version
+  # rather than matrixing over 3 versions which would 404 on missing artifacts.
+  test-windows:
+    if: >
+      github.event_name == 'pull_request' ||
+      github.event_name == 'release'
+    needs: [resolve-torch-versions, build-wheels-windows]
+    permissions:
+      contents: read
+    uses: ./.github/workflows/_test-wheel.yml
+    with:
+      os: windows-latest
+      python_versions: ${{ github.event_name == 'pull_request' && '["3.13"]' || '["3.10", "3.11", "3.12", "3.13"]' }}
+      torch_version: ${{ fromJson(needs.resolve-torch-versions.outputs.matrix)[0] }}
+    secrets:
+      codecov_token: ${{ secrets.CODECOV_TOKEN }}
+
+  build-sdist:
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+          submodules: recursive
+          # fetch-depth 0 + submodules required so setuptools_scm sees tags and vendored third_party.
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.x"
+          cache: "pip"
+
+      - name: Install build dependencies
+        run: python -m pip install "setuptools_scm>=8" build
+
+      - name: Build sdist
+        run: python -m build --sdist
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: sdist
+          path: dist/*.tar.gz
+
+  publish:
+    runs-on: ubuntu-latest
+    # TestPyPI publishes from dev after the Linux smoke tests pass.
+    # Production publishes only from a supported published GitHub Release after
+    # every Linux, macOS, and Windows wheel smoke test passes.
+    needs:
+      [
+        resolve-torch-versions,
+        build-wheels-ubuntu,
+        build-wheels-macos,
+        build-wheels-windows,
+        build-sdist,
+        lint,
+        test-ubuntu,
+        test-macos,
+        test-windows,
+      ]
+    # `!cancelled()` allows the dev path to run while release-only macOS and
+    # Windows test jobs are skipped, so every required result is checked here.
+    if: >
+      !cancelled() &&
+      needs.build-wheels-ubuntu.result == 'success' &&
+      needs.build-wheels-windows.result == 'success' &&
+      needs.build-sdist.result == 'success' &&
+      needs.lint.result == 'success' &&
+      needs.test-ubuntu.result == 'success' &&
+      (
+        (github.event_name == 'push' && github.ref == 'refs/heads/dev') ||
+        (
+          github.event_name == 'release' &&
+          github.event.action == 'published' &&
+          (startsWith(github.event.release.tag_name, 'v0.') || startsWith(github.event.release.tag_name, 'v1.')) &&
+          needs.build-wheels-macos.result == 'success' &&
+          needs.test-macos.result == 'success' &&
+          needs.test-windows.result == 'success'
+        )
+      )
+    permissions:
+      id-token: write
+    environment:
+      name: ${{ github.event_name == 'release' && 'pypi' || 'testpypi' }}
+    steps:
+      - name: Download Linux wheel
+        uses: actions/download-artifact@v4
+        with:
+          name: wheels-ubuntu-latest-torch${{ fromJson(needs.resolve-torch-versions.outputs.matrix)[0] }}
+          path: dist/
+
+      - name: Download macOS wheel
+        if: >
+          github.event_name == 'release' &&
+          needs.build-wheels-macos.result == 'success'
+        uses: actions/download-artifact@v4
+        with:
+          name: wheels-macos-latest-torch${{ fromJson(needs.resolve-torch-versions.outputs.matrix)[0] }}
+          path: dist/
+
+      - name: Download Windows wheel
+        uses: actions/download-artifact@v4
+        with:
+          name: wheels-windows-latest-torch${{ fromJson(needs.resolve-torch-versions.outputs.matrix)[0] }}
+          path: dist/
+
+      - uses: actions/download-artifact@v4
+        with:
+          name: sdist
+          path: dist/
+
+      - name: Publish to TestPyPI
+        if: github.event_name == 'push' && github.ref == 'refs/heads/dev'
+        uses: pypa/gh-action-pypi-publish@release/v1
+        with:
+          packages-dir: dist/
+          repository-url: https://test.pypi.org/legacy/
+
+      - name: Publish to PyPI
+        if: >
+          github.event_name == 'release' &&
+          (startsWith(github.event.release.tag_name, 'v0.') || startsWith(github.event.release.tag_name, 'v1.'))
+        uses: pypa/gh-action-pypi-publish@release/v1
+        with:
+          packages-dir: dist/
+          skip-existing: true

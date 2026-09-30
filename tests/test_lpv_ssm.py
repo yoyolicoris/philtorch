@@ -1,10 +1,6 @@
 import torch
-from torch import Tensor
-from torch.nn import functional as F
-from typing import Optional
 import pytest
 from itertools import product, chain
-
 from philtorch.lpv import state_space_recursion as lpv_state_space, state_space
 from philtorch.lti import state_space_recursion as lti_state_space
 from philtorch.mat import companion

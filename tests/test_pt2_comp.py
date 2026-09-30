@@ -1,18 +1,168 @@
 import pytest
 import torch
 
+from philtorch import HELION_LOADED
+
+_REQUIRES_GRAD_CASES = [
+    (True, False, False),
+    (False, True, False),
+    (False, False, True),
+    (True, True, False),
+    (True, False, True),
+    (False, True, True),
+    (True, True, True),
+]
+
 
 @pytest.mark.parametrize(
-    "x_requires_grad",
-    [True],
+    ("x_requires_grad", "A_requires_grad", "zi_requires_grad"),
+    _REQUIRES_GRAD_CASES,
 )
 @pytest.mark.parametrize(
-    "A_requires_grad",
-    [True, False],
+    "samples",
+    [11],
 )
 @pytest.mark.parametrize(
-    "zi_requires_grad",
+    "cmplx",
+    [False],
+)
+@pytest.mark.parametrize(
+    "device",
+    [
+        pytest.param(
+            "cuda",
+            marks=pytest.mark.skipif(
+                not torch.cuda.is_available() or not HELION_LOADED,
+                reason="CUDA not available",
+            ),
+        ),
+    ],
+)
+@pytest.mark.parametrize(
+    "share_A",
     [True, False],
+)
+def test_hl_lti_recurN_pt2_compatibility(
+    x_requires_grad: bool,
+    A_requires_grad: bool,
+    zi_requires_grad: bool,
+    samples: int,
+    cmplx: bool,
+    device: str,
+    share_A: bool,
+):
+    batch_size = 3
+    order = 4
+    if device == "mps":
+        dtype = torch.float32
+    else:
+        dtype = torch.double
+
+    x, A, zi = tuple(
+        x.to(device)
+        for x in [
+            torch.randn(
+                batch_size,
+                samples,
+                order,
+                dtype=dtype,
+            ),
+            torch.randn(
+                *((batch_size, order, order) if not share_A else (order, order)),
+                dtype=dtype,
+            )
+            * 0.25,
+            torch.randn(
+                batch_size,
+                order,
+                dtype=dtype,
+            ),
+        ]
+    )
+    A.requires_grad = A_requires_grad
+    x.requires_grad = x_requires_grad
+    zi.requires_grad = zi_requires_grad
+
+    from philtorch import hl_lti_recurN
+
+    torch.library.opcheck(hl_lti_recurN, (A, zi, x))
+
+
+@pytest.mark.parametrize(
+    ("x_requires_grad", "A_requires_grad", "zi_requires_grad"),
+    _REQUIRES_GRAD_CASES,
+)
+@pytest.mark.parametrize(
+    "samples",
+    [11],
+)
+@pytest.mark.parametrize(
+    ("cmplx", "order", "device"),
+    [
+        pytest.param(
+            False,
+            4,
+            "cuda",
+            marks=pytest.mark.skipif(
+                not torch.cuda.is_available() or not HELION_LOADED,
+                reason="CUDA not available",
+            ),
+        ),
+    ],
+)
+@pytest.mark.parametrize(
+    "share_A",
+    [True, False],
+)
+def test_hl_recurN_pt2_compatibility(
+    x_requires_grad: bool,
+    A_requires_grad: bool,
+    zi_requires_grad: bool,
+    share_A: bool,
+    samples: int,
+    cmplx: bool,
+    device: str,
+    order: int,
+):
+    batch_size = 3
+    dtype = torch.float32 if device == "mps" else torch.double
+    x, A, zi = tuple(
+        x.to(device)
+        for x in [
+            torch.randn(
+                batch_size,
+                samples,
+                order,
+                dtype=dtype,
+            ),
+            torch.randn(
+                *(
+                    (batch_size, samples, order, order)
+                    if not share_A
+                    else (samples, order, order)
+                ),
+                dtype=dtype,
+            )
+            / order**2,
+            torch.randn(
+                batch_size,
+                order,
+                dtype=dtype,
+            ),
+        ]
+    )
+    A.requires_grad = A_requires_grad
+    x.requires_grad = x_requires_grad
+    zi.requires_grad = zi_requires_grad
+
+    from philtorch import hl_recurN
+
+    torch.library.opcheck(hl_recurN, (A, zi, x))
+
+
+@pytest.mark.parametrize(
+    ("x_requires_grad", "A_requires_grad", "zi_requires_grad"),
+    _REQUIRES_GRAD_CASES,
 )
 @pytest.mark.parametrize(
     "samples",
@@ -71,16 +221,8 @@ def test_recurN_pt2_compatibility(
 
 
 @pytest.mark.parametrize(
-    "x_requires_grad",
-    [True],
-)
-@pytest.mark.parametrize(
-    "A_requires_grad",
-    [True, False],
-)
-@pytest.mark.parametrize(
-    "zi_requires_grad",
-    [True, False],
+    ("x_requires_grad", "A_requires_grad", "zi_requires_grad"),
+    _REQUIRES_GRAD_CASES,
 )
 @pytest.mark.parametrize(
     "samples",
@@ -153,16 +295,8 @@ def test_recur2_pt2_compatibility(
 
 
 @pytest.mark.parametrize(
-    "x_requires_grad",
-    [True],
-)
-@pytest.mark.parametrize(
-    "A_requires_grad",
-    [True, False],
-)
-@pytest.mark.parametrize(
-    "zi_requires_grad",
-    [True, False],
+    ("x_requires_grad", "A_requires_grad", "zi_requires_grad"),
+    _REQUIRES_GRAD_CASES,
 )
 @pytest.mark.parametrize(
     "samples",
@@ -226,16 +360,8 @@ def test_lti_recur2_pt2_compatibility(
 
 
 @pytest.mark.parametrize(
-    "x_requires_grad",
-    [True],
-)
-@pytest.mark.parametrize(
-    "A_requires_grad",
-    [True, False],
-)
-@pytest.mark.parametrize(
-    "zi_requires_grad",
-    [True, False],
+    ("x_requires_grad", "A_requires_grad", "zi_requires_grad"),
+    _REQUIRES_GRAD_CASES,
 )
 @pytest.mark.parametrize(
     "samples",
@@ -249,12 +375,6 @@ def test_lti_recur2_pt2_compatibility(
     "device",
     [
         "cpu",
-        # pytest.param(
-        #     "cuda",
-        #     marks=pytest.mark.skipif(
-        #         not torch.cuda.is_available(), reason="CUDA not available"
-        #     ),
-        # ),
     ],
 )
 @pytest.mark.parametrize(
@@ -299,16 +419,8 @@ def test_lti_recurN_pt2_compatibility(
 
 
 @pytest.mark.parametrize(
-    "x_requires_grad",
-    [True],
-)
-@pytest.mark.parametrize(
-    "a_requires_grad",
-    [True, False],
-)
-@pytest.mark.parametrize(
-    "zi_requires_grad",
-    [True, False],
+    ("x_requires_grad", "a_requires_grad", "zi_requires_grad"),
+    _REQUIRES_GRAD_CASES,
 )
 @pytest.mark.parametrize(
     "samples",

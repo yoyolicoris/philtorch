@@ -3,31 +3,25 @@ import torch.nn.functional as F
 from torch.autograd import Function
 from typing import Optional, Union, Any
 from torch import Tensor
-from torchlpc import sample_wise_lpc
-
-try:
-    import pararnn.parallel_reduction.parallel_reduction
-
-    PARARNN_AVAILABLE = True
-except ImportError:
-    PARARNN_AVAILABLE = False
+from .._torchlpc import lpc
 
 from ..mat import matrices_cumdot
-from .. import EXTENSION_LOADED
+from .. import HELION_LOADED
+from ..lti.ssm import helion_backend_indicator
 
 
 def extension_backend_indicator(x: Tensor, M: int) -> bool:
     """Return True when a compiled extension backend is preferable.
 
-    The indicator prefers the extension when it is available and when the
-    problem size or device favors the extension implementation.
+    The indicator prefers the extension when the problem size or device favors
+    the compiled implementation.
     """
-    return (EXTENSION_LOADED and (x.is_cpu or (M <= 2))) or _pararnn_applicable(x, M)
+    return x.is_cpu or M <= 2 or _pararnn_applicable(x, M)
 
 
 def _pararnn_applicable(x: Tensor, M: int) -> bool:
-    """Check if the PararNN backend can be used for the given input."""
-    return PARARNN_AVAILABLE and x.is_cuda and x.is_floating_point() and M in (2, 3)
+    """Check if the vendored PararNN kernels support the given input."""
+    return x.is_cuda and x.is_floating_point() and M in (2, 3)
 
 
 class MatrixRecurrence(Function):
@@ -47,6 +41,10 @@ class MatrixRecurrence(Function):
             )(jac, rhs)[:, 1:]
         elif x.size(-1) == 2:
             return torch.ops.philtorch.recur2(A, zi, x)
+        elif helion_backend_indicator(x):
+            from .. import hl_recurN
+
+            return hl_recurN(A, zi, x)
         return torch.ops.philtorch.recurN(A, zi, x)
 
     @staticmethod
@@ -108,6 +106,12 @@ class MatrixRecurrence(Function):
             fwd_x = fwd_x + fwd_A
 
         return MatrixRecurrence.apply(A, fwd_zi, fwd_x)
+
+
+def _matrix_recurrence(A: Tensor, zi: Tensor, x: Tensor) -> Tensor:
+    if torch.compiler.is_compiling():
+        return MatrixRecurrence.forward(A, zi, x)
+    return MatrixRecurrence.apply(A, zi, x)
 
 
 def _recursion_loop(
@@ -177,27 +181,26 @@ def _ext_ss_recur(
     Returns:
         Tensor: Output states (B, N, M) or (B, N) if ``out_idx`` is set.
     """
-    assert (
-        EXTENSION_LOADED
-    ), "Extension not loaded. Please ensure philtorch is built with extensions."
     if x.dim() == 2 and A.size(-1) == 1:
-        y = sample_wise_lpc(x, -A[..., 0].broadcast_to(x.shape + (1,)), zi).unsqueeze(
-            -1
-        )
+        y = lpc(x, -A[..., 0].broadcast_to(x.shape + (1,)), zi).unsqueeze(-1)
     elif A.size(-1) == 1:
-        y = sample_wise_lpc(
-            x.squeeze(-1), -A[..., 0].broadcast_to(x.shape), zi
-        ).unsqueeze(-1)
+        y = lpc(x.squeeze(-1), -A[..., 0].broadcast_to(x.shape), zi).unsqueeze(-1)
     else:
         x = (
             torch.cat([x.unsqueeze(-1), x.new_zeros(*x.shape, A.size(-1) - 1)], dim=-1)
             if x.dim() == 2
             else x
         )
-        y = MatrixRecurrence.apply(A, zi, x)
+        y = _matrix_recurrence(A, zi, x)
     if out_idx is not None and y.dim() == 3:
         y = y[:, :, out_idx]
     return y
+
+
+def _select_recursion_runner(x: Tensor, M: int, unroll_factor: int):
+    if unroll_factor == 1 and extension_backend_indicator(x, M):
+        return _ext_ss_recur
+    return _recursion_loop
 
 
 def state_space_recursion(
@@ -263,9 +266,11 @@ def state_space_recursion(
     else:
         block_size = unroll_factor
 
+    runner = _select_recursion_runner(x, M, block_size)
+
     # boundary condition
     if block_size == 1 or block_size >= N:
-        return _recursion_loop(A, zi, x, out_idx=out_idx)
+        return runner(A, zi, x, out_idx=out_idx)
 
     remainder = N % block_size
     if remainder != 0:
@@ -303,7 +308,7 @@ def state_space_recursion(
         dim=1,
     )
 
-    output = _recursion_loop(
+    output = runner(
         (
             unrolled_A[:, :, :-1].flatten(0, 1)
             if unrolled_A.dim() == 5
@@ -334,7 +339,7 @@ def state_space(
     C: Optional[Tensor] = None,
     D: Optional[Tensor] = None,
     zi: Optional[Tensor] = None,
-    unroll_factor: Optional[int] = None,
+    unroll_factor: int = 1,
     out_idx: Optional[int] = None,
     # **kwargs,
 ):
@@ -359,11 +364,9 @@ def state_space(
         zi (Tensor, optional): Initial states with shape (B, M). If not
             provided, assumed to be zero. If provided, the final state
             ``zf`` is also returned.
-        unroll_factor (int, optional): Block unroll factor to accelerate
-            long recurrences if the pure-Python backend is used.
-            Setting it to >1 forces the pure-Python backend even if a compiled
-            extension is available.
-            If ``None``, it is set to ``round(N**0.5)``.
+        unroll_factor (int): Recursion block size. The default of 1 selects a
+            compiled kernel when supported and otherwise uses the naive Python
+            loop. Setting it to >1 forces block-unrolled Python recursion.
         out_idx (int, optional): If set and the returned y has a state
             dimension, selects the single output index to return.
     Returns:
@@ -394,9 +397,6 @@ def state_space(
         zi = x.new_zeros(batch_size, M)
     elif zi.dim() == 1:
         zi = zi.unsqueeze(0).expand(batch_size, -1)
-
-    if unroll_factor is None:
-        unroll_factor = round(N**0.5)
 
     if x.dim() == 2:
         features = -1
@@ -446,14 +446,8 @@ def state_space(
     else:
         Bx = x
 
-    recur_runner = (
-        _ext_ss_recur
-        if extension_backend_indicator(x, M) and unroll_factor in (None, 1)
-        else state_space_recursion
-    )
-
     if return_zf or out_idx is None:
-        h = recur_runner(A, zi, Bx, unroll_factor=unroll_factor, out_idx=None)
+        h = state_space_recursion(A, zi, Bx, unroll_factor=unroll_factor, out_idx=None)
         zf = h[:, -1, :] if return_zf else None
         h = (
             torch.cat([zi.unsqueeze(1), h[:, :-1]], dim=1)
@@ -462,7 +456,9 @@ def state_space(
         )
     else:
         zf = None
-        h = recur_runner(A, zi, Bx, unroll_factor=unroll_factor, out_idx=out_idx)
+        h = state_space_recursion(
+            A, zi, Bx, unroll_factor=unroll_factor, out_idx=out_idx
+        )
         h = torch.cat([zi[:, None, out_idx], h[:, :-1]], dim=1)
 
     if x.dim() == 2:

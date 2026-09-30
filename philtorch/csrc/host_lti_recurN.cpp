@@ -1,6 +1,8 @@
 #include <torch/script.h>
 #include <torch/torch.h>
 
+#include "host_dot.h"
+
 template <typename scalar_t>
 void host_lti_batch_mat_recur_N_order(int B, int T, int N,
                                       const scalar_t *A, // [B][N][N]
@@ -22,11 +24,8 @@ void host_lti_batch_mat_recur_N_order(int B, int T, int N,
 
             for (int i = 0; i < N; ++i)
             {
-                scalar_t sum = 0;
                 const scalar_t *Arow = A_b + i * N;
-                for (int j = 0; j < N; ++j)
-                    sum += Arow[j] * H_prev[j];
-                H_curr[i] += sum;
+                H_curr[i] += host_dot(Arow, H_prev, N);
             }
         }
     }
@@ -50,11 +49,8 @@ void host_lti_share_mat_recur_N_order(int B, int T, int N,
             scalar_t *H_curr = H_b + t * N;
             for (int i = 0; i < N; ++i)
             {
-                scalar_t sum = 0;
                 const scalar_t *Arow = A + i * N;
-                for (int j = 0; j < N; ++j)
-                    sum += Arow[j] * H_prev[j];
-                H_curr[i] += sum;
+                H_curr[i] += host_dot(Arow, H_prev, N);
             }
         }
     }

@@ -1,0 +1,90 @@
+name: Bug report
+description: Report reproducible incorrect behavior or a regression in PhilTorch.
+title: "[Bug]: "
+labels:
+  - bug
+body:
+  - type: markdown
+    attributes:
+      value: |
+        Thanks for reporting a problem. Please provide a minimal reproduction and enough environment information for someone else to investigate it.
+
+  - type: textarea
+    id: summary
+    attributes:
+      label: Summary
+      description: What went wrong, and which PhilTorch API is affected?
+      placeholder: Describe the observed behavior and its impact.
+    validations:
+      required: true
+
+  - type: textarea
+    id: reproduction
+    attributes:
+      label: Minimal reproduction
+      description: Provide the smallest self-contained Python example that reproduces the problem.
+      render: python
+    validations:
+      required: true
+
+  - type: textarea
+    id: expected
+    attributes:
+      label: Expected behavior
+      description: What result did you expect?
+    validations:
+      required: true
+
+  - type: textarea
+    id: actual
+    attributes:
+      label: Actual behavior
+      description: Include the complete error message, traceback, or relevant numerical output.
+    validations:
+      required: true
+
+  - type: input
+    id: philtorch-version
+    attributes:
+      label: PhilTorch version or commit
+      placeholder: "For example: 0.4.0 or commit abc1234"
+    validations:
+      required: true
+
+  - type: input
+    id: pytorch-version
+    attributes:
+      label: PyTorch version
+      placeholder: "For example: 2.9.1+cu130"
+    validations:
+      required: true
+
+  - type: textarea
+    id: environment
+    attributes:
+      label: Environment
+      description: Include OS, Python version, installation method, device (CPU/CUDA), GPU model, and CUDA version when relevant.
+      placeholder: |
+        OS:
+        Python:
+        Installation method:
+        Device:
+        GPU/CUDA:
+    validations:
+      required: true
+
+  - type: textarea
+    id: context
+    attributes:
+      label: Additional context
+      description: Add anything else that may help, such as input shapes, dtypes, expected tolerances, or links to related issues.
+
+  - type: checkboxes
+    id: checks
+    attributes:
+      label: Checklist
+      options:
+        - label: I searched the existing issues for a duplicate.
+          required: true
+        - label: The reproduction does not contain private data or credentials.
+          required: true

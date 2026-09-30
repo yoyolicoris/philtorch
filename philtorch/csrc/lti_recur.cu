@@ -119,6 +119,7 @@ at::Tensor lti_recur_cuda_impl(const at::Tensor &a,
                 "A must have the same scalar type as input");
     TORCH_CHECK(a.dim() <= 1, "A must be a vector or a scalar");
     TORCH_CHECK(zi.dim() == 1, "zi must be a vector");
+    TORCH_CHECK(x.size(1) > 0, "x must contain at least one time step");
 
     auto n_steps = x.size(1) + 1; // +1 for the initial state
     auto n_batches = x.size(0);

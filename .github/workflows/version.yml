@@ -18,6 +18,7 @@ jobs:
       uses: actions/checkout@v4
       with:
         fetch-depth: 0
+        submodules: recursive
     - name: Set up Python
       uses: actions/setup-python@v5
       with:
@@ -26,8 +27,8 @@ jobs:
     - name: Install dependencies
       run: |
         python -m pip install --upgrade pip
-        pip install build "setuptools-git-versioning>=2,<3"
+        pip install build "setuptools_scm>=8"
         pip install torch --index-url https://download.pytorch.org/whl/cpu
     - name: Display version
       run: |
-          setuptools-git-versioning -v >> $GITHUB_STEP_SUMMARY
+          python -m setuptools_scm >> $GITHUB_STEP_SUMMARY
