@@ -13,6 +13,7 @@ from typing import Iterable
 from urllib.parse import quote
 
 _NORMALIZE_PATTERN = re.compile(r"[-_.]+")
+_VALID_PROJECT_NAME = re.compile(r"^[a-z0-9]([a-z0-9-]*[a-z0-9])?$")
 
 
 def normalize_project_name(name: str) -> str:
@@ -92,6 +93,8 @@ def _root_page(project: str) -> str:
 def generate_index(project: str, wheel_paths: Iterable[Path], output: Path) -> None:
     """Copy wheels into ``output/simple`` and generate deterministic index pages."""
     project = normalize_project_name(project)
+    if not _VALID_PROJECT_NAME.match(project):
+        raise ValueError(f"invalid project name: {project}")
     package_dir = output.resolve() / "simple" / project
     wheels: dict[str, tuple[Path, str]] = {}
 
@@ -109,7 +112,15 @@ def generate_index(project: str, wheel_paths: Iterable[Path], output: Path) -> N
             if file_sha256(destination) != digest:
                 raise ValueError(f"conflicting duplicate wheel filename: {filename}")
             continue
-        shutil.copyfile(source, destination)
+        temporary = destination.with_suffix(destination.suffix + ".tmp")
+        try:
+            shutil.copyfile(source, temporary)
+            if file_sha256(temporary) != digest:
+                raise ValueError(f"copied wheel failed digest check: {filename}")
+            temporary.replace(destination)
+        finally:
+            if temporary.exists():
+                temporary.unlink()
 
     _write_if_changed(package_dir / "index.html", _project_page(project, wheels))
     _write_if_changed(package_dir.parent / "index.html", _root_page(project))

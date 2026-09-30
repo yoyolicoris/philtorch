@@ -82,3 +82,33 @@ def test_rejects_conflict_with_existing_published_wheel(tmp_path):
         INDEX.generate_index("philtorch", [incoming], output)
 
     assert published.read_bytes() == b"published wheel"
+
+
+@pytest.mark.parametrize("project", ["/tmp/example", ".."])
+def test_rejects_unsafe_project_name(tmp_path, project):
+    output = tmp_path / "site"
+
+    with pytest.raises(ValueError, match="invalid project name"):
+        INDEX.generate_index(project, [], output)
+
+    assert not output.exists()
+
+
+def test_incremental_run_keeps_previously_published_wheels(tmp_path):
+    output = tmp_path / "site"
+    first_name = "philtorch-0.6.0+torch2.8.cu128-cp310-cp310-linux_x86_64.whl"
+    second_name = "philtorch-0.6.0+torch2.9.cu130-cp313-cp313-linux_x86_64.whl"
+    first = wheel(tmp_path / "wheels", first_name, b"first wheel")
+    second = wheel(tmp_path / "wheels", second_name, b"second wheel")
+
+    INDEX.generate_index("philtorch", [first], output)
+    INDEX.generate_index("philtorch", [second], output)
+
+    package_dir = output / "simple" / "philtorch"
+    page = (package_dir / "index.html").read_text()
+    first_hash = hashlib.sha256(b"first wheel").hexdigest()
+    second_hash = hashlib.sha256(b"second wheel").hexdigest()
+    assert f"{quote(first_name)}#sha256={first_hash}" in page
+    assert f"{quote(second_name)}#sha256={second_hash}" in page
+    assert (package_dir / first_name).read_bytes() == b"first wheel"
+    assert (package_dir / second_name).read_bytes() == b"second wheel"
