@@ -52,7 +52,7 @@ def _read_delay_line(
 def delay_state_space(
     A: Tensor,
     x: Tensor,
-    delays: Union[Sequence[int], Tensor],
+    delays: Union[int, Sequence[int], Tensor],
     B: Optional[Tensor] = None,
     C: Optional[Tensor] = None,
     D: Optional[Tensor] = None,
@@ -80,7 +80,7 @@ def delay_state_space(
         x (Tensor): Input sequence with shape ``(B, N)`` or ``(B, N, F)``.
         delays (Sequence[int] or Tensor): Positive integer delay lengths for
             the ``M`` lines. Python, NumPy, and integer tensor values are
-            accepted.
+            accepted; a scalar gives a single delay line.
         B (Tensor, optional): Input matrix with the same shapes as in
             :func:`state_space`. If omitted, scalar input enters the first
             delay line, or vector input must have ``M`` features.
@@ -110,6 +110,9 @@ def delay_state_space(
             "C and out_idx cannot be used together. Use either C or out_idx."
         )
 
+    # A scalar (int, NumPy scalar, or 0-d array/tensor) is a single delay line.
+    if isinstance(delays, int) or getattr(delays, "ndim", None) == 0:
+        delays = (delays,)
     delays = tuple(
         _as_int(delay, "Every delay must be a positive integer") for delay in delays
     )
