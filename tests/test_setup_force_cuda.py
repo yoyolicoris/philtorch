@@ -21,7 +21,7 @@ def test_default_cpu_selection_without_toolkit():
 
 
 def test_force_cuda_selection_without_visible_gpu():
-    assert resolve_cuda_build("1", "/opt/cuda", False) is True
+    assert resolve_cuda_build("1", "/opt/cuda", False, "8.0 8.6") is True
 
 
 def test_force_cuda_rejects_missing_toolkit():
@@ -37,3 +37,21 @@ def test_force_cuda_rejects_invalid_value():
         RuntimeError, match="PHILTORCH_FORCE_CUDA must be either '0' or '1'"
     ):
         resolve_cuda_build("yes", "/opt/cuda", False)
+
+
+def test_force_cuda_with_visible_gpu_ignores_missing_arch_list():
+    assert resolve_cuda_build("1", "/opt/cuda", True) is True
+
+
+def test_force_cuda_without_visible_gpu_requires_arch_list():
+    with pytest.raises(RuntimeError, match="TORCH_CUDA_ARCH_LIST"):
+        resolve_cuda_build("1", "/opt/cuda", False)
+
+
+def test_force_cuda_without_visible_gpu_accepts_arch_list():
+    assert resolve_cuda_build("1", "/opt/cuda", False, "8.0 8.6") is True
+
+
+def test_force_cuda_without_visible_gpu_rejects_native_arch_list():
+    with pytest.raises(RuntimeError, match="TORCH_CUDA_ARCH_LIST"):
+        resolve_cuda_build("1", "/opt/cuda", False, "native")

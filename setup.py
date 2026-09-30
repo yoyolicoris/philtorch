@@ -73,6 +73,7 @@ def get_extensions():
         force_cuda_value=os.environ.get("PHILTORCH_FORCE_CUDA", "0"),
         cuda_home=CUDA_HOME,
         cuda_available=torch.cuda.is_available(),
+        cuda_arch_list=os.environ.get("TORCH_CUDA_ARCH_LIST"),
     )
     print(
         "[philtorch build] "
