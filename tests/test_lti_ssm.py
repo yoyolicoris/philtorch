@@ -4,6 +4,7 @@ import torch
 from scipy import signal
 from itertools import product, chain
 from philtorch.lti import state_space_recursion, state_space, diag_state_space
+from philtorch.lti.ssm import _ssm_B, _ssm_C_D
 from philtorch.mat import companion
 
 from .test_lti_lfilter import _generate_random_signal
@@ -202,3 +203,146 @@ def test_ssm_D_shape_handling(
         y = result
 
     assert y.shape[:2] == x.shape[:2]
+
+
+_b, _N, _M, _F, _P = 3, 6, 4, 2, 5
+
+
+@pytest.mark.parametrize("dtype", [torch.double, torch.cdouble])
+@pytest.mark.parametrize(
+    ("x_shape", "B_shape", "equation"),
+    [
+        ((_b, _N), (_M,), "bn,m->bnm"),
+        ((_b, _N), (_b, _M), "bn,bm->bnm"),
+        ((_b, _N, _F), (_M, _F), "bnf,mf->bnm"),
+        ((_b, _N, _F), (_b, _M, _F), "bnf,bmf->bnm"),
+        # batch == M: (M, F) must not be read as a batched (B, M) vector.
+        ((2, _N, 2), (2, 2), "bnf,mf->bnm"),
+        ((1, _N, 1), (1, 1), "bnf,mf->bnm"),
+    ],
+)
+def test_ssm_B_layouts(x_shape, B_shape, equation, dtype):
+    x = torch.randn(x_shape, dtype=dtype)
+    B = torch.randn(B_shape, dtype=dtype)
+    M = B_shape[-1] if len(x_shape) == 2 else B_shape[-2]
+    expected = torch.einsum(equation, x, B)
+    torch.testing.assert_close(_ssm_B(B, x, x_shape[0], M), expected)
+
+
+@pytest.mark.parametrize("dtype", [torch.double, torch.cdouble])
+@pytest.mark.parametrize(
+    ("x_shape", "D_shape", "equation"),
+    [
+        ((_b, _N), (), "bn,->bn"),
+        ((_b, _N), (1,), "bn,o->bn"),
+        ((_b, _N), (_b,), "bn,b->bn"),
+        ((_b, _N), (_P,), "bn,p->bnp"),
+        ((_b, _N), (_b, _P), "bn,bp->bnp"),
+        ((_b, _N, _F), (), "bnf,->bnf"),
+        ((_b, _N, _F), (1,), "bnf,o->bnf"),
+        ((_b, _N, _F), (_F,), "bnf,f->bn"),
+        ((_b, _N, _F), (_b, _F), "bnf,bf->bn"),
+        ((_b, _N, _F), (_P, _F), "bnf,pf->bnp"),
+        ((_b, _N, _F), (_b, _P, _F), "bnf,bpf->bnp"),
+        # batch == 1: a (1,) gain on vector input stays a scalar gain.
+        ((1, _N, _F), (1,), "bnf,o->bnf"),
+    ],
+)
+def test_ssm_D_layouts(x_shape, D_shape, equation, dtype):
+    x = torch.randn(x_shape, dtype=dtype)
+    D = torch.randn(D_shape, dtype=dtype)
+    expected = torch.einsum(equation, x, D)
+    y = _ssm_C_D(torch.zeros((), dtype=dtype), x, None, D, x_shape[0], _M)
+    torch.testing.assert_close(y, expected)
+
+
+@pytest.mark.parametrize("dtype", [torch.double, torch.cdouble])
+@pytest.mark.parametrize(
+    ("C_shape", "equation"),
+    [
+        (None, "bnm->bnm"),
+        ((_M,), "bnm,m->bn"),
+        ((_b, _M), "bnm,bm->bn"),
+        ((_P, _M), "bnm,pm->bnp"),
+        ((_b, _P, _M), "bnm,bpm->bnp"),
+    ],
+)
+def test_ssm_C_layouts(C_shape, equation, dtype):
+    h = torch.randn(_b, _N, _M, dtype=dtype)
+    x = torch.randn(_b, _N, dtype=dtype)
+    if C_shape is None:
+        C, expected = None, h
+    else:
+        C = torch.randn(C_shape, dtype=dtype)
+        expected = torch.einsum(equation, h, C)
+    torch.testing.assert_close(_ssm_C_D(h, x, C, None, _b, _M), expected)
+
+
+@pytest.mark.parametrize("ssm", [state_space, diag_state_space])
+def test_ssm_unbatched_B_when_batch_equals_state_dim(ssm):
+    x = torch.randn(3, 17, 2)
+    A = _generate_diagonalizable_matrix((3, 3))
+    B = torch.randn(3, 2)
+
+    y = ssm(A=A, x=x, B=B)
+
+    torch.testing.assert_close(y, ssm(A=A, x=x, B=B.expand(3, 3, 2)))
+
+
+@pytest.mark.parametrize("ssm", [state_space, diag_state_space])
+def test_ssm_scalar_D_with_single_batch_vector_input(ssm):
+    x = torch.randn(1, 17, 2)
+    A = _generate_diagonalizable_matrix((3, 3))
+    B, C, D = torch.randn(3, 2), torch.randn(2, 3), torch.randn(1)
+
+    y = ssm(A=A, x=x, B=B, C=C, D=D)
+
+    torch.testing.assert_close(y, ssm(A=A, x=x, B=B, C=C, D=D[0]))
+
+
+@pytest.mark.parametrize(
+    ("x_shape", "B_shape"),
+    [
+        ((_b, _N), (_M, _F)),
+        ((_b, _N), ()),
+        ((_b, _N), (_M + 1,)),
+        ((_b, _N, _F), (_M,)),
+        ((_b, _N, _F), (_b, _M)),
+        ((_b, _N, _F), (_M, _F + 1)),
+    ],
+)
+def test_ssm_B_rejects_invalid_shapes(x_shape, B_shape):
+    with pytest.raises(ValueError, match=f"Input matrix B .* for {len(x_shape)}D"):
+        _ssm_B(torch.zeros(B_shape), torch.zeros(x_shape), _b, _M)
+
+
+@pytest.mark.parametrize(
+    ("x_shape", "D_shape"),
+    [
+        ((_b, _N), (_P, _F)),
+        ((_b, _N), (_b, _P, _F)),
+        ((_b, _N, _F), (_b,)),
+        ((_b, _N, _F), (_P,)),
+        ((_b, _N, _F), (_b, _P)),
+        ((_b, _N, _F), (_b, _P, _F + 1)),
+        ((_b, _N, _F), (1, 1, 1, 1)),
+    ],
+)
+def test_ssm_D_rejects_invalid_shapes(x_shape, D_shape):
+    with pytest.raises(ValueError, match=f"Input matrix D .* for {len(x_shape)}D"):
+        _ssm_C_D(
+            torch.zeros(()), torch.zeros(x_shape), None, torch.zeros(D_shape), _b, _M
+        )
+
+
+@pytest.mark.parametrize("C_shape", [(), (_M + 1,), (_b, _P, _M + 1), (1, 1, 1, _M)])
+def test_ssm_C_rejects_invalid_shapes(C_shape):
+    with pytest.raises(ValueError, match="Output matrix C"):
+        _ssm_C_D(
+            torch.zeros(_b, _N, _M),
+            torch.zeros(_b, _N),
+            torch.zeros(C_shape),
+            None,
+            _b,
+            _M,
+        )
