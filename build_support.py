@@ -1,4 +1,6 @@
-def resolve_cuda_build(force_cuda_value, cuda_home, cuda_available, cuda_arch_list=None):
+def resolve_cuda_build(
+    force_cuda_value, cuda_home, cuda_available, cuda_arch_list=None
+):
     if force_cuda_value not in {"0", "1"}:
         raise RuntimeError(
             "PHILTORCH_FORCE_CUDA must be either '0' or '1'; "
