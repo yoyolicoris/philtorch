@@ -502,11 +502,16 @@ def _ssm_B(B, x, batch_size, M):
             return x @ B.T
         case 3, (b, m, f) if (b, m, f) == (batch_size, M, features):
             return x @ B.mT
-        case 2, _:
-            allowed = f"({M},) or ({batch_size}, {M})"
-        case _:
-            allowed = f"({M}, {features}) or ({batch_size}, {M}, {features})"
-    raise ValueError(
+    raise _ssm_B_shape_error(B, x, batch_size, M)
+
+
+def _ssm_B_shape_error(B, x, batch_size, M):
+    if x.dim() == 2:
+        allowed = f"({M},) or ({batch_size}, {M})"
+    else:
+        features = x.size(-1)
+        allowed = f"({M}, {features}) or ({batch_size}, {M}, {features})"
+    return ValueError(
         f"Input matrix B must be of shape {allowed} for {x.dim()}D input x, got {tuple(B.shape)}"
     )
 
@@ -747,43 +752,24 @@ def diag_state_space(
         case _:
             assert False, f"Vinv must be 2D or 3D, got {Vinv.shape}"
 
-    if x.dim() == 2:
-        features = -1
-    else:
-        features = x.size(-1)
-
     if B is not None:
-        match B.shape:
-            case (BM,) if BM == M:
-                assert (
-                    x.dim() == 2
-                ), f"Input signal x must be 2D when B is of shape {M,}, got {x.shape}"
+        # Same dispatch as _ssm_B, but Vinv is folded into B before touching x.
+        features = x.size(-1)
+        match x.dim(), tuple(B.shape):
+            case 2, (m,) if m == M:
                 VinvB = Vinv @ B
                 if VinvB.dim() == 2:
                     VinvB = VinvB.unsqueeze(1)
                 VinvBx = x.unsqueeze(-1) * VinvB
-            case (B_batch, BM) if B_batch == batch_size and BM == M:
-                assert (
-                    x.dim() == 2
-                ), f"Input signal x must be 2D when B is of shape {batch_size, M}, got {x.shape}"
-                VinvB = (
-                    B @ Vinv.T
-                    if Vinv.dim() == 2
-                    else torch.linalg.vecdot(Vinv.conj(), B.unsqueeze(1))
-                )
+            case 2, (b, m) if (b, m) == (batch_size, M):
+                VinvB = (Vinv @ B.unsqueeze(-1)).squeeze(-1)
                 VinvBx = x.unsqueeze(-1) * VinvB.unsqueeze(1)
-            case (BM, F) if BM == M and F == features:
-                VinvB = Vinv @ B
-                VinvBx = x @ VinvB.mT
-            case (B_batch, BM, F) if (
-                B_batch == batch_size and BM == M and F == features
-            ):
-                VinvB = Vinv @ B
-                VinvBx = torch.linalg.vecdot(VinvB.unsqueeze(1).conj(), x.unsqueeze(-2))
+            case 3, (m, f) if (m, f) == (M, features):
+                VinvBx = x @ (Vinv @ B).mT
+            case 3, (b, m, f) if (b, m, f) == (batch_size, M, features):
+                VinvBx = x @ (Vinv @ B).mT
             case _:
-                raise ValueError(
-                    f"Input matrix B must be of shape ({M,}), ({batch_size, M}), ({M, features}), or ({batch_size, M, features}), got {B.shape}"
-                )
+                raise _ssm_B_shape_error(B, x, batch_size, M)
     elif x.dim() == 2 and Vinv.dim() == 2:
         VinvBx = x.unsqueeze(-1) * Vinv[:, 0]
     elif x.dim() == 2 and Vinv.dim() == 3:

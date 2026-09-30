@@ -280,13 +280,47 @@ def test_ssm_C_layouts(C_shape, equation, dtype):
 
 @pytest.mark.parametrize("ssm", [state_space, diag_state_space])
 def test_ssm_unbatched_B_when_batch_equals_state_dim(ssm):
-    x = torch.randn(3, 17, 2)
-    A = _generate_diagonalizable_matrix((3, 3))
-    B = torch.randn(3, 2)
+    # batch == M == F, so the (M, F) matrix has the same shape as a (batch, M) one.
+    x = torch.randn(2, 17, 2, dtype=torch.double)
+    A = _generate_diagonalizable_matrix((2, 2)).double()
+    B = torch.randn(2, 2, dtype=torch.double)
 
     y = ssm(A=A, x=x, B=B)
 
-    torch.testing.assert_close(y, ssm(A=A, x=x, B=B.expand(3, 3, 2)))
+    torch.testing.assert_close(y, ssm(A=A, x=x, B=B.expand(2, 2, 2)))
+
+
+@pytest.mark.parametrize("batched_A", [False, True])
+@pytest.mark.parametrize(
+    ("x_shape", "B_shape"),
+    [
+        ((2, 17), (2,)),
+        ((2, 17), (2, 2)),
+        ((2, 17, 2), (2, 2)),
+        ((2, 17, 2), (2, 2, 2)),
+    ],
+)
+def test_diag_state_space_B_layouts_match_state_space(x_shape, B_shape, batched_A):
+    # batch == M == F: every 2D B shape collides, so only x.dim() tells them apart.
+    x = torch.randn(x_shape, dtype=torch.double)
+    A = _generate_diagonalizable_matrix((2, 2, 2) if batched_A else (2, 2)).double()
+    B = torch.randn(B_shape, dtype=torch.double)
+
+    y = diag_state_space(A=A, x=x, B=B)
+
+    # Without C, diag_state_space returns its complex eigenbasis result as is.
+    torch.testing.assert_close(y.imag, torch.zeros_like(y.real))
+    torch.testing.assert_close(y.real, state_space(A=A, x=x, B=B))
+
+
+@pytest.mark.parametrize("ssm", [state_space, diag_state_space])
+@pytest.mark.parametrize(
+    ("x_shape", "B_shape"), [((3, 17), (3, 2)), ((3, 17, 2), (3,))]
+)
+def test_ssm_rejects_invalid_B(ssm, x_shape, B_shape):
+    A = _generate_diagonalizable_matrix((3, 3))
+    with pytest.raises(ValueError, match=f"Input matrix B .* for {len(x_shape)}D"):
+        ssm(A=A, x=torch.randn(x_shape), B=torch.randn(B_shape))
 
 
 @pytest.mark.parametrize("ssm", [state_space, diag_state_space])
