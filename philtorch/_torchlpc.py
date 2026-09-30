@@ -164,4 +164,18 @@ class ScanRecurrence(Function):
         )
 
 
-__all__ = ["AllPole", "ScanRecurrence"]
+def lpc(x: torch.Tensor, A: torch.Tensor, zi: torch.Tensor) -> torch.Tensor:
+    if torch.compiler.is_compiling():
+        return torch.ops.philtorch.lpc(x, A, zi)
+    return AllPole.apply(x, A, zi)
+
+
+def scan(
+    impulse: torch.Tensor, decay: torch.Tensor, init: torch.Tensor
+) -> torch.Tensor:
+    if torch.compiler.is_compiling():
+        return torch.ops.philtorch.scan(impulse, decay, init)
+    return ScanRecurrence.apply(impulse, decay, init)
+
+
+__all__ = ["AllPole", "ScanRecurrence", "lpc", "scan"]

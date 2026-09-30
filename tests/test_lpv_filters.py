@@ -68,7 +68,6 @@ def _generate_time_varying_coeffs(
     a = torch.randn(B, T, den_order)
 
     # Ensure stability by keeping denominator coefficients small
-    # a = torch.clamp(a, -0.5, 0.5)
     a = a / a.abs().sum(dim=-1, keepdim=True).clamp(min=1e-6)
 
     return b, a
