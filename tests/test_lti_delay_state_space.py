@@ -125,7 +125,6 @@ LAYOUTS = [
 def test_delay_state_space_matches_expanded_state_space(
     layout, dtype, batched_A, zi_mode, block_size
 ):
-    torch.manual_seed(0)
     args = _layout(layout, dtype)
     A_shape = (BATCH, LINES, LINES) if batched_A else (LINES, LINES)
     A = 0.4 * torch.randn(*A_shape, dtype=dtype)
@@ -146,7 +145,6 @@ def test_delay_state_space_matches_expanded_state_space(
 @pytest.mark.parametrize("chunk", [1, 2, 4, 5, 64])
 @pytest.mark.parametrize("out_idx", [None, 1])
 def test_delay_state_space_output_chunking(monkeypatch, chunk, out_idx):
-    torch.manual_seed(1)
     delays = (4, 6)
     x = torch.randn(2, 37, dtype=torch.double)
     A = 0.5 * torch.randn(2, 2, dtype=torch.double)
@@ -163,7 +161,6 @@ def test_delay_state_space_output_chunking(monkeypatch, chunk, out_idx):
 
 @pytest.mark.parametrize("samples", [1, 3, 6, 7, 20])
 def test_delay_state_space_short_and_long_signals(samples):
-    torch.manual_seed(2)
     delays = (3, 7)
     x = torch.randn(BATCH, samples, dtype=torch.double)
     A = 0.5 * torch.randn(2, 2, dtype=torch.double)
@@ -177,7 +174,6 @@ def test_delay_state_space_short_and_long_signals(samples):
 
 
 def test_delay_state_space_batched_matrices_are_not_conjugated_like_state_space():
-    torch.manual_seed(3)
     x = torch.randn(BATCH, SAMPLES, FEATURES, dtype=torch.cdouble)
     A = 0.4 * torch.randn(LINES, LINES, dtype=torch.cdouble)
     B = torch.randn(LINES, FEATURES, dtype=torch.cdouble)
@@ -247,7 +243,6 @@ def test_delay_state_space_default_input_and_initial_state():
 )
 def test_delay_state_space_accepts_integer_like_delays(delays, block_size):
     np = pytest.importorskip("numpy")
-    torch.manual_seed(4)
     x = torch.randn(2, 9, dtype=torch.double)
     A = 0.5 * torch.randn(2, 2, dtype=torch.double)
     zi = (torch.randn(3, dtype=torch.double), torch.randn(7, dtype=torch.double))
@@ -262,8 +257,46 @@ def test_delay_state_space_accepts_integer_like_delays(delays, block_size):
     _assert_states_close(zf, expected_zf)
 
 
+@pytest.mark.parametrize(
+    "delay",
+    [
+        pytest.param(lambda np: 5, id="int"),
+        pytest.param(lambda np: torch.tensor(5), id="0d-tensor"),
+        pytest.param(lambda np: torch.tensor(5, dtype=torch.int32), id="0d-int32"),
+        pytest.param(lambda np: np.int64(5), id="numpy-scalar"),
+        pytest.param(lambda np: np.array(5), id="0d-numpy-array"),
+    ],
+)
+def test_delay_state_space_accepts_scalar_delay(delay):
+    np = pytest.importorskip("numpy")
+    x = torch.randn(2, 13, dtype=torch.double)
+    A = torch.tensor([[0.5]], dtype=torch.double)
+    zi = (torch.randn(5, dtype=torch.double),)
+
+    y, zf = delay_state_space(A, x, delay(np), zi=zi)
+    expected_y, expected_zf = delay_state_space(A, x, (5,), zi=zi)
+
+    torch.testing.assert_close(y, expected_y)
+    _assert_states_close(zf, expected_zf)
+
+
+@pytest.mark.parametrize(
+    "delay",
+    [
+        pytest.param(lambda np: True, id="bool"),
+        pytest.param(lambda np: 0, id="zero"),
+        pytest.param(lambda np: torch.tensor(True), id="0d-bool-tensor"),
+        pytest.param(lambda np: torch.tensor(5.0), id="0d-float-tensor"),
+        pytest.param(lambda np: np.array(5.0), id="0d-float-array"),
+    ],
+)
+def test_delay_state_space_rejects_invalid_scalar_delay(delay):
+    np = pytest.importorskip("numpy")
+    with pytest.raises(ValueError, match="positive integer"):
+        delay_state_space(torch.zeros(1, 1), torch.zeros(1, 4), delay(np))
+
+
 def test_delay_state_space_is_functional():
-    torch.manual_seed(5)
     delays = (2, 5, 3)
     x = torch.randn(2, 9, dtype=torch.double)
     A = 0.3 * torch.randn(3, 3, dtype=torch.double)
@@ -279,7 +312,6 @@ def test_delay_state_space_is_functional():
 
 
 def test_delay_state_space_reuses_returned_states():
-    torch.manual_seed(6)
     delays = (2, 4)
     x = torch.randn(2, 7, dtype=torch.double)
     A = 0.4 * torch.randn(2, 2, dtype=torch.double)
