@@ -18,6 +18,10 @@ cuda-version = ">=13.0,<14"
 pytorch-gpu = ">=2.9.1,<3"
 cuda = { version = ">=13.0,<14", channel = "nvidia" }
 
+[target.linux-64.activation.env]
+# Triton looks for ptxas-blackwell for sm_100+ GPUs; the CUDA ptxas here supports them.
+TRITON_PTXAS_BLACKWELL_PATH = "$CONDA_PREFIX/bin/ptxas"
+
 [pypi-dependencies]
 setuptools_scm = ">=8, <9"
 philtorch = { path = ".", editable = true }
