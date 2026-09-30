@@ -3,7 +3,7 @@ import torch.nn.functional as F
 from torch.autograd import Function
 from typing import Optional, Union, Any
 from torch import Tensor
-from .._torchlpc import AllPole
+from .._torchlpc import lpc
 
 from ..mat import matrices_cumdot
 from .. import HELION_LOADED
@@ -108,6 +108,12 @@ class MatrixRecurrence(Function):
         return MatrixRecurrence.apply(A, fwd_zi, fwd_x)
 
 
+def _matrix_recurrence(A: Tensor, zi: Tensor, x: Tensor) -> Tensor:
+    if torch.compiler.is_compiling():
+        return MatrixRecurrence.forward(A, zi, x)
+    return MatrixRecurrence.apply(A, zi, x)
+
+
 def _recursion_loop(
     A: Tensor,
     zi: Tensor,
@@ -176,18 +182,16 @@ def _ext_ss_recur(
         Tensor: Output states (B, N, M) or (B, N) if ``out_idx`` is set.
     """
     if x.dim() == 2 and A.size(-1) == 1:
-        y = AllPole.apply(x, -A[..., 0].broadcast_to(x.shape + (1,)), zi).unsqueeze(-1)
+        y = lpc(x, -A[..., 0].broadcast_to(x.shape + (1,)), zi).unsqueeze(-1)
     elif A.size(-1) == 1:
-        y = AllPole.apply(
-            x.squeeze(-1), -A[..., 0].broadcast_to(x.shape), zi
-        ).unsqueeze(-1)
+        y = lpc(x.squeeze(-1), -A[..., 0].broadcast_to(x.shape), zi).unsqueeze(-1)
     else:
         x = (
             torch.cat([x.unsqueeze(-1), x.new_zeros(*x.shape, A.size(-1) - 1)], dim=-1)
             if x.dim() == 2
             else x
         )
-        y = MatrixRecurrence.apply(A, zi, x)
+        y = _matrix_recurrence(A, zi, x)
     if out_idx is not None and y.dim() == 3:
         y = y[:, :, out_idx]
     return y

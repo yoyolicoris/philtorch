@@ -21,6 +21,25 @@ from torch.func import jacfwd
 
 from philtorch._torchlpc import AllPole, ScanRecurrence
 
+_DEVICES = [
+    "cpu",
+    pytest.param(
+        "cuda",
+        marks=pytest.mark.skipif(
+            not torch.cuda.is_available(), reason="CUDA not available"
+        ),
+    ),
+]
+_REQUIRES_GRAD_CASES = [
+    (True, False, False),
+    (False, True, False),
+    (False, False, True),
+    (True, True, False),
+    (True, False, True),
+    (False, True, True),
+    (True, True, True),
+]
+
 
 def test_external_torchlpc_namespace_coexists(tmp_path):
     script = """
@@ -72,46 +91,20 @@ def create_test_inputs(batch_size, samples, cmplx=False):
 
 
 @pytest.mark.parametrize(
-    "x_requires_grad",
-    [True],
+    ("x_requires_grad", "a_requires_grad", "zi_requires_grad"),
+    _REQUIRES_GRAD_CASES,
 )
-@pytest.mark.parametrize(
-    "a_requires_grad",
-    [True, False],
-)
-@pytest.mark.parametrize(
-    "zi_requires_grad",
-    [True, False],
-)
-@pytest.mark.parametrize(
-    "samples",
-    [32],
-)
-@pytest.mark.parametrize(
-    "cmplx",
-    [True, False],
-)
-@pytest.mark.parametrize(
-    "device",
-    [
-        "cpu",
-        pytest.param(
-            "cuda",
-            marks=pytest.mark.skipif(
-                not torch.cuda.is_available(), reason="CUDA not available"
-            ),
-        ),
-    ],
-)
+@pytest.mark.parametrize("cmplx", [True, False])
+@pytest.mark.parametrize("device", _DEVICES)
 def test_allpole(
     x_requires_grad: bool,
     a_requires_grad: bool,
     zi_requires_grad: bool,
-    samples: int,
     cmplx: bool,
     device: str,
 ):
     batch_size = 4
+    samples = 32
     x, A, zi = tuple(
         x.to(device) for x in create_test_inputs(batch_size, samples, cmplx)
     )
@@ -124,33 +117,11 @@ def test_allpole(
 
 
 @pytest.mark.parametrize(
-    "x_requires_grad",
-    [True],
+    ("x_requires_grad", "a_requires_grad", "zi_requires_grad"),
+    _REQUIRES_GRAD_CASES,
 )
-@pytest.mark.parametrize(
-    "a_requires_grad",
-    [True, False],
-)
-@pytest.mark.parametrize(
-    "zi_requires_grad",
-    [True, False],
-)
-@pytest.mark.parametrize(
-    "cmplx",
-    [True, False],
-)
-@pytest.mark.parametrize(
-    "device",
-    [
-        "cpu",
-        pytest.param(
-            "cuda",
-            marks=pytest.mark.skipif(
-                not torch.cuda.is_available(), reason="CUDA not available"
-            ),
-        ),
-    ],
-)
+@pytest.mark.parametrize("cmplx", [True, False])
+@pytest.mark.parametrize("device", _DEVICES)
 def test_scan_recurrence(
     x_requires_grad: bool,
     a_requires_grad: bool,
@@ -205,18 +176,7 @@ def test_allpole_float64_vs_32_cuda():
     )
 
 
-@pytest.mark.parametrize(
-    "device",
-    [
-        "cpu",
-        pytest.param(
-            "cuda",
-            marks=pytest.mark.skipif(
-                not torch.cuda.is_available(), reason="CUDA not available"
-            ),
-        ),
-    ],
-)
+@pytest.mark.parametrize("device", _DEVICES)
 def test_allpole_vmap(device: str):
     batch_size = 4
     samples = 40
@@ -246,18 +206,7 @@ def test_allpole_vmap(device: str):
         assert torch.allclose(jac, arg.grad)
 
 
-@pytest.mark.parametrize(
-    "device",
-    [
-        "cpu",
-        pytest.param(
-            "cuda",
-            marks=pytest.mark.skipif(
-                not torch.cuda.is_available(), reason="CUDA not available"
-            ),
-        ),
-    ],
-)
+@pytest.mark.parametrize("device", _DEVICES)
 def test_scan_recurrence_vmap(device: str):
     batch_size = 3
     samples = 255

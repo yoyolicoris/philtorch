@@ -2,8 +2,7 @@ import pytest
 import numpy as np
 import torch
 from scipy import signal
-from typing import Optional
-from itertools import product, chain
+from itertools import chain
 from unittest.mock import Mock
 
 import philtorch.lpv.filtering as lpv_filtering
@@ -11,7 +10,6 @@ from philtorch.lpv import lfilter
 from .test_lti_lfilter import (
     _generate_random_filter_coeffs,
     _generate_random_signal,
-    _generate_a,
 )
 
 

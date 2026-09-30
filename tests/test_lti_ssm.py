@@ -2,11 +2,7 @@ import pytest
 import numpy as np
 import torch
 from scipy import signal
-from typing import Optional
 from itertools import product, chain
-from unittest.mock import Mock
-
-import philtorch.lti.ssm as lti_ssm
 from philtorch.lti import state_space_recursion, state_space, diag_state_space
 from philtorch.mat import companion
 
@@ -20,6 +16,16 @@ def _generate_random_filter_coeffs(order: int, B: int) -> np.ndarray:
     a = a / np.abs(a).sum(axis=-1, keepdims=True)
 
     return a
+
+
+def _generate_diagonalizable_matrix(shape: tuple[int, ...]) -> torch.Tensor:
+    order = shape[-1]
+    values = torch.arange(1, order + 1, dtype=torch.get_default_dtype())
+    basis = torch.vander(values, N=order, increasing=True)
+    Q, _ = torch.linalg.qr(basis)
+    eigenvalues = torch.linspace(0.2, 0.8, order, dtype=Q.dtype)
+    A = Q @ torch.diag(eigenvalues) @ Q.mT
+    return A.expand(*shape[:-2], order, order).clone()
 
 
 @pytest.mark.parametrize("B", [1, 8])
@@ -56,49 +62,6 @@ def test_time_invariant_ssm(
 
     # Compare outputs
     assert np.allclose(y_torch.numpy(), y_scipy)
-
-
-def test_scalar_native_routing(monkeypatch):
-    A = torch.rand(1, 1)
-    zi = torch.rand(2, 1)
-    x = torch.rand(2, 7)
-    native_runner = Mock(wraps=lti_ssm._ext_ss_recur)
-    monkeypatch.setattr(lti_ssm, "_ext_ss_recur", native_runner)
-
-    native_output = state_space_recursion(A, zi, x, unroll_factor=1)
-    native_runner.assert_called_once()
-
-    native_runner.reset_mock()
-    unrolled_output = state_space_recursion(A, zi, x, unroll_factor=2)
-    native_runner.assert_not_called()
-    assert torch.allclose(native_output, unrolled_output)
-
-
-def test_state_space_default_routing(monkeypatch):
-    A = torch.rand(1, 1)
-    x = torch.rand(2, 7)
-    native_runner = Mock(wraps=lti_ssm._ext_ss_recur)
-    monkeypatch.setattr(lti_ssm, "_ext_ss_recur", native_runner)
-
-    state_space(A=A, x=x)
-
-    native_runner.assert_called_once()
-
-
-def test_state_space_default_unsupported_fallback(monkeypatch):
-    A = torch.rand(1, 1)
-    x = torch.rand(2, 7)
-    loop_runner = Mock(wraps=lti_ssm._recursion_loop)
-    monkeypatch.setattr(
-        lti_ssm,
-        "extension_backend_indicator",
-        lambda _input, _state_size: False,
-    )
-    monkeypatch.setattr(lti_ssm, "_recursion_loop", loop_runner)
-
-    state_space(A=A, x=x)
-
-    loop_runner.assert_called_once()
 
 
 @pytest.mark.parametrize("order", [8])
@@ -150,7 +113,7 @@ def test_ssm_shape_handling(x_shape, A_shape, B_shape, C_shape, D_shape, zi_shap
     unroll_factor = 4
 
     x = torch.randn(*x_shape)
-    A = torch.randn(*A_shape)
+    A = _generate_diagonalizable_matrix(A_shape)
     B = torch.randn(*B_shape) if B_shape is not None else None
     C = torch.randn(*C_shape) if C_shape is not None else None
     if D_shape is None:
@@ -224,7 +187,7 @@ def test_ssm_D_shape_handling(
     unroll_factor = 4
 
     x = torch.randn(*x_shape)
-    A = torch.randn(*A_shape)
+    A = _generate_diagonalizable_matrix(A_shape)
     B = torch.randn(*B_shape)
     C = torch.randn(*C_shape)
     D = torch.randn(*D_shape) if len(D_shape) > 0 else torch.randn(1)

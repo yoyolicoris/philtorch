@@ -3,9 +3,6 @@ name: Build CPU wheels
 on:
   push:
     branches: ["dev"]
-    tags:
-      - "v0.*"
-      - "v1.*"
   pull_request:
     branches: ["dev"]
   release:
@@ -88,15 +85,14 @@ jobs:
       os: ubuntu-latest
       torch_version: ${{ matrix.torch-version }}
 
-  # macOS runners are expensive: build/test only on pull_request and official
-  # releases (v* tag push or published release). Matrixed over the resolved
+  # macOS runners are expensive: build/test only on pull requests and
+  # published releases. Matrixed over the resolved
   # Torch versions like ubuntu (1 version on PR, top 3 otherwise) so releases
   # get full torch x python coverage, not just the latest minor.
   build-wheels-macos:
     if: >
       github.event_name == 'pull_request' ||
-      github.event_name == 'release' ||
-      startsWith(github.ref, 'refs/tags/')
+      github.event_name == 'release'
     needs: resolve-torch-versions
     permissions:
       contents: read
@@ -173,8 +169,7 @@ jobs:
   test-macos:
     if: >
       github.event_name == 'pull_request' ||
-      github.event_name == 'release' ||
-      startsWith(github.ref, 'refs/tags/')
+      github.event_name == 'release'
     needs: [resolve-torch-versions, build-wheels-macos]
     permissions:
       contents: read
@@ -197,8 +192,7 @@ jobs:
   test-windows:
     if: >
       github.event_name == 'pull_request' ||
-      github.event_name == 'release' ||
-      startsWith(github.ref, 'refs/tags/')
+      github.event_name == 'release'
     needs: [resolve-torch-versions, build-wheels-windows]
     permissions:
       contents: read
@@ -239,11 +233,9 @@ jobs:
 
   publish:
     runs-on: ubuntu-latest
-    # Gated on builds (+ sdist + lint) only, not tests: a flaky test
-    # shouldn't block a release when the built wheels are otherwise fine.
-    # Linux always gates publish; macOS does too when it runs (releases/tags)
-    # — besides Windows, which is never published. For push to dev, macOS is
-    # intentionally not built (skipped), so it doesn't gate TestPyPI there.
+    # TestPyPI publishes from dev after the Linux smoke tests pass.
+    # Production publishes only from a supported published GitHub Release after
+    # every Linux, macOS, and Windows wheel smoke test passes.
     needs:
       [
         resolve-torch-versions,
@@ -254,32 +246,32 @@ jobs:
         lint,
         test-ubuntu,
         test-macos,
+        test-windows,
       ]
-    # `!cancelled()` (not `!failure()`) plus explicit per-job result checks:
-    # test-ubuntu/test-macos results aren't checked, so a failing test never
-    # skips this job (only builds/sdist/lint do). The release branch also
-    # re-checks the tag pattern because `release: [published]` fires for any
-    # tag, unlike the push-tag trigger which is already filtered.
+    # `!cancelled()` allows the dev path to run while release-only macOS and
+    # Windows test jobs are skipped, so every required result is checked here.
     if: >
       !cancelled() &&
       needs.build-wheels-ubuntu.result == 'success' &&
+      needs.build-wheels-windows.result == 'success' &&
       needs.build-sdist.result == 'success' &&
       needs.lint.result == 'success' &&
+      needs.test-ubuntu.result == 'success' &&
       (
         (github.event_name == 'push' && github.ref == 'refs/heads/dev') ||
         (
+          github.event_name == 'release' &&
+          github.event.action == 'published' &&
+          (startsWith(github.event.release.tag_name, 'v0.') || startsWith(github.event.release.tag_name, 'v1.')) &&
           needs.build-wheels-macos.result == 'success' &&
-          (
-            (github.event_name == 'push' && startsWith(github.ref, 'refs/tags/')) ||
-            (github.event_name == 'release' && github.event.action == 'published' &&
-              (startsWith(github.event.release.tag_name, 'v0.') || startsWith(github.event.release.tag_name, 'v1.')))
-          )
+          needs.test-macos.result == 'success' &&
+          needs.test-windows.result == 'success'
         )
       )
     permissions:
       id-token: write
     environment:
-      name: ${{ (github.event_name == 'release' || startsWith(github.ref, 'refs/tags/')) && 'pypi' || 'testpypi' }}
+      name: ${{ github.event_name == 'release' && 'pypi' || 'testpypi' }}
     steps:
       - name: Download Linux wheel
         uses: actions/download-artifact@v4
@@ -289,7 +281,7 @@ jobs:
 
       - name: Download macOS wheel
         if: >
-          (github.event_name == 'release' || startsWith(github.ref, 'refs/tags/')) &&
+          github.event_name == 'release' &&
           needs.build-wheels-macos.result == 'success'
         uses: actions/download-artifact@v4
         with:
@@ -316,9 +308,8 @@ jobs:
 
       - name: Publish to PyPI
         if: >
-          startsWith(github.ref, 'refs/tags/') ||
-          (github.event_name == 'release' &&
-            (startsWith(github.event.release.tag_name, 'v0.') || startsWith(github.event.release.tag_name, 'v1.')))
+          github.event_name == 'release' &&
+          (startsWith(github.event.release.tag_name, 'v0.') || startsWith(github.event.release.tag_name, 'v1.'))
         uses: pypa/gh-action-pypi-publish@release/v1
         with:
           packages-dir: dist/
