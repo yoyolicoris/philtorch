@@ -1,7 +1,7 @@
-from torch import Tensor
-import torch
 import helion
 import helion.language as hl
+import torch
+from torch import Tensor
 
 
 @helion.kernel(

@@ -1,8 +1,9 @@
+from typing import Any
+
 import torch
 from torch import Tensor
 from torch.autograd import Function
 from torch.nn import functional as F
-from typing import Optional, Any
 
 
 class LTIRecurrence(Function):
@@ -23,9 +24,7 @@ class LTIRecurrence(Function):
         ctx.save_for_forward(a, init, output)
 
     @staticmethod
-    def backward(
-        ctx: Any, grad_out: Tensor
-    ) -> tuple[Optional[Tensor], Optional[Tensor], Optional[Tensor]]:
+    def backward(ctx: Any, grad_out: Tensor) -> tuple[Tensor | None, Tensor | None, Tensor | None]:
         a, init, out = ctx.saved_tensors
         grad_a = grad_x = grad_init = None
 
@@ -61,9 +60,9 @@ class LTIRecurrence(Function):
     @staticmethod
     def jvp(
         ctx: Any,
-        grad_a: Optional[Tensor],
-        grad_init: Optional[Tensor],
-        grad_x: Optional[Tensor],
+        grad_a: Tensor | None,
+        grad_init: Tensor | None,
+        grad_x: Tensor | None,
     ) -> Tensor:
         a, init, out = ctx.saved_tensors
 
@@ -91,9 +90,7 @@ def _scalar_recursion_loop(
     return torch.stack(results, dim=1)
 
 
-def linear_recurrence(
-    a: Tensor, init: Tensor, x: Tensor, *, unroll_factor: int = 1
-) -> Tensor:
+def linear_recurrence(a: Tensor, init: Tensor, x: Tensor, *, unroll_factor: int = 1) -> Tensor:
     """Compute a batched scalar linear recurrence efficiently in Python.
 
     Implements h[t] = a * h[t-1] + x[t] for scalar or per-batch coefficients
@@ -110,15 +107,14 @@ def linear_recurrence(
         Tensor: Output sequence of shape (B, N).
     """
     if unroll_factor == 1:
-        return LTIRecurrence.apply(
-            a.broadcast_to(x.shape[0]), init.broadcast_to(x.shape[0]), x
-        )
+        return LTIRecurrence.apply(a.broadcast_to(x.shape[0]), init.broadcast_to(x.shape[0]), x)
 
     assert x.dim() == 2, f"Input x must be 2D, got {x.shape}"
     assert a.dim() in (0, 1), f"State matrix a must be 1D or 0D, got {a.shape}"
     if a.dim() == 1 and a.size(0) > 1 and a.size(0) != x.size(0):
         raise ValueError(
-            f"State matrix a must be 1D with the same batch size as x, got a: {a.size(0)}, x: {x.size(0)}"
+            f"State matrix a must be 1D with the same batch size as x, "
+            f"got a: {a.size(0)}, x: {x.size(0)}"
         )
 
     if a.dim() == 0:
@@ -132,7 +128,8 @@ def linear_recurrence(
     ), f"Initial state init must be 1D or 0D, got {init.shape}"
     if init.dim() == 1 and init.size(0) > 1 and init.size(0) != batch_size:
         raise ValueError(
-            f"Initial state init must be 1D with the same batch size as x, got init: {init.size(0)}, x: {batch_size}"
+            f"Initial state init must be 1D with the same batch size as x, "
+            f"got init: {init.size(0)}, x: {batch_size}"
         )
 
     if init.dim() == 0:
@@ -155,11 +152,7 @@ def linear_recurrence(
     unrolled_x = x.unflatten(1, (-1, block_size))
 
     a_powers = torch.cumprod(
-        (
-            a.expand(block_size)
-            if a.numel() == 1
-            else a.unsqueeze(1).expand(-1, block_size)
-        ),
+        (a.expand(block_size) if a.numel() == 1 else a.unsqueeze(1).expand(-1, block_size)),
         dim=-1,
     )
     a_powered = a_powers[..., -1]
@@ -182,9 +175,7 @@ def linear_recurrence(
     # prepare the augmented matrix and input for all the remaining steps
     aug_x = torch.cat([initials[:, :-1, None], unrolled_x[..., :-1]], dim=2)
     aug_A = (
-        F.pad(a_powers_plus_I, (0, block_size - 2), value=0.0)
-        .unfold(-1, block_size, 1)
-        .flip(-2)
+        F.pad(a_powers_plus_I, (0, block_size - 2), value=0.0).unfold(-1, block_size, 1).flip(-2)
     )
 
     output = aug_x @ aug_A.mT

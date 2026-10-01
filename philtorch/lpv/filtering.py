@@ -1,20 +1,19 @@
+from functools import partial
+
 import torch
-from torch import Tensor
-from typing import Optional, Union
-from functools import reduce, partial
 import torch.nn.functional as F
+from torch import Tensor
 
 from .._torchlpc import lpc
-
-from ..utils import chain_functions
 from ..mat import companion
+from ..utils import chain_functions
 from .ssm import state_space, state_space_recursion
 from .utils import diag_shift
 
 
 def fir(
-    b: Tensor, x: Tensor, zi: Optional[Tensor] = None, transpose: bool = True
-) -> Union[Tensor, tuple[Tensor, Tensor]]:
+    b: Tensor, x: Tensor, zi: Tensor | None = None, transpose: bool = True
+) -> Tensor | tuple[Tensor, Tensor]:
     """Apply a batch of parameter-varying FIR filters.
 
     This supports time-varying (parameter-varying) FIR coefficients where the
@@ -34,9 +33,7 @@ def fir(
     assert x.dim() == 2, "Input signal x must be 2D."
 
     B, T = x.shape
-    assert (
-        b.shape[:2] == x.shape
-    ), "The first two dimensions of b must match the shape of x."
+    assert b.shape[:2] == x.shape, "The first two dimensions of b must match the shape of x."
 
     if zi is None:
         return_zf = False
@@ -44,9 +41,9 @@ def fir(
     else:
         assert zi.dim() == 2, "Initial conditions zi must be 2D."
         assert zi.size(0) == B, "The first dimension of zi must match the batch size."
-        assert (
-            zi.size(1) == b.size(2) - 1
-        ), "The second dimension of zi must match the filter order."
+        assert zi.size(1) == b.size(2) - 1, (
+            "The second dimension of zi must match the filter order."
+        )
 
         return_zf = True
 
@@ -82,8 +79,8 @@ def fir(
 
 
 def allpole(
-    a: Tensor, x: Tensor, zi: Optional[Tensor] = None, transpose: bool = False
-) -> Union[Tensor, tuple[Tensor, Tensor]]:
+    a: Tensor, x: Tensor, zi: Tensor | None = None, transpose: bool = False
+) -> Tensor | tuple[Tensor, Tensor]:
     """Apply a batch of parameter-varying all-pole filters.
 
     Args:
@@ -98,9 +95,7 @@ def allpole(
     assert a.dim() == 3, "Denominator coefficients a must be 3D."
     assert x.dim() == 2, "Input signal x must be 2D."
     B, T = x.shape
-    assert (
-        a.shape[:2] == x.shape
-    ), "The first two dimensions of a must match the shape of x."
+    assert a.shape[:2] == x.shape, "The first two dimensions of a must match the shape of x."
 
     if zi is None:
         return_zf = False
@@ -108,10 +103,9 @@ def allpole(
     else:
         assert zi.dim() == 2, "Initial conditions zi must be 2D."
         assert zi.size(0) == B, "The first dimension of zi must match the batch size."
-        assert zi.size(1) == a.size(
-            2
-        ), "The second dimension of zi must match the filter order, but got {} instead of {}".format(
-            zi.size(1), a.size(2)
+        assert zi.size(1) == a.size(2), (
+            f"The second dimension of zi must match the filter order, "
+            f"but got {zi.size(1)} instead of {a.size(2)}"
         )
 
         return_zf = True
@@ -138,31 +132,30 @@ def lfilter(
     b: Tensor,
     a: Tensor,
     x: Tensor,
-    zi: Optional[Tensor] = None,
-    form: Optional[str] = None,
+    zi: Tensor | None = None,
+    form: str | None = None,
     backend: str = "ssm",
-    **kwargs: Optional[dict],
-) -> Union[Tensor, tuple[Tensor, Tensor]]:
+    **kwargs: dict | None,
+) -> Tensor | tuple[Tensor, Tensor]:
     """Apply a batch of parameter-varying linear filters to input signal.
     Args:
         b (Tensor): Coefficients of the FIR filters, shape (B, N, M_b + 1) or (N, M_b + 1).
         a (Tensor): Coefficients of the all-pole filters, shape (B, N, M_a) or (N, M_a).
         x (Tensor): Input signal, shape (B, N) or (N).
-        zi (Tensor, optional): Initial conditions for the filter, shape (B, max(M_a, M_b)) or (max(M_a, M_b)).
+        zi (Tensor, optional): Initial conditions for the filter,
+            shape (B, max(M_a, M_b)) or (max(M_a, M_b)).
         form (str, optional): The filter form to use. Defaults to 'tdf2' for the
             SSM backend and 'df2' for torchlpc. Options are 'df2', 'tdf2',
             'df1', 'tdf1'.
         backend (str): The backend to use for filtering. Options are 'ssm', 'torchlpc'.
         **kwargs: Additional keyword arguments for the backend-specific filtering function.
     Returns:
-        Filtered output signal with the same time steps as x and optionally the final state of the filter.
+        Filtered output signal with the same time steps as x and optionally the
+        final state of the filter.
     """
 
     squeeze_first = (
-        (x.dim() == 1)
-        & (b.dim() == 2)
-        & (a.dim() == 2)
-        & ((zi is None) or (zi.dim() == 1))
+        (x.dim() == 1) & (b.dim() == 2) & (a.dim() == 2) & ((zi is None) or (zi.dim() == 1))
     )
 
     if x.dim() == 1:
@@ -202,9 +195,9 @@ def _torchlpc_lfilter(
     b: Tensor,
     a: Tensor,
     x: Tensor,
-    zi: Optional[Tensor] = None,
+    zi: Tensor | None = None,
     form: str = "df2",
-) -> Union[Tensor, tuple[Tensor, Tensor]]:
+) -> Tensor | tuple[Tensor, Tensor]:
 
     _, T = x.shape
 
@@ -221,9 +214,9 @@ def _torchlpc_lfilter(
     else:
         raise ValueError("Denominator coefficients a must be 2D or 3D.")
 
-    assert (
-        b.shape[1] == a.shape[1] == T
-    ), "The number of time steps in b and a must match the input signal x."
+    assert b.shape[1] == a.shape[1] == T, (
+        "The number of time steps in b and a must match the input signal x."
+    )
 
     order = max(a.shape[2], b.shape[2] - 1)
 
@@ -250,13 +243,15 @@ def _torchlpc_lfilter(
         case "df2":
             filt = chain_functions(
                 partial(allpole, broadcasted_a, zi=zi[:, : a.shape[2]]),
-                lambda x, a_zf: fir(
-                    broadcasted_b,
-                    x,
-                    zi=zi[:, : b.shape[2] - 1],
-                    transpose=False,
-                )
-                + (a_zf,),
+                lambda x, a_zf: (
+                    fir(
+                        broadcasted_b,
+                        x,
+                        zi=zi[:, : b.shape[2] - 1],
+                        transpose=False,
+                    )
+                    + (a_zf,)
+                ),
                 lambda x, b_zf, a_zf: (
                     (
                         x,
@@ -267,9 +262,7 @@ def _torchlpc_lfilter(
                 ),
             )
         case "tdf2":
-            raise NotImplementedError(
-                "Transposed Direct Form II (tdf2) is not implemented yet."
-            )
+            raise NotImplementedError("Transposed Direct Form II (tdf2) is not implemented yet.")
         case "df1":
             # In Direct Form I, the initial conditions are neglected.
             filt = chain_functions(
@@ -298,10 +291,10 @@ def _ssm_lfilter(
     b: Tensor,
     a: Tensor,
     x: Tensor,
-    zi: Optional[Tensor] = None,
+    zi: Tensor | None = None,
     form: str = "df2",
     **kwargs,
-) -> Union[Tensor, tuple[Tensor, Tensor]]:
+) -> Tensor | tuple[Tensor, Tensor]:
     """Apply a batch of time-invariant linear filters to input signal using state-space model."""
     if b.size(-1) < a.size(-1) + 1:
         b = F.pad(b, (0, a.size(-1) + 1 - b.size(-1)))
@@ -365,9 +358,7 @@ def _ssm_lfilter(
                     out_idx=0,
                     **kwargs,
                 ),
-                partial(
-                    fir, b.conj().broadcast_to((x.size(0), -1, -1)), transpose=True
-                ),
+                partial(fir, b.conj().broadcast_to((x.size(0), -1, -1)), transpose=True),
             )
         case _:
             raise ValueError(f"Unknown filter form: {form}")

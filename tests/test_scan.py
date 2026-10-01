@@ -22,9 +22,7 @@ def test_linear_recurrence_equivalence():
     lti_output = lti_linear_recurrence(a, init, x, unroll_factor=unroll_factor)
 
     # Compare outputs
-    assert torch.allclose(lpv_output, lti_output), torch.max(
-        torch.abs(lpv_output - lti_output)
-    )
+    assert torch.allclose(lpv_output, lti_output), torch.max(torch.abs(lpv_output - lti_output))
 
 
 def test_linear_recurrence_unrolling():
@@ -55,8 +53,6 @@ def test_linear_recurrence_native_broadcasting():
     init = torch.tensor(0.5)
 
     actual = lpv_linear_recurrence(a, init, x)
-    expected = lpv_linear_recurrence(
-        a.expand_as(x), init.expand(x.size(0)), x, unroll_factor=2
-    )
+    expected = lpv_linear_recurrence(a.expand_as(x), init.expand(x.size(0)), x, unroll_factor=2)
 
     assert torch.allclose(actual, expected)

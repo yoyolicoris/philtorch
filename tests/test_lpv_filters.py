@@ -1,9 +1,12 @@
-import pytest
 import numpy as np
+import pytest
 import torch
 from scipy import signal
 
-from philtorch.lpv import lfilter, allpole as lpv_allpole, fir as lpv_fir
+from philtorch.lpv import allpole as lpv_allpole
+from philtorch.lpv import fir as lpv_fir
+from philtorch.lpv import lfilter
+
 from .test_lpv_lfilter import _generate_random_signal
 
 
@@ -73,9 +76,7 @@ def _generate_time_varying_coeffs(
     return b, a
 
 
-def _generate_test_signal(
-    B: int, T: int, signal_type: str = "white_noise"
-) -> torch.Tensor:
+def _generate_test_signal(B: int, T: int, signal_type: str = "white_noise") -> torch.Tensor:
     """Generate different types of test signals"""
     if signal_type == "white_noise":
         return torch.randn(B, T)
@@ -251,9 +252,7 @@ def test_df_fir():
     y_scipy = np.stack([signal.lfilter(b[i], [1.0], x[i]) for i in range(B)], axis=0)
 
     # Compare outputs
-    assert np.allclose(y_torch.numpy(), y_scipy), np.max(
-        np.abs(y_torch.numpy() - y_scipy)
-    )
+    assert np.allclose(y_torch.numpy(), y_scipy), np.max(np.abs(y_torch.numpy() - y_scipy))
 
 
 def test_df_allpole():
@@ -272,18 +271,14 @@ def test_df_allpole():
     x_torch = torch.from_numpy(x)
 
     # Apply philtorch filter
-    y_torch = lpv_allpole(
-        a_torch.unsqueeze(1).expand(-1, T, -1), x_torch, transpose=False
-    )
+    y_torch = lpv_allpole(a_torch.unsqueeze(1).expand(-1, T, -1), x_torch, transpose=False)
     # Apply scipy filter
     y_scipy = np.stack(
         [signal.lfilter([1.0], [1.0] + a[i].tolist(), x[i]) for i in range(B)], axis=0
     )
 
     # Compare outputs
-    assert np.allclose(y_torch.numpy(), y_scipy), np.max(
-        np.abs(y_torch.numpy() - y_scipy)
-    )
+    assert np.allclose(y_torch.numpy(), y_scipy), np.max(np.abs(y_torch.numpy() - y_scipy))
 
 
 @pytest.mark.parametrize("include_zi", [True, False])
@@ -316,8 +311,7 @@ def test_tdf_fir(include_zi: bool):
     )
     # Apply scipy filter
     scipy_results = [
-        signal.lfilter(b[i], [1.0], x[i], zi=zi[i] if zi is not None else None)
-        for i in range(B)
+        signal.lfilter(b[i], [1.0], x[i], zi=zi[i] if zi is not None else None) for i in range(B)
     ]
 
     if include_zi:
@@ -326,17 +320,13 @@ def test_tdf_fir(include_zi: bool):
         zf_scipy = np.stack(zf_scipy, axis=0)
         y_torch, zf_torch = torch_results
 
-        assert np.allclose(zf_torch.numpy(), zf_scipy), np.max(
-            np.abs(zf_torch.numpy() - zf_scipy)
-        )
+        assert np.allclose(zf_torch.numpy(), zf_scipy), np.max(np.abs(zf_torch.numpy() - zf_scipy))
     else:
         y_scipy = np.vstack(scipy_results)
         y_torch = torch_results
 
     # Compare outputs
-    assert np.allclose(y_torch.numpy(), y_scipy), np.max(
-        np.abs(y_torch.numpy() - y_scipy)
-    )
+    assert np.allclose(y_torch.numpy(), y_scipy), np.max(np.abs(y_torch.numpy() - y_scipy))
 
 
 @pytest.mark.parametrize("include_zi", [True, False])
@@ -370,9 +360,7 @@ def test_tdf_allpole(include_zi: bool):
     )
     # Apply scipy filter
     scipy_results = [
-        signal.lfilter(
-            [1.0], [1.0] + a[i].tolist(), x[i], zi=zi[i] if zi is not None else None
-        )
+        signal.lfilter([1.0], [1.0] + a[i].tolist(), x[i], zi=zi[i] if zi is not None else None)
         for i in range(B)
     ]
 
@@ -382,17 +370,13 @@ def test_tdf_allpole(include_zi: bool):
         zf_scipy = np.stack(zf_scipy, axis=0)
         y_torch, zf_torch = torch_results
 
-        assert np.allclose(zf_torch.numpy(), zf_scipy), np.max(
-            np.abs(zf_torch.numpy() - zf_scipy)
-        )
+        assert np.allclose(zf_torch.numpy(), zf_scipy), np.max(np.abs(zf_torch.numpy() - zf_scipy))
     else:
         y_scipy = np.vstack(scipy_results)
         y_torch = torch_results
 
     # Compare outputs
-    assert np.allclose(y_torch.numpy(), y_scipy), np.max(
-        np.abs(y_torch.numpy() - y_scipy)
-    )
+    assert np.allclose(y_torch.numpy(), y_scipy), np.max(np.abs(y_torch.numpy() - y_scipy))
 
 
 @pytest.mark.parametrize("transpose", [True, False])

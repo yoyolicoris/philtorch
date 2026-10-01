@@ -25,9 +25,7 @@ _DEVICES = [
     "cpu",
     pytest.param(
         "cuda",
-        marks=pytest.mark.skipif(
-            not torch.cuda.is_available(), reason="CUDA not available"
-        ),
+        marks=pytest.mark.skipif(not torch.cuda.is_available(), reason="CUDA not available"),
     ),
 ]
 _REQUIRES_GRAD_CASES = [
@@ -62,9 +60,7 @@ def get_random_biquads(cmplx=False):
         mag = torch.rand(2, dtype=torch.double)
         phase = torch.rand(2, dtype=torch.double) * 2 * torch.pi
         roots = mag * torch.exp(1j * phase)
-        return torch.tensor(
-            [-roots[0] - roots[1], roots[0] * roots[1]], dtype=torch.complex128
-        )
+        return torch.tensor([-roots[0] - roots[1], roots[0] * roots[1]], dtype=torch.complex128)
     mag = torch.rand(1, dtype=torch.double)
     phase = torch.rand(1, dtype=torch.double) * torch.pi
     return torch.tensor([-mag * torch.cos(phase) * 2, mag**2], dtype=torch.double)
@@ -77,10 +73,7 @@ def create_test_inputs(batch_size, samples, cmplx=False):
 
     A = (
         torch.stack(
-            [
-                torch.linspace(start_coeffs[i], end_coeffs[i], samples, dtype=dtype)
-                for i in range(2)
-            ]
+            [torch.linspace(start_coeffs[i], end_coeffs[i], samples, dtype=dtype) for i in range(2)]
         )
         .T.unsqueeze(0)
         .repeat(batch_size, 1, 1)
@@ -105,9 +98,7 @@ def test_allpole(
 ):
     batch_size = 4
     samples = 32
-    x, A, zi = tuple(
-        x.to(device) for x in create_test_inputs(batch_size, samples, cmplx)
-    )
+    x, A, zi = tuple(x.to(device) for x in create_test_inputs(batch_size, samples, cmplx))
     A.requires_grad = a_requires_grad
     x.requires_grad = x_requires_grad
     zi.requires_grad = zi_requires_grad
@@ -134,13 +125,8 @@ def test_scan_recurrence(
     dtype = torch.complex128 if cmplx else torch.double
     x = torch.randn(batch_size, samples, dtype=dtype, device=device)
     if cmplx:
-        A = torch.rand(
-            batch_size, samples, dtype=torch.double, device=device
-        ).sqrt() * torch.exp(
-            1j
-            * torch.rand(batch_size, samples, dtype=torch.double, device=device)
-            * 2
-            * torch.pi
+        A = torch.rand(batch_size, samples, dtype=torch.double, device=device).sqrt() * torch.exp(
+            1j * torch.rand(batch_size, samples, dtype=torch.double, device=device) * 2 * torch.pi
         )
     else:
         A = torch.rand(batch_size, samples, dtype=dtype, device=device) * 2 - 1
@@ -171,18 +157,14 @@ def test_allpole_float64_vs_32_cuda():
     y64 = AllPole.apply(x, A, zi)
     y32 = AllPole.apply(x32, A32, zi32)
 
-    assert torch.allclose(y64, y32.double(), atol=1e-6), torch.max(
-        torch.abs(y64 - y32.double())
-    )
+    assert torch.allclose(y64, y32.double(), atol=1e-6), torch.max(torch.abs(y64 - y32.double()))
 
 
 @pytest.mark.parametrize("device", _DEVICES)
 def test_allpole_vmap(device: str):
     batch_size = 4
     samples = 40
-    x, A, zi = tuple(
-        x.to(device) for x in create_test_inputs(batch_size, samples, False)
-    )
+    x, A, zi = tuple(x.to(device) for x in create_test_inputs(batch_size, samples, False))
     y = torch.randn_like(x)
 
     A = A[:, 0, :].clone()
@@ -194,9 +176,7 @@ def test_allpole_vmap(device: str):
     args = (x, A, zi)
 
     def func(x, A, zi):
-        return F.mse_loss(
-            AllPole.apply(x, A[:, None, :].expand(-1, samples, -1), zi), y
-        )
+        return F.mse_loss(AllPole.apply(x, A[:, None, :].expand(-1, samples, -1), zi), y)
 
     jacs = jacfwd(func, argnums=tuple(range(len(args))))(*args)
 

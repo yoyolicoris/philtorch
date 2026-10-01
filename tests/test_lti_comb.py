@@ -37,8 +37,6 @@ def test_comb_filter(delay, batch_a, zi_shape):
     if zi is not None:
         lfilter_y, lfilter_zf = lfilter_y
         comb_y, comb_zf = comb_y
-        assert torch.allclose(comb_zf, lfilter_zf), torch.max(
-            torch.abs(comb_zf - lfilter_zf)
-        )
+        assert torch.allclose(comb_zf, lfilter_zf), torch.max(torch.abs(comb_zf - lfilter_zf))
 
     assert torch.allclose(comb_y, lfilter_y), torch.max(torch.abs(comb_y - lfilter_y))

@@ -1,13 +1,16 @@
-import torch
-from torch import Tensor
 from itertools import accumulate
+
+import torch
 from sympy.ntheory import factorint
+from torch import Tensor
 
 
 def find_eigenvectors(A: Tensor, eigenvalues: Tensor) -> Tensor:
     """Construct normalised eigenvectors for a square matrix from its eigenvalues.
 
-    This solves (A - lambda I) v = 0 for each eigenvalue and returns normalised right-eigenvectors. The output is shaped so that columns correspond to eigenvectors.
+    This solves (A - lambda I) v = 0 for each eigenvalue and returns normalised
+    right-eigenvectors. The output is shaped so that columns correspond to
+    eigenvectors.
 
     Args:
         A (Tensor): Square matrix of shape (..., N, N).
@@ -25,8 +28,8 @@ def find_eigenvectors(A: Tensor, eigenvalues: Tensor) -> Tensor:
     assert A.size(-1) == eigenvalues.size(-1), "Eigenvalues must match the size of A."
 
     n = A.size(-1)
-    I = torch.eye(n, device=A.device, dtype=A.dtype)
-    W = A.unsqueeze(-3) - eigenvalues[..., None, None] * I
+    eye = torch.eye(n, device=A.device, dtype=A.dtype)
+    W = A.unsqueeze(-3) - eigenvalues[..., None, None] * eye
     B, W = torch.split(W, [1, n - 1], dim=-1)
 
     WtW = W.mT.conj() @ W
@@ -54,9 +57,7 @@ def companion(a: Tensor) -> Tensor:
     """
     assert a.dim() >= 1, "All-pole coefficients must be at least 1D."
     M = a.size(-1)
-    c = torch.cat([-a, a.new_zeros(a.shape[:-1] + (M * (M - 1),))], dim=-1).unflatten(
-        -1, (M, M)
-    )
+    c = torch.cat([-a, a.new_zeros(a.shape[:-1] + (M * (M - 1),))], dim=-1).unflatten(-1, (M, M))
     # c = A + torch.diag(a.new_ones(M - 1), diagonal=-1)
     c[..., list(range(1, M)), list(range(M - 1))] = 1
     return c
@@ -121,9 +122,7 @@ def _mat_pwr_accum_runner(A: Tensor, factors: list[int]) -> Tensor:
     return torch.cat(
         [
             accums,
-            torch.cat([tmp, higher_powers[..., 1:, None, :, :]], dim=-3).flatten(
-                -4, -3
-            ),
+            torch.cat([tmp, higher_powers[..., 1:, None, :, :]], dim=-3).flatten(-4, -3),
         ],
         dim=-3,
     )
@@ -134,7 +133,8 @@ def matrices_cumdot(A: Tensor) -> Tensor:
     Given a sequence of matrices [A_1, A_2, ..., A_M], this function returns
     [A_1, A_1 @ A_2, A_1 @ A_2 @ A_3, ..., A_1 @ A_2 @ ... @ A_M].
     Args:
-        A (Tensor): Input tensor of shape (..., M, N, N) where ... can be any number of batch dimensions.
+        A (Tensor): Input tensor of shape (..., M, N, N) where ... can be any
+            number of batch dimensions.
     Returns:
         Tensor: Cumulative dot product of matrices with shape (..., M, N, N).
     """

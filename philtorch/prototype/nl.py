@@ -1,8 +1,8 @@
+from collections.abc import Callable
+from functools import partial
+
 import torch
 from torch import Tensor
-import torch.nn.functional as F
-from typing import Any, Optional, Callable, Union
-from functools import partial
 
 from ..lpv.ssm import state_space_recursion
 
@@ -15,21 +15,24 @@ def newton_solve(
     max_iter: int = 3,
     atol: float = 1e-6,
     rtol: float = 1e-6,
-    fprime: Optional[Callable[[Tensor, Tensor], Tensor]] = None,
+    fprime: Callable[[Tensor, Tensor], Tensor] | None = None,
     unroll_factor: int = 1,
     return_intermediate: bool = False,
-) -> Union[tuple[Tensor, int], tuple[Tensor, int, list[tuple[Tensor, Tensor]]]]:
+) -> tuple[Tensor, int] | tuple[Tensor, int, list[tuple[Tensor, Tensor]]]:
     """Solve for the root of a function using Newton's method.
 
     Args:
-        func (Callable[[Tensor], Tensor]): A given function that given an input tensor and previous state, returns the next state. The function should be differentiable with respect to its input.
+        func (Callable[[Tensor], Tensor]): A given function that given an input
+            tensor and previous state, returns the next state. The function
+            should be differentiable with respect to its input.
         x (Tensor): Input tensor to be passed to the function with shape (B, L, N).
         y0 (Tensor): Initial state to be passed to the function with shape (B, L, D).
         init (Tensor): Initial state to be passed to the function with shape (B, D).
         max_iter (int, optional): Maximum number of iterations. Defaults to 3.
         atol (float, optional): Tolerance for convergence. Defaults to 1e-6.
         rtol (float, optional): Relative tolerance for convergence. Defaults to 1e-6.
-        fprime (optional): Optional function to compute the Jacobian. If None, the Jacobian will be computed using autograd. Defaults to None.
+        fprime (optional): Optional function to compute the Jacobian. If None,
+            the Jacobian will be computed using autograd. Defaults to None.
 
     Returns:
         Tensor: Approximation of the root of the function.

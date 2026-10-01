@@ -136,11 +136,7 @@ def test_hl_recurN_pt2_compatibility(
                 dtype=dtype,
             ),
             torch.randn(
-                *(
-                    (batch_size, samples, order, order)
-                    if not share_A
-                    else (samples, order, order)
-                ),
+                *((batch_size, samples, order, order) if not share_A else (samples, order, order)),
                 dtype=dtype,
             )
             / order**2,
@@ -200,17 +196,11 @@ def test_recurN_pt2_compatibility(
                 dtype=torch.double if not cmplx else torch.complex128,
             ),
             torch.randn(
-                *(
-                    (batch_size, samples, order, order)
-                    if not share_A
-                    else (samples, order, order)
-                ),
+                *((batch_size, samples, order, order) if not share_A else (samples, order, order)),
                 dtype=torch.double if not cmplx else torch.complex128,
             )
             / order**2,
-            torch.randn(
-                batch_size, order, dtype=torch.double if not cmplx else torch.complex128
-            ),
+            torch.randn(batch_size, order, dtype=torch.double if not cmplx else torch.complex128),
         ]
     )
     A.requires_grad = A_requires_grad
@@ -236,16 +226,12 @@ def test_recurN_pt2_compatibility(
         pytest.param(
             True,
             "cuda",
-            marks=pytest.mark.skipif(
-                not torch.cuda.is_available(), reason="CUDA not available"
-            ),
+            marks=pytest.mark.skipif(not torch.cuda.is_available(), reason="CUDA not available"),
         ),
         pytest.param(
             False,
             "cuda",
-            marks=pytest.mark.skipif(
-                not torch.cuda.is_available(), reason="CUDA not available"
-            ),
+            marks=pytest.mark.skipif(not torch.cuda.is_available(), reason="CUDA not available"),
         ),
     ],
 )
@@ -274,17 +260,11 @@ def test_recur2_pt2_compatibility(
                 dtype=torch.double if not cmplx else torch.complex128,
             ),
             torch.randn(
-                *(
-                    (batch_size, samples, order, order)
-                    if not share_A
-                    else (samples, order, order)
-                ),
+                *((batch_size, samples, order, order) if not share_A else (samples, order, order)),
                 dtype=torch.double if not cmplx else torch.complex128,
             )
             / order**2,
-            torch.randn(
-                batch_size, order, dtype=torch.double if not cmplx else torch.complex128
-            ),
+            torch.randn(batch_size, order, dtype=torch.double if not cmplx else torch.complex128),
         ]
     )
     A.requires_grad = A_requires_grad
@@ -312,9 +292,7 @@ def test_recur2_pt2_compatibility(
         "cpu",
         pytest.param(
             "cuda",
-            marks=pytest.mark.skipif(
-                not torch.cuda.is_available(), reason="CUDA not available"
-            ),
+            marks=pytest.mark.skipif(not torch.cuda.is_available(), reason="CUDA not available"),
         ),
     ],
 )
@@ -347,9 +325,7 @@ def test_lti_recur2_pt2_compatibility(
                 dtype=torch.double if not cmplx else torch.complex128,
             )
             * 0.25,
-            torch.randn(
-                batch_size, order, dtype=torch.double if not cmplx else torch.complex128
-            ),
+            torch.randn(batch_size, order, dtype=torch.double if not cmplx else torch.complex128),
         ]
     )
     A.requires_grad = A_requires_grad
@@ -406,9 +382,7 @@ def test_lti_recurN_pt2_compatibility(
                 dtype=torch.double if not cmplx else torch.complex128,
             )
             * 0.25,
-            torch.randn(
-                batch_size, order, dtype=torch.double if not cmplx else torch.complex128
-            ),
+            torch.randn(batch_size, order, dtype=torch.double if not cmplx else torch.complex128),
         ]
     )
     A.requires_grad = A_requires_grad
@@ -436,9 +410,7 @@ def test_lti_recurN_pt2_compatibility(
         "cpu",
         pytest.param(
             "cuda",
-            marks=pytest.mark.skipif(
-                not torch.cuda.is_available(), reason="CUDA not available"
-            ),
+            marks=pytest.mark.skipif(not torch.cuda.is_available(), reason="CUDA not available"),
         ),
     ],
 )
@@ -469,9 +441,7 @@ def test_lti_recur_pt2_compatibility(
                 dtype=torch.double if not cmplx else torch.complex128,
             )
             * 0.5,
-            torch.randn(
-                batch_size, dtype=torch.double if not cmplx else torch.complex128
-            ),
+            torch.randn(batch_size, dtype=torch.double if not cmplx else torch.complex128),
         ]
     )
     a.requires_grad = a_requires_grad

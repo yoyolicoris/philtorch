@@ -1,7 +1,7 @@
-from .filtering import lfilter, fir, lfilter_zi, lfiltic, filtfilt, comb_filter
-from .ssm import state_space_recursion, diag_state_space, state_space
-from .recur import linear_recurrence
+from .filtering import comb_filter, filtfilt, fir, lfilter, lfilter_zi, lfiltic
 from .interp import cubic_spline
+from .recur import linear_recurrence
+from .ssm import diag_state_space, state_space, state_space_recursion
 
 __all__ = [
     "lfilter",

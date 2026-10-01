@@ -1,6 +1,5 @@
-import torch
-from torch import Tensor
 import torch.nn.functional as F
+from torch import Tensor
 
 
 def diag_shift(coef: Tensor, offset: int = 0, discard_end: bool = False) -> Tensor:

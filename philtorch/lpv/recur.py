@@ -1,7 +1,6 @@
 import torch
 from torch import Tensor
 from torch.nn import functional as F
-from typing import Optional
 
 from .._torchlpc import scan
 
@@ -19,9 +18,7 @@ def _scalar_recursion_loop(
     return torch.stack(results, dim=-1)
 
 
-def linear_recurrence(
-    a: Tensor, init: Tensor, x: Tensor, *, unroll_factor: int = 1
-) -> Tensor:
+def linear_recurrence(a: Tensor, init: Tensor, x: Tensor, *, unroll_factor: int = 1) -> Tensor:
     """A pure-Python implementation of a linear recurrence with time-varying
     coefficients.
 
@@ -46,7 +43,8 @@ def linear_recurrence(
     assert a.dim() in (1, 2), f"State matrix a must be 1D or 2D, got {a.shape}"
     if a.dim() == 1 and a.size(0) != x.size(1):
         raise ValueError(
-            f"State matrix a must be 1D with the same length as x, got a: {a.size(0)}, x: {x.size(1)}"
+            f"State matrix a must be 1D with the same length as x, "
+            f"got a: {a.size(0)}, x: {x.size(1)}"
         )
 
     batch_size, N = x.size(0), x.size(1)
@@ -57,7 +55,8 @@ def linear_recurrence(
     ), f"Initial state init must be 1D or 0D, got {init.shape}"
     if init.dim() == 1 and init.size(0) > 1 and init.size(0) != batch_size:
         raise ValueError(
-            f"Initial state init must be 1D with the same batch size as x, got init: {init.size(0)}, x: {batch_size}"
+            f"Initial state init must be 1D with the same batch size as x, "
+            f"got init: {init.size(0)}, x: {batch_size}"
         )
 
     if init.dim() == 0:
@@ -95,9 +94,7 @@ def linear_recurrence(
         dim=1,
     )
 
-    output = _scalar_recursion_loop(
-        unrolled_a[..., :-1], initials[:, :-1], unrolled_x[..., :-1]
-    )
+    output = _scalar_recursion_loop(unrolled_a[..., :-1], initials[:, :-1], unrolled_x[..., :-1])
 
     # concat the first M - 1 outputs with the last one
     output = torch.cat([output, initials[:, 1:, None]], dim=2).flatten(1, 2)

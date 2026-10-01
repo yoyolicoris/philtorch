@@ -1,9 +1,9 @@
-import pytest
 import numpy as np
+import pytest
 import torch
 from scipy import signal
 
-from philtorch.lti import lfilter, fir, lfilter_zi, lfiltic, filtfilt
+from philtorch.lti import filtfilt, fir, lfilter, lfilter_zi, lfiltic
 from philtorch.mat import vandermonde
 
 
@@ -70,9 +70,7 @@ def test_filtfilt(b_shape, a_shape, padmode, padlen):
     # Apply scipy filtfilt
     y_scipy = np.stack(
         [
-            signal.filtfilt(
-                b[i], [1.0] + a[i].tolist(), x[i], padtype=padtype, padlen=padlen
-            )
+            signal.filtfilt(b[i], [1.0] + a[i].tolist(), x[i], padtype=padtype, padlen=padlen)
             for i in range(b.shape[0])
         ],
         axis=0,
@@ -82,9 +80,7 @@ def test_filtfilt(b_shape, a_shape, padmode, padlen):
     y_torch = filtfilt(b_torch, a_torch, x_torch, padmode=padmode, padlen=padlen)
 
     # Compare outputs
-    assert np.allclose(y_torch.numpy(), y_scipy), np.max(
-        np.abs(y_torch.numpy() - y_scipy)
-    )
+    assert np.allclose(y_torch.numpy(), y_scipy), np.max(np.abs(y_torch.numpy() - y_scipy))
 
 
 @pytest.mark.parametrize("b_shape", [(3, 5), (5,)])
@@ -128,9 +124,7 @@ def test_lfiltic(b_shape, a_shape, y_shape, x_shape):
     # Apply scipy lfiltic
     zi_scipy = np.stack(
         [
-            signal.lfiltic(
-                b[i], [1.0] + a[i].tolist(), y[i], x[i] if x is not None else None
-            )
+            signal.lfiltic(b[i], [1.0] + a[i].tolist(), y[i], x[i] if x is not None else None)
             for i in range(b.shape[0])
         ],
         axis=0,
@@ -142,9 +136,7 @@ def test_lfiltic(b_shape, a_shape, y_shape, x_shape):
     zi_torch = lfiltic(b_torch, a_torch, y_torch, x_torch)
 
     # Compare outputs
-    assert np.allclose(zi_torch.numpy(), zi_scipy), np.max(
-        np.abs(zi_torch.numpy() - zi_scipy)
-    )
+    assert np.allclose(zi_torch.numpy(), zi_scipy), np.max(np.abs(zi_torch.numpy() - zi_scipy))
 
 
 @pytest.mark.parametrize("b_shape", [(3, 5), (4,)])
@@ -183,9 +175,7 @@ def test_lfilter_zi(b_shape, a_shape):
     zi_torch = lfilter_zi(b=b_torch, a=a_torch)
 
     # Compare outputs
-    assert np.allclose(zi_torch.numpy(), zi_scipy), np.max(
-        np.abs(zi_torch.numpy() - zi_scipy)
-    )
+    assert np.allclose(zi_torch.numpy(), zi_scipy), np.max(np.abs(zi_torch.numpy() - zi_scipy))
 
 
 @pytest.mark.parametrize("transpose", [True, False])
@@ -199,9 +189,7 @@ def test_zi_constant_response(transpose: bool):
     a = torch.from_numpy(a).float()
 
     zi = lfilter_zi(a, b if transpose else None, transpose=transpose)
-    y, _ = lfilter(
-        b, a, torch.ones(3, 10), zi=zi, form="df2" if not transpose else "tdf2"
-    )
+    y, _ = lfilter(b, a, torch.ones(3, 10), zi=zi, form="df2" if not transpose else "tdf2")
 
     assert torch.all(torch.diff(y).abs() < 1e-5), y.diff().abs().max()
 
@@ -226,9 +214,7 @@ def test_df_fir():
     y_scipy = np.stack([signal.lfilter(b[i], [1.0], x[i]) for i in range(B)], axis=0)
 
     # Compare outputs
-    assert np.allclose(y_torch.numpy(), y_scipy), np.max(
-        np.abs(y_torch.numpy() - y_scipy)
-    )
+    assert np.allclose(y_torch.numpy(), y_scipy), np.max(np.abs(y_torch.numpy() - y_scipy))
 
 
 @pytest.mark.parametrize("include_zi", [True, False])
@@ -259,8 +245,7 @@ def test_tdf_fir(include_zi: bool):
     torch_results = fir(b_torch, x_torch, zi=zi_torch, transpose=True)
     # Apply scipy filter
     scipy_results = [
-        signal.lfilter(b[i], [1.0], x[i], zi=zi[i] if zi is not None else None)
-        for i in range(B)
+        signal.lfilter(b[i], [1.0], x[i], zi=zi[i] if zi is not None else None) for i in range(B)
     ]
 
     if include_zi:
@@ -269,17 +254,13 @@ def test_tdf_fir(include_zi: bool):
         zf_scipy = np.stack(zf_scipy, axis=0)
         y_torch, zf_torch = torch_results
 
-        assert np.allclose(zf_torch.numpy(), zf_scipy), np.max(
-            np.abs(zf_torch.numpy() - zf_scipy)
-        )
+        assert np.allclose(zf_torch.numpy(), zf_scipy), np.max(np.abs(zf_torch.numpy() - zf_scipy))
     else:
         y_scipy = np.vstack(scipy_results)
         y_torch = torch_results
 
     # Compare outputs
-    assert np.allclose(y_torch.numpy(), y_scipy), np.max(
-        np.abs(y_torch.numpy() - y_scipy)
-    )
+    assert np.allclose(y_torch.numpy(), y_scipy), np.max(np.abs(y_torch.numpy() - y_scipy))
 
 
 @pytest.mark.parametrize("B", [1, 8])
@@ -287,9 +268,7 @@ def test_tdf_fir(include_zi: bool):
 @pytest.mark.parametrize("num_order", [1, 2, 4])
 @pytest.mark.parametrize("den_order", [1, 3, 5])
 @pytest.mark.parametrize("form", ["df2", "tdf2", "df1", "tdf1"])
-def test_time_invariant_filter(
-    B: int, T: int, num_order: int, den_order: int, form: str
-):
+def test_time_invariant_filter(B: int, T: int, num_order: int, den_order: int, form: str):
     """Test time-invariant filters against scipy.signal.lfilter"""
 
     # Generate test data
@@ -310,9 +289,7 @@ def test_time_invariant_filter(
     )
 
     # Compare outputs
-    assert np.allclose(y_torch.numpy(), y_scipy), np.max(
-        np.abs(y_torch.numpy() - y_scipy)
-    )
+    assert np.allclose(y_torch.numpy(), y_scipy), np.max(np.abs(y_torch.numpy() - y_scipy))
 
 
 @pytest.mark.parametrize("num_order", [1, 3, 5])
@@ -342,12 +319,8 @@ def test_tdf2_zi(num_order: int, den_order: int):
     y_scipy = np.stack(y_scipy, axis=0)
     zf_scipy = np.stack(zf_scipy, axis=0)
     # Compare outputs
-    assert np.allclose(y_torch.numpy(), y_scipy), np.max(
-        np.abs(y_torch.numpy() - y_scipy)
-    )
-    assert np.allclose(zf_torch.numpy(), zf_scipy), np.max(
-        np.abs(zf_torch.numpy() - zf_scipy)
-    )
+    assert np.allclose(y_torch.numpy(), y_scipy), np.max(np.abs(y_torch.numpy() - y_scipy))
+    assert np.allclose(zf_torch.numpy(), zf_scipy), np.max(np.abs(zf_torch.numpy() - zf_scipy))
 
 
 @pytest.mark.parametrize("B", [1, 8])
@@ -413,11 +386,7 @@ def test_diag_ssm_backend(
     )
 
     # Apply scipy filter
-    y_scipy = np.stack(
-        [signal.lfilter(b[i], [1.0] + a.tolist(), x[i]) for i in range(B)], axis=0
-    )
+    y_scipy = np.stack([signal.lfilter(b[i], [1.0] + a.tolist(), x[i]) for i in range(B)], axis=0)
 
     # Compare outputs
-    assert np.allclose(y_torch.numpy(), y_scipy), np.max(
-        np.abs(y_torch.numpy() - y_scipy)
-    )
+    assert np.allclose(y_torch.numpy(), y_scipy), np.max(np.abs(y_torch.numpy() - y_scipy))
