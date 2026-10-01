@@ -71,6 +71,9 @@ jobs:
           echo "matrix=${MATRIX}" >> "$GITHUB_OUTPUT"
 
   build:
+    # The leg is a single matrix dimension holding a JSON object; without this
+    # GitHub would print every field of the object into the job name.
+    name: build (py${{ matrix.leg.python }}, torch${{ matrix.leg.torch }}+cu${{ matrix.leg.cuda }})
     needs: resolve-matrix
     runs-on: ubuntu-latest
     strategy:
