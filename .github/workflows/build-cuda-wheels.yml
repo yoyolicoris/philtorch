@@ -83,13 +83,14 @@ jobs:
     container:
       image: ${{ matrix.leg.cuda_image }}
     steps:
-      # nvidia/cuda images ship no git. Install it before anything needs it:
-      # actions/checkout shells out to git, and git refuses the mounted
-      # workspace until it is marked safe.
-      - name: Install git
+      # nvidia/cuda images ship neither git nor patchelf. Install both before
+      # anything needs them: actions/checkout shells out to git (which refuses
+      # the mounted workspace until it is marked safe), and `auditwheel repair`
+      # shells out to the patchelf executable, which pip does not provide.
+      - name: Install system dependencies
         run: |
           apt-get update -qq
-          DEBIAN_FRONTEND=noninteractive apt-get install -y -qq git
+          DEBIAN_FRONTEND=noninteractive apt-get install -y -qq git patchelf
           git config --global --add safe.directory "$GITHUB_WORKSPACE"
 
       - uses: actions/checkout@v4
