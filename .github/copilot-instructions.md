@@ -32,10 +32,9 @@ pixi run pytest tests/test_lti_lfilter.py::test_time_invariant_filter
 ```
 
 ```bash
-# lint command used by CI
-pixi run python -m pip install flake8
-pixi run flake8 . --count --select=E9,F63,F7,F82 --show-source --statistics
-pixi run flake8 . --count --exit-zero --max-complexity=10 --max-line-length=127 --statistics
+# lint and format commands used by CI
+ruff check .
+ruff format --check .
 ```
 
 ## Terminal usage (avoid hangs)

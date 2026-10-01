@@ -39,10 +39,11 @@ pixi run python -m pytest
 
 For a focused change, run the smallest relevant test file while iterating, then run the full suite before requesting review when practical. If a test cannot be run on your platform, state that clearly in the pull request.
 
-Python formatting is enforced by Black in CI. If Black is available in your development environment, check changed Python files with:
+Python lint and formatting are enforced by Ruff in CI. If Ruff is available in your development environment, check changed Python files with:
 
 ```bash
-black --check philtorch tests
+ruff check philtorch tests
+ruff format --check philtorch tests
 ```
 
 Apply formatting only to files in the scope of your change.

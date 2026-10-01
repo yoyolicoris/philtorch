@@ -78,5 +78,10 @@ source_pkgs = ["philtorch"]
 # editable checkout, so map both locations to the same source for reporting.
 source = ["philtorch/", "*/site-packages/philtorch/"]
 
-[tool.black]
-target-version = ["py310"]
+[tool.ruff]
+line-length = 100
+target-version = "py310"
+exclude = ["third_party"]
+
+[tool.ruff.lint]
+select = ["E", "F", "W", "I", "UP"]
