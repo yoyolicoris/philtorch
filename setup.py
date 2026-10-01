@@ -1,51 +1,14 @@
+from setuptools import setup
+
+# build_support.py sits next to setup.py; the setuptools.build_meta:__legacy__
+# backend puts this directory on sys.path, which this import relies on.
+from build_support import resolve_cuda_build
 import os
 import glob
 import subprocess
 import sys
 
 library_name = "philtorch"
-
-
-def resolve_cuda_build(
-    force_cuda_value,
-    cuda_home,
-    cuda_available,
-    cuda_arch_list=None,
-    torch_cuda_version=None,
-):
-    # An empty value means unset, e.g. a GitHub Actions expression for a
-    # missing input or `docker run -e PHILTORCH_FORCE_CUDA=`.
-    if force_cuda_value not in {"", "0", "1"}:
-        raise RuntimeError(
-            "PHILTORCH_FORCE_CUDA must be either '0' or '1'; "
-            f"got {force_cuda_value!r}."
-        )
-
-    force_cuda = force_cuda_value == "1"
-    if force_cuda and cuda_home is None:
-        raise RuntimeError(
-            "PHILTORCH_FORCE_CUDA=1 was requested, but CUDA_HOME is not set "
-            "or the CUDA toolkit could not be found."
-        )
-    if force_cuda and torch_cuda_version is None:
-        raise RuntimeError(
-            "PHILTORCH_FORCE_CUDA=1 was requested, but the installed PyTorch has "
-            "no CUDA support (torch.version.cuda is None). Install a CUDA build "
-            "of PyTorch."
-        )
-    if (
-        force_cuda
-        and not cuda_available
-        and (not cuda_arch_list or cuda_arch_list == "native")
-    ):
-        raise RuntimeError(
-            "PHILTORCH_FORCE_CUDA=1 was requested on a host with no visible GPU, "
-            "but TORCH_CUDA_ARCH_LIST is unset or 'native', so there is no safe "
-            "target architecture to infer. Set TORCH_CUDA_ARCH_LIST to the target "
-            'architectures, e.g. TORCH_CUDA_ARCH_LIST="8.0 8.6".'
-        )
-
-    return cuda_home is not None and (force_cuda or cuda_available)
 
 
 def get_homebrew_prefix(formula):
@@ -233,48 +196,39 @@ def get_extensions():
     return ext_modules
 
 
-def main():
-    from setuptools import setup
-
-    try:
-        ext_modules = get_extensions()
-    except ImportError:
-        # Only torch's absence is treated as "maybe metadata-only"; other errors
-        # from get_extensions() (e.g. missing Homebrew on macOS) propagate as-is,
-        # since those are real build failures rather than a missing-torch case.
-        #
-        # Metadata-only invocations (e.g. `setup.py egg_info`/`sdist`, which pip
-        # also runs to prepare metadata/sdists in an isolated build environment
-        # populated solely from build-system.requires) don't need torch to be
-        # importable. Let those keep working without torch pre-installed.
-        #
-        # Actually building an extension (bdist_wheel/build_ext/develop/install)
-        # does need torch; failing loudly here instead of silently degrading to
-        # an extension-less wheel avoids shipping a philtorch that's missing
-        # `_C` with no indication anything went wrong.
-        metadata_only_commands = {"egg_info", "sdist", "dist_info"}
-        if metadata_only_commands.intersection(sys.argv):
-            ext_modules = []
-        else:
-            raise RuntimeError(
-                "philtorch could not `import torch` while building its "
-                "C++/CUDA extension. Install torch first (see README), then "
-                "reinstall/rebuild with `--no-build-isolation` so the build "
-                "sees it."
-            )
-
-    if not ext_modules:
-        setup()
+try:
+    ext_modules = get_extensions()
+except ImportError:
+    # Only torch's absence is treated as "maybe metadata-only"; other errors
+    # from get_extensions() (e.g. missing Homebrew on macOS) propagate as-is,
+    # since those are real build failures rather than a missing-torch case.
+    #
+    # Metadata-only invocations (e.g. `setup.py egg_info`/`sdist`, which pip
+    # also runs to prepare metadata/sdists in an isolated build environment
+    # populated solely from build-system.requires) don't need torch to be
+    # importable. Let those keep working without torch pre-installed.
+    #
+    # Actually building an extension (bdist_wheel/build_ext/develop/install)
+    # does need torch; failing loudly here instead of silently degrading to
+    # an extension-less wheel avoids shipping a philtorch that's missing
+    # `_C` with no indication anything went wrong.
+    metadata_only_commands = {"egg_info", "sdist", "dist_info"}
+    if metadata_only_commands.intersection(sys.argv):
+        ext_modules = []
     else:
-        from torch.utils.cpp_extension import BuildExtension
-
-        setup(
-            ext_modules=ext_modules,
-            cmdclass={"build_ext": BuildExtension},
+        raise RuntimeError(
+            "philtorch could not `import torch` while building its "
+            "C++/CUDA extension. Install torch first (see README), then "
+            "reinstall/rebuild with `--no-build-isolation` so the build "
+            "sees it."
         )
 
+if not ext_modules:
+    setup()
+else:
+    from torch.utils.cpp_extension import BuildExtension
 
-# setuptools runs setup.py as __main__; tests load it for resolve_cuda_build
-# without building anything.
-if __name__ == "__main__":
-    main()
+    setup(
+        ext_modules=ext_modules,
+        cmdclass={"build_ext": BuildExtension},
+    )

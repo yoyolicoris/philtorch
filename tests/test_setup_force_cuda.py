@@ -3,10 +3,9 @@ from runpy import run_path
 
 import pytest
 
-# Loading setup.py under a non-__main__ name defines its helpers without building.
-resolve_cuda_build = run_path(str(Path(__file__).resolve().parents[1] / "setup.py"))[
-    "resolve_cuda_build"
-]
+resolve_cuda_build = run_path(
+    str(Path(__file__).resolve().parents[1] / "build_support.py")
+)["resolve_cuda_build"]
 
 
 def test_default_cpu_selection_without_visible_gpu():
