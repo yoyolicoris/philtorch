@@ -80,10 +80,14 @@ jobs:
     container:
       image: ${{ matrix.leg.cuda_image }}
     steps:
-      # The workspace is mounted into the container; without this git refuses
-      # to operate on it ("detected dubious ownership").
-      - name: Mark workspace safe for git
-        run: git config --global --add safe.directory "$GITHUB_WORKSPACE"
+      # nvidia/cuda images ship no git. Install it before anything needs it:
+      # actions/checkout shells out to git, and git refuses the mounted
+      # workspace until it is marked safe.
+      - name: Install git
+        run: |
+          apt-get update -qq
+          DEBIAN_FRONTEND=noninteractive apt-get install -y -qq git
+          git config --global --add safe.directory "$GITHUB_WORKSPACE"
 
       - uses: actions/checkout@v4
         with:
@@ -92,10 +96,9 @@ jobs:
           fetch-depth: 0
           submodules: recursive
 
-      - name: Install Python and git
+      - name: Install Python
         run: |
-          apt-get update -qq
-          DEBIAN_FRONTEND=noninteractive apt-get install -y -qq software-properties-common git
+          DEBIAN_FRONTEND=noninteractive apt-get install -y -qq software-properties-common
           add-apt-repository -y ppa:deadsnakes/ppa
           apt-get update -qq
           DEBIAN_FRONTEND=noninteractive apt-get install -y -qq "python${{ matrix.leg.python }}-venv"
