@@ -1,0 +1,139 @@
+name: Build CUDA wheels
+
+# Builds Linux CUDA wheels for every (PyTorch, CUDA, Python) combination in
+# cuda_wheel_matrix.json and uploads them as CI artifacts. Publishing them
+# (GitHub Release assets behind the PEP 503 index) is a separate step; see
+# issue #23.
+#
+# Design notes:
+# - The build matrix comes from `scripts/cuda_wheel_version.py --list`, so the
+#   checked-in JSON file is the single source of truth (the same script the
+#   tests validate). The workflow never hardcodes torch/CUDA versions.
+# - Each leg builds inside an nvidia/cuda devel container. No GPU runner is
+#   needed: nvcc cross-compiles, and PHILTORCH_FORCE_CUDA=1 tells setup.py to
+#   take the CUDA path without a visible GPU. It fails loudly if
+#   TORCH_CUDA_ARCH_LIST is unset (see build_support.py).
+# - `auditwheel repair --plat manylinux_2_28_x86_64` is a fail-loud
+#   conformance gate: the matrix promises manylinux_2_28, so a toolchain that
+#   outgrows it must fail here, not ship a dishonest tag.
+# - PRs build a single smoke leg (newest torch/CUDA x newest Python). The full
+#   matrix (currently 32 legs) runs on dev pushes and manual dispatches.
+
+on:
+  push:
+    branches: ["dev"]
+  pull_request:
+    branches: ["dev"]
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  resolve-matrix:
+    runs-on: ubuntu-latest
+    outputs:
+      matrix: ${{ steps.matrix.outputs.matrix }}
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Expand CUDA wheel matrix
+        id: matrix
+        env:
+          GITHUB_EVENT_NAME: ${{ github.event_name }}
+        run: |
+          pip install -q packaging
+          FULL=$(python3 scripts/cuda_wheel_version.py --list)
+          if [ "${GITHUB_EVENT_NAME}" = "pull_request" ]; then
+            MATRIX=$(python3 -c '
+          import json, sys
+          legs = json.loads(sys.argv[1])
+          newest_python = max(leg["python"] for leg in legs)
+          latest = [leg for leg in legs if leg["python"] == newest_python][-1]
+          print(json.dumps([latest]))
+          ' "$FULL")
+          else
+            MATRIX=$FULL
+          fi
+          # The matrix carries the CUDA X.Y version; the devel container needs
+          # a full X.Y.Z tag. Pinned to the newest Z verified on Docker Hub;
+          # the matrix watcher must bump these when it bumps a CUDA minor.
+          MATRIX=$(python3 -c '
+          import json, sys
+          patch = {"12.9": "12.9.1", "13.0": "13.0.3", "13.2": "13.2.1"}
+          legs = json.loads(sys.argv[1])
+          for leg in legs:
+              leg["cuda_image"] = (
+                  "nvidia/cuda:" + patch[leg["cuda"]] + "-devel-ubuntu22.04"
+              )
+          print(json.dumps(legs))
+          ' "$MATRIX")
+          echo "matrix=${MATRIX}" >> "$GITHUB_OUTPUT"
+
+  build:
+    needs: resolve-matrix
+    runs-on: ubuntu-latest
+    strategy:
+      fail-fast: false
+      matrix:
+        leg: ${{ fromJSON(needs.resolve-matrix.outputs.matrix) }}
+    container:
+      image: ${{ matrix.leg.cuda_image }}
+    steps:
+      # The workspace is mounted into the container; without this git refuses
+      # to operate on it ("detected dubious ownership").
+      - name: Mark workspace safe for git
+        run: git config --global --add safe.directory "$GITHUB_WORKSPACE"
+
+      - uses: actions/checkout@v4
+        with:
+          # Full history so setuptools_scm can derive the base version, and
+          # submodules so the vendored CUDA sources are present.
+          fetch-depth: 0
+          submodules: recursive
+
+      - name: Install Python and git
+        run: |
+          apt-get update -qq
+          DEBIAN_FRONTEND=noninteractive apt-get install -y -qq software-properties-common git
+          add-apt-repository -y ppa:deadsnakes/ppa
+          apt-get update -qq
+          DEBIAN_FRONTEND=noninteractive apt-get install -y -qq "python${{ matrix.leg.python }}-venv"
+          "python${{ matrix.leg.python }}" -m venv /opt/venv
+          /opt/venv/bin/pip install -q -U pip
+
+      - name: Install build dependencies
+        run: |
+          /opt/venv/bin/pip install -q "setuptools>=77.0.3" "setuptools_scm>=8" wheel packaging auditwheel
+          /opt/venv/bin/pip install -q "torch==${{ matrix.leg.torch }}" --index-url "${{ matrix.leg.torch_index_url }}"
+
+      - name: Compute wheel version
+        id: version
+        run: |
+          VERSION=$(/opt/venv/bin/python scripts/cuda_wheel_version.py \
+            --torch "${{ matrix.leg.torch }}" --cuda "${{ matrix.leg.cuda }}")
+          echo "version=${VERSION}" >> "$GITHUB_OUTPUT"
+
+      - name: Build wheel
+        env:
+          PHILTORCH_FORCE_CUDA: "1"
+          TORCH_CUDA_ARCH_LIST: ${{ matrix.leg.cuda_arch_list }}
+          MAX_JOBS: "4"
+          SETUPTOOLS_SCM_PRETEND_VERSION_FOR_PHILTORCH: ${{ steps.version.outputs.version }}
+        # --no-build-isolation so setup.py can `import torch`; without it the
+        # build silently produces an extension-less wheel (same reason the CPU
+        # workflow passes it to cibuildwheel).
+        run: /opt/venv/bin/pip wheel . --no-build-isolation -w wheelhouse/
+
+      - name: Repair wheel
+        run: |
+          /opt/venv/bin/python -m auditwheel repair \
+            --plat manylinux_2_28_x86_64 \
+            --exclude "libtorch*.so*" --exclude "libc10*.so*" \
+            -w repaired/ wheelhouse/*.whl
+
+      - name: Upload wheel artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: cuda-wheels-torch${{ matrix.leg.torch }}-cu${{ matrix.leg.cuda }}-py${{ matrix.leg.python }}
+          path: repaired/*.whl
