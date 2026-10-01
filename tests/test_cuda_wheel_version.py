@@ -19,6 +19,21 @@ SPEC.loader.exec_module(VERSION_SCRIPT)
 REPO_ROOT = Path(__file__).parents[1]
 MATRIX_PATH = REPO_ROOT / "cuda_wheel_matrix.json"
 
+# (torch, cuda) pairs PyTorch publishes per release, mirrored in the matrix.
+EXPECTED_BUILDS = [
+    ("2.12.1", "12.6"),
+    ("2.12.1", "12.9"),
+    ("2.12.1", "13.0"),
+    ("2.12.1", "13.2"),
+    ("2.13.0", "12.6"),
+    ("2.13.0", "12.9"),
+    ("2.13.0", "13.0"),
+    ("2.13.0", "13.2"),
+    ("2.14.1", "12.6"),
+    ("2.14.1", "13.0"),
+    ("2.14.1", "13.2"),
+]
+
 
 def _build(**fields):
     return {
@@ -45,13 +60,9 @@ def test_matrix_file_validates_against_schema():
     assert data["schema_version"] == 1
     assert data["platform"] == "manylinux_2_28_x86_64"
     assert data["python_versions"] == ["3.10", "3.11", "3.12", "3.13"]
-    # Latest patch of each of the three newest stable PyTorch minors.
-    assert [build["torch"] for build in data["builds"]] == [
-        "2.12.1",
-        "2.13.0",
-        "2.14.1",
-    ]
-    assert {build["cuda"] for build in data["builds"]} == {"13.0"}
+    # Latest patch of each of the three newest stable PyTorch minors, with one
+    # build per CUDA version PyTorch publishes for that minor.
+    assert [(build["torch"], build["cuda"]) for build in data["builds"]] == EXPECTED_BUILDS
 
 
 def test_version_label_is_deterministic_pep440():
@@ -88,10 +99,19 @@ def test_base_version_rejects_garbage():
         VERSION_SCRIPT.base_version(override="not a version!!!")
 
 
-def test_find_build_rejects_unknown_torch():
+def test_find_build_rejects_unknown_pair():
     data = VERSION_SCRIPT.validate_matrix(VERSION_SCRIPT.load_matrix(MATRIX_PATH))
     with pytest.raises(RuntimeError, match="not in the CUDA wheel matrix"):
-        VERSION_SCRIPT.find_build(data, "2.11.0")
+        VERSION_SCRIPT.find_build(data, "2.11.0", "13.0")
+    # 2.14.1 exists, but PyTorch never published it for CUDA 12.9.
+    with pytest.raises(RuntimeError, match="not in the CUDA wheel matrix"):
+        VERSION_SCRIPT.find_build(data, "2.14.1", "12.9")
+
+
+def test_find_build_returns_exact_pair():
+    data = VERSION_SCRIPT.validate_matrix(VERSION_SCRIPT.load_matrix(MATRIX_PATH))
+    build = VERSION_SCRIPT.find_build(data, "2.14.1", "13.2")
+    assert build["torch_index_url"] == "https://download.pytorch.org/whl/cu132"
 
 
 def test_validate_matrix_accepts_minimal_matrix():
@@ -142,23 +162,28 @@ def test_validate_matrix_accepts_minimal_matrix():
         # A stray "python" key inside a build would otherwise flow through **build
         # in expand_matrix and silently override the matrix's python_versions.
         pytest.param(_matrix(builds=[_build(python="3.9")]), "unknown field", id="stray-field"),
-        # find_build looks up by torch version alone, so the matrix must keep
-        # torch versions unique even across different CUDA builds.
+        # One torch release ships several CUDA builds, but a repeated
+        # (torch, CUDA) pair would emit the same wheel twice.
         pytest.param(
-            _matrix(
-                builds=[
-                    _build(),
-                    _build(cuda="12.6", torch_index_url="https://download.pytorch.org/whl/cu126"),
-                ]
-            ),
-            "duplicate torch version",
-            id="torch-dup",
+            _matrix(builds=[_build(), _build()]),
+            "duplicate torch/CUDA combination",
+            id="torch-cuda-dup",
         ),
     ],
 )
 def test_validate_matrix_rejects_bad_matrix(data, message):
     with pytest.raises(RuntimeError, match=message):
         VERSION_SCRIPT.validate_matrix(data)
+
+
+def test_validate_matrix_accepts_same_torch_different_cuda():
+    data = _matrix(
+        builds=[
+            _build(),
+            _build(cuda="12.6", torch_index_url="https://download.pytorch.org/whl/cu126"),
+        ]
+    )
+    assert len(VERSION_SCRIPT.validate_matrix(data)["builds"]) == 2
 
 
 def test_validate_matrix_rejects_non_object_build():
@@ -192,14 +217,14 @@ def test_matrix_python_versions_match_package_classifiers():
     assert VERSION_SCRIPT.load_matrix(MATRIX_PATH)["python_versions"] == classifiers
 
 
-def test_expand_matrix_covers_python_x_torch():
+def test_expand_matrix_covers_python_x_torch_cuda():
     data = VERSION_SCRIPT.validate_matrix(VERSION_SCRIPT.load_matrix(MATRIX_PATH))
     expanded = VERSION_SCRIPT.expand_matrix(data)
-    assert len(expanded) == 4 * 3
-    assert {(entry["python"], entry["torch"]) for entry in expanded} == {
-        (python, torch)
+    assert len(expanded) == 4 * len(EXPECTED_BUILDS)
+    assert {(entry["python"], entry["torch"], entry["cuda"]) for entry in expanded} == {
+        (python, torch, cuda)
         for python in ["3.10", "3.11", "3.12", "3.13"]
-        for torch in ["2.12.1", "2.13.0", "2.14.1"]
+        for torch, cuda in EXPECTED_BUILDS
     }
 
 
@@ -214,6 +239,8 @@ def test_cli_prints_version(tmp_path):
             str(matrix),
             "--torch",
             "2.14.1",
+            "--cuda",
+            "13.0",
             "--base-version",
             "0.6.0",
         ],
@@ -223,6 +250,61 @@ def test_cli_prints_version(tmp_path):
     )
     assert result.returncode == 0, result.stderr
     assert result.stdout.strip() == "0.6.0+torch2.14.1.cu130"
+
+
+def test_cli_prints_version_for_non_default_cuda(tmp_path):
+    matrix = tmp_path / "matrix.json"
+    matrix.write_text(
+        json.dumps(
+            _matrix(
+                builds=[
+                    _build(
+                        cuda="12.6",
+                        torch_index_url="https://download.pytorch.org/whl/cu126",
+                    )
+                ]
+            )
+        )
+    )
+    result = subprocess.run(
+        [
+            sys.executable,
+            str(SCRIPT),
+            "--matrix",
+            str(matrix),
+            "--torch",
+            "2.14.1",
+            "--cuda",
+            "12.6",
+            "--base-version",
+            "0.6.0",
+        ],
+        capture_output=True,
+        text=True,
+        check=False,
+    )
+    assert result.returncode == 0, result.stderr
+    assert result.stdout.strip() == "0.6.0+torch2.14.1.cu126"
+
+
+def test_cli_requires_cuda_with_torch():
+    result = subprocess.run(
+        [
+            sys.executable,
+            str(SCRIPT),
+            "--matrix",
+            str(MATRIX_PATH),
+            "--torch",
+            "2.14.1",
+            "--base-version",
+            "0.6.0",
+        ],
+        capture_output=True,
+        text=True,
+        check=False,
+    )
+    assert result.returncode != 0
+    assert "--cuda is required" in result.stderr
 
 
 def test_cli_list_prints_valid_json():
@@ -235,10 +317,10 @@ def test_cli_list_prints_valid_json():
     assert result.returncode == 0, result.stderr
     # One line, so the workflow can write it to $GITHUB_OUTPUT as matrix=<json>.
     assert result.stdout.count("\n") == 1
-    assert len(json.loads(result.stdout)) == 12
+    assert len(json.loads(result.stdout)) == 4 * len(EXPECTED_BUILDS)
 
 
-def test_cli_fails_loudly_on_unknown_torch():
+def test_cli_fails_loudly_on_unknown_pair():
     result = subprocess.run(
         [
             sys.executable,
@@ -247,6 +329,8 @@ def test_cli_fails_loudly_on_unknown_torch():
             str(MATRIX_PATH),
             "--torch",
             "1.0.0",
+            "--cuda",
+            "13.0",
             "--base-version",
             "0.6.0",
         ],

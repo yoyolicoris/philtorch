@@ -1,26 +1,74 @@
 {
   "builds": [
     {
-      "cuda": "13.0",
-      "cuda_arch_list": "7.5 8.0 8.6 9.0 10.0 12.0+PTX",
       "torch": "2.12.1",
-      "torch_index_url": "https://download.pytorch.org/whl/cu130"
+      "cuda": "12.6",
+      "torch_index_url": "https://download.pytorch.org/whl/cu126",
+      "cuda_arch_list": "7.5 8.0 8.6 9.0 10.0 12.0+PTX"
     },
     {
+      "torch": "2.12.1",
+      "cuda": "12.9",
+      "torch_index_url": "https://download.pytorch.org/whl/cu129",
+      "cuda_arch_list": "7.5 8.0 8.6 9.0 10.0 12.0+PTX"
+    },
+    {
+      "torch": "2.12.1",
       "cuda": "13.0",
-      "cuda_arch_list": "7.5 8.0 8.6 9.0 10.0 12.0+PTX",
+      "torch_index_url": "https://download.pytorch.org/whl/cu130",
+      "cuda_arch_list": "7.5 8.0 8.6 9.0 10.0 12.0+PTX"
+    },
+    {
+      "torch": "2.12.1",
+      "cuda": "13.2",
+      "torch_index_url": "https://download.pytorch.org/whl/cu132",
+      "cuda_arch_list": "7.5 8.0 8.6 9.0 10.0 12.0+PTX"
+    },
+    {
       "torch": "2.13.0",
-      "torch_index_url": "https://download.pytorch.org/whl/cu130"
+      "cuda": "12.6",
+      "torch_index_url": "https://download.pytorch.org/whl/cu126",
+      "cuda_arch_list": "7.5 8.0 8.6 9.0 10.0 12.0+PTX"
     },
     {
+      "torch": "2.13.0",
+      "cuda": "12.9",
+      "torch_index_url": "https://download.pytorch.org/whl/cu129",
+      "cuda_arch_list": "7.5 8.0 8.6 9.0 10.0 12.0+PTX"
+    },
+    {
+      "torch": "2.13.0",
       "cuda": "13.0",
-      "cuda_arch_list": "7.5 8.0 8.6 9.0 10.0 12.0+PTX",
+      "torch_index_url": "https://download.pytorch.org/whl/cu130",
+      "cuda_arch_list": "7.5 8.0 8.6 9.0 10.0 12.0+PTX"
+    },
+    {
+      "torch": "2.13.0",
+      "cuda": "13.2",
+      "torch_index_url": "https://download.pytorch.org/whl/cu132",
+      "cuda_arch_list": "7.5 8.0 8.6 9.0 10.0 12.0+PTX"
+    },
+    {
       "torch": "2.14.1",
-      "torch_index_url": "https://download.pytorch.org/whl/cu130"
+      "cuda": "12.6",
+      "torch_index_url": "https://download.pytorch.org/whl/cu126",
+      "cuda_arch_list": "7.5 8.0 8.6 9.0 10.0 12.0+PTX"
+    },
+    {
+      "torch": "2.14.1",
+      "cuda": "13.0",
+      "torch_index_url": "https://download.pytorch.org/whl/cu130",
+      "cuda_arch_list": "7.5 8.0 8.6 9.0 10.0 12.0+PTX"
+    },
+    {
+      "torch": "2.14.1",
+      "cuda": "13.2",
+      "torch_index_url": "https://download.pytorch.org/whl/cu132",
+      "cuda_arch_list": "7.5 8.0 8.6 9.0 10.0 12.0+PTX"
     }
   ],
   "platform": "manylinux_2_28_x86_64",
-  "policy": "Latest patch of each of the three newest stable PyTorch minors, with one CUDA build per minor using PyTorch's stable-default CUDA for that minor. Linux x86_64 only; PyPI remains the CPU-only channel.",
+  "policy": "Latest patch of each of the three newest stable PyTorch minors, with one build per CUDA version PyTorch publishes for that minor (mirroring download.pytorch.org). Linux x86_64 only; PyPI remains the CPU-only channel.",
   "python_versions": [
     "3.10",
     "3.11",

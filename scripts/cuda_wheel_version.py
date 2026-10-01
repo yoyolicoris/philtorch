@@ -8,7 +8,7 @@ versions in several places.
 
 Intended use in the CUDA wheel workflow::
 
-    VERSION="$(python scripts/cuda_wheel_version.py --torch 2.14.1)"
+    VERSION="$(python scripts/cuda_wheel_version.py --torch 2.14.1 --cuda 13.0)"
     SETUPTOOLS_SCM_PRETEND_VERSION_FOR_PHILTORCH="$VERSION" python -m build ...
 
 The ``_FOR_PHILTORCH`` form scopes the override to this project, so packages
@@ -105,23 +105,22 @@ def validate_matrix(data, path="<matrix>"):
                 f"{where}: 'cuda_arch_list' must be space-separated compute capabilities "
                 "like '8.6 9.0 12.0+PTX'"
             )
-        key = torch_version
+        key = (torch_version, cuda_version)
         if key in seen:
-            raise RuntimeError(
-                f"{where}: duplicate torch version {key} (one CUDA build per PyTorch version)"
-            )
+            raise RuntimeError(f"{where}: duplicate torch/CUDA combination {key}")
         seen.add(key)
     return data
 
 
-def find_build(data, torch_version):
-    """Return the matrix build entry for an exact PyTorch version."""
+def find_build(data, torch_version, cuda_version):
+    """Return the matrix build entry for an exact PyTorch/CUDA pair."""
     for build in data["builds"]:
-        if build["torch"] == torch_version:
+        if build["torch"] == torch_version and build["cuda"] == cuda_version:
             return build
-    supported = ", ".join(build["torch"] for build in data["builds"])
+    supported = ", ".join(f"{build['torch']}/cu{build['cuda']}" for build in data["builds"])
     raise RuntimeError(
-        f"torch {torch_version} is not in the CUDA wheel matrix (supported: {supported})"
+        f"torch {torch_version} with CUDA {cuda_version} is not in the CUDA wheel "
+        f"matrix (supported: {supported})"
     )
 
 
@@ -177,6 +176,11 @@ def main(argv=None):
     group.add_argument(
         "--list", action="store_true", help="print the expanded build matrix as JSON"
     )
+    parser.add_argument(
+        "--cuda",
+        default=None,
+        help="CUDA version for --torch, e.g. 13.0 (required with --torch)",
+    )
     args = parser.parse_args(argv)
 
     data = validate_matrix(load_matrix(args.matrix), args.matrix)
@@ -184,7 +188,9 @@ def main(argv=None):
         print(json.dumps(expand_matrix(data), separators=(",", ":")))
         return 0
 
-    build = find_build(data, args.torch)
+    if args.cuda is None:
+        parser.error("--cuda is required with --torch")
+    build = find_build(data, args.torch, args.cuda)
     print(
         cuda_wheel_version(base_version(override=args.base_version), build["torch"], build["cuda"])
     )
