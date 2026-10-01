@@ -2,12 +2,6 @@
   "builds": [
     {
       "torch": "2.12.1",
-      "cuda": "12.6",
-      "torch_index_url": "https://download.pytorch.org/whl/cu126",
-      "cuda_arch_list": "6.0 7.0 7.5 8.0 8.6 9.0"
-    },
-    {
-      "torch": "2.12.1",
       "cuda": "12.9",
       "torch_index_url": "https://download.pytorch.org/whl/cu129",
       "cuda_arch_list": "7.5 8.0 8.6 9.0 10.0 12.0"
@@ -26,12 +20,6 @@
     },
     {
       "torch": "2.13.0",
-      "cuda": "12.6",
-      "torch_index_url": "https://download.pytorch.org/whl/cu126",
-      "cuda_arch_list": "6.0 7.0 7.5 8.0 8.6 9.0"
-    },
-    {
-      "torch": "2.13.0",
       "cuda": "12.9",
       "torch_index_url": "https://download.pytorch.org/whl/cu129",
       "cuda_arch_list": "7.5 8.0 8.6 9.0 10.0 12.0"
@@ -47,12 +35,6 @@
       "cuda": "13.2",
       "torch_index_url": "https://download.pytorch.org/whl/cu132",
       "cuda_arch_list": "7.5 8.0 8.6 9.0 10.0 12.0"
-    },
-    {
-      "torch": "2.14.1",
-      "cuda": "12.6",
-      "torch_index_url": "https://download.pytorch.org/whl/cu126",
-      "cuda_arch_list": "6.0 7.0 7.5 8.0 8.6 9.0"
     },
     {
       "torch": "2.14.1",
@@ -68,7 +50,7 @@
     }
   ],
   "platform": "manylinux_2_28_x86_64",
-  "policy": "Latest patch of each of the three newest stable PyTorch minors, with one build per CUDA version PyTorch publishes for that minor (mirroring download.pytorch.org). cuda_arch_list mirrors the x86_64 list PyTorch's own release wheels use for that CUDA version (.ci/manywheel/build_env_setup.py), minus any architecture the CUDA sources do not build for unchanged: 5.0 is dropped for CUDA 12.6 because the vendored torchlpc kernel needs double atomicAdd (6.0+). Linux x86_64 only; PyPI remains the CPU-only channel.",
+  "policy": "Latest patch of each of the three newest stable PyTorch minors, with one build per CUDA version PyTorch publishes for that minor (mirroring download.pytorch.org), except CUDA versions the CUDA sources don't build with unchanged: 12.6 is skipped because its Thrust keeps thrust::tuple separate from cuda::std::tuple. cuda_arch_list mirrors the x86_64 list PyTorch's own release wheels use for that CUDA version (.ci/manywheel/build_env_setup.py). Linux x86_64 only; PyPI remains the CPU-only channel.",
   "python_versions": [
     "3.10",
     "3.11",

@@ -44,24 +44,31 @@ _ARCH_RE = re.compile(r"(\d+)\.(\d+)a?(\+PTX)?")
 
 _BUILD_FIELDS = frozenset({"torch", "cuda", "torch_index_url", "cuda_arch_list"})
 
+# Oldest CUDA the CUDA sources build with unchanged. recur2.cuh treats
+# thrust::tuple and cuda::std::tuple as one type; CUDA 12.6 keeps them
+# separate, so it fails to compile there. 12.9 is the oldest verified to work.
+_MIN_CUDA = (12, 9)
+
 
 def _cuda_tag(cuda_version):
     return "cu" + cuda_version.replace(".", "")
 
 
+def _cuda_tuple(cuda_version):
+    return tuple(int(part) for part in cuda_version.split("."))
+
+
 def _arch_support_error(cuda_version, arch_list):
     """Return why nvcc for ``cuda_version`` cannot build ``arch_list``, or None.
 
-    Only the two limits an arch list copied between CUDA versions would hit:
-    Blackwell (10.x and up) needs CUDA 12.8, and CUDA 13 dropped everything
-    older than Turing (7.5).
+    CUDA 13 dropped everything older than Turing (7.5), which an arch list
+    copied from a CUDA 12 build would still contain.
     """
-    cuda = tuple(int(part) for part in cuda_version.split("."))
+    if _cuda_tuple(cuda_version) < (13, 0):
+        return None
     for arch in arch_list.split():
         major, minor = (int(part) for part in _ARCH_RE.fullmatch(arch).group(1, 2))
-        if major >= 10 and cuda < (12, 8):
-            return f"{arch} needs CUDA 12.8 or newer"
-        if (major, minor) < (7, 5) and cuda >= (13, 0):
+        if (major, minor) < (7, 5):
             return f"CUDA 13 dropped {arch}"
     return None
 
@@ -112,6 +119,11 @@ def validate_matrix(data, path="<matrix>"):
             raise RuntimeError(f"{where}: 'torch' must be an exact X.Y.Z version")
         if not isinstance(cuda_version, str) or not _CUDA_RE.fullmatch(cuda_version):
             raise RuntimeError(f"{where}: 'cuda' must be an X.Y version")
+        if _cuda_tuple(cuda_version) < _MIN_CUDA:
+            raise RuntimeError(
+                f"{where}: CUDA {cuda_version} is older than "
+                f"{'.'.join(map(str, _MIN_CUDA))}, the oldest the CUDA sources build with"
+            )
         index_url = build.get("torch_index_url")
         cuda_tag = _cuda_tag(cuda_version)
         if not isinstance(index_url, str) or not index_url.endswith("/" + cuda_tag):
