@@ -32,9 +32,17 @@ def file_sha256(path: Path) -> str:
 
 def wheel_project_name(filename: str) -> str:
     """Read the escaped distribution component from a wheel filename."""
-    if not filename.endswith(".whl") or "-" not in filename:
+    # {name}-{version}(-{build})?-{python}-{abi}-{platform}.whl; a build tag
+    # starts with a digit.
+    parts = filename.removesuffix(".whl").split("-")
+    if (
+        not filename.endswith(".whl")
+        or len(parts) not in (5, 6)
+        or not all(parts)
+        or (len(parts) == 6 and not parts[2][0].isdigit())
+    ):
         raise ValueError(f"not a wheel filename: {filename}")
-    return normalize_project_name(filename.split("-", 1)[0])
+    return normalize_project_name(parts[0])
 
 
 def _add_wheel(wheels: dict[str, tuple[Path, str]], path: Path, project: str) -> None:
@@ -83,6 +91,10 @@ def _root_page(project: str) -> str:
     return (
         "<!DOCTYPE html>\n"
         '<html lang="en">\n'
+        "  <head>\n"
+        '    <meta name="pypi:repository-version" content="1.0">\n'
+        "    <title>Simple index</title>\n"
+        "  </head>\n"
         "  <body>\n"
         f'    <a href="{quote(project)}/">{html.escape(project)}</a>\n'
         "  </body>\n"
@@ -93,7 +105,7 @@ def _root_page(project: str) -> str:
 def generate_index(project: str, wheel_paths: Iterable[Path], output: Path) -> None:
     """Copy wheels into ``output/simple`` and generate deterministic index pages."""
     project = normalize_project_name(project)
-    if not _VALID_PROJECT_NAME.match(project):
+    if not _VALID_PROJECT_NAME.fullmatch(project):
         raise ValueError(f"invalid project name: {project}")
     package_dir = output.resolve() / "simple" / project
     wheels: dict[str, tuple[Path, str]] = {}
@@ -108,9 +120,8 @@ def generate_index(project: str, wheel_paths: Iterable[Path], output: Path) -> N
     package_dir.mkdir(parents=True, exist_ok=True)
     for filename, (source, digest) in sorted(wheels.items()):
         destination = package_dir / filename
+        # Existing wheels were all hashed and checked for conflicts above.
         if destination.exists():
-            if file_sha256(destination) != digest:
-                raise ValueError(f"conflicting duplicate wheel filename: {filename}")
             continue
         temporary = destination.with_suffix(destination.suffix + ".tmp")
         try:
@@ -142,10 +153,13 @@ def main() -> None:
     parser.add_argument("--output", required=True, type=Path)
     parser.add_argument("--project", default="philtorch")
     arguments = parser.parse_args()
-    try:
-        generate_index(
-            arguments.project, _expand_inputs(arguments.wheels), arguments.output
+    wheels = _expand_inputs(arguments.wheels)
+    if not wheels:
+        parser.error(
+            "no wheel files found in: " + ", ".join(map(str, arguments.wheels))
         )
+    try:
+        generate_index(arguments.project, wheels, arguments.output)
     except (OSError, ValueError) as error:
         parser.error(str(error))
 
