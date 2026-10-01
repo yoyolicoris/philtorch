@@ -33,6 +33,15 @@ EXPECTED_BUILDS = [
     ("2.14.1", "13.0"),
     ("2.14.1", "13.2"),
 ]
+# PyTorch's x86_64 release arch lists (.ci/manywheel/build_env_setup.py), minus
+# architectures the sources don't build for unchanged: 5.0 for CUDA 12.6,
+# because torchlpc needs double atomicAdd (sm_60+).
+EXPECTED_ARCHS = {
+    "12.6": "6.0 7.0 7.5 8.0 8.6 9.0",
+    "12.9": "7.5 8.0 8.6 9.0 10.0 12.0",
+    "13.0": "7.5 8.0 8.6 9.0 10.0 12.0",
+    "13.2": "7.5 8.0 8.6 9.0 10.0 12.0",
+}
 
 
 def _build(**fields):
@@ -40,7 +49,8 @@ def _build(**fields):
         "torch": "2.14.1",
         "cuda": "13.0",
         "torch_index_url": "https://download.pytorch.org/whl/cu130",
-        "cuda_arch_list": "8.0 12.0+PTX",
+        # Valid for every CUDA version, so tests can change "cuda" alone.
+        "cuda_arch_list": "8.0 9.0+PTX",
         **fields,
     }
 
@@ -63,6 +73,8 @@ def test_matrix_file_validates_against_schema():
     # Latest patch of each of the three newest stable PyTorch minors, with one
     # build per CUDA version PyTorch publishes for that minor.
     assert [(build["torch"], build["cuda"]) for build in data["builds"]] == EXPECTED_BUILDS
+    for build in data["builds"]:
+        assert build["cuda_arch_list"] == EXPECTED_ARCHS[build["cuda"]], build
 
 
 def test_version_label_is_deterministic_pep440():
@@ -104,7 +116,7 @@ def test_find_build_rejects_unknown_pair():
     with pytest.raises(RuntimeError, match="not in the CUDA wheel matrix"):
         VERSION_SCRIPT.find_build(data, "2.11.0", "13.0")
     # 2.14.1 exists, but PyTorch never published it for CUDA 12.9.
-    with pytest.raises(RuntimeError, match="not in the CUDA wheel matrix"):
+    with pytest.raises(RuntimeError, match=r"supported: .*2\.14\.1\+cu130"):
         VERSION_SCRIPT.find_build(data, "2.14.1", "12.9")
 
 
@@ -158,6 +170,24 @@ def test_validate_matrix_accepts_minimal_matrix():
             _matrix(builds=[_build(cuda_arch_list="8.0;9.0")]),
             "'cuda_arch_list' must be",
             id="semicolon-arch",
+        ),
+        pytest.param(
+            _matrix(
+                builds=[
+                    _build(
+                        cuda="12.6",
+                        torch_index_url="https://download.pytorch.org/whl/cu126",
+                        cuda_arch_list="9.0 10.0",
+                    )
+                ]
+            ),
+            "10.0 needs CUDA 12.8",
+            id="arch-too-new-for-cuda",
+        ),
+        pytest.param(
+            _matrix(builds=[_build(cuda_arch_list="7.0 8.0")]),
+            "CUDA 13 dropped 7.0",
+            id="arch-dropped-by-cuda",
         ),
         # A stray "python" key inside a build would otherwise flow through **build
         # in expand_matrix and silently override the matrix's python_versions.

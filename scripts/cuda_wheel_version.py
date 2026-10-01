@@ -40,9 +40,30 @@ _PYTHON_RE = re.compile(r"\d+\.\d+")
 # One TORCH_CUDA_ARCH_LIST entry, e.g. "8.6", "9.0a" or "12.0+PTX". "native"
 # needs a visible GPU (see build_support.py), and named architectures such as
 # "Ampere" hide what is built, so only explicit compute capabilities pass.
-_ARCH_RE = re.compile(r"\d+\.\d+a?(\+PTX)?")
+_ARCH_RE = re.compile(r"(\d+)\.(\d+)a?(\+PTX)?")
 
 _BUILD_FIELDS = frozenset({"torch", "cuda", "torch_index_url", "cuda_arch_list"})
+
+
+def _cuda_tag(cuda_version):
+    return "cu" + cuda_version.replace(".", "")
+
+
+def _arch_support_error(cuda_version, arch_list):
+    """Return why nvcc for ``cuda_version`` cannot build ``arch_list``, or None.
+
+    Only the two limits an arch list copied between CUDA versions would hit:
+    Blackwell (10.x and up) needs CUDA 12.8, and CUDA 13 dropped everything
+    older than Turing (7.5).
+    """
+    cuda = tuple(int(part) for part in cuda_version.split("."))
+    for arch in arch_list.split():
+        major, minor = (int(part) for part in _ARCH_RE.fullmatch(arch).group(1, 2))
+        if major >= 10 and cuda < (12, 8):
+            return f"{arch} needs CUDA 12.8 or newer"
+        if (major, minor) < (7, 5) and cuda >= (13, 0):
+            return f"CUDA 13 dropped {arch}"
+    return None
 
 
 def load_matrix(path):
@@ -92,7 +113,7 @@ def validate_matrix(data, path="<matrix>"):
         if not isinstance(cuda_version, str) or not _CUDA_RE.fullmatch(cuda_version):
             raise RuntimeError(f"{where}: 'cuda' must be an X.Y version")
         index_url = build.get("torch_index_url")
-        cuda_tag = "cu" + cuda_version.replace(".", "")
+        cuda_tag = _cuda_tag(cuda_version)
         if not isinstance(index_url, str) or not index_url.endswith("/" + cuda_tag):
             raise RuntimeError(f"{where}: 'torch_index_url' must end with '/{cuda_tag}'")
         arch_list = build.get("cuda_arch_list")
@@ -105,6 +126,9 @@ def validate_matrix(data, path="<matrix>"):
                 f"{where}: 'cuda_arch_list' must be space-separated compute capabilities "
                 "like '8.6 9.0 12.0+PTX'"
             )
+        arch_error = _arch_support_error(cuda_version, arch_list)
+        if arch_error:
+            raise RuntimeError(f"{where}: 'cuda_arch_list': {arch_error}")
         key = (torch_version, cuda_version)
         if key in seen:
             raise RuntimeError(f"{where}: duplicate torch/CUDA combination {key}")
@@ -117,7 +141,9 @@ def find_build(data, torch_version, cuda_version):
     for build in data["builds"]:
         if build["torch"] == torch_version and build["cuda"] == cuda_version:
             return build
-    supported = ", ".join(f"{build['torch']}/cu{build['cuda']}" for build in data["builds"])
+    supported = ", ".join(
+        f"{build['torch']}+{_cuda_tag(build['cuda'])}" for build in data["builds"]
+    )
     raise RuntimeError(
         f"torch {torch_version} with CUDA {cuda_version} is not in the CUDA wheel "
         f"matrix (supported: {supported})"
@@ -141,8 +167,7 @@ def base_version(root=REPO_ROOT, override=None):
 
 def cuda_wheel_version(base, torch_version, cuda_version):
     """Build ``{base}+torch{X.Y.Z}.cu{NNN}`` and prove it is valid, deterministic PEP 440."""
-    cuda_tag = "cu" + cuda_version.replace(".", "")
-    label = f"torch{torch_version}.{cuda_tag}"
+    label = f"torch{torch_version}.{_cuda_tag(cuda_version)}"
     version = f"{base}+{label}"
     parsed = Version(version)
     # A version holds at most one "+", so a round trip also proves that the
