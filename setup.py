@@ -1,12 +1,13 @@
+import glob
+import os
+import subprocess
+import sys
+
 from setuptools import setup
 
 # build_support.py sits next to setup.py; the setuptools.build_meta:__legacy__
 # backend puts this directory on sys.path, which this import relies on.
 from build_support import resolve_cuda_build
-import os
-import glob
-import subprocess
-import sys
 
 library_name = "philtorch"
 
@@ -47,8 +48,7 @@ def get_macos_openmp_config(extra_compile_args, extra_link_args, torch_lib):
     missing_paths = [path for path in required_paths if not os.path.isfile(path)]
     if missing_paths:
         raise RuntimeError(
-            "macOS OpenMP build dependencies are incomplete; missing: "
-            + ", ".join(missing_paths)
+            "macOS OpenMP build dependencies are incomplete; missing: " + ", ".join(missing_paths)
         )
 
     configured_compile_args = {
@@ -66,9 +66,9 @@ def get_macos_openmp_config(extra_compile_args, extra_link_args, torch_lib):
 def get_extensions():
     import torch
     from torch.utils.cpp_extension import (
+        CUDA_HOME,
         CppExtension,
         CUDAExtension,
-        CUDA_HOME,
     )
 
     use_cuda = resolve_cuda_build(
@@ -118,39 +118,28 @@ def get_extensions():
     cuda_sources = list(glob.glob(os.path.join(extensions_dir, "*.cu")))
     if use_cuda and not cuda_sources:
         raise RuntimeError(
-            "CUDA compilation was selected, but no .cu sources were found in "
-            f"{extensions_dir}."
+            f"CUDA compilation was selected, but no .cu sources were found in {extensions_dir}."
         )
 
-    torchlpc_root = os.path.join(
-        this_dir, "third_party", "torchlpc", "torchlpc", "csrc"
-    )
+    torchlpc_root = os.path.join(this_dir, "third_party", "torchlpc", "torchlpc", "csrc")
     torchlpc_sources = [
-        os.path.join(torchlpc_root, "cuda", name)
-        for name in ("lpc.cu", "linear_recurrence.cu")
+        os.path.join(torchlpc_root, "cuda", name) for name in ("lpc.cu", "linear_recurrence.cu")
     ]
     pararnn_root = os.path.join(this_dir, "third_party", "pararnn", "pararnn", "csrc")
     pararnn_sources = [os.path.join(pararnn_root, "parallel_reduce.cu")]
 
     if use_cuda:
         vendored_sources = [*torchlpc_sources, *pararnn_sources]
-        missing_sources = [
-            path for path in vendored_sources if not os.path.isfile(path)
-        ]
+        missing_sources = [path for path in vendored_sources if not os.path.isfile(path)]
         if missing_sources:
-            relative_paths = [
-                os.path.relpath(path, this_dir) for path in missing_sources
-            ]
+            relative_paths = [os.path.relpath(path, this_dir) for path in missing_sources]
             raise RuntimeError(
                 "CUDA builds require initialized third-party submodules. Run "
-                "'git submodule update --init --recursive'. Missing: "
-                + ", ".join(relative_paths)
+                "'git submodule update --init --recursive'. Missing: " + ", ".join(relative_paths)
             )
 
         extra_compile_args.setdefault("cxx", []).append(f"-I{torchlpc_root}")
-        extra_compile_args.setdefault("cxx", []).append(
-            f"-I{os.path.join(torchlpc_root, 'cuda')}"
-        )
+        extra_compile_args.setdefault("cxx", []).append(f"-I{os.path.join(torchlpc_root, 'cuda')}")
         extra_compile_args.setdefault("cxx", []).append(f"-I{pararnn_root}")
         extra_compile_args.setdefault("cxx", []).extend(
             ["-DFLOAT64_CHUNK_SIZE_DIAG=4", "-DFLOAT64_CHUNK_SIZE_BLOCK_DIAG_2x2=1"]

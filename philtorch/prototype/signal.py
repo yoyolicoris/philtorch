@@ -1,17 +1,14 @@
 import torch
 from torch import Tensor
-from typing import Optional
-from functools import reduce
-from itertools import chain, starmap
 
-from .poly import roots, polydiv, polymul, polyval, polysub, polysmul, polyder, polyadd
+from .poly import polyder, polydiv, polymul, polysmul, polysub, polyval, roots
 
 
 def unique_roots(
     p: Tensor,
     tol: float = 1e-3,
     rtype: str = "min",
-    is_complex: Optional[Tensor] = None,
+    is_complex: Tensor | None = None,
 ) -> tuple[Tensor, Tensor, Tensor]:
     """Determine unique roots and their multiplicities from a list of roots."""
     match rtype:
@@ -23,8 +20,7 @@ def unique_roots(
             reduction = torch.mean
         case _:
             raise ValueError(
-                "`rtype` must be one of "
-                "{'max', 'maximum', 'min', 'minimum', 'avg', 'mean'}"
+                "`rtype` must be one of {'max', 'maximum', 'min', 'minimum', 'avg', 'mean'}"
             )
 
     assert p.is_complex(), "Input must be complex array."
@@ -107,9 +103,9 @@ def residue(
     b: Tensor, a: Tensor, tol: float = 1e-3, rtype: str = "avg"
 ) -> tuple[Tensor, Tensor, Tensor]:
     """Compute partial-fraction expansion of b(s) / a(s)."""
-    assert (
-        b.is_floating_point() and a.is_floating_point()
-    ), "Residue function only supports floating point types."
+    assert b.is_floating_point() and a.is_floating_point(), (
+        "Residue function only supports floating point types."
+    )
     assert b.ndim == 1 and a.ndim == 1, "Input must be rank-1 arrays."
     assert b.numel() > 0 and a.numel() > 0, "Input must be non-empty arrays."
 
@@ -126,9 +122,7 @@ def residue(
     multiplicity = multiplicity[order]
 
     residues = _compute_residues(unique_poles, multiplicity, b)
-    poles = torch.stack(
-        sum([[pole] * mult for pole, mult in zip(unique_poles, multiplicity)], [])
-    )
+    poles = torch.stack(sum([[pole] * mult for pole, mult in zip(unique_poles, multiplicity)], []))
     return residues / a[0], poles, k
 
 
@@ -136,9 +130,9 @@ def residuez(
     b: Tensor, a: Tensor, tol: float = 1e-3, rtype: str = "avg"
 ) -> tuple[Tensor, Tensor, Tensor]:
     """Compute partial-fraction expansion of b(z) / a(z)."""
-    assert (
-        b.is_floating_point() and a.is_floating_point()
-    ), "Residue function only supports floating point types."
+    assert b.is_floating_point() and a.is_floating_point(), (
+        "Residue function only supports floating point types."
+    )
     assert b.ndim == 1 and a.ndim == 1, "Input must be rank-1 arrays."
     assert b.numel() > 0 and a.numel() > 0, "Input must be non-empty arrays."
 
@@ -159,9 +153,7 @@ def residuez(
 
     residues = _compute_residues(unique_poles.reciprocal(), multiplicity, b_rev)
 
-    poles = torch.stack(
-        sum([[pole] * mult for pole, mult in zip(unique_poles, multiplicity)], [])
-    )
+    poles = torch.stack(sum([[pole] * mult for pole, mult in zip(unique_poles, multiplicity)], []))
     powers = torch.concat([torch.arange(0, mult) + 1 for mult in multiplicity])
 
     residues = residues * (-poles) ** powers / a_rev[0]
@@ -183,7 +175,9 @@ def sos2pfe(
     b = b[:, 1:] / b[:, :1]
     a = a[:, 1:] / a[:, :1]
 
-    expsumlog = lambda x: x.log().sum(dim=-1).exp()
+    def expsumlog(x):
+        return x.log().sum(dim=-1).exp()
+
     G0 = expsumlog(k0)
 
     a1, a2 = a[:, 0], a[:, 1]
@@ -226,8 +220,7 @@ def sos2pfe(
         mask[range(len(non_repeated_poles)), torch.where(~repeated_mask)[0]] = True
 
         denominator_val = expsumlog(
-            (non_repeated_poles[:, None] - unique_poles)
-            ** torch.where(mask, 0, multiplicity)
+            (non_repeated_poles[:, None] - unique_poles) ** torch.where(mask, 0, multiplicity)
         )
         non_repeated_residues = numerator_val / denominator_val
 
@@ -260,9 +253,7 @@ def sos2pfe(
         for i in range(len(repeated_poles)):
             pole = repeated_poles[i]
             repeats = multiplicity[repeated_mask][i]
-            divided_denominator = (
-                lambda x: polysmul(*x) if len(x) > 0 else pole.new_ones(1)
-            )(
+            divided_denominator = (lambda x: polysmul(*x) if len(x) > 0 else pole.new_ones(1))(
                 sum(
                     map(
                         lambda x: [x[0]] * x[1],
@@ -321,10 +312,7 @@ def sos2pfe(
             (
                 torch.stack(
                     sum(
-                        [
-                            repeated_residues[i]
-                            for i in torch.where(sub_complex_mask)[0]
-                        ],
+                        [repeated_residues[i] for i in torch.where(sub_complex_mask)[0]],
                         [],
                     )
                 )

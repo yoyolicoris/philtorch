@@ -1,0 +1,25 @@
+name: Lint
+
+on:
+  push:
+  pull_request:
+  workflow_call:
+
+jobs:
+  lint:
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+    steps:
+      - uses: actions/checkout@v4
+      - uses: astral-sh/ruff-action@v3
+        with:
+          # Keep in sync with ruff in pixi.toml.
+          version: "0.16.9"
+          args: "--version"
+      - name: Lint
+        run: ruff check
+      - name: Check formatting
+        # Run even if linting failed, so both problems are reported at once.
+        if: ${{ !cancelled() }}
+        run: ruff format --check

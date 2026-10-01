@@ -78,5 +78,12 @@ source_pkgs = ["philtorch"]
 # editable checkout, so map both locations to the same source for reporting.
 source = ["philtorch/", "*/site-packages/philtorch/"]
 
-[tool.black]
-target-version = ["py310"]
+[tool.ruff]
+# CI and pixi pin 0.16.9; formatting style can change between minor releases.
+required-version = ">=0.16,<0.17"
+line-length = 100
+target-version = "py310"
+extend-exclude = ["third_party"]
+
+[tool.ruff.lint]
+select = ["E", "F", "W", "I", "UP"]

@@ -1,5 +1,5 @@
+from collections.abc import Callable
 from functools import reduce
-from typing import Callable
 
 
 def chain_functions(*functions: Callable) -> Callable:

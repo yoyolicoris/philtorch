@@ -46,9 +46,7 @@ def profile_cpu_peak(function):
     for event in profiler.events():
         memory_change = event.self_cpu_memory_usage
         if memory_change:
-            timestamp = (
-                event.time_range.start if memory_change > 0 else event.time_range.end
-            )
+            timestamp = event.time_range.start if memory_change > 0 else event.time_range.end
             memory_changes.append((timestamp, memory_change))
 
     current = 0
@@ -117,8 +115,11 @@ def main():
         x_cpu = torch.randn(batch, steps)
         mps_inputs = tuple(value.to("mps") for value in (a_cpu, zi_cpu, x_cpu))
 
-        cpu_function = lambda: torch.ops.philtorch.lti_recur(a_cpu, zi_cpu, x_cpu)
-        mps_function = lambda: torch.ops.philtorch.lti_recur(*mps_inputs)
+        def cpu_function():
+            return torch.ops.philtorch.lti_recur(a_cpu, zi_cpu, x_cpu)
+
+        def mps_function():
+            return torch.ops.philtorch.lti_recur(*mps_inputs)
 
         expected = cpu_function()
         actual = mps_function().cpu()

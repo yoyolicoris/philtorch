@@ -1,6 +1,6 @@
 """Lightweight vendor shim for torchlpc ops."""
 
-from typing import Any, List
+from typing import Any
 
 import torch
 import torch.nn.functional as F
@@ -15,7 +15,7 @@ class AllPole(Function):
         return torch.ops.philtorch.lpc(x, A, zi)
 
     @staticmethod
-    def setup_context(ctx: Any, inputs: List[Any], output: Any) -> Any:
+    def setup_context(ctx: Any, inputs: list[Any], output: Any) -> Any:
         _, A, zi = inputs
         y = output
         ctx.save_for_backward(A, zi, y)
@@ -64,9 +64,7 @@ class AllPole(Function):
         fwd_zi = grad_zi if grad_zi is not None else torch.zeros_like(zi)
         fwd_x = grad_x if grad_x is not None else torch.zeros_like(y)
         if grad_A is not None:
-            unfolded_y = (
-                torch.cat([zi.flip(1), y[:, :-1]], dim=1).unfold(1, order, 1).flip(2)
-            )
+            unfolded_y = torch.cat([zi.flip(1), y[:, :-1]], dim=1).unfold(1, order, 1).flip(2)
             fwd_x = fwd_x - torch.sum(unfolded_y * grad_A, dim=2)
         return AllPole.apply(fwd_x, A, fwd_zi)
 
@@ -89,13 +87,11 @@ class AllPole(Function):
 
 class ScanRecurrence(Function):
     @staticmethod
-    def forward(
-        impulse: torch.Tensor, decay: torch.Tensor, init: torch.Tensor
-    ) -> torch.Tensor:
+    def forward(impulse: torch.Tensor, decay: torch.Tensor, init: torch.Tensor) -> torch.Tensor:
         return torch.ops.philtorch.scan(impulse, decay, init)
 
     @staticmethod
-    def setup_context(ctx: Any, inputs: List[Any], output: Any) -> Any:
+    def setup_context(ctx: Any, inputs: list[Any], output: Any) -> Any:
         impulse, decay, init = inputs
         ctx.save_for_backward(decay, init, output)
         ctx.save_for_forward(decay, init, output)
@@ -137,10 +133,7 @@ class ScanRecurrence(Function):
         fwd_init = grad_init if grad_init is not None else torch.zeros_like(init)
         fwd_imp = grad_impulse if grad_impulse is not None else torch.zeros_like(out)
         if grad_decay is not None:
-            fwd_imp = (
-                fwd_imp
-                + torch.cat([init.unsqueeze(1), out[:, :-1]], dim=1) * grad_decay
-            )
+            fwd_imp = fwd_imp + torch.cat([init.unsqueeze(1), out[:, :-1]], dim=1) * grad_decay
         return ScanRecurrence.apply(fwd_imp, decay, fwd_init)
 
     @staticmethod
@@ -170,9 +163,7 @@ def lpc(x: torch.Tensor, A: torch.Tensor, zi: torch.Tensor) -> torch.Tensor:
     return AllPole.apply(x, A, zi)
 
 
-def scan(
-    impulse: torch.Tensor, decay: torch.Tensor, init: torch.Tensor
-) -> torch.Tensor:
+def scan(impulse: torch.Tensor, decay: torch.Tensor, init: torch.Tensor) -> torch.Tensor:
     if torch.compiler.is_compiling():
         return torch.ops.philtorch.scan(impulse, decay, init)
     return ScanRecurrence.apply(impulse, decay, init)

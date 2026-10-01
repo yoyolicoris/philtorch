@@ -1,11 +1,9 @@
+from itertools import accumulate
+
 import torch
 import torch.nn.functional as F
-from torch import Tensor
-from typing import Any, Optional
-
 from sympy.ntheory import factorint
-from itertools import accumulate
-import math
+from torch import Tensor
 
 
 def exp_state_space_recursion(
@@ -14,7 +12,7 @@ def exp_state_space_recursion(
     x: Tensor,
     *,
     unroll_factor: int = 1,
-    out_idx: Optional[int] = None,
+    out_idx: int | None = None,
 ) -> Tensor:
     """Compute internal state evolution for an LTI model.
 
@@ -37,29 +35,28 @@ def exp_state_space_recursion(
     assert A.dim() in (2, 3), f"State matrix A must be 2D or 3D, got {A.shape}"
     assert A.size(-2) == A.size(-1), f"State matrix A must be square, got {A.shape}"
     if A.dim() == 3:
-        assert x.size(0) == A.size(
-            0
-        ), f"Batch size of A must match batch size of x, got A: {A.size(0)}, x: {x.size(0)}"
+        assert x.size(0) == A.size(0), (
+            f"Batch size of A must match batch size of x, got A: {A.size(0)}, x: {x.size(0)}"
+        )
 
     if x.dim() == 3:
-        assert A.size(-1) == x.size(
-            -1
-        ), f"Last dimension of A must match last dimension of x, got A: {A.size(-1)}, x: {x.size(-1)}"
+        assert A.size(-1) == x.size(-1), (
+            f"Last dimension of A must match last dimension of x, "
+            f"got A: {A.size(-1)}, x: {x.size(-1)}"
+        )
 
     batch_size, N = x.size(0), x.size(1)
     M = A.size(-1)
     assert zi.dim() == 2, f"Initial conditions zi must be 2D, got {zi.shape}"
-    assert (
-        zi.size(0) == batch_size
-    ), f"Batch size of zi must match batch size of x, got zi: {zi.size(0)}, x: {batch_size}"
-    assert (
-        zi.size(1) == M
-    ), f"Last dimension of zi must match last dimension of A, got zi: {zi.size(1)}, A: {M}"
+    assert zi.size(0) == batch_size, (
+        f"Batch size of zi must match batch size of x, got zi: {zi.size(0)}, x: {batch_size}"
+    )
+    assert zi.size(1) == M, (
+        f"Last dimension of zi must match last dimension of A, got zi: {zi.size(1)}, A: {M}"
+    )
 
     if x.dim() == 2:
-        x = torch.cat(
-            [x.unsqueeze(-1), x.new_zeros(*x.shape, M - 1)], dim=-1
-        )  # (batch, time, M)
+        x = torch.cat([x.unsqueeze(-1), x.new_zeros(*x.shape, M - 1)], dim=-1)  # (batch, time, M)
     # x = torch.cat([zi.unsqueeze(1), x], dim=1)  # prepend zi to the input sequence
     # N += 1  # account for the prepended zi
 

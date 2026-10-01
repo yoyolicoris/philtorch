@@ -1,6 +1,7 @@
-import torch
 import pytest
+import torch
 from torch._higher_order_ops import scan
+
 from philtorch.prototype.nl import newton_solve
 
 
@@ -23,9 +24,7 @@ def fprime(gprev, x, at, rt):
         "cpu",
         pytest.param(
             "cuda",
-            marks=pytest.mark.skipif(
-                not torch.cuda.is_available(), reason="CUDA not available"
-            ),
+            marks=pytest.mark.skipif(not torch.cuda.is_available(), reason="CUDA not available"),
         ),
     ],
 )
@@ -44,9 +43,7 @@ def test_newton_solve(use_fprime: bool, device: str):
         init=init,
         atol=1e-8,
         rtol=1e-6,
-        fprime=(
-            (lambda gprev, x: fprime(gprev, x, at=at, rt=rt)) if use_fprime else None
-        ),
+        fprime=((lambda gprev, x: fprime(gprev, x, at=at, rt=rt)) if use_fprime else None),
     )
 
     target = scan(

@@ -8,8 +8,8 @@ import hashlib
 import html
 import re
 import shutil
+from collections.abc import Iterable
 from pathlib import Path
-from typing import Iterable
 from urllib.parse import quote
 
 _NORMALIZE_PATTERN = re.compile(r"[-_.]+")
@@ -161,9 +161,7 @@ def main() -> None:
     arguments = parser.parse_args()
     wheels = _expand_inputs(arguments.wheels)
     if not wheels:
-        parser.error(
-            "no wheel files found in: " + ", ".join(map(str, arguments.wheels))
-        )
+        parser.error("no wheel files found in: " + ", ".join(map(str, arguments.wheels)))
     try:
         generate_index(arguments.project, wheels, arguments.output)
     except (OSError, ValueError) as error:

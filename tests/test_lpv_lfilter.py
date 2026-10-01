@@ -1,12 +1,14 @@
-import pytest
-import numpy as np
-import torch
-from scipy import signal
 from itertools import chain
 from unittest.mock import Mock
 
+import numpy as np
+import pytest
+import torch
+from scipy import signal
+
 import philtorch.lpv.filtering as lpv_filtering
 from philtorch.lpv import lfilter
+
 from .test_lti_lfilter import (
     _generate_random_filter_coeffs,
     _generate_random_signal,
@@ -24,9 +26,7 @@ from .test_lti_lfilter import (
         zip(["df2", "df1", "tdf1"], ["torchlpc"] * 3),
     ),
 )
-def test_against_lti_scipy(
-    B: int, T: int, num_order: int, den_order: int, form: str, backend: str
-):
+def test_against_lti_scipy(B: int, T: int, num_order: int, den_order: int, form: str, backend: str):
     """Test time-invariant filters against scipy.signal.lfilter"""
 
     # Generate test data
@@ -53,14 +53,10 @@ def test_against_lti_scipy(
     )
 
     # Compare outputs
-    assert np.allclose(y_torch.numpy(), y_scipy), np.max(
-        np.abs(y_torch.numpy() - y_scipy)
-    )
+    assert np.allclose(y_torch.numpy(), y_scipy), np.max(np.abs(y_torch.numpy() - y_scipy))
 
 
-@pytest.mark.parametrize(
-    ("backend", "expected_form"), [("ssm", "tdf2"), ("torchlpc", "df2")]
-)
+@pytest.mark.parametrize(("backend", "expected_form"), [("ssm", "tdf2"), ("torchlpc", "df2")])
 def test_backend_default_form(backend: str, expected_form: str):
     batch_size, time_steps, order = 2, 17, 2
     b = torch.randn(batch_size, time_steps, order + 1).double()
@@ -121,9 +117,5 @@ def test_tdf2_zi(num_order: int, den_order: int):
     y_scipy = np.stack(y_scipy, axis=0)
     zf_scipy = np.stack(zf_scipy, axis=0)
     # Compare outputs
-    assert np.allclose(y_torch.numpy(), y_scipy), np.max(
-        np.abs(y_torch.numpy() - y_scipy)
-    )
-    assert np.allclose(zf_torch.numpy(), zf_scipy), np.max(
-        np.abs(zf_torch.numpy() - zf_scipy)
-    )
+    assert np.allclose(y_torch.numpy(), y_scipy), np.max(np.abs(y_torch.numpy() - y_scipy))
+    assert np.allclose(zf_torch.numpy(), zf_scipy), np.max(np.abs(zf_torch.numpy() - zf_scipy))

@@ -3,7 +3,7 @@ import torch
 from scipy.interpolate import CubicSpline
 from scipy.signal import cspline1d, cspline1d_eval
 
-from philtorch.lti.interp import cubic_spline, cspline
+from philtorch.lti.interp import cspline, cubic_spline
 
 
 @pytest.mark.parametrize("n", [20, 100])
@@ -14,9 +14,7 @@ from philtorch.lti.interp import cubic_spline, cspline
         "cpu",
         pytest.param(
             "cuda",
-            marks=pytest.mark.skipif(
-                not torch.cuda.is_available(), reason="CUDA not available"
-            ),
+            marks=pytest.mark.skipif(not torch.cuda.is_available(), reason="CUDA not available"),
         ),
     ],
 )
@@ -40,9 +38,9 @@ def test_cubic_spline(n, m, device, pfe, scipy_padding):
         cs = CubicSpline(t.cpu().numpy(), x.cpu().numpy(), bc_type="periodic")
         y_scipy = cs(t_new.cpu().numpy())
 
-    assert torch.allclose(
-        y_philtorch, torch.from_numpy(y_scipy)
-    ), f"Max abs diff: {(y_philtorch - torch.from_numpy(y_scipy)).abs().max()}"
+    assert torch.allclose(y_philtorch, torch.from_numpy(y_scipy)), (
+        f"Max abs diff: {(y_philtorch - torch.from_numpy(y_scipy)).abs().max()}"
+    )
 
 
 @pytest.mark.parametrize("n", [20])
@@ -52,20 +50,16 @@ def test_cubic_spline(n, m, device, pfe, scipy_padding):
         "cpu",
         pytest.param(
             "cuda",
-            marks=pytest.mark.skipif(
-                not torch.cuda.is_available(), reason="CUDA not available"
-            ),
+            marks=pytest.mark.skipif(not torch.cuda.is_available(), reason="CUDA not available"),
         ),
     ],
 )
 @pytest.mark.parametrize("pfe", [True, False])
 def test_cspline(n, device, pfe):
     x = torch.randn(n, device=device).double()
-    y_philtorch = (
-        cspline(x.unsqueeze(0), parallel_form=pfe, scipy_padding=True).squeeze().cpu()
-    )
+    y_philtorch = cspline(x.unsqueeze(0), parallel_form=pfe, scipy_padding=True).squeeze().cpu()
     y_scipy = cspline1d(x.cpu().numpy())
 
-    assert torch.allclose(
-        y_philtorch, torch.from_numpy(y_scipy)
-    ), f"Max abs diff: {(y_philtorch - torch.from_numpy(y_scipy)).abs().max()}"
+    assert torch.allclose(y_philtorch, torch.from_numpy(y_scipy)), (
+        f"Max abs diff: {(y_philtorch - torch.from_numpy(y_scipy)).abs().max()}"
+    )

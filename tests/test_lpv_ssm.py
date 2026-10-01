@@ -1,11 +1,14 @@
-import torch
+from itertools import chain, product
+
 import pytest
-from itertools import product, chain
-from philtorch.lpv import state_space_recursion as lpv_state_space, state_space
+import torch
+
+from philtorch.lpv import state_space
+from philtorch.lpv import state_space_recursion as lpv_state_space
 from philtorch.lti import state_space_recursion as lti_state_space
 from philtorch.mat import companion
 
-from .test_lpv_filters import _generate_time_varying_coeffs, _generate_test_signal
+from .test_lpv_filters import _generate_test_signal, _generate_time_varying_coeffs
 
 
 @pytest.mark.parametrize(
@@ -14,9 +17,7 @@ from .test_lpv_filters import _generate_time_varying_coeffs, _generate_test_sign
         "cpu",
         pytest.param(
             "cuda",
-            marks=pytest.mark.skipif(
-                not torch.cuda.is_available(), reason="CUDA not available"
-            ),
+            marks=pytest.mark.skipif(not torch.cuda.is_available(), reason="CUDA not available"),
         ),
     ],
 )
@@ -45,9 +46,7 @@ def test_ssm_equivalence(device):
     # LTI state_space
     lti_output = lti_state_space(A, zi, x, unroll_factor=unroll_factor)
     # Compare outputs
-    assert torch.allclose(lpv_output, lti_output), torch.max(
-        torch.abs(lpv_output - lti_output)
-    )
+    assert torch.allclose(lpv_output, lti_output), torch.max(torch.abs(lpv_output - lti_output))
 
 
 @pytest.mark.parametrize(
@@ -56,9 +55,7 @@ def test_ssm_equivalence(device):
         "cpu",
         pytest.param(
             "cuda",
-            marks=pytest.mark.skipif(
-                not torch.cuda.is_available(), reason="CUDA not available"
-            ),
+            marks=pytest.mark.skipif(not torch.cuda.is_available(), reason="CUDA not available"),
         ),
     ],
 )

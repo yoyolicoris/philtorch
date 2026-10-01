@@ -2,14 +2,15 @@ from unittest.mock import Mock
 
 import pytest
 import torch
-import philtorch.lti.ssm as lti_ssm
-import philtorch.lpv.ssm as lpv_ssm
-from philtorch.mat import companion
-from philtorch.lti import linear_recurrence
-from philtorch.lpv import state_space_recursion as lpv_state_space
 
-from .test_lti_ssm import _generate_random_filter_coeffs
+import philtorch.lpv.ssm as lpv_ssm
+import philtorch.lti.ssm as lti_ssm
+from philtorch.lpv import state_space_recursion as lpv_state_space
+from philtorch.lti import linear_recurrence
+from philtorch.mat import companion
+
 from .test_lpv_filters import _generate_time_varying_coeffs
+from .test_lti_ssm import _generate_random_filter_coeffs
 
 _REQUIRES_GRAD_CASES = [
     (True, False, False),
@@ -42,15 +43,11 @@ def test_state_space_native_routing(ssm_case, scenario, monkeypatch):
     monkeypatch.setattr(module, "_ext_ss_recur", native_runner)
 
     if scenario == "native_and_unrolled":
-        native_output = module.state_space_recursion(
-            recursion_A, zi, x, unroll_factor=1
-        )
+        native_output = module.state_space_recursion(recursion_A, zi, x, unroll_factor=1)
         native_runner.assert_called_once()
 
         native_runner.reset_mock()
-        unrolled_output = module.state_space_recursion(
-            recursion_A, zi, x, unroll_factor=2
-        )
+        unrolled_output = module.state_space_recursion(recursion_A, zi, x, unroll_factor=2)
         native_runner.assert_not_called()
         assert torch.allclose(native_output, unrolled_output)
     else:
@@ -91,9 +88,7 @@ def test_state_space_unsupported_fallback(module, monkeypatch):
         "cpu",
         pytest.param(
             "cuda",
-            marks=pytest.mark.skipif(
-                not torch.cuda.is_available(), reason="CUDA not available"
-            ),
+            marks=pytest.mark.skipif(not torch.cuda.is_available(), reason="CUDA not available"),
         ),
     ],
 )
@@ -176,11 +171,7 @@ def test_lti_recurN_cpu_dispatch_equiv(dtype: torch.dtype, batch: bool):
         x = torch.randn(batch_size, samples, order, dtype=dtype)
 
     expected = torch.ops.philtorch.recurN(
-        (
-            A.unsqueeze(1).expand(-1, samples, -1, -1)
-            if batch
-            else A.expand(samples, -1, -1)
-        ),
+        (A.unsqueeze(1).expand(-1, samples, -1, -1) if batch else A.expand(samples, -1, -1)),
         zi,
         x,
     )
@@ -194,9 +185,7 @@ def test_lti_recurN_cpu_dispatch_equiv(dtype: torch.dtype, batch: bool):
         "cpu",
         pytest.param(
             "cuda",
-            marks=pytest.mark.skipif(
-                not torch.cuda.is_available(), reason="CUDA not available"
-            ),
+            marks=pytest.mark.skipif(not torch.cuda.is_available(), reason="CUDA not available"),
         ),
         pytest.param(
             "mps",
@@ -229,9 +218,7 @@ def test_lti_recur_equiv(device: str, batch: bool):
         "meta",
         pytest.param(
             "cuda",
-            marks=pytest.mark.skipif(
-                not torch.cuda.is_available(), reason="CUDA not available"
-            ),
+            marks=pytest.mark.skipif(not torch.cuda.is_available(), reason="CUDA not available"),
         ),
         pytest.param(
             "mps",
@@ -351,9 +338,7 @@ def test_recurN_extension_matches_fallback(order: int):
     ext_output = torch.ops.philtorch.recurN(A, zi, x)
     torch_output = lpv_state_space(A, zi, x, unroll_factor=2)
 
-    assert torch.allclose(ext_output, torch_output), torch.max(
-        torch.abs(ext_output - torch_output)
-    )
+    assert torch.allclose(ext_output, torch_output), torch.max(torch.abs(ext_output - torch_output))
 
 
 @pytest.mark.parametrize(
@@ -362,9 +347,7 @@ def test_recurN_extension_matches_fallback(order: int):
         "cpu",
         pytest.param(
             "cuda",
-            marks=pytest.mark.skipif(
-                not torch.cuda.is_available(), reason="CUDA not available"
-            ),
+            marks=pytest.mark.skipif(not torch.cuda.is_available(), reason="CUDA not available"),
         ),
     ],
 )
@@ -382,9 +365,7 @@ def test_recur2_extension_matches_fallback(device):
     ext_output = torch.ops.philtorch.recur2(A, zi, x)
     torch_output = lpv_state_space(A, zi, x, unroll_factor=2)
 
-    assert torch.allclose(ext_output, torch_output), torch.max(
-        torch.abs(ext_output - torch_output)
-    )
+    assert torch.allclose(ext_output, torch_output), torch.max(torch.abs(ext_output - torch_output))
     if device == "cuda":
         # CUDA uses the ParaRNN route here rather than the direct recur2 op.
         native_output = lpv_state_space(A, zi, x, unroll_factor=1)

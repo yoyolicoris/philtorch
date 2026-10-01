@@ -1,9 +1,11 @@
-import pytest
+from itertools import chain, product
+
 import numpy as np
+import pytest
 import torch
 from scipy import signal
-from itertools import product, chain
-from philtorch.lti import state_space_recursion, state_space, diag_state_space
+
+from philtorch.lti import diag_state_space, state_space, state_space_recursion
 from philtorch.mat import companion
 
 from .test_lti_lfilter import _generate_random_signal
@@ -51,9 +53,7 @@ def test_time_invariant_ssm(
     zi = x_torch.new_zeros(B, A.size(-1))
 
     # Apply philtorch filter
-    y_torch = state_space_recursion(
-        A, zi, x_torch, out_idx=0, unroll_factor=unroll_factor
-    )
+    y_torch = state_space_recursion(A, zi, x_torch, out_idx=0, unroll_factor=unroll_factor)
 
     # Apply scipy filter
     y_scipy = np.stack(
@@ -181,9 +181,7 @@ def test_ssm_shape_handling(x_shape, A_shape, B_shape, C_shape, D_shape, zi_shap
 @pytest.mark.parametrize("A_shape", [(3, 3), (5, 3, 3)])
 @pytest.mark.parametrize("zi_shape", [None, (3,), (5, 3)])
 @pytest.mark.parametrize("ssm", [state_space, diag_state_space])
-def test_ssm_D_shape_handling(
-    x_shape, A_shape, B_shape, C_shape, D_shape, zi_shape, ssm
-):
+def test_ssm_D_shape_handling(x_shape, A_shape, B_shape, C_shape, D_shape, zi_shape, ssm):
     unroll_factor = 4
 
     x = torch.randn(*x_shape)

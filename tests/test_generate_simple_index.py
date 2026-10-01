@@ -153,9 +153,7 @@ def test_cli_expands_wheel_directories(tmp_path, monkeypatch):
     filename = "philtorch-0.6.0+torch2.9.cu130-cp312-cp312-linux_x86_64.whl"
     wheel(tmp_path / "wheels", filename, b"wheel")
     wheel(tmp_path / "wheels", "notes.txt", b"ignored")
-    monkeypatch.setattr(
-        "sys.argv", ["prog", str(tmp_path / "wheels"), "--output", str(output)]
-    )
+    monkeypatch.setattr("sys.argv", ["prog", str(tmp_path / "wheels"), "--output", str(output)])
 
     INDEX.main()
 
@@ -168,9 +166,7 @@ def test_cli_expands_wheel_directories(tmp_path, monkeypatch):
 def test_cli_rejects_inputs_without_wheels(tmp_path, monkeypatch, capsys):
     (tmp_path / "empty").mkdir()
     output = tmp_path / "site"
-    monkeypatch.setattr(
-        "sys.argv", ["prog", str(tmp_path / "empty"), "--output", str(output)]
-    )
+    monkeypatch.setattr("sys.argv", ["prog", str(tmp_path / "empty"), "--output", str(output)])
 
     with pytest.raises(SystemExit) as exit_info:
         INDEX.main()
@@ -256,9 +252,7 @@ def test_symlinked_wheel_keeps_its_filename(tmp_path):
     digest = hashlib.sha256(b"wheel bytes").hexdigest()
     assert (package_dir / filename).read_bytes() == b"wheel bytes"
     assert not (package_dir / filename).is_symlink()
-    assert (
-        f"{quote(filename)}#sha256={digest}" in (package_dir / "index.html").read_text()
-    )
+    assert f"{quote(filename)}#sha256={digest}" in (package_dir / "index.html").read_text()
 
 
 def test_failed_index_write_leaves_no_temporary_file(tmp_path, monkeypatch):
