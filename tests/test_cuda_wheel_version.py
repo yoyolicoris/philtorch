@@ -52,8 +52,9 @@ def _build(**fields):
 
 def _matrix(**fields):
     return {
-        "schema_version": 1,
+        "schema_version": 2,
         "platform": "manylinux_2_28_x86_64",
+        "build_image": "quay.io/pypa/manylinux_2_28_x86_64:2026.09.30-1",
         "python_versions": ["3.10"],
         "builds": [_build()],
         **fields,
@@ -62,8 +63,9 @@ def _matrix(**fields):
 
 def test_matrix_file_validates_against_schema():
     data = VERSION_SCRIPT.validate_matrix(VERSION_SCRIPT.load_matrix(MATRIX_PATH), MATRIX_PATH)
-    assert data["schema_version"] == 1
+    assert data["schema_version"] == 2
     assert data["platform"] == "manylinux_2_28_x86_64"
+    assert data["build_image"].startswith("quay.io/pypa/manylinux_2_28_x86_64:")
     assert data["python_versions"] == ["3.10", "3.11", "3.12", "3.13"]
     # Latest patch of each of the three newest stable PyTorch minors, with one
     # build per CUDA version PyTorch publishes for that minor.
@@ -129,8 +131,14 @@ def test_validate_matrix_accepts_minimal_matrix():
 @pytest.mark.parametrize(
     "data, message",
     [
-        pytest.param(_matrix(schema_version=2), "schema_version must be 1", id="schema"),
+        pytest.param(_matrix(schema_version=1), "schema_version must be 2", id="schema"),
         pytest.param(_matrix(platform=""), "'platform' must be", id="platform"),
+        # The image must match the platform auditwheel certifies.
+        pytest.param(
+            _matrix(build_image="nvidia/cuda:13.2.1-devel-ubuntu22.04"),
+            "'build_image' must be an image for 'manylinux_2_28_x86_64'",
+            id="build-image",
+        ),
         pytest.param(_matrix(python_versions=[]), "'python_versions' must be", id="no-python"),
         pytest.param(
             _matrix(python_versions=["3.10\n"]), "'python_versions' must be", id="python-newline"
@@ -248,6 +256,10 @@ def test_expand_matrix_covers_python_x_torch_cuda():
         for python in ["3.10", "3.11", "3.12", "3.13"]
         for torch, cuda in EXPECTED_BUILDS
     }
+    # Every leg carries what the workflow needs to pick its container and tag.
+    for entry in expanded:
+        assert entry["platform"] == data["platform"]
+        assert entry["build_image"] == data["build_image"]
 
 
 def test_cli_prints_version(tmp_path):

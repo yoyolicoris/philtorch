@@ -7,7 +7,7 @@ from setuptools import setup
 
 # build_support.py sits next to setup.py; the setuptools.build_meta:__legacy__
 # backend puts this directory on sys.path, which this import relies on.
-from build_support import resolve_cuda_build
+from build_support import resolve_cuda_build, torch_requirement
 
 library_name = "philtorch"
 
@@ -212,12 +212,15 @@ except ImportError:
             "sees it."
         )
 
+install_requires = [torch_requirement(os.environ.get("PHILTORCH_TORCH_PIN", ""))]
+
 if not ext_modules:
-    setup()
+    setup(install_requires=install_requires)
 else:
     from torch.utils.cpp_extension import BuildExtension
 
     setup(
+        install_requires=install_requires,
         ext_modules=ext_modules,
         cmdclass={"build_ext": BuildExtension},
     )

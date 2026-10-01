@@ -30,7 +30,7 @@ from packaging.version import InvalidVersion, Version
 
 REPO_ROOT = Path(__file__).parents[1]
 DEFAULT_MATRIX = REPO_ROOT / "cuda_wheel_matrix.json"
-SCHEMA_VERSION = 1
+SCHEMA_VERSION = 2
 
 # Patterns are matched with fullmatch, which unlike match plus "$" rejects a
 # trailing newline.
@@ -93,6 +93,11 @@ def validate_matrix(data, path="<matrix>"):
     platform = data.get("platform")
     if not isinstance(platform, str) or not platform:
         raise RuntimeError(f"{path}: 'platform' must be a non-empty string")
+    # The container every leg builds in. Its name must carry the platform, so
+    # the wheel is built on the glibc that auditwheel then certifies.
+    build_image = data.get("build_image")
+    if not isinstance(build_image, str) or platform not in build_image:
+        raise RuntimeError(f"{path}: 'build_image' must be an image for {platform!r}")
     python_versions = data.get("python_versions")
     if (
         not isinstance(python_versions, list)
@@ -191,8 +196,9 @@ def cuda_wheel_version(base, torch_version, cuda_version):
 
 def expand_matrix(data):
     """Cartesian product of Python versions and torch/CUDA builds, in file order."""
+    shared = {"platform": data["platform"], "build_image": data["build_image"]}
     return [
-        {"python": python_version, **build}
+        {"python": python_version, **shared, **build}
         for python_version in data["python_versions"]
         for build in data["builds"]
     ]
