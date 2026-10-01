@@ -31,9 +31,9 @@ def test_linear_recurrence_unrolling():
     N = 17
     unroll_factor = 3
 
-    a = torch.rand(batch_size, N) * 2 - 1
-    x = torch.randn(batch_size, N)
-    init = torch.randn(batch_size)
+    a = torch.rand(batch_size, N, dtype=torch.double) * 2 - 1
+    x = torch.randn(batch_size, N, dtype=torch.double)
+    init = torch.randn(batch_size, dtype=torch.double)
 
     output_naive = lpv_linear_recurrence(
         a, init, x, unroll_factor=1
@@ -48,9 +48,9 @@ def test_linear_recurrence_unrolling():
 
 
 def test_linear_recurrence_native_broadcasting():
-    x = torch.randn(2, 7)
-    a = torch.rand(7)
-    init = torch.tensor(0.5)
+    x = torch.randn(2, 7, dtype=torch.double)
+    a = torch.rand(7, dtype=torch.double)
+    init = torch.tensor(0.5, dtype=torch.double)
 
     actual = lpv_linear_recurrence(a, init, x)
     expected = lpv_linear_recurrence(a.expand_as(x), init.expand(x.size(0)), x, unroll_factor=2)
