@@ -1,5 +1,7 @@
 from setuptools import setup
 
+# build_support.py sits next to setup.py; the setuptools.build_meta:__legacy__
+# backend puts this directory on sys.path, which this import relies on.
 from build_support import resolve_cuda_build
 import os
 import glob
@@ -74,6 +76,7 @@ def get_extensions():
         cuda_home=CUDA_HOME,
         cuda_available=torch.cuda.is_available(),
         cuda_arch_list=os.environ.get("TORCH_CUDA_ARCH_LIST"),
+        torch_cuda_version=torch.version.cuda,
     )
     print(
         "[philtorch build] "
