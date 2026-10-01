@@ -74,12 +74,14 @@ Releases are cut from `dev`. The package version comes from the latest `v*` tag 
    ```
 
    This needs a role that can bypass the `release` ruleset. If Git refuses because the push is not a fast-forward, `main` has a commit `dev` lacks: merge `main` into `dev` with a merge commit first.
-3. Publish a GitHub Release with a new `vX.Y` or `vX.Y.Z` tag on the same commit:
+3. Publish a GitHub Release with a new three-part `vX.Y.Z` tag on the same commit, e.g. `v0.6.0` rather than `v0.6`:
 
    ```bash
-   gh release create vX.Y --target <sha> --generate-notes
+   gh release create vX.Y.Z --target <sha> --generate-notes
    ```
 
    Publishing the release triggers the PyPI upload in `build-wheels.yml`, which accepts tags starting with `v0.` or `v1.`.
+
+   setuptools_scm versions `dev` builds by bumping the tag's last component. After `v0.6.0`, `dev` builds as `0.6.1.devN`, and versions keep increasing whichever release comes next. A two-part tag breaks that: after `v0.5`, `dev` built as `0.6.devN`, and once `v0.5.1` came out, the newer `0.5.2.devN` builds sorted below those older TestPyPI uploads.
 
 Do not merge a pull request into `main`. GitHub creates a new commit for every merge method, even rebase, so the tag would land on a commit outside `dev`'s history. Builds from `dev` would then fall back to the previous version, as happened with `v0.5`.
