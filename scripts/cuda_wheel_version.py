@@ -9,10 +9,13 @@ versions in several places.
 Intended use in the CUDA wheel workflow::
 
     VERSION="$(python scripts/cuda_wheel_version.py --torch 2.14.1)"
-    SETUPTOOLS_SCM_PRETEND_VERSION="$VERSION" python -m build ...
+    SETUPTOOLS_SCM_PRETEND_VERSION_FOR_PHILTORCH="$VERSION" python -m build ...
+
+The ``_FOR_PHILTORCH`` form scopes the override to this project, so packages
+built from source in the same environment keep their own versions.
 
 ``--list`` prints the expanded build matrix (Python x PyTorch/CUDA) as JSON
-for the workflow to consume.
+on a single line, so it can be written straight to ``$GITHUB_OUTPUT``.
 """
 
 from __future__ import annotations
@@ -29,10 +32,15 @@ REPO_ROOT = Path(__file__).parents[1]
 DEFAULT_MATRIX = REPO_ROOT / "cuda_wheel_matrix.json"
 SCHEMA_VERSION = 1
 
-_TORCH_RE = re.compile(r"^\d+\.\d+\.\d+$")
-_CUDA_RE = re.compile(r"^\d+\.\d+$")
-_PYTHON_RE = re.compile(r"^\d+\.\d+$")
-
+# Patterns are matched with fullmatch, which unlike match plus "$" rejects a
+# trailing newline.
+_TORCH_RE = re.compile(r"\d+\.\d+\.\d+")
+_CUDA_RE = re.compile(r"\d+\.\d+")
+_PYTHON_RE = re.compile(r"\d+\.\d+")
+# One TORCH_CUDA_ARCH_LIST entry, e.g. "8.6", "9.0a" or "12.0+PTX". "native"
+# needs a visible GPU (see build_support.py), and named architectures such as
+# "Ampere" hide what is built, so only explicit compute capabilities pass.
+_ARCH_RE = re.compile(r"\d+\.\d+a?(\+PTX)?")
 
 _BUILD_FIELDS = frozenset({"torch", "cuda", "torch_index_url", "cuda_arch_list"})
 
@@ -61,9 +69,11 @@ def validate_matrix(data, path="<matrix>"):
     if (
         not isinstance(python_versions, list)
         or not python_versions
-        or any(not isinstance(v, str) or not _PYTHON_RE.match(v) for v in python_versions)
+        or any(not isinstance(v, str) or not _PYTHON_RE.fullmatch(v) for v in python_versions)
     ):
         raise RuntimeError(f"{path}: 'python_versions' must be a non-empty list like ['3.10']")
+    if len(set(python_versions)) != len(python_versions):
+        raise RuntimeError(f"{path}: 'python_versions' contains a duplicate")
     builds = data.get("builds")
     if not isinstance(builds, list) or not builds:
         raise RuntimeError(f"{path}: 'builds' must be a non-empty list")
@@ -77,17 +87,24 @@ def validate_matrix(data, path="<matrix>"):
             raise RuntimeError(f"{where}: unknown field(s) {sorted(unknown)}")
         torch_version = build.get("torch")
         cuda_version = build.get("cuda")
-        if not isinstance(torch_version, str) or not _TORCH_RE.match(torch_version):
+        if not isinstance(torch_version, str) or not _TORCH_RE.fullmatch(torch_version):
             raise RuntimeError(f"{where}: 'torch' must be an exact X.Y.Z version")
-        if not isinstance(cuda_version, str) or not _CUDA_RE.match(cuda_version):
+        if not isinstance(cuda_version, str) or not _CUDA_RE.fullmatch(cuda_version):
             raise RuntimeError(f"{where}: 'cuda' must be an X.Y version")
         index_url = build.get("torch_index_url")
         cuda_tag = "cu" + cuda_version.replace(".", "")
         if not isinstance(index_url, str) or not index_url.endswith("/" + cuda_tag):
             raise RuntimeError(f"{where}: 'torch_index_url' must end with '/{cuda_tag}'")
         arch_list = build.get("cuda_arch_list")
-        if not isinstance(arch_list, str) or not arch_list.split():
-            raise RuntimeError(f"{where}: 'cuda_arch_list' must be a non-empty string")
+        if (
+            not isinstance(arch_list, str)
+            or not arch_list.split()
+            or any(not _ARCH_RE.fullmatch(arch) for arch in arch_list.split())
+        ):
+            raise RuntimeError(
+                f"{where}: 'cuda_arch_list' must be space-separated compute capabilities "
+                "like '8.6 9.0 12.0+PTX'"
+            )
         key = torch_version
         if key in seen:
             raise RuntimeError(
@@ -120,8 +137,6 @@ def base_version(root=REPO_ROOT, override=None):
         public = Version(raw).public
     except InvalidVersion as error:
         raise RuntimeError(f"base version {raw!r} is not valid PEP 440: {error}") from error
-    if not public:
-        raise RuntimeError(f"base version {raw!r} has an empty public part")
     return public
 
 
@@ -131,10 +146,10 @@ def cuda_wheel_version(base, torch_version, cuda_version):
     label = f"torch{torch_version}.{cuda_tag}"
     version = f"{base}+{label}"
     parsed = Version(version)
+    # A version holds at most one "+", so a round trip also proves that the
+    # local segment is exactly the label.
     if str(parsed) != version:
         raise RuntimeError(f"version {version!r} does not normalize to itself (got {parsed})")
-    if parsed.local != label:
-        raise RuntimeError(f"version {version!r} has unexpected local segment {parsed.local!r}")
     return version
 
 
@@ -166,8 +181,7 @@ def main(argv=None):
 
     data = validate_matrix(load_matrix(args.matrix), args.matrix)
     if args.list:
-        json.dump(expand_matrix(data), sys.stdout, indent=2)
-        sys.stdout.write("\n")
+        print(json.dumps(expand_matrix(data), separators=(",", ":")))
         return 0
 
     build = find_build(data, args.torch)
