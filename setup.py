@@ -5,6 +5,10 @@ import sys
 
 from setuptools import setup
 
+# build_support.py sits next to setup.py; the setuptools.build_meta:__legacy__
+# backend puts this directory on sys.path, which this import relies on.
+from build_support import resolve_cuda_build
+
 library_name = "philtorch"
 
 
@@ -67,7 +71,22 @@ def get_extensions():
         CUDAExtension,
     )
 
-    use_cuda = torch.cuda.is_available() and CUDA_HOME is not None
+    use_cuda = resolve_cuda_build(
+        force_cuda_value=os.environ.get("PHILTORCH_FORCE_CUDA", "0"),
+        cuda_home=CUDA_HOME,
+        cuda_available=torch.cuda.is_available(),
+        cuda_arch_list=os.environ.get("TORCH_CUDA_ARCH_LIST"),
+        torch_cuda_version=torch.version.cuda,
+    )
+    print(
+        "[philtorch build] "
+        f"use_cuda={use_cuda} "
+        f"CUDA_HOME={CUDA_HOME or 'None'} "
+        f"torch={torch.__version__} "
+        f"torch_cuda={torch.version.cuda or 'None'} "
+        "TORCH_CUDA_ARCH_LIST="
+        f"{os.environ.get('TORCH_CUDA_ARCH_LIST') or 'unset'}"
+    )
     use_openmp = (
         torch.backends.openmp.is_available()
         and os.environ.get("PHILTORCH_DISABLE_OPENMP", "0") != "1"
@@ -97,6 +116,10 @@ def get_extensions():
     extensions_dir = os.path.join(this_dir, library_name, "csrc")
     sources = list(glob.glob(os.path.join(extensions_dir, "*.cpp")))
     cuda_sources = list(glob.glob(os.path.join(extensions_dir, "*.cu")))
+    if use_cuda and not cuda_sources:
+        raise RuntimeError(
+            f"CUDA compilation was selected, but no .cu sources were found in {extensions_dir}."
+        )
 
     torchlpc_root = os.path.join(this_dir, "third_party", "torchlpc", "torchlpc", "csrc")
     torchlpc_sources = [
