@@ -11,9 +11,17 @@ write_to = "philtorch/_version.py"
 [tool.setuptools.package-data]
 philtorch = ["VERSION.txt"]
 
+[tool.setuptools.exclude-package-data]
+# The extension sources are compiled into _C; nothing reads them at runtime.
+philtorch = ["csrc/*"]
+
 [tool.setuptools.packages.find]
 where = ["."]
-exclude = ["tests", "tests.*"]
+# Namespace discovery is on by default here, so without this every directory
+# (examples, scripts, third_party, ...) is packaged and installed as a
+# top-level entry in site-packages.
+include = ["philtorch", "philtorch.*"]
+exclude = ["philtorch.csrc"]
 
 [tool.setuptools]
 zip-safe = false

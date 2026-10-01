@@ -67,6 +67,11 @@ jobs:
           CIBW_ARCHS_MACOS: arm64
           CIBW_ARCHS_WINDOWS: AMD64
           CIBW_MANYLINUX_X86_64_IMAGE: manylinux_2_28
+          # CPython's default flags include -g, and on Linux the debug info
+          # lands in _C itself (about 36 of its 37 MB). Strip it at link time:
+          # LDFLAGS is appended to the link command, whereas a CXXFLAGS
+          # override would replace Python's flags, -O3 included.
+          CIBW_ENVIRONMENT_LINUX: LDFLAGS="$LDFLAGS -Wl,--strip-debug"
           # torch (+ setuptools) are installed into the build env by
           # CIBW_BEFORE_BUILD, so disable build isolation; otherwise setup.py
           # can't `import torch` and silently builds an extension-less wheel.
