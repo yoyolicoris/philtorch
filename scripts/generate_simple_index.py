@@ -46,25 +46,31 @@ def wheel_project_name(filename: str) -> str:
 
 
 def _add_wheel(wheels: dict[str, tuple[Path, str]], path: Path, project: str) -> None:
+    # Take the name before resolving: a symlinked wheel keeps its own filename.
+    name = path.name
     path = path.resolve()
     if not path.is_file():
         raise ValueError(f"wheel path is not a file: {path}")
-    if wheel_project_name(path.name) != project:
-        raise ValueError(f"wheel does not belong to {project}: {path.name}")
+    if wheel_project_name(name) != project:
+        raise ValueError(f"wheel does not belong to {project}: {name}")
 
     digest = file_sha256(path)
-    previous = wheels.get(path.name)
+    previous = wheels.get(name)
     if previous is not None and previous[1] != digest:
-        raise ValueError(f"conflicting duplicate wheel filename: {path.name}")
-    wheels[path.name] = (path, digest)
+        raise ValueError(f"conflicting duplicate wheel filename: {name}")
+    wheels[name] = (path, digest)
 
 
 def _write_if_changed(path: Path, content: str) -> None:
     if path.exists() and path.read_text(encoding="utf-8") == content:
         return
     temporary = path.with_suffix(path.suffix + ".tmp")
-    temporary.write_text(content, encoding="utf-8")
-    temporary.replace(path)
+    try:
+        temporary.write_text(content, encoding="utf-8")
+        temporary.replace(path)
+    finally:
+        if temporary.exists():
+            temporary.unlink()
 
 
 def _project_page(project: str, wheels: dict[str, tuple[Path, str]]) -> str:

@@ -237,3 +237,47 @@ def test_script_runs_as_a_command(tmp_path):
     )
 
     assert (output / "simple/philtorch" / filename).read_bytes() == b"wheel"
+
+
+def test_symlinked_wheel_keeps_its_filename(tmp_path):
+    output = tmp_path / "site"
+    filename = "philtorch-0.6.0+torch2.9.cu130-cp312-cp312-linux_x86_64.whl"
+    blob = wheel(tmp_path / "blobs", "3f2a9c", b"wheel bytes")
+    link = tmp_path / "staging" / filename
+    link.parent.mkdir()
+    try:
+        link.symlink_to(blob)
+    except (OSError, NotImplementedError):
+        pytest.skip("symlinks are not supported here")
+
+    INDEX.generate_index("philtorch", [link], output)
+
+    package_dir = output / "simple/philtorch"
+    digest = hashlib.sha256(b"wheel bytes").hexdigest()
+    assert (package_dir / filename).read_bytes() == b"wheel bytes"
+    assert not (package_dir / filename).is_symlink()
+    assert (
+        f"{quote(filename)}#sha256={digest}" in (package_dir / "index.html").read_text()
+    )
+
+
+def test_failed_index_write_leaves_no_temporary_file(tmp_path, monkeypatch):
+    output = tmp_path / "site"
+    filename = "philtorch-0.6.0+torch2.9.cu130-cp312-cp312-linux_x86_64.whl"
+    source = wheel(tmp_path / "wheels", filename, b"wheel")
+    write_text = Path.write_text
+
+    def disk_full(self, *args, **kwargs):
+        write_text(self, "partial", encoding="utf-8")
+        raise OSError("disk full")
+
+    monkeypatch.setattr(Path, "write_text", disk_full)
+    with pytest.raises(OSError, match="disk full"):
+        INDEX.generate_index("philtorch", [source], output)
+
+    package_dir = output / "simple/philtorch"
+    assert sorted(p.name for p in package_dir.iterdir()) == [filename]
+
+    monkeypatch.undo()
+    INDEX.generate_index("philtorch", [source], output)
+    assert (package_dir / "index.html").exists()
