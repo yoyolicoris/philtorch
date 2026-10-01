@@ -169,6 +169,10 @@ def get_extensions():
         sources += cuda_sources
         sources += pararnn_sources
         extra_compile_args.setdefault("nvcc", []).append("--extended-lambda")
+        # Store the GPU code (one copy per target architecture) compressed in
+        # the binary, as PyTorch does for its own wheels. It is otherwise most
+        # of the extension's size, and is decompressed once at load.
+        extra_compile_args.setdefault("nvcc", []).extend(["-Xfatbin", "-compress-all"])
 
     if len(sources) == 0:
         return []
