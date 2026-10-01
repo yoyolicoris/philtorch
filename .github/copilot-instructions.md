@@ -32,9 +32,9 @@ pixi run pytest tests/test_lti_lfilter.py::test_time_invariant_filter
 ```
 
 ```bash
-# lint and format commands used by CI
-ruff check .
-ruff format --check .
+# lint and format commands used by CI (Ruff version pinned in pixi.toml)
+pixi run ruff check .
+pixi run ruff format --check .
 ```
 
 ## Terminal usage (avoid hangs)

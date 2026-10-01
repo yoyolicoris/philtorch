@@ -1,6 +1,9 @@
 name: Lint
 
-on: [push, pull_request]
+on:
+  push:
+  pull_request:
+  workflow_call:
 
 jobs:
   lint:
@@ -11,7 +14,12 @@ jobs:
       - uses: actions/checkout@v4
       - uses: astral-sh/ruff-action@v3
         with:
-          args: "check ."
-      - uses: astral-sh/ruff-action@v3
-        with:
-          args: "format --check ."
+          # Keep in sync with ruff in pixi.toml.
+          version: "0.16.9"
+          args: "--version"
+      - name: Lint
+        run: ruff check
+      - name: Check formatting
+        # Run even if linting failed, so both problems are reported at once.
+        if: ${{ !cancelled() }}
+        run: ruff format --check

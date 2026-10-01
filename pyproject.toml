@@ -79,9 +79,11 @@ source_pkgs = ["philtorch"]
 source = ["philtorch/", "*/site-packages/philtorch/"]
 
 [tool.ruff]
+# CI and pixi pin 0.16.9; formatting style can change between minor releases.
+required-version = ">=0.16,<0.17"
 line-length = 100
 target-version = "py310"
-exclude = ["third_party"]
+extend-exclude = ["third_party"]
 
 [tool.ruff.lint]
 select = ["E", "F", "W", "I", "UP"]
