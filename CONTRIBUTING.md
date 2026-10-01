@@ -60,3 +60,26 @@ Open pull requests against `dev`, not `main`. A pull request should:
 - pass the applicable CI checks.
 
 Maintainers may ask for a larger proposal to be split into smaller pull requests. This keeps review precise and makes regressions easier to isolate.
+
+## Releasing
+
+Releases are cut from `dev`. The package version comes from the latest `v*` tag reachable from the commit being built (setuptools_scm), so the release tag must be on a commit that `dev` contains.
+
+1. Pick the `dev` commit to release and check that its CI, including the TestPyPI upload, has passed.
+2. Fast-forward `main` to that commit:
+
+   ```bash
+   git fetch origin
+   git push origin <sha>:main
+   ```
+
+   This needs a role that can bypass the `release` ruleset. If Git refuses because the push is not a fast-forward, `main` has a commit `dev` lacks: merge `main` into `dev` with a merge commit first.
+3. Publish a GitHub Release with a new `vX.Y` or `vX.Y.Z` tag on the same commit:
+
+   ```bash
+   gh release create vX.Y --target <sha> --generate-notes
+   ```
+
+   Publishing the release triggers the PyPI upload in `build-wheels.yml`, which accepts tags starting with `v0.` or `v1.`.
+
+Do not merge a pull request into `main`. GitHub creates a new commit for every merge method, even rebase, so the tag would land on a commit outside `dev`'s history. Builds from `dev` would then fall back to the previous version, as happened with `v0.5`.
