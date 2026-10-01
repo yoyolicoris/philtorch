@@ -34,6 +34,9 @@ _CUDA_RE = re.compile(r"^\d+\.\d+$")
 _PYTHON_RE = re.compile(r"^\d+\.\d+$")
 
 
+_BUILD_FIELDS = frozenset({"torch", "cuda", "torch_index_url", "cuda_arch_list"})
+
+
 def load_matrix(path):
     """Read the matrix file, raising RuntimeError with context on failure."""
     try:
@@ -41,9 +44,7 @@ def load_matrix(path):
     except OSError as error:
         raise RuntimeError(f"cannot read CUDA wheel matrix {path}: {error}") from error
     except json.JSONDecodeError as error:
-        raise RuntimeError(
-            f"CUDA wheel matrix {path} is not valid JSON: {error}"
-        ) from error
+        raise RuntimeError(f"CUDA wheel matrix {path} is not valid JSON: {error}") from error
     if not isinstance(data, dict):
         raise TypeError(f"CUDA wheel matrix {path} must be a JSON object")
     return data
@@ -60,13 +61,9 @@ def validate_matrix(data, path="<matrix>"):
     if (
         not isinstance(python_versions, list)
         or not python_versions
-        or any(
-            not isinstance(v, str) or not _PYTHON_RE.match(v) for v in python_versions
-        )
+        or any(not isinstance(v, str) or not _PYTHON_RE.match(v) for v in python_versions)
     ):
-        raise RuntimeError(
-            f"{path}: 'python_versions' must be a non-empty list like ['3.10']"
-        )
+        raise RuntimeError(f"{path}: 'python_versions' must be a non-empty list like ['3.10']")
     builds = data.get("builds")
     if not isinstance(builds, list) or not builds:
         raise RuntimeError(f"{path}: 'builds' must be a non-empty list")
@@ -75,6 +72,9 @@ def validate_matrix(data, path="<matrix>"):
         where = f"{path}: builds[{i}]"
         if not isinstance(build, dict):
             raise TypeError(f"{where} must be an object")
+        unknown = set(build) - _BUILD_FIELDS
+        if unknown:
+            raise RuntimeError(f"{where}: unknown field(s) {sorted(unknown)}")
         torch_version = build.get("torch")
         cuda_version = build.get("cuda")
         if not isinstance(torch_version, str) or not _TORCH_RE.match(torch_version):
@@ -84,15 +84,15 @@ def validate_matrix(data, path="<matrix>"):
         index_url = build.get("torch_index_url")
         cuda_tag = "cu" + cuda_version.replace(".", "")
         if not isinstance(index_url, str) or not index_url.endswith("/" + cuda_tag):
-            raise RuntimeError(
-                f"{where}: 'torch_index_url' must end with '/{cuda_tag}'"
-            )
+            raise RuntimeError(f"{where}: 'torch_index_url' must end with '/{cuda_tag}'")
         arch_list = build.get("cuda_arch_list")
         if not isinstance(arch_list, str) or not arch_list.split():
             raise RuntimeError(f"{where}: 'cuda_arch_list' must be a non-empty string")
-        key = (torch_version, cuda_version)
+        key = torch_version
         if key in seen:
-            raise RuntimeError(f"{where}: duplicate torch/CUDA combination {key}")
+            raise RuntimeError(
+                f"{where}: duplicate torch version {key} (one CUDA build per PyTorch version)"
+            )
         seen.add(key)
     return data
 
@@ -119,9 +119,7 @@ def base_version(root=REPO_ROOT, override=None):
     try:
         public = Version(raw).public
     except InvalidVersion as error:
-        raise RuntimeError(
-            f"base version {raw!r} is not valid PEP 440: {error}"
-        ) from error
+        raise RuntimeError(f"base version {raw!r} is not valid PEP 440: {error}") from error
     if not public:
         raise RuntimeError(f"base version {raw!r} has an empty public part")
     return public
@@ -134,13 +132,9 @@ def cuda_wheel_version(base, torch_version, cuda_version):
     version = f"{base}+{label}"
     parsed = Version(version)
     if str(parsed) != version:
-        raise RuntimeError(
-            f"version {version!r} does not normalize to itself (got {parsed})"
-        )
+        raise RuntimeError(f"version {version!r} does not normalize to itself (got {parsed})")
     if parsed.local != label:
-        raise RuntimeError(
-            f"version {version!r} has unexpected local segment {parsed.local!r}"
-        )
+        raise RuntimeError(f"version {version!r} has unexpected local segment {parsed.local!r}")
     return version
 
 
@@ -164,9 +158,7 @@ def main(argv=None):
         help="override the setuptools_scm base version (for testing)",
     )
     group = parser.add_mutually_exclusive_group(required=True)
-    group.add_argument(
-        "--torch", help="exact PyTorch version from the matrix, e.g. 2.14.1"
-    )
+    group.add_argument("--torch", help="exact PyTorch version from the matrix, e.g. 2.14.1")
     group.add_argument(
         "--list", action="store_true", help="print the expanded build matrix as JSON"
     )
@@ -180,9 +172,7 @@ def main(argv=None):
 
     build = find_build(data, args.torch)
     print(
-        cuda_wheel_version(
-            base_version(override=args.base_version), build["torch"], build["cuda"]
-        )
+        cuda_wheel_version(base_version(override=args.base_version), build["torch"], build["cuda"])
     )
     return 0
 

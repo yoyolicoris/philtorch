@@ -20,9 +20,7 @@ MATRIX_PATH = REPO_ROOT / "cuda_wheel_matrix.json"
 
 
 def test_matrix_file_validates_against_schema():
-    data = VERSION_SCRIPT.validate_matrix(
-        VERSION_SCRIPT.load_matrix(MATRIX_PATH), MATRIX_PATH
-    )
+    data = VERSION_SCRIPT.validate_matrix(VERSION_SCRIPT.load_matrix(MATRIX_PATH), MATRIX_PATH)
     assert data["schema_version"] == 1
     assert data["platform"] == "manylinux_2_28_x86_64"
     assert data["python_versions"] == ["3.10", "3.11", "3.12", "3.13"]
@@ -107,6 +105,57 @@ def test_validate_matrix_rejects_index_url_cuda_mismatch(tmp_path):
     path = tmp_path / "matrix.json"
     path.write_text(json.dumps(bad))
     with pytest.raises(RuntimeError, match="must end with '/cu130'"):
+        VERSION_SCRIPT.validate_matrix(VERSION_SCRIPT.load_matrix(path), path)
+
+
+def test_validate_matrix_rejects_unknown_build_field(tmp_path):
+    # A stray "python" key inside a build would otherwise flow through **build
+    # in expand_matrix and silently override the matrix's python_versions.
+    bad = {
+        "schema_version": 1,
+        "platform": "manylinux_2_28_x86_64",
+        "python_versions": ["3.10"],
+        "builds": [
+            {
+                "torch": "2.14.1",
+                "cuda": "13.0",
+                "torch_index_url": "https://download.pytorch.org/whl/cu130",
+                "cuda_arch_list": "8.0",
+                "python": "3.9",
+            }
+        ],
+    }
+    path = tmp_path / "matrix.json"
+    path.write_text(json.dumps(bad))
+    with pytest.raises(RuntimeError, match="unknown field"):
+        VERSION_SCRIPT.validate_matrix(VERSION_SCRIPT.load_matrix(path), path)
+
+
+def test_validate_matrix_rejects_duplicate_torch_version(tmp_path):
+    # find_build looks up by torch version alone, so the matrix must keep
+    # torch versions unique even across different CUDA builds.
+    bad = {
+        "schema_version": 1,
+        "platform": "manylinux_2_28_x86_64",
+        "python_versions": ["3.10"],
+        "builds": [
+            {
+                "torch": "2.14.1",
+                "cuda": "13.0",
+                "torch_index_url": "https://download.pytorch.org/whl/cu130",
+                "cuda_arch_list": "8.0",
+            },
+            {
+                "torch": "2.14.1",
+                "cuda": "12.6",
+                "torch_index_url": "https://download.pytorch.org/whl/cu126",
+                "cuda_arch_list": "8.0",
+            },
+        ],
+    }
+    path = tmp_path / "matrix.json"
+    path.write_text(json.dumps(bad))
+    with pytest.raises(RuntimeError, match="duplicate torch version"):
         VERSION_SCRIPT.validate_matrix(VERSION_SCRIPT.load_matrix(path), path)
 
 
