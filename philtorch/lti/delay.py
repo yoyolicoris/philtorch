@@ -1,5 +1,5 @@
 import operator
-from collections.abc import Sequence
+from collections.abc import Iterable, Sequence
 from typing import Any
 
 import torch
@@ -106,8 +106,9 @@ def delay_state_space(
     if not (C is None or out_idx is None):
         raise ValueError("C and out_idx cannot be used together. Use either C or out_idx.")
 
-    # A scalar (int, NumPy scalar, or 0-d array/tensor) is a single delay line.
-    if isinstance(delays, int) or getattr(delays, "ndim", None) == 0:
+    # Anything that is not a sequence (int, NumPy scalar, 0-d array/tensor) is
+    # a single delay line, so a non-integer scalar gets the ValueError below.
+    if not isinstance(delays, Iterable) or getattr(delays, "ndim", None) == 0:
         delays = (delays,)
     delays = tuple(_as_int(delay, "Every delay must be a positive integer") for delay in delays)
     if not delays:

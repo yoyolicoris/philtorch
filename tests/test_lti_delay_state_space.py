@@ -279,6 +279,8 @@ def test_delay_state_space_accepts_scalar_delay(delay):
     [
         pytest.param(lambda np: True, id="bool"),
         pytest.param(lambda np: 0, id="zero"),
+        pytest.param(lambda np: 5.0, id="float"),
+        pytest.param(lambda np: None, id="none"),
         pytest.param(lambda np: torch.tensor(True), id="0d-bool-tensor"),
         pytest.param(lambda np: torch.tensor(5.0), id="0d-float-tensor"),
         pytest.param(lambda np: np.array(5.0), id="0d-float-array"),
