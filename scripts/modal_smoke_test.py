@@ -79,7 +79,9 @@ image = (
 app = modal.App("philtorch-cuda-smoke-test", image=image)
 
 
-@app.function(gpu=GPU, timeout=45 * 60)
+# Most of the run is CPU-bound: Helion autotuning and torch.compile compile
+# kernels in parallel subprocesses, and Modal's default share is under a core.
+@app.function(gpu=GPU, cpu=4, timeout=45 * 60)
 def run_tests(wheel_name: str, wheel: bytes, version: str, tests: dict[str, bytes]) -> None:
     import subprocess
 
