@@ -1,10 +1,11 @@
 import pytest
 import torch
 from torch.autograd.gradcheck import gradcheck, gradgradcheck
-from philtorch.lpv.ssm import MatrixRecurrence
-from philtorch.lti.ssm import LTIMatrixRecurrence
-from philtorch.lti.recur import LTIRecurrence
+
 from philtorch import HELION_LOADED
+from philtorch.lpv.ssm import MatrixRecurrence
+from philtorch.lti.recur import LTIRecurrence
+from philtorch.lti.ssm import LTIMatrixRecurrence
 
 _REQUIRES_GRAD_CASES = (
     (True, False, False),
@@ -36,17 +37,13 @@ _REQUIRES_GRAD_CASES = (
             True,
             2,
             "cuda",
-            marks=pytest.mark.skipif(
-                not torch.cuda.is_available(), reason="CUDA not available"
-            ),
+            marks=pytest.mark.skipif(not torch.cuda.is_available(), reason="CUDA not available"),
         ),
         pytest.param(
             False,
             2,
             "cuda",
-            marks=pytest.mark.skipif(
-                not torch.cuda.is_available(), reason="CUDA not available"
-            ),
+            marks=pytest.mark.skipif(not torch.cuda.is_available(), reason="CUDA not available"),
         ),
         pytest.param(
             False,
@@ -63,7 +60,7 @@ _REQUIRES_GRAD_CASES = (
             "cuda",
             marks=pytest.mark.skipif(
                 not HELION_LOADED or not torch.cuda.is_available(),
-                reason="Helion not available",
+                reason="CUDA or Helion not available",
             ),
         ),
     ],
@@ -93,17 +90,11 @@ def test_N_order(
                 dtype=torch.double if not cmplx else torch.complex128,
             ),
             torch.randn(
-                *(
-                    (batch_size, samples, order, order)
-                    if not share_A
-                    else (samples, order, order)
-                ),
+                *((batch_size, samples, order, order) if not share_A else (samples, order, order)),
                 dtype=torch.double if not cmplx else torch.complex128,
             )
             / order**2,
-            torch.randn(
-                batch_size, order, dtype=torch.double if not cmplx else torch.complex128
-            ),
+            torch.randn(batch_size, order, dtype=torch.double if not cmplx else torch.complex128),
         ]
     )
     A.requires_grad = A_requires_grad
@@ -132,9 +123,7 @@ def test_N_order(
         "cpu",
         pytest.param(
             "cuda",
-            marks=pytest.mark.skipif(
-                not torch.cuda.is_available(), reason="CUDA not available"
-            ),
+            marks=pytest.mark.skipif(not torch.cuda.is_available(), reason="CUDA not available"),
         ),
     ],
 )
@@ -167,9 +156,7 @@ def test_second_order_lti(
                 dtype=torch.double if not cmplx else torch.complex128,
             )
             * 0.25,
-            torch.randn(
-                batch_size, order, dtype=torch.double if not cmplx else torch.complex128
-            ),
+            torch.randn(batch_size, order, dtype=torch.double if not cmplx else torch.complex128),
         ]
     )
     A.requires_grad = A_requires_grad
@@ -198,9 +185,7 @@ def test_second_order_lti(
         "cpu",
         pytest.param(
             "cuda",
-            marks=pytest.mark.skipif(
-                not torch.cuda.is_available(), reason="CUDA not available"
-            ),
+            marks=pytest.mark.skipif(not torch.cuda.is_available(), reason="CUDA not available"),
         ),
     ],
 )
@@ -231,9 +216,7 @@ def test_first_order_lti(
                 dtype=torch.double if not cmplx else torch.complex128,
             )
             * 0.5,
-            torch.randn(
-                batch_size, dtype=torch.double if not cmplx else torch.complex128
-            ),
+            torch.randn(batch_size, dtype=torch.double if not cmplx else torch.complex128),
         ]
     )
     a.requires_grad = a_requires_grad

@@ -1,12 +1,21 @@
-from torch import Tensor
-import torch
+import os
+
 import helion
 import helion.language as hl
+import torch
+from torch import Tensor
+
+# Helion's own default is "full" autotuning, which makes the first call slow.
+# Use "quick" unless the user chooses with HELION_AUTOTUNE_EFFORT, which must
+# be set before philtorch is imported.
+_AUTOTUNE_SETTINGS = (
+    {} if os.environ.get("HELION_AUTOTUNE_EFFORT") else {"autotune_effort": "quick"}
+)
 
 
 @helion.kernel(
     # config=helion.Config(block_sizes=[4, 16]),
-    autotune_effort="quick",
+    **_AUTOTUNE_SETTINGS,
     static_shapes=False,
     dot_precision="ieee",
 )
@@ -43,7 +52,7 @@ def lti_shared_A_recursion_loop(
 
 @helion.kernel(
     # config=helion.Config(block_sizes=[4, 16]),
-    autotune_effort="quick",
+    **_AUTOTUNE_SETTINGS,
     static_shapes=False,
     dot_precision="ieee",
 )
@@ -80,7 +89,7 @@ def lti_recursion_loop(
 
 @helion.kernel(
     # config=helion.Config(block_sizes=[4, 16]),
-    autotune_effort="quick",
+    **_AUTOTUNE_SETTINGS,
     static_shapes=False,
     dot_precision="ieee",
 )
@@ -117,7 +126,7 @@ def lpv_shared_A_recursion_loop(
 
 @helion.kernel(
     # config=helion.Config(block_sizes=[4, 16]),
-    autotune_effort="quick",
+    **_AUTOTUNE_SETTINGS,
     static_shapes=False,
     dot_precision="ieee",
 )

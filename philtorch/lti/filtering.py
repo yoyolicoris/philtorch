@@ -1,19 +1,17 @@
-import torch
-from torch import Tensor
-import torch.nn.functional as F
-from typing import Optional, Union
 from functools import partial
 
-from .ssm import state_space, state_space_recursion, diag_state_space
+import torch
+import torch.nn.functional as F
+from torch import Tensor
+
 from ..mat import companion
-from ..utils import chain_functions
 from ..poly import polydiv
+from ..utils import chain_functions
 from .recur import linear_recurrence
+from .ssm import diag_state_space, state_space, state_space_recursion
 
 
-def comb_filter(
-    a: Tensor, delay: int, x: Tensor, zi: Optional[Tensor] = None, **kwargs
-) -> Tensor:
+def comb_filter(a: Tensor, delay: int, x: Tensor, zi: Tensor | None = None, **kwargs) -> Tensor:
     """Apply a comb filter to the input signal.
     Args:
         a (Tensor): Coefficients of the all-pole filter, shape (B,) or (1,).
@@ -28,9 +26,7 @@ def comb_filter(
     assert x.dim() == 2, "Input signal x must be 2D."
     assert delay >= 0, "Delay must be non-negative."
     if a.dim() == 1:
-        assert a.size(0) == x.size(
-            0
-        ), "The first dimension of a must match the batch size of x."
+        assert a.size(0) == x.size(0), "The first dimension of a must match the batch size of x."
 
     if delay == 1:
         return linear_recurrence(
@@ -66,7 +62,7 @@ def comb_filter(
     return y
 
 
-def lfiltic(b: Tensor, a: Tensor, y: Tensor, x: Optional[Tensor] = None) -> Tensor:
+def lfiltic(b: Tensor, a: Tensor, y: Tensor, x: Tensor | None = None) -> Tensor:
     """Compute the initial conditions for a linear filter given its coefficients and output.
     Args:
         b (Tensor): Coefficients of the FIR filter, shape (..., M+1).
@@ -99,12 +95,13 @@ def lfiltic(b: Tensor, a: Tensor, y: Tensor, x: Optional[Tensor] = None) -> Tens
     return zi
 
 
-def lfilter_zi(a: Tensor, b: Optional[Tensor] = None, transpose: bool = True) -> Tensor:
+def lfilter_zi(a: Tensor, b: Tensor | None = None, transpose: bool = True) -> Tensor:
     """Compute the initial conditions for a linear filter given its coefficients.
     Args:
         b (Tensor): Coefficients of the FIR filter, shape (..., M+1).
         a (Tensor): Coefficients of the all-pole filter, shape (..., M).
-        transpose (bool): When set to `True`, the TDF-II form is used; otherwise it's DF-II. Default to `True`.
+        transpose (bool): When set to `True`, the TDF-II form is used; otherwise
+            it's DF-II. Default to `True`.
     Returns:
         Tensor: Initial conditions for the filter, shape (..., M).
     """
@@ -125,9 +122,7 @@ def lfilter_zi(a: Tensor, b: Optional[Tensor] = None, transpose: bool = True) ->
         A = companion(a).mT.conj()
         B = b[..., 1:] - b[..., :1] * a
     else:
-        raise ValueError(
-            "Numerator coefficients b must be provided for transpose=True."
-        )
+        raise ValueError("Numerator coefficients b must be provided for transpose=True.")
 
     IminusA = torch.eye(n - 1, device=a.device, dtype=a.dtype) - A
 
@@ -140,9 +135,9 @@ def lfilter_zi(a: Tensor, b: Optional[Tensor] = None, transpose: bool = True) ->
 def fir(
     b: Tensor,
     x: Tensor,
-    zi: Optional[Tensor] = None,
+    zi: Tensor | None = None,
     transpose: bool = True,
-) -> Union[Tensor, tuple[Tensor, Tensor]]:
+) -> Tensor | tuple[Tensor, Tensor]:
     """Apply a batch of time-invariant FIR filters.
 
     This function supports both direct (convolution) and transposed forms via
@@ -168,9 +163,7 @@ def fir(
     if zi is not None:
         assert zi.dim() == 2, "Initial conditions zi must be 2D."
         assert zi.size(0) == B, "The first dimension of zi must match the batch size."
-        assert (
-            zi.size(1) == M
-        ), "The second dimension of zi must match the filter order."
+        assert zi.size(1) == M, "The second dimension of zi must match the filter order."
 
     if transpose:
         y = F.conv_transpose1d(
@@ -207,11 +200,11 @@ def lfilter(
     b: Tensor,
     a: Tensor,
     x: Tensor,
-    zi: Optional[Tensor] = None,
+    zi: Tensor | None = None,
     form: str = "tdf2",
     backend: str = "ssm",
     **kwargs,
-) -> Union[Tensor, tuple[Tensor, Tensor]]:
+) -> Tensor | tuple[Tensor, Tensor]:
     """Apply a batch of time-invariant IIR filters.
 
     This is a convenience wrapper that dispatches to different backends
@@ -231,14 +224,12 @@ def lfilter(
         backend (str): Backend to execute the filter ('ssm', 'diag_ssm', ...). Default is `ssm`.
 
     Returns:
-        Filtered output and optionally final state if `zi` is given and `form` is either `tdf2` or `df2`.
+        Filtered output and optionally final state if `zi` is given and `form`
+        is either `tdf2` or `df2`.
     """
 
     squeeze_first = (
-        (x.dim() == 1)
-        & (b.dim() == 1)
-        & (a.dim() == 1)
-        & ((zi is None) or (zi.dim() == 1))
+        (x.dim() == 1) & (b.dim() == 1) & (a.dim() == 1) & ((zi is None) or (zi.dim() == 1))
     )
     if x.dim() == 1:
         x = x.unsqueeze(0)
@@ -269,10 +260,10 @@ def _ssm_lfilter(
     b: Tensor,
     a: Tensor,
     x: Tensor,
-    zi: Optional[Tensor] = None,
+    zi: Tensor | None = None,
     form: str = "df2",
     **kwargs,
-) -> Union[Tensor, tuple[Tensor, Tensor]]:
+) -> Tensor | tuple[Tensor, Tensor]:
     """Apply a batch of time-invariant linear filters to input signal using state-space model."""
     if b.size(-1) < a.size(-1) + 1:
         b = F.pad(b, (0, a.size(-1) + 1 - b.size(-1)))
@@ -332,11 +323,11 @@ def _diag_ssm_lfilter(
     b: Tensor,
     a: Tensor,
     x: Tensor,
-    zi: Optional[Tensor] = None,
+    zi: Tensor | None = None,
     form: str = "df2",
     delayed_form: bool = False,
     **kwargs,
-) -> Union[Tensor, tuple[Tensor, Tensor]]:
+) -> Tensor | tuple[Tensor, Tensor]:
     """Apply a batch of time-invariant linear filters to input signal using state-space model."""
 
     if b.size(-1) > a.size(-1) + 1:
@@ -409,14 +400,15 @@ def filtfilt(
     b: Tensor,
     a: Tensor,
     x: Tensor,
-    padmode: Optional[str] = "replicate",
-    padlen: Optional[int] = None,
+    padmode: str | None = "replicate",
+    padlen: int | None = None,
     method: str = "pad",
-    irlen: Optional[int] = None,
+    irlen: int | None = None,
     form: str = "tdf2",
     **kwargs,
-) -> Union[Tensor, tuple[Tensor, Tensor]]:
-    """Apply zero-phase filtering by processing the input signal in both forward and backward directions.
+) -> Tensor | tuple[Tensor, Tensor]:
+    """Apply zero-phase filtering by processing the input signal in both
+    forward and backward directions.
 
     This function uses the `lfilter` function twice: first in the forward direction,
     then in the reverse direction, to achieve zero-phase distortion. Padding is applied
@@ -429,7 +421,8 @@ def filtfilt(
         padmode (str, optional): Padding mode for the input signal. Default is 'replicate'.
         padlen (int, optional): Padding length. If None, set to 3 times the number of taps.
         method (str, optional): Filtering method, one of {'pad', 'gust'}. Default is 'pad'.
-        irlen (int, optional): Impulse response length (unused). This parameter is copied from SciPy and will be implemented in the future.
+        irlen (int, optional): Impulse response length (unused). This parameter
+            is copied from SciPy and will be implemented in the future.
         form (str, optional): Filter form, one of {'df2', 'tdf2', 'df1', 'tdf1'}. Default is 'tdf2'.
         **kwargs: Additional keyword arguments for `lfilter`.
 
@@ -450,9 +443,9 @@ def filtfilt(
     else:
         edge = padlen
 
-    assert (
-        x.size(-1) > edge
-    ), f"Input signal length {x.size(-1)} must be greater than pad length {edge}."
+    assert x.size(-1) > edge, (
+        f"Input signal length {x.size(-1)} must be greater than pad length {edge}."
+    )
 
     if edge > 0 and padmode is not None:
         ext = F.pad(

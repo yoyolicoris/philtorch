@@ -1,9 +1,11 @@
-import pytest
+from itertools import chain, product
+
 import numpy as np
+import pytest
 import torch
 from scipy import signal
-from itertools import product, chain
-from philtorch.lti import state_space_recursion, state_space, diag_state_space
+
+from philtorch.lti import diag_state_space, state_space, state_space_recursion
 from philtorch.lti.ssm import _ssm_B, _ssm_C_D
 from philtorch.mat import companion
 
@@ -52,9 +54,7 @@ def test_time_invariant_ssm(
     zi = x_torch.new_zeros(B, A.size(-1))
 
     # Apply philtorch filter
-    y_torch = state_space_recursion(
-        A, zi, x_torch, out_idx=0, unroll_factor=unroll_factor
-    )
+    y_torch = state_space_recursion(A, zi, x_torch, out_idx=0, unroll_factor=unroll_factor)
 
     # Apply scipy filter
     y_scipy = np.stack(
@@ -182,9 +182,7 @@ def test_ssm_shape_handling(x_shape, A_shape, B_shape, C_shape, D_shape, zi_shap
 @pytest.mark.parametrize("A_shape", [(3, 3), (5, 3, 3)])
 @pytest.mark.parametrize("zi_shape", [None, (3,), (5, 3)])
 @pytest.mark.parametrize("ssm", [state_space, diag_state_space])
-def test_ssm_D_shape_handling(
-    x_shape, A_shape, B_shape, C_shape, D_shape, zi_shape, ssm
-):
+def test_ssm_D_shape_handling(x_shape, A_shape, B_shape, C_shape, D_shape, zi_shape, ssm):
     unroll_factor = 4
 
     x = torch.randn(*x_shape)
@@ -314,9 +312,7 @@ def test_diag_state_space_B_layouts_match_state_space(x_shape, B_shape, batched_
 
 
 @pytest.mark.parametrize("ssm", [state_space, diag_state_space])
-@pytest.mark.parametrize(
-    ("x_shape", "B_shape"), [((3, 17), (3, 2)), ((3, 17, 2), (3,))]
-)
+@pytest.mark.parametrize(("x_shape", "B_shape"), [((3, 17), (3, 2)), ((3, 17, 2), (3,))])
 def test_ssm_rejects_invalid_B(ssm, x_shape, B_shape):
     A = _generate_diagonalizable_matrix((3, 3))
     with pytest.raises(ValueError, match=f"Input matrix B .* for {len(x_shape)}D"):
@@ -364,9 +360,7 @@ def test_ssm_B_rejects_invalid_shapes(x_shape, B_shape):
 )
 def test_ssm_D_rejects_invalid_shapes(x_shape, D_shape):
     with pytest.raises(ValueError, match=f"Input matrix D .* for {len(x_shape)}D"):
-        _ssm_C_D(
-            torch.zeros(()), torch.zeros(x_shape), None, torch.zeros(D_shape), _b, _M
-        )
+        _ssm_C_D(torch.zeros(()), torch.zeros(x_shape), None, torch.zeros(D_shape), _b, _M)
 
 
 @pytest.mark.parametrize("C_shape", [(), (_M + 1,), (_b, _P, _M + 1), (1, 1, 1, _M)])

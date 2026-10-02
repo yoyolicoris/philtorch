@@ -1,37 +1,44 @@
-from pathlib import Path
 import warnings
+from pathlib import Path
+from typing import Any
+
 import torch
 import torch.nn.functional as F
-from typing import Any, Optional
 
-from . import _C  # noqa: F401
-
-try:
-    from ._helion import (
-        lti_recursion_loop,
-        lti_shared_A_recursion_loop,
-        lpv_recursion_loop,
-        lpv_shared_A_recursion_loop,
-    )
-except ImportError:
-    HELION_LOADED = False
-    warnings.warn(
-        "Helion kernels not loaded. Please ensure Helion is installed and compatible with your PyTorch version."
-    )
-else:
-    HELION_LOADED = True
-
+from ._build_check import check_torch_build
 
 try:
     from ._version import __version__ as __version__  # type: ignore
 except ImportError:
     __version__ = Path(__file__).parent.joinpath("VERSION.txt").read_text().strip()
 
+# Fail clearly on a CUDA wheel installed next to a different torch, before
+# loading the extension would fail with an undefined-symbol error.
+check_torch_build(__version__, torch.__version__, torch.version.cuda)
+
+from . import _C  # noqa: E402, F401
+
+try:
+    from ._helion import (
+        lpv_recursion_loop,
+        lpv_shared_A_recursion_loop,
+        lti_recursion_loop,
+        lti_shared_A_recursion_loop,
+    )
+except ImportError:
+    HELION_LOADED = False
+    warnings.warn(
+        "Helion kernels not loaded. Please ensure Helion is installed "
+        "and compatible with your PyTorch version."
+    )
+else:
+    HELION_LOADED = True
+
 
 def _recurN_backward(f):
     def closure(
         ctx: Any, grad_y: torch.Tensor
-    ) -> tuple[Optional[torch.Tensor], Optional[torch.Tensor], Optional[torch.Tensor]]:
+    ) -> tuple[torch.Tensor | None, torch.Tensor | None, torch.Tensor | None]:
         A, zi, y = ctx.saved_tensors
         grad_x = grad_A = grad_zi = None
 
@@ -61,9 +68,9 @@ def _recurN_backward(f):
                     1, 2, 0
                 ) @ padded_y.conj_physical().transpose(0, 1)
             else:
-                grad_A = padded_y.conj_physical().unsqueeze(-2) * flipped_grad_x.flip(
-                    1
-                ).unsqueeze(-1)
+                grad_A = padded_y.conj_physical().unsqueeze(-2) * flipped_grad_x.flip(1).unsqueeze(
+                    -1
+                )
 
         return grad_A, grad_zi, grad_x
 
@@ -73,7 +80,7 @@ def _recurN_backward(f):
 def _lti_recurN_backward(f):
     def closure(
         ctx: Any, grad_y: torch.Tensor
-    ) -> tuple[Optional[torch.Tensor], Optional[torch.Tensor], Optional[torch.Tensor]]:
+    ) -> tuple[torch.Tensor | None, torch.Tensor | None, torch.Tensor | None]:
         A, zi, y = ctx.saved_tensors
         grad_x = grad_A = grad_zi = None
 
@@ -81,9 +88,7 @@ def _lti_recurN_backward(f):
 
         runner = (
             # torch.ops.philtorch.lti_recurN
-            f
-            if A.shape[-1] != 2
-            else torch.ops.philtorch.lti_recur2
+            f if A.shape[-1] != 2 else torch.ops.philtorch.lti_recur2
         )
 
         flipped_grad_x = runner(AmT, torch.zeros_like(zi), grad_y.flip(1))
@@ -98,9 +103,9 @@ def _lti_recurN_backward(f):
             valid_y = y[:, :-1]
             padded_y = torch.cat([zi.unsqueeze(1), valid_y], dim=1)
             if A.dim() == 2:
-                grad_A = flipped_grad_x.flip(1).flatten(
+                grad_A = flipped_grad_x.flip(1).flatten(0, 1).T @ padded_y.conj_physical().flatten(
                     0, 1
-                ).T @ padded_y.conj_physical().flatten(0, 1)
+                )
             else:
                 grad_A = flipped_grad_x.flip(1).mT @ padded_y.conj_physical()
 
@@ -111,7 +116,7 @@ def _lti_recurN_backward(f):
 
 def _lti_recur_backward(
     ctx: Any, grad_out: torch.Tensor
-) -> tuple[Optional[torch.Tensor], Optional[torch.Tensor], Optional[torch.Tensor]]:
+) -> tuple[torch.Tensor | None, torch.Tensor | None, torch.Tensor | None]:
     a, init, out = ctx.saved_tensors
     grad_a = grad_x = grad_init = None
 
@@ -237,9 +242,7 @@ def _(A, zi, x):
 @torch.library.register_fake("philtorch::scan")
 def _scan_fake(impulse, decay, init):
     torch._check(impulse.ndim == 2, lambda: "impulse must be 2D.")
-    torch._check(
-        decay.shape == impulse.shape, lambda: "decay must match impulse's shape."
-    )
+    torch._check(decay.shape == impulse.shape, lambda: "decay must match impulse's shape.")
     torch._check(init.ndim == 1, lambda: "init must be 1D.")
     torch._check(
         init.shape[0] == impulse.shape[0],
@@ -254,12 +257,8 @@ def _lpc_fake(x, A, zi):
     torch._check(A.ndim == 3, lambda: "A must be 3D.")
     torch._check(zi.ndim == 2, lambda: "zi must be 2D.")
     torch._check(A.shape[:2] == x.shape, lambda: "A's leading dimensions must match x.")
-    torch._check(
-        A.shape[2] == zi.shape[1], lambda: "A and zi must have the same order."
-    )
-    torch._check(
-        x.shape[0] == zi.shape[0], lambda: "x and zi must have the same batch size."
-    )
+    torch._check(A.shape[2] == zi.shape[1], lambda: "A and zi must have the same order.")
+    torch._check(x.shape[0] == zi.shape[0], lambda: "x and zi must have the same batch size.")
     return x.new_empty(x.shape)
 
 
@@ -350,9 +349,7 @@ def _pararnn_backward(runner):
         AmT_rolled = torch.roll(AmT, shifts=-1, dims=-3)
         reverse_A = AmT_rolled.flip(-3)
         reverse_jac = F.pad(-reverse_A, (0, 0, 0, 0, 1, 0))
-        reverse_rhs = torch.cat(
-            [torch.zeros_like(zi).unsqueeze(1), grad_y.flip(1)], dim=1
-        )
+        reverse_rhs = torch.cat([torch.zeros_like(zi).unsqueeze(1), grad_y.flip(1)], dim=1)
         flipped_grad_x = runner(reverse_jac, reverse_rhs)[:, 1:]
         grad_x = flipped_grad_x.flip(1)
 
@@ -363,9 +360,7 @@ def _pararnn_backward(runner):
             grad_jac = torch.cat([torch.zeros_like(jac[:, :1]), -grad_A], dim=1)
         if ctx.needs_input_grad[1]:
             grad_zi = (AmT[..., 0, :, :] @ flipped_grad_x[:, -1, :, None]).squeeze(-1)
-            grad_rhs = torch.cat(
-                [(grad_output[:, 0] + grad_zi).unsqueeze(1), grad_x], dim=1
-            )
+            grad_rhs = torch.cat([(grad_output[:, 0] + grad_zi).unsqueeze(1), grad_x], dim=1)
         return grad_jac, grad_rhs
 
     return closure
@@ -395,15 +390,12 @@ def _pararnn_fake(block_size):
 torch.library.register_autograd(
     "philtorch::scan", _scan_backward, setup_context=_scan_setup_context
 )
-torch.library.register_autograd(
-    "philtorch::lpc", _lpc_backward, setup_context=_lpc_setup_context
-)
+torch.library.register_autograd("philtorch::lpc", _lpc_backward, setup_context=_lpc_setup_context)
 
 
 if hasattr(  # pragma: no cover - CUDA-only schema
     torch.ops.parallel_reduce_cuda, "parallel_reduce_block_diag_2x2_cuda"
 ):
-
     torch.library.register_fake(
         "parallel_reduce_cuda::parallel_reduce_block_diag_2x2_cuda",
         _pararnn_fake(2),
@@ -411,9 +403,7 @@ if hasattr(  # pragma: no cover - CUDA-only schema
 
     torch.library.register_autograd(
         "parallel_reduce_cuda::parallel_reduce_block_diag_2x2_cuda",
-        _pararnn_backward(
-            torch.ops.parallel_reduce_cuda.parallel_reduce_block_diag_2x2_cuda
-        ),
+        _pararnn_backward(torch.ops.parallel_reduce_cuda.parallel_reduce_block_diag_2x2_cuda),
         setup_context=_pararnn_setup_context,
     )
 
@@ -421,7 +411,6 @@ if hasattr(  # pragma: no cover - CUDA-only schema
 if hasattr(  # pragma: no cover - CUDA-only schema
     torch.ops.parallel_reduce_cuda, "parallel_reduce_block_diag_3x3_cuda"
 ):
-
     torch.library.register_fake(
         "parallel_reduce_cuda::parallel_reduce_block_diag_3x3_cuda",
         _pararnn_fake(3),
@@ -429,9 +418,7 @@ if hasattr(  # pragma: no cover - CUDA-only schema
 
     torch.library.register_autograd(
         "parallel_reduce_cuda::parallel_reduce_block_diag_3x3_cuda",
-        _pararnn_backward(
-            torch.ops.parallel_reduce_cuda.parallel_reduce_block_diag_3x3_cuda
-        ),
+        _pararnn_backward(torch.ops.parallel_reduce_cuda.parallel_reduce_block_diag_3x3_cuda),
         setup_context=_pararnn_setup_context,
     )
 
@@ -464,9 +451,7 @@ torch.library.register_autograd(
 if HELION_LOADED:
 
     @torch.library.custom_op("philtorch::hl_lti_recurN", mutates_args=())
-    def hl_lti_recurN(
-        A: torch.Tensor, zi: torch.Tensor, x: torch.Tensor
-    ) -> torch.Tensor:
+    def hl_lti_recurN(A: torch.Tensor, zi: torch.Tensor, x: torch.Tensor) -> torch.Tensor:
         if A.ndim == 2:
             return lti_shared_A_recursion_loop(A, zi, x)
         return lti_recursion_loop(A, zi, x)
@@ -481,12 +466,8 @@ if HELION_LOADED:
     def _(A, zi, x):
         torch._check(A.shape[-1] == A.shape[-2] == x.shape[2], "A must be square.")
         torch._check(A.ndim in (2, 3), "A must be 2D or 3D.")
-        torch._check(
-            zi.shape[1] == x.shape[2], "zi must have last dimension of size 2."
-        )
-        torch._check(
-            x.shape[0] == zi.shape[0], "x and zi must have the same batch size."
-        )
+        torch._check(zi.shape[1] == x.shape[2], "zi must have last dimension of size 2.")
+        torch._check(x.shape[0] == zi.shape[0], "x and zi must have the same batch size.")
         if A.ndim == 3:
             torch._check(
                 A.shape[0] == x.shape[0],
@@ -499,16 +480,12 @@ if HELION_LOADED:
     def _(A, zi, x):
         torch._check(A.shape[-1] == A.shape[-2] == x.shape[2], "A must be square.")
         torch._check(A.ndim in (3, 4), "A must be 3D or 4D.")
-        torch._check(
-            zi.shape[1] == x.shape[2], "zi must have last dimension of size 2."
-        )
+        torch._check(zi.shape[1] == x.shape[2], "zi must have last dimension of size 2.")
         torch._check(
             x.shape[1] == A.shape[-3],
             "x's second dimension must match A's last-3 dimension.",
         )
-        torch._check(
-            x.shape[0] == zi.shape[0], "x and zi must have the same batch size."
-        )
+        torch._check(x.shape[0] == zi.shape[0], "x and zi must have the same batch size.")
         if A.ndim == 4:
             torch._check(
                 A.shape[0] == x.shape[0],

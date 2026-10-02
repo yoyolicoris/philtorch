@@ -1,4 +1,4 @@
-from .filtering import lfilter, allpole, fir
+from .filtering import allpole, fir, lfilter
 from .recur import linear_recurrence
 from .ssm import state_space, state_space_recursion
 

@@ -53,7 +53,9 @@ jobs:
           echo "MACOSX_DEPLOYMENT_TARGET=14.0" >> "$GITHUB_ENV"
 
       - name: Install cibuildwheel
-        run: pip install cibuildwheel==2.23.3
+        # 2.23.4 or later: older releases download virtualenv from a GitHub
+        # blob URL, which GitHub now answers with HTTP 503 (Windows builds).
+        run: pip install cibuildwheel==2.23.4
 
       - name: Build wheels
         run: cibuildwheel --output-dir wheelhouse
@@ -67,6 +69,11 @@ jobs:
           CIBW_ARCHS_MACOS: arm64
           CIBW_ARCHS_WINDOWS: AMD64
           CIBW_MANYLINUX_X86_64_IMAGE: manylinux_2_28
+          # CPython's default flags include -g, and on Linux the debug info
+          # lands in _C itself (about 36 of its 37 MB). Strip it at link time:
+          # LDFLAGS is appended to the link command, whereas a CXXFLAGS
+          # override would replace Python's flags, -O3 included.
+          CIBW_ENVIRONMENT_LINUX: LDFLAGS="$LDFLAGS -Wl,--strip-debug"
           # torch (+ setuptools) are installed into the build env by
           # CIBW_BEFORE_BUILD, so disable build isolation; otherwise setup.py
           # can't `import torch` and silently builds an extension-less wheel.

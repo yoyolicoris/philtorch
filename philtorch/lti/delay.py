@@ -1,6 +1,6 @@
 import operator
 from collections.abc import Sequence
-from typing import Any, Optional, Union
+from typing import Any
 
 import torch
 from torch import Tensor
@@ -12,9 +12,7 @@ _OUTPUT_CHUNK = 4096
 
 def _as_int(value: Any, message: str) -> int:
     """Convert Python, NumPy, or single-element integer tensor scalars to ``int``."""
-    if isinstance(value, bool) or (
-        isinstance(value, Tensor) and value.dtype == torch.bool
-    ):
+    if isinstance(value, bool) or (isinstance(value, Tensor) and value.dtype == torch.bool):
         raise ValueError(message)
     try:
         return operator.index(value)
@@ -24,7 +22,7 @@ def _as_int(value: Any, message: str) -> int:
 
 def _read_delay_line(
     initial: Tensor,
-    blocks: list[Optional[Tensor]],
+    blocks: list[Tensor | None],
     block_size: int,
     delay: int,
     line: int,
@@ -52,13 +50,13 @@ def _read_delay_line(
 def delay_state_space(
     A: Tensor,
     x: Tensor,
-    delays: Union[int, Sequence[int], Tensor],
-    B: Optional[Tensor] = None,
-    C: Optional[Tensor] = None,
-    D: Optional[Tensor] = None,
-    zi: Optional[Sequence[Tensor]] = None,
-    block_size: Optional[int] = None,
-    out_idx: Optional[int] = None,
+    delays: int | Sequence[int] | Tensor,
+    B: Tensor | None = None,
+    C: Tensor | None = None,
+    D: Tensor | None = None,
+    zi: Sequence[Tensor] | None = None,
+    block_size: int | None = None,
+    out_idx: int | None = None,
 ):
     """Compute a structured state-space model with explicit delay lines.
 
@@ -106,16 +104,12 @@ def delay_state_space(
     assert A.dim() in (2, 3), f"State matrix A must be 2D or 3D, got {A.shape}"
     assert A.size(-2) == A.size(-1), f"State matrix A must be square, got {A.shape}"
     if not (C is None or out_idx is None):
-        raise ValueError(
-            "C and out_idx cannot be used together. Use either C or out_idx."
-        )
+        raise ValueError("C and out_idx cannot be used together. Use either C or out_idx.")
 
     # A scalar (int, NumPy scalar, or 0-d array/tensor) is a single delay line.
     if isinstance(delays, int) or getattr(delays, "ndim", None) == 0:
         delays = (delays,)
-    delays = tuple(
-        _as_int(delay, "Every delay must be a positive integer") for delay in delays
-    )
+    delays = tuple(_as_int(delay, "Every delay must be a positive integer") for delay in delays)
     if not delays:
         raise ValueError("delays must contain at least one delay line")
     if any(delay < 1 for delay in delays):
@@ -123,13 +117,13 @@ def delay_state_space(
 
     batch_size, samples, *_ = x.shape
     M = len(delays)
-    assert (
-        A.size(-1) == M
-    ), f"Last dimension of A must match the number of delays, got A: {A.size(-1)}, delays: {M}"
+    assert A.size(-1) == M, (
+        f"Last dimension of A must match the number of delays, got A: {A.size(-1)}, delays: {M}"
+    )
     if A.dim() == 3:
-        assert (
-            A.size(0) == batch_size
-        ), f"Batch size of A must match batch size of x, got A: {A.size(0)}, x: {batch_size}"
+        assert A.size(0) == batch_size, (
+            f"Batch size of A must match batch size of x, got A: {A.size(0)}, x: {batch_size}"
+        )
 
     if block_size is None:
         block_size = min(delays)
@@ -138,9 +132,10 @@ def delay_state_space(
         raise ValueError("block_size must satisfy 1 <= block_size <= min(delays)")
 
     if B is None and x.dim() == 3:
-        assert (
-            x.size(-1) == M
-        ), f"Last dimension of x must match the number of delays when B is None, got x: {x.size(-1)}, delays: {M}"
+        assert x.size(-1) == M, (
+            f"Last dimension of x must match the number of delays when B is None, "
+            f"got x: {x.size(-1)}, delays: {M}"
+        )
     Bx = _ssm_B(B, x, batch_size, M)
     if Bx.dim() == 2:
         Bx = torch.cat([Bx.unsqueeze(-1), Bx.new_zeros(batch_size, samples, M - 1)], -1)
@@ -159,24 +154,23 @@ def delay_state_space(
                 1,
                 2,
             ), f"Initial delay state zi[{index}] must be 1D or 2D, got {state.shape}"
-            assert (
-                state.size(-1) == delay
-            ), f"Last dimension of zi[{index}] must match delay {delay}, got {state.size(-1)}"
+            assert state.size(-1) == delay, (
+                f"Last dimension of zi[{index}] must match delay {delay}, got {state.size(-1)}"
+            )
             if state.dim() == 1:
                 state = state.unsqueeze(0).expand(batch_size, -1)
             else:
-                assert (
-                    state.size(0) == batch_size
-                ), f"Batch size of zi[{index}] must match batch size of x, got zi: {state.size(0)}, x: {batch_size}"
+                assert state.size(0) == batch_size, (
+                    f"Batch size of zi[{index}] must match batch size of x, "
+                    f"got zi: {state.size(0)}, x: {batch_size}"
+                )
             expanded_states.append(state)
         initial = tuple(expanded_states)
 
     def read(line: int, start: int, stop: int) -> Tensor:
-        return _read_delay_line(
-            initial[line], blocks, block_size, delays[line], line, start, stop
-        )
+        return _read_delay_line(initial[line], blocks, block_size, delays[line], line, start, stop)
 
-    blocks: list[Optional[Tensor]] = []
+    blocks: list[Tensor | None] = []
     history = max(delays)
     outputs, pending, pending_start = [], [], 0
     for start in range(0, samples, block_size):

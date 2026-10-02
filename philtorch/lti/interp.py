@@ -1,23 +1,18 @@
 import torch
-from torch import Tensor
 import torch.nn.functional as F
-from typing import Optional, Union
+from torch import Tensor
 
 from .recur import LTIRecurrence
 
 
 def _first_order_filt(
-    x: Tensor, a: Tensor, zi: Tensor, b: Optional[Tensor] = None, **kwargs
+    x: Tensor, a: Tensor, zi: Tensor, b: Tensor | None = None, **kwargs
 ) -> Tensor:
     xb = x if b is None else x * b
-    return LTIRecurrence.apply(
-        a.broadcast_to(x.shape[0]), zi.broadcast_to(x.shape[0]), xb
-    )
+    return LTIRecurrence.apply(a.broadcast_to(x.shape[0]), zi.broadcast_to(x.shape[0]), xb)
 
 
-def _cubic_coeff(
-    x: Tensor, parallel_form: bool, scipy_padding: bool, **kwargs
-) -> Tensor:
+def _cubic_coeff(x: Tensor, parallel_form: bool, scipy_padding: bool, **kwargs) -> Tensor:
     r = torch.tensor(3**0.5 - 2, device=x.device, dtype=x.dtype)
     # k_0 = min(14, x.shape[-1] - 1)
 
@@ -31,9 +26,7 @@ def _cubic_coeff(
         causal_zi = x[..., 1:] @ powers
 
     if parallel_form:
-        mirrored_x = torch.cat(
-            [x, x.flip(-1) if scipy_padding else x[..., :-1].flip(-1)], dim=-1
-        )
+        mirrored_x = torch.cat([x, x.flip(-1) if scipy_padding else x[..., :-1].flip(-1)], dim=-1)
 
         h = _first_order_filt(mirrored_x, r, causal_zi, **kwargs)
         causal_h, anticausal_h = h[..., : x.shape[-1]], h[..., -x.shape[-1] :].flip(-1)
@@ -75,14 +68,22 @@ def cspline(
     **kwargs,
 ) -> Tensor:
     r"""
-    Compute the coefficients for cubic spline interpolation of the input tensor `x` using the method described in "B-Spline Signal Processing: Part II: Efficient Design and Applications" by M. Unser.
+    Compute the coefficients for cubic spline interpolation of the input tensor
+    `x` using the method described in "B-Spline Signal Processing: Part II:
+    Efficient Design and Applications" by M. Unser.
 
     Args:
         x (Tensor): Input tensor of shape (B, L).
-        parallel_form (bool): If True, use the partial fraction expansion form for cubic spline interpolation. If False, use cascaded form. Default is True.
-        scipy_padding (bool): If True, use the same padding convention as `scipy.signal.cspline1d` (mirrored padding). If False, use PyTorch's reflect padding convention. Default is False.
-        lamb (float): Smoothing coefficient. Current implementation only supports `lamb=0.0` (no smoothing). Default is 0.0.
-        **kwargs: Additional keyword arguments passed to the underlying `linear_recurrence` function for inverse filtering.
+        parallel_form (bool): If True, use the partial fraction expansion form
+            for cubic spline interpolation. If False, use cascaded form. Default
+            is True.
+        scipy_padding (bool): If True, use the same padding convention as
+            `scipy.signal.cspline1d` (mirrored padding). If False, use PyTorch's
+            reflect padding convention. Default is False.
+        lamb (float): Smoothing coefficient. Current implementation only
+            supports `lamb=0.0` (no smoothing). Default is 0.0.
+        **kwargs: Additional keyword arguments passed to the underlying
+            `linear_recurrence` function for inverse filtering.
     Returns:
         Tensor: Coefficients for cubic spline interpolation of shape (B, L).
     """
@@ -102,23 +103,22 @@ def cubic_spline(x: Tensor, m: int, scipy_padding: bool = False, **kwargs) -> Te
     Args:
         x (Tensor): Input tensor of shape (B, L).
         m (int): Interpolation factor (must be an integer >= 1).
-        scipy_padding (bool): If True, use the same padding convention as `scipy.signal.cspline1d` (mirrored padding). If False, use PyTorch's reflect padding convention. Default is False.
-        **kwargs: Additional keyword arguments passed to the underlying `cspline` function for coefficient computation.
+        scipy_padding (bool): If True, use the same padding convention as
+            `scipy.signal.cspline1d` (mirrored padding). If False, use PyTorch's
+            reflect padding convention. Default is False.
+        **kwargs: Additional keyword arguments passed to the underlying
+            `cspline` function for coefficient computation.
 
     Returns:
         Tensor: Upsampled tensor of shape (B, (L - 1) * m + 1).
     """
-    assert m >= 1 and isinstance(
-        m, int
-    ), "Interpolation factor m must be an integer >= 1."
+    assert m >= 1 and isinstance(m, int), "Interpolation factor m must be an integer >= 1."
     if m == 1:
         return x
 
     c = cspline(x, scipy_padding=scipy_padding, **kwargs)
 
-    kernel_idx = torch.arange(-2, 2, 1 / m, device=x.device, dtype=x.dtype).reshape(
-        4, m
-    )
+    kernel_idx = torch.arange(-2, 2, 1 / m, device=x.device, dtype=x.dtype).reshape(4, m)
     kernel = _cubic_spline_kernel(kernel_idx).flip(0).T
 
     interped = F.conv1d(

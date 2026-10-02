@@ -63,18 +63,12 @@ def _layout(name, dtype):
         "B(b,M) C(b,M) D(b)": dict(x=siso, B=randn(b, M), C=randn(b, M), D=randn(b)),
         "B(M) C(M) D(1)": dict(x=siso, B=randn(M), C=randn(M), D=randn(1)),
         "B(M) C(P,M) D(P)": dict(x=siso, B=randn(M), C=randn(P, M), D=randn(P)),
-        "B(b,M) C(b,P,M) D(b,P)": dict(
-            x=siso, B=randn(b, M), C=randn(b, P, M), D=randn(b, P)
-        ),
+        "B(b,M) C(b,P,M) D(b,P)": dict(x=siso, B=randn(b, M), C=randn(b, P, M), D=randn(b, P)),
         "B(M) out_idx D()": dict(x=siso, B=randn(M), D=randn(()), out_idx=2),
         "defaults 2D": dict(x=siso),
         "B(M,F) C(M) D(F)": dict(x=mimo, B=randn(M, F), C=randn(M), D=randn(F)),
-        "B(b,M,F) C(b,M) D(b,F)": dict(
-            x=mimo, B=randn(b, M, F), C=randn(b, M), D=randn(b, F)
-        ),
-        "B(M,F) C(P,M) D(P,F)": dict(
-            x=mimo, B=randn(M, F), C=randn(P, M), D=randn(P, F)
-        ),
+        "B(b,M,F) C(b,M) D(b,F)": dict(x=mimo, B=randn(b, M, F), C=randn(b, M), D=randn(b, F)),
+        "B(M,F) C(P,M) D(P,F)": dict(x=mimo, B=randn(M, F), C=randn(P, M), D=randn(P, F)),
         "B(b,M,F) C(b,P,M) D(b,P,F)": dict(
             x=mimo, B=randn(b, M, F), C=randn(b, P, M), D=randn(b, P, F)
         ),
@@ -320,9 +314,7 @@ def test_delay_state_space_reuses_returned_states():
 
     expected_y, expected_zf = delay_state_space(A, x, delays, B=B, C=C, D=D, zi=zi)
     first_y, first_zf = delay_state_space(A, x[:, :3], delays, B=B, C=C, D=D, zi=zi)
-    second_y, actual_zf = delay_state_space(
-        A, x[:, 3:], delays, B=B, C=C, D=D, zi=first_zf
-    )
+    second_y, actual_zf = delay_state_space(A, x[:, 3:], delays, B=B, C=C, D=D, zi=first_zf)
 
     torch.testing.assert_close(torch.cat([first_y, second_y], dim=1), expected_y)
     _assert_states_close(actual_zf, expected_zf)
@@ -336,14 +328,10 @@ def test_delay_state_space_zero_length(with_zi, out_idx):
     A = torch.eye(2)
     C = torch.ones(2) if out_idx is None else None
     zi = (
-        (torch.tensor([[1.0, 2.0], [3.0, 4.0]]), torch.tensor([5.0, 6.0, 7.0]))
-        if with_zi
-        else None
+        (torch.tensor([[1.0, 2.0], [3.0, 4.0]]), torch.tensor([5.0, 6.0, 7.0])) if with_zi else None
     )
 
-    result = delay_state_space(
-        A, x, delays, C=C, D=torch.tensor(0.5), zi=zi, out_idx=out_idx
-    )
+    result = delay_state_space(A, x, delays, C=C, D=torch.tensor(0.5), zi=zi, out_idx=out_idx)
 
     y = result[0] if with_zi else result
     assert y.shape == (2, 0)
@@ -375,9 +363,7 @@ def test_delay_state_space_zero_length(with_zi, out_idx):
 def test_delay_state_space_validates_delays_and_block_size(delays, block_size, message):
     M = max(len(delays), 1)
     with pytest.raises(ValueError, match=message):
-        delay_state_space(
-            torch.zeros(M, M), torch.zeros(1, 4), delays, block_size=block_size
-        )
+        delay_state_space(torch.zeros(M, M), torch.zeros(1, 4), delays, block_size=block_size)
 
 
 @pytest.mark.parametrize(
@@ -412,9 +398,7 @@ def test_delay_state_space_validates_signal_and_feedback_matrix(A, x, message):
 
 def test_delay_state_space_rejects_C_with_out_idx():
     with pytest.raises(ValueError, match="C and out_idx"):
-        delay_state_space(
-            torch.zeros(2, 2), torch.zeros(2, 4), (2, 3), C=torch.ones(2), out_idx=0
-        )
+        delay_state_space(torch.zeros(2, 2), torch.zeros(2, 4), (2, 3), C=torch.ones(2), out_idx=0)
 
 
 @pytest.mark.parametrize(

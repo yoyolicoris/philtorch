@@ -1,7 +1,8 @@
+from functools import reduce
+
 import torch
 import torch.nn.functional as F
 from torch import Tensor
-from functools import reduce
 
 
 def trim_zeros(p: Tensor) -> Tensor:
