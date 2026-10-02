@@ -33,7 +33,7 @@ _REQUIRES_GRAD_CASES = [
             "cuda",
             marks=pytest.mark.skipif(
                 not torch.cuda.is_available() or not HELION_LOADED,
-                reason="CUDA not available",
+                reason="CUDA or Helion not available",
             ),
         ),
     ],
@@ -105,7 +105,7 @@ def test_hl_lti_recurN_pt2_compatibility(
             "cuda",
             marks=pytest.mark.skipif(
                 not torch.cuda.is_available() or not HELION_LOADED,
-                reason="CUDA not available",
+                reason="CUDA or Helion not available",
             ),
         ),
     ],

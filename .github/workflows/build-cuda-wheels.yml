@@ -17,9 +17,13 @@ name: Build CUDA wheels
 # - `auditwheel repair --plat <platform>` is a fail-loud conformance gate, and
 #   a check step then rejects bundled CUDA or torch libraries, leftover debug
 #   info, and a missing torch pin.
+# - A GPU job then installs one wheel per torch/CUDA build, with --no-deps,
+#   next to the matching official torch on a Modal GPU, and runs the CUDA
+#   tests against it (scripts/modal_smoke_test.py).
 # - PRs and dev pushes build one smoke leg (newest Python x newest torch x
 #   newest CUDA), and only when the build inputs change. Manual dispatches
-#   build the full matrix (currently 32 legs).
+#   build the full matrix (currently 32 legs) and GPU-test each of its 8
+#   torch/CUDA builds.
 
 on:
   push:
@@ -28,6 +32,7 @@ on:
       - ".github/workflows/build-cuda-wheels.yml"
       - "cuda_wheel_matrix.json"
       - "scripts/cuda_wheel_version.py"
+      - "scripts/modal_smoke_test.py"
       - "setup.py"
       - "build_support.py"
       - "pyproject.toml"
@@ -41,6 +46,7 @@ on:
       - ".github/workflows/build-cuda-wheels.yml"
       - "cuda_wheel_matrix.json"
       - "scripts/cuda_wheel_version.py"
+      - "scripts/modal_smoke_test.py"
       - "setup.py"
       - "build_support.py"
       - "pyproject.toml"
@@ -62,6 +68,7 @@ jobs:
     runs-on: ubuntu-latest
     outputs:
       matrix: ${{ steps.matrix.outputs.matrix }}
+      smoke: ${{ steps.matrix.outputs.smoke }}
     steps:
       - uses: actions/checkout@v4
 
@@ -71,18 +78,28 @@ jobs:
           GITHUB_EVENT_NAME: ${{ github.event_name }}
         run: |
           pip install -q packaging
-          MATRIX=$(python3 scripts/cuda_wheel_version.py --list)
-          if [ "${GITHUB_EVENT_NAME}" != "workflow_dispatch" ]; then
-            # Compare versions numerically ("3.9" < "3.13") and pick the newest
-            # Python, then torch, then CUDA, independent of file order.
-            MATRIX=$(python3 -c '
-          import json, sys
-          def key(leg):
-              return [tuple(int(p) for p in leg[k].split(".")) for k in ("python", "torch", "cuda")]
-          print(json.dumps([max(json.loads(sys.argv[1]), key=key)]))
-          ' "$MATRIX")
-          fi
-          echo "matrix=${MATRIX}" >> "$GITHUB_OUTPUT"
+          python3 scripts/cuda_wheel_version.py --list > legs.json
+          python3 - >> "$GITHUB_OUTPUT" <<'EOF'
+          import json, os
+
+          legs = json.load(open("legs.json"))
+
+          def newest(group):
+              # Compare versions numerically ("3.9" < "3.13"): newest Python,
+              # then torch, then CUDA, independent of file order.
+              return max(group, key=lambda leg: [
+                  tuple(int(p) for p in leg[k].split(".")) for k in ("python", "torch", "cuda")
+              ])
+
+          if os.environ["GITHUB_EVENT_NAME"] != "workflow_dispatch":
+              legs = [newest(legs)]
+          # One GPU test per torch/CUDA build, on its newest Python.
+          builds = {}
+          for leg in legs:
+              builds.setdefault((leg["torch"], leg["cuda"]), []).append(leg)
+          print("matrix=" + json.dumps(legs))
+          print("smoke=" + json.dumps([newest(group) for group in builds.values()]))
+          EOF
 
   build:
     # The leg is a single matrix dimension holding a JSON object; without this
@@ -197,6 +214,8 @@ jobs:
             grep "^Requires-Dist" check/philtorch-*.dist-info/METADATA
             exit 1
           fi
+          pip install -q twine
+          twine check --strict "$WHEEL"
           ls -l "$WHEEL"
 
       - name: Upload wheel artifact
@@ -204,3 +223,45 @@ jobs:
         with:
           name: cuda-wheels-torch${{ matrix.leg.torch }}-cu${{ matrix.leg.cuda }}-py${{ matrix.leg.python }}
           path: repaired/*.whl
+
+  gpu-test:
+    # Runs the CUDA tests against the exact wheel built above, on a Modal GPU.
+    name: GPU test (py${{ matrix.leg.python }}, torch${{ matrix.leg.torch }}+cu${{ matrix.leg.cuda }})
+    needs: [resolve-matrix, build]
+    # Repository secrets are not available to pull requests from forks.
+    if: github.event_name != 'pull_request' || github.event.pull_request.head.repo.full_name == github.repository
+    runs-on: ubuntu-latest
+    timeout-minutes: 60
+    strategy:
+      fail-fast: false
+      matrix:
+        leg: ${{ fromJSON(needs.resolve-matrix.outputs.smoke) }}
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.13"
+
+      - uses: actions/download-artifact@v4
+        with:
+          name: cuda-wheels-torch${{ matrix.leg.torch }}-cu${{ matrix.leg.cuda }}-py${{ matrix.leg.python }}
+          path: wheel/
+
+      - name: Run CUDA tests on a Modal GPU
+        env:
+          MODAL_TOKEN_ID: ${{ secrets.MODAL_TOKEN_ID }}
+          MODAL_TOKEN_SECRET: ${{ secrets.MODAL_TOKEN_SECRET }}
+          SMOKE_PYTHON: ${{ matrix.leg.python }}
+          SMOKE_TORCH: ${{ matrix.leg.torch }}
+          SMOKE_TORCH_INDEX_URL: ${{ matrix.leg.torch_index_url }}
+          # T4 (sm_75) is Modal's cheapest GPU and our oldest target
+          # architecture. Set the MODAL_GPU repository variable to use another.
+          SMOKE_GPU: ${{ vars.MODAL_GPU || 'T4' }}
+        run: |
+          if [ -z "$MODAL_TOKEN_ID" ] || [ -z "$MODAL_TOKEN_SECRET" ]; then
+            echo "::error::Set the MODAL_TOKEN_ID and MODAL_TOKEN_SECRET repository secrets"
+            exit 1
+          fi
+          pip install -q "modal>=1,<2"
+          modal run scripts/modal_smoke_test.py --wheel wheel/*.whl
