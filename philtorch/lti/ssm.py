@@ -425,37 +425,7 @@ def state_space(
     elif zi.dim() == 1:
         zi = zi.unsqueeze(0).expand(batch_size, -1)
 
-    if x.dim() == 2:
-        features = -1
-    else:
-        features = x.size(-1)
-
-    if B is not None:
-        match B.shape:
-            case (BM,) if BM == M:
-                assert x.dim() == 2, (
-                    f"Input signal x must be 2D when B is of shape {(M,)}, got {x.shape}"
-                )
-                Bx = x.unsqueeze(-1) * B
-            case (B_batch, BM) if B_batch == batch_size and BM == M:
-                assert x.dim() == 2, (
-                    f"Input signal x must be 2D when B is of shape {batch_size, M}, got {x.shape}"
-                )
-                Bx = x.unsqueeze(-1) * B.unsqueeze(1)
-            case (BM, F) if BM == M and F == features:
-                Bx = x @ B.T
-            case (B_batch, BM, F) if B_batch == batch_size and BM == M and F == features:
-                Bx = torch.linalg.vecdot(
-                    B.unsqueeze(1).conj(), x.unsqueeze(-2)
-                )  # (batch_size, N, M)
-            case _:
-                raise ValueError(
-                    f"Input matrix B must be of shape ({(M,)}), ({batch_size, M}), "
-                    f"({M, features}), or ({batch_size, M, features}), "
-                    f"got {B.shape}"
-                )
-    else:
-        Bx = x
+    Bx = _ssm_B(B, x, batch_size, M)
 
     if return_zf or out_idx is None:
         h = state_space_recursion(A, zi, Bx, unroll_factor=unroll_factor, out_idx=None)
@@ -477,14 +447,101 @@ def state_space(
     return y
 
 
+def _ssm_B(B, x, batch_size, M):
+    """Apply input matrix B to input sequence x.
+
+    Args:
+        B (Tensor, optional): Input matrix or broadcastable variants. If None,
+            ``x`` is returned unchanged.
+        x (Tensor): Input sequence (B, N, F) or (B, N).
+        batch_size (int): Batch size B.
+        M (int): State dimension.
+
+    Returns:
+        Tensor: ``B x`` with shape (B, N, M), or ``x`` when B is None.
+    """
+    if B is None:
+        return x
+
+    # Matching on x.dim() first makes every case unambiguous, e.g. an (M, F)
+    # matrix is never mistaken for a batched (B, M) vector when B == M.
+    features = x.size(-1)
+    match x.dim(), tuple(B.shape):
+        case 2, (m,) if m == M:
+            return x.unsqueeze(-1) * B
+        case 2, (b, m) if (b, m) == (batch_size, M):
+            return x.unsqueeze(-1) * B.unsqueeze(1)
+        case 3, (m, f) if (m, f) == (M, features):
+            return x @ B.T
+        case 3, (b, m, f) if (b, m, f) == (batch_size, M, features):
+            return x @ B.mT
+    raise _ssm_B_shape_error(B, x, batch_size, M)
+
+
+def _ssm_B_shape_error(B, x, batch_size, M):
+    if x.dim() == 2:
+        allowed = f"({M},) or ({batch_size}, {M})"
+    else:
+        features = x.size(-1)
+        allowed = f"({M}, {features}) or ({batch_size}, {M}, {features})"
+    return ValueError(
+        f"Input matrix B must be of shape {allowed} for {x.dim()}D input x, got {tuple(B.shape)}"
+    )
+
+
+def _ssm_D(D, x, batch_size):
+    """Apply feedthrough matrix D to input sequence x.
+
+    Args:
+        D (Tensor): Feedthrough matrix or broadcastable variants.
+        x (Tensor): Input sequence (B, N, F) or (B, N).
+        batch_size (int): Batch size B.
+
+    Returns:
+        Tensor: ``D x`` with shape (B, N), (B, N, F), or (B, N, P).
+    """
+    features = x.size(-1)
+    match x.dim(), tuple(D.shape):
+        case 2, (b,) if b == batch_size:
+            return D.unsqueeze(1) * x
+        case 2, () | (1,):
+            return x * D
+        case 2, (_,):
+            return x.unsqueeze(-1) * D
+        case 2, (b, _) if b == batch_size:
+            return x.unsqueeze(-1) * D.unsqueeze(1)
+        case 3, (f,) if f == features:
+            return x @ D
+        case 3, () | (1,):
+            return x * D
+        case 3, (b, f) if (b, f) == (batch_size, features):
+            return (x @ D.unsqueeze(-1)).squeeze(-1)
+        case 3, (_, f) if f == features:
+            return x @ D.T
+        case 3, (b, _, f) if (b, f) == (batch_size, features):
+            return x @ D.mT
+        case 2, _:
+            allowed = f"(), (1,), ({batch_size},), (P,), or ({batch_size}, P)"
+        case _:
+            allowed = (
+                f"(), (1,), ({features},), ({batch_size}, {features}), "
+                f"(P, {features}), or ({batch_size}, P, {features})"
+            )
+    raise ValueError(
+        f"Input matrix D must be of shape {allowed} for {x.dim()}D input x, got {tuple(D.shape)}"
+    )
+
+
 def _ssm_C_D(h, x, C, D, batch_size, M):
     """Apply output matrix C and feedthrough D to state sequence h.
 
     Handles many broadcastable shapes for C and D to compute y = C h + D x.
+    Where a batched and an unbatched shape coincide (e.g. P == B), the batched
+    interpretation wins.
 
     Args:
         h (Tensor): State sequence (B, N, M).
-        x (Tensor): Input sequence (B, N, ...) or (B, N).
+        x (Tensor): Input sequence (B, N, F) or (B, N).
         C (Tensor, optional): Output matrix or broadcastable variants.
         D (Tensor, optional): Direct feedthrough matrix or broadcastable variants.
         batch_size (int): Batch size B.
@@ -493,62 +550,22 @@ def _ssm_C_D(h, x, C, D, batch_size, M):
     Returns:
         Tensor: Output sequence y with appropriate broadcasted shape.
     """
-    if x.dim() == 2:
-        features = -1
-    else:
-        features = x.size(-1)
-
-    if D is not None:
-        match D.shape:
-            case (F,) if F == features:
-                Dx = x @ D
-            case (D_batch,) if D_batch == batch_size:
-                assert x.dim() == 2, (
-                    f"Input signal x must be 2D when D is of shape {(batch_size,)}, got {x.shape}"
-                )
-                Dx = D.unsqueeze(1) * x
-            case (1,) | ():
-                Dx = x * D
-            case (_,):
-                assert x.dim() == 2, (
-                    f"Input signal x must be 2D when D is of shape (_,), got {x.shape}"
-                )
-                Dx = D * x.unsqueeze(-1)
-            case (D_batch, F) if D_batch == batch_size and F == features:
-                Dx = torch.linalg.vecdot(D.unsqueeze(1).conj(), x)
-            case (D_batch, _) if D_batch == batch_size:
-                assert x.dim() == 2, (
-                    f"Input signal x must be 2D when D is of shape ({batch_size}, _), got {x.shape}"
-                )
-                Dx = D.unsqueeze(1) * x.unsqueeze(-1)
-            case (_, F) if F == features:
-                Dx = x @ D.T
-            case (D_batch, _, F) if D_batch == batch_size and F == features:
-                Dx = torch.linalg.vecdot(D.unsqueeze(1).conj(), x.unsqueeze(-2))
-            case _:
-                raise ValueError(
-                    f"Input matrix D must be of shape ({(batch_size,)}), (), "
-                    f"({features},), (_, ), ({batch_size}, {features}), "
-                    f"({batch_size}, _), (_, {features}), "
-                    f"or ({batch_size}, _, {features}), got {D.shape}"
-                )
-    else:
-        Dx = None
+    Dx = None if D is None else _ssm_D(D, x, batch_size)
 
     if C is not None:
-        match C.shape:
-            case (CM,) if CM == M:
+        match tuple(C.shape):
+            case (m,) if m == M:
                 Ch = h @ C
-            case (C_batch, CM) if C_batch == batch_size and CM == M:
-                Ch = torch.linalg.vecdot(C.unsqueeze(1).conj(), h)
-            case (_, CM) if CM == M:
+            case (b, m) if (b, m) == (batch_size, M):
+                Ch = (h @ C.unsqueeze(-1)).squeeze(-1)
+            case (_, m) if m == M:
                 Ch = h @ C.T
-            case (C_batch, _, CM) if C_batch == batch_size and CM == M:
+            case (b, _, m) if (b, m) == (batch_size, M):
                 Ch = h @ C.mT
             case _:
                 raise ValueError(
-                    f"Output matrix C must be of shape ({(M,)}), ({batch_size, M}), "
-                    f"(_, {M}), or ({batch_size}, _, {M}), got {C.shape}"
+                    f"Output matrix C must be of shape ({M},), ({batch_size}, {M}), "
+                    f"(P, {M}), or ({batch_size}, P, {M}), got {tuple(C.shape)}"
                 )
     else:
         Ch = h
@@ -708,43 +725,24 @@ def diag_state_space(
         case _:
             assert False, f"Vinv must be 2D or 3D, got {Vinv.shape}"
 
-    if x.dim() == 2:
-        features = -1
-    else:
-        features = x.size(-1)
-
     if B is not None:
-        match B.shape:
-            case (BM,) if BM == M:
-                assert x.dim() == 2, (
-                    f"Input signal x must be 2D when B is of shape {(M,)}, got {x.shape}"
-                )
+        # Same dispatch as _ssm_B, but Vinv is folded into B before touching x.
+        features = x.size(-1)
+        match x.dim(), tuple(B.shape):
+            case 2, (m,) if m == M:
                 VinvB = Vinv @ B
                 if VinvB.dim() == 2:
                     VinvB = VinvB.unsqueeze(1)
                 VinvBx = x.unsqueeze(-1) * VinvB
-            case (B_batch, BM) if B_batch == batch_size and BM == M:
-                assert x.dim() == 2, (
-                    f"Input signal x must be 2D when B is of shape {batch_size, M}, got {x.shape}"
-                )
-                VinvB = (
-                    B @ Vinv.T
-                    if Vinv.dim() == 2
-                    else torch.linalg.vecdot(Vinv.conj(), B.unsqueeze(1))
-                )
+            case 2, (b, m) if (b, m) == (batch_size, M):
+                VinvB = (Vinv @ B.unsqueeze(-1)).squeeze(-1)
                 VinvBx = x.unsqueeze(-1) * VinvB.unsqueeze(1)
-            case (BM, F) if BM == M and F == features:
-                VinvB = Vinv @ B
-                VinvBx = x @ VinvB.mT
-            case (B_batch, BM, F) if B_batch == batch_size and BM == M and F == features:
-                VinvB = Vinv @ B
-                VinvBx = torch.linalg.vecdot(VinvB.unsqueeze(1).conj(), x.unsqueeze(-2))
+            case 3, (m, f) if (m, f) == (M, features):
+                VinvBx = x @ (Vinv @ B).mT
+            case 3, (b, m, f) if (b, m, f) == (batch_size, M, features):
+                VinvBx = x @ (Vinv @ B).mT
             case _:
-                raise ValueError(
-                    f"Input matrix B must be of shape ({(M,)}), ({batch_size, M}), "
-                    f"({M, features}), or ({batch_size, M, features}), "
-                    f"got {B.shape}"
-                )
+                raise _ssm_B_shape_error(B, x, batch_size, M)
     elif x.dim() == 2 and Vinv.dim() == 2:
         VinvBx = x.unsqueeze(-1) * Vinv[:, 0]
     elif x.dim() == 2 and Vinv.dim() == 3:

@@ -1,3 +1,4 @@
+from .delay import delay_state_space
 from .filtering import comb_filter, filtfilt, fir, lfilter, lfilter_zi, lfiltic
 from .interp import cubic_spline
 from .recur import linear_recurrence
@@ -11,6 +12,7 @@ __all__ = [
     "state_space_recursion",
     "diag_state_space",
     "state_space",
+    "delay_state_space",
     "fir",
     "linear_recurrence",
     "comb_filter",

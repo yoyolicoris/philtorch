@@ -130,6 +130,8 @@ y_zero_phase = filtfilt(b, a, x)
             - State-space models.
         - `diag_state_space`:
             - State-space models with diagonalisable state matrix.
+        - `delay_state_space`:
+            - State-space models whose states are delay lines of arbitrary integer length, such as feedback delay networks.
         - `state_space_recursion`:
             - The core recursion function for state-space models.
         - `linear_recurrence`:
@@ -157,6 +159,7 @@ The supported high-level interfaces are exported from [`philtorch.lti`](philtorc
 | Evaluate a scalar linear recurrence. | `philtorch.lti.linear_recurrence` or `philtorch.lpv.linear_recurrence` | Choose the namespace according to whether the recurrence coefficient is fixed or time-varying. |
 | Evaluate a state-space system. | `philtorch.lti.state_space` or `philtorch.lpv.state_space` | Use `state_space_recursion` directly when only the internal state sequence is needed. |
 | Evaluate an LTI state-space system through eigendecomposition. | `philtorch.lti.diag_state_space` | Requires a diagonalisable `A`, or explicitly supplied `L`, `V`, and/or `Vinv`; diagonalisation failures propagate. |
+| Evaluate an LTI system whose states are delay lines, such as a feedback delay network. | `philtorch.lti.delay_state_space` | `delays` are positive integers, one per line; `B`, `C`, `D`, and `out_idx` follow `state_space`. `zi` holds one initial queue per line, and `(y, zf)` is returned only when it is given. |
 | Apply an LTI comb filter or cubic-spline interpolation. | `philtorch.lti.comb_filter` or `philtorch.lti.cubic_spline` | These utilities are also part of the public LTI exports. |
 
 ## Comparison with `scipy.signal`
