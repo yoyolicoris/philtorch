@@ -270,7 +270,26 @@ jobs:
             exit 1
           fi
           pip install -q "modal>=1,<2"
-          modal run scripts/modal_smoke_test.py --wheel wheel/*.whl
+          # Modal rate-limits app creation, and every leg creates its app at
+          # the same moment. Retry only when the app was never created, after
+          # a randomised wait so the legs spread out; once Modal prints
+          # "Initialized", a failure is a real one.
+          set -o pipefail
+          for ATTEMPT in 1 2 3 4 5; do
+            if modal run scripts/modal_smoke_test.py --wheel wheel/*.whl 2>&1 | tee modal.log; then
+              exit 0
+            fi
+            if grep -q "Initialized. View run at" modal.log ||
+              ! grep -q "App create rate limit exceeded" modal.log; then
+              exit 1
+            fi
+            [ "$ATTEMPT" -lt 5 ] || break
+            WAIT=$((ATTEMPT * 30 + RANDOM % 60))
+            echo "::warning::Modal rate-limited app creation; retrying in ${WAIT}s"
+            sleep "$WAIT"
+          done
+          echo "::error::Modal still rate-limited app creation after 5 attempts"
+          exit 1
 
   publish:
     # Attaches every wheel to the release; deploy-cuda-index.yml then lists
