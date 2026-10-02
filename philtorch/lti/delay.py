@@ -12,7 +12,14 @@ _OUTPUT_CHUNK = 4096
 
 def _as_int(value: Any, message: str) -> int:
     """Convert Python, NumPy, or single-element integer tensor scalars to ``int``."""
-    if isinstance(value, bool) or (isinstance(value, Tensor) and value.dtype == torch.bool):
+    # Booleans are integers to operator.index, so reject them first: Python
+    # bools, bool tensors, and NumPy bools (dtype kind "b"), which NumPy
+    # before 2.3 still converts to 0 or 1, with only a DeprecationWarning.
+    if (
+        isinstance(value, bool)
+        or (isinstance(value, Tensor) and value.dtype == torch.bool)
+        or getattr(getattr(value, "dtype", None), "kind", None) == "b"
+    ):
         raise ValueError(message)
     try:
         return operator.index(value)
