@@ -82,6 +82,14 @@ Releases are cut from `dev`. The package version comes from the latest `v*` tag 
 
    Publishing the release triggers the PyPI upload in `build-wheels.yml`, which accepts tags starting with `v0.` or `v1.`.
 
+   It also starts the CUDA wheels, which take under an hour:
+   - `build-cuda-wheels.yml` builds every CUDA wheel in `cuda_wheel_matrix.json`, tests one per torch/CUDA build on a Modal GPU, and attaches them all to the release. It attaches none unless every build and test passes.
+   - `deploy-cuda-index.yml` then rebuilds the CUDA wheel index on GitHub Pages from every release's assets.
+
+   If a CUDA job fails, re-run it from the Actions tab. The upload skips wheels already on the release with the same contents and refuses different ones, because a published release's assets are never replaced. A failure that needs a code change needs a new patch release.
+
+   To rebuild the index without a release, for example after deleting one, run "Deploy CUDA wheel index" from the Actions tab.
+
    setuptools_scm versions `dev` builds by bumping the tag's last component. After `v0.6.0`, `dev` builds as `0.6.1.devN`, and versions keep increasing whichever release comes next. A two-part tag breaks that: after `v0.5`, `dev` built as `0.6.devN`, and once `v0.5.1` came out, the newer `0.5.2.devN` builds sorted below those older TestPyPI uploads.
 
 Do not merge a pull request into `main`. GitHub creates a new commit for every merge method, even rebase, so the tag would land on a commit outside `dev`'s history. Builds from `dev` would then fall back to the previous version, as happened with `v0.5`.

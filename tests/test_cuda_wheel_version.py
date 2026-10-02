@@ -196,8 +196,14 @@ def test_validate_matrix_accepts_minimal_matrix():
         # (torch, CUDA) pair would emit the same wheel twice.
         pytest.param(
             _matrix(builds=[_build(), _build()]),
-            "duplicate torch/CUDA combination",
+            "duplicate torch minor/CUDA combination",
             id="torch-cuda-dup",
+        ),
+        # Two patches of one minor would share that minor's package index.
+        pytest.param(
+            _matrix(builds=[_build(), _build(torch="2.14.0")]),
+            r"duplicate torch minor/CUDA combination \('2.14', '13.0'\)",
+            id="torch-minor-cuda-dup",
         ),
     ],
 )
