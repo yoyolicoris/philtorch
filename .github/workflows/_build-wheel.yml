@@ -53,7 +53,9 @@ jobs:
           echo "MACOSX_DEPLOYMENT_TARGET=14.0" >> "$GITHUB_ENV"
 
       - name: Install cibuildwheel
-        run: pip install cibuildwheel==2.23.3
+        # 2.23.4 or later: older releases download virtualenv from a GitHub
+        # blob URL, which GitHub now answers with HTTP 503 (Windows builds).
+        run: pip install cibuildwheel==2.23.4
 
       - name: Build wheels
         run: cibuildwheel --output-dir wheelhouse
