@@ -75,6 +75,9 @@ image = (
     # helion is the "extra" dependency in pyproject.toml. Its kernels only run
     # on CUDA, so without it here no CI job would run their tests.
     .pip_install("pytest", "numpy", "scipy", "helion>=1.0.0,<2")
+    # Run the Helion kernels with their default configs. Autotuning them on
+    # every run took about 10 minutes, and the tests check results, not speed.
+    .env({"HELION_AUTOTUNE_EFFORT": "none"})
 )
 app = modal.App("philtorch-cuda-smoke-test", image=image)
 
