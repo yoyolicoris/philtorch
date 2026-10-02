@@ -60,6 +60,13 @@ jobs:
       - name: Build wheels
         run: cibuildwheel --output-dir wheelhouse
         env:
+          # The wheel only loads with the torch minor it is compiled against,
+          # so it requires that minor: torch == X.Y.* (see setup.py). The sdist
+          # is built without this and keeps torch >= 2.4.0.
+          PHILTORCH_TORCH_PIN: ${{ inputs.torch_version }}
+          # Linux builds run in a container, which doesn't inherit the runner's
+          # environment; macOS and Windows build on the runner itself.
+          CIBW_ENVIRONMENT_PASS_LINUX: PHILTORCH_TORCH_PIN
           # PRs only need a quick sanity check against the latest stable
           # Python; other events (push/tag/release/dispatch) build the full
           # supported range.
@@ -96,6 +103,32 @@ jobs:
           # already-loaded copy.
           CIBW_REPAIR_WHEEL_COMMAND_MACOS: >-
             delocate-wheel --require-archs {delocate_archs} -e libtorch -e libc10 --ignore-missing-dependencies -w {dest_dir} -v {wheel}
+
+      - name: Check the torch pin
+        shell: bash
+        env:
+          TORCH_VERSION: ${{ inputs.torch_version }}
+        run: |
+          python - <<'EOF'
+          import glob, os, sys, zipfile
+
+          pin = "torch==" + os.environ["TORCH_VERSION"].rsplit(".", 1)[0] + ".*"
+          wheels = sorted(glob.glob("wheelhouse/*.whl"))
+          wrong = []
+          for path in wheels:
+              with zipfile.ZipFile(path) as wheel:
+                  name = next(n for n in wheel.namelist() if n.endswith(".dist-info/METADATA"))
+                  requires = [
+                      line.split(":", 1)[1].strip()
+                      for line in wheel.read(name).decode().splitlines()
+                      if line.startswith("Requires-Dist:")
+                  ]
+              if pin not in requires:
+                  wrong.append(f"  {os.path.basename(path)}: {requires}")
+          if not wheels or wrong:
+              sys.exit(f"Every wheel must require {pin}:\n" + "\n".join(wrong or ["  no wheels"]))
+          print(f"{len(wheels)} wheels require {pin}")
+          EOF
 
       - uses: actions/upload-artifact@v4
         with:
