@@ -60,7 +60,7 @@ _REQUIRES_GRAD_CASES = (
             "cuda",
             marks=pytest.mark.skipif(
                 not HELION_LOADED or not torch.cuda.is_available(),
-                reason="Helion not available",
+                reason="CUDA or Helion not available",
             ),
         ),
     ],
