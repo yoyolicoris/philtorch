@@ -146,9 +146,12 @@ def validate_matrix(data, path="<matrix>"):
         arch_error = _arch_support_error(cuda_version, arch_list)
         if arch_error:
             raise RuntimeError(f"{where}: 'cuda_arch_list': {arch_error}")
-        key = (torch_version, cuda_version)
+        # Each torch minor/CUDA pair gets its own package index (see
+        # scripts/generate_simple_index.py), which must hold one build per
+        # PhilTorch version; two patches of one minor would add a second.
+        key = (torch_version.rsplit(".", 1)[0], cuda_version)
         if key in seen:
-            raise RuntimeError(f"{where}: duplicate torch/CUDA combination {key}")
+            raise RuntimeError(f"{where}: duplicate torch minor/CUDA combination {key}")
         seen.add(key)
     return data
 

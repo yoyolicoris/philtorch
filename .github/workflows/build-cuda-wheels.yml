@@ -1,9 +1,9 @@
 name: Build CUDA wheels
 
 # Builds Linux CUDA wheels for every (PyTorch, CUDA, Python) combination in
-# cuda_wheel_matrix.json and uploads them as CI artifacts. Publishing them
-# (GitHub Release assets behind the PEP 503 index) is a separate step; see
-# issue #23.
+# cuda_wheel_matrix.json and uploads them as CI artifacts. For a published
+# release, it then attaches them to the release as assets, and
+# deploy-cuda-index.yml rebuilds the PEP 503 index that links to them.
 #
 # Design notes:
 # - The build matrix comes from `scripts/cuda_wheel_version.py --list`, so the
@@ -21,9 +21,13 @@ name: Build CUDA wheels
 #   next to the matching official torch on a Modal GPU, and runs the CUDA
 #   tests against it (scripts/modal_smoke_test.py).
 # - PRs and dev pushes build one smoke leg (newest Python x newest torch x
-#   newest CUDA), and only when the build inputs change. Manual dispatches
-#   build the full matrix (currently 32 legs) and GPU-test each of its 8
-#   torch/CUDA builds.
+#   newest CUDA), and only when the build inputs change. Releases and manual
+#   dispatches build the full matrix (currently 32 legs) and GPU-test each of
+#   its 8 torch/CUDA builds.
+# - A release's wheels are published only once every leg has built and every
+#   GPU test has passed. Assets already on the release are never replaced:
+#   a wheel already there with the same contents is skipped, so failed jobs
+#   can be re-run, and one with different contents fails the job.
 
 on:
   push:
@@ -53,6 +57,8 @@ on:
       - "MANIFEST.in"
       - "philtorch/csrc/**"
       - "third_party/**"
+  release:
+    types: [published]
   workflow_dispatch:
 
 permissions:
@@ -91,7 +97,7 @@ jobs:
                   tuple(int(p) for p in leg[k].split(".")) for k in ("python", "torch", "cuda")
               ])
 
-          if os.environ["GITHUB_EVENT_NAME"] != "workflow_dispatch":
+          if os.environ["GITHUB_EVENT_NAME"] not in ("release", "workflow_dispatch"):
               legs = [newest(legs)]
           # One GPU test per torch/CUDA build, on its newest Python.
           builds = {}
@@ -265,3 +271,74 @@ jobs:
           fi
           pip install -q "modal>=1,<2"
           modal run scripts/modal_smoke_test.py --wheel wheel/*.whl
+
+  publish:
+    # Attaches every wheel to the release; deploy-cuda-index.yml then lists
+    # them in the index. Same tag filter as the PyPI upload in build-wheels.yml.
+    needs: [resolve-matrix, build, gpu-test]
+    if: >
+      github.event_name == 'release' &&
+      (startsWith(github.event.release.tag_name, 'v0.') || startsWith(github.event.release.tag_name, 'v1.'))
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+    steps:
+      - uses: actions/download-artifact@v4
+        with:
+          pattern: cuda-wheels-*
+          merge-multiple: true
+          path: wheels/
+
+      - name: Upload wheels to the release
+        env:
+          GH_TOKEN: ${{ github.token }}
+          TAG: ${{ github.event.release.tag_name }}
+          MATRIX: ${{ needs.resolve-matrix.outputs.matrix }}
+        run: |
+          EXPECTED=$(echo "$MATRIX" | jq length)
+          FOUND=$(ls wheels/*.whl | wc -l)
+          if [ "$FOUND" -ne "$EXPECTED" ]; then
+            echo "::error::Expected $EXPECTED wheels, found $FOUND"
+            exit 1
+          fi
+          published() {
+            gh release view "$TAG" --repo "$GITHUB_REPOSITORY" \
+              --json assets --jq '.assets[] | "\(.name) \(.digest)"' > published.txt
+          }
+          published_digest() {
+            awk -v name="$(basename "$1")" '$1 == name { print $2 }' published.txt
+          }
+          digest() {
+            echo "sha256:$(sha256sum "$1" | cut -d' ' -f1)"
+          }
+          # Check every wheel before uploading any.
+          published
+          for WHEEL in wheels/*.whl; do
+            NAME=$(basename "$WHEEL")
+            VERSION=$(echo "$NAME" | cut -d- -f2)
+            if [ "${VERSION%%+*}" != "${TAG#v}" ]; then
+              echo "::error::$NAME was not built as version ${TAG#v}"
+              exit 1
+            fi
+            PUBLISHED=$(published_digest "$WHEEL")
+            if [ -n "$PUBLISHED" ] && [ "$PUBLISHED" != "$(digest "$WHEEL")" ]; then
+              echo "::error::$NAME is already on $TAG with different contents"
+              exit 1
+            fi
+          done
+          for WHEEL in wheels/*.whl; do
+            if [ -n "$(published_digest "$WHEEL")" ]; then
+              echo "$(basename "$WHEEL") is already on $TAG"
+            else
+              gh release upload "$TAG" "$WHEEL" --repo "$GITHUB_REPOSITORY"
+            fi
+          done
+          # The index links to assets by name, so check that every wheel is
+          # there under its own filename and with its own contents.
+          published
+          for WHEEL in wheels/*.whl; do
+            if [ "$(published_digest "$WHEEL")" != "$(digest "$WHEEL")" ]; then
+              echo "::error::$(basename "$WHEEL") is missing from $TAG or differs"
+              exit 1
+            fi
+          done

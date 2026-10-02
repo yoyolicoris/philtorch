@@ -1,0 +1,67 @@
+name: Deploy CUDA wheel index
+
+# Rebuilds the PEP 503 index of PhilTorch's CUDA wheels from the assets of
+# every published release (scripts/generate_simple_index.py) and deploys it to
+# GitHub Pages. It runs after "Build CUDA wheels" succeeds for a published
+# release, which attaches that release's wheels, and can be run by hand, e.g.
+# after a release is deleted.
+#
+# Pages must be enabled with GitHub Actions as its source. Both triggers run
+# on the default branch, which the github-pages environment allows to deploy
+# by default; a job in the release's own run would run on its tag instead.
+
+on:
+  workflow_run:
+    workflows: ["Build CUDA wheels"]
+    types: [completed]
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+# Deploy one site at a time, and never cancel one halfway.
+concurrency:
+  group: pages
+  cancel-in-progress: false
+
+jobs:
+  build:
+    if: >
+      github.event_name == 'workflow_dispatch' ||
+      (github.event.workflow_run.event == 'release' && github.event.workflow_run.conclusion == 'success')
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+      pages: read
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Configure Pages
+        id: pages
+        uses: actions/configure-pages@v6
+
+      - name: Generate index
+        env:
+          GH_TOKEN: ${{ github.token }}
+          BASE_URL: ${{ steps.pages.outputs.base_url }}
+        run: |
+          gh api --paginate --slurp "repos/$GITHUB_REPOSITORY/releases" > releases.json
+          python3 scripts/generate_simple_index.py releases.json --output site --base-url "$BASE_URL"
+
+      - uses: actions/upload-pages-artifact@v5
+        with:
+          path: site/
+
+  deploy:
+    needs: build
+    runs-on: ubuntu-latest
+    permissions:
+      pages: write
+      id-token: write
+    environment:
+      name: github-pages
+      url: ${{ steps.deployment.outputs.page_url }}
+    steps:
+      - name: Deploy to GitHub Pages
+        id: deployment
+        uses: actions/deploy-pages@v5
