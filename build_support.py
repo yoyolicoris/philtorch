@@ -33,3 +33,18 @@ def resolve_cuda_build(
         )
 
     return cuda_home is not None and (force_cuda or cuda_available)
+
+
+def torch_requirement(pinned_torch_version=""):
+    # A wheel's compiled extension only works with the PyTorch minor it was
+    # built against. Source builds and the CPU wheels keep the broad range;
+    # CUDA wheels set PHILTORCH_TORCH_PIN to the torch they were built with.
+    if not pinned_torch_version:
+        return "torch >= 2.4.0"
+    parts = pinned_torch_version.split(".")
+    if len(parts) != 3 or not all(part.isdigit() for part in parts):
+        raise RuntimeError(
+            "PHILTORCH_TORCH_PIN must be an exact X.Y.Z torch version; "
+            f"got {pinned_torch_version!r}."
+        )
+    return f"torch == {parts[0]}.{parts[1]}.*"

@@ -5,7 +5,18 @@ from typing import Any
 import torch
 import torch.nn.functional as F
 
-from . import _C  # noqa: F401
+from ._build_check import check_torch_build
+
+try:
+    from ._version import __version__ as __version__  # type: ignore
+except ImportError:
+    __version__ = Path(__file__).parent.joinpath("VERSION.txt").read_text().strip()
+
+# Fail clearly on a CUDA wheel installed next to a different torch, before
+# loading the extension would fail with an undefined-symbol error.
+check_torch_build(__version__, torch.__version__, torch.version.cuda)
+
+from . import _C  # noqa: E402, F401
 
 try:
     from ._helion import (
@@ -22,12 +33,6 @@ except ImportError:
     )
 else:
     HELION_LOADED = True
-
-
-try:
-    from ._version import __version__ as __version__  # type: ignore
-except ImportError:
-    __version__ = Path(__file__).parent.joinpath("VERSION.txt").read_text().strip()
 
 
 def _recurN_backward(f):

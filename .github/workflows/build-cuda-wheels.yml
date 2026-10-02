@@ -1,0 +1,206 @@
+name: Build CUDA wheels
+
+# Builds Linux CUDA wheels for every (PyTorch, CUDA, Python) combination in
+# cuda_wheel_matrix.json and uploads them as CI artifacts. Publishing them
+# (GitHub Release assets behind the PEP 503 index) is a separate step; see
+# issue #23.
+#
+# Design notes:
+# - The build matrix comes from `scripts/cuda_wheel_version.py --list`, so the
+#   checked-in JSON file is the single source of truth, including the build
+#   image. The workflow hardcodes no torch, CUDA or image versions.
+# - Each leg builds in the matrix's manylinux image, the same glibc 2.28
+#   environment the CPU wheels build in, with only the CUDA packages the build
+#   needs installed from NVIDIA's RHEL 8 repository. No GPU runner is needed:
+#   nvcc cross-compiles, and PHILTORCH_FORCE_CUDA=1 tells setup.py to take the
+#   CUDA path without a visible GPU (see build_support.py).
+# - `auditwheel repair --plat <platform>` is a fail-loud conformance gate, and
+#   a check step then rejects bundled CUDA or torch libraries, leftover debug
+#   info, and a missing torch pin.
+# - PRs and dev pushes build one smoke leg (newest Python x newest torch x
+#   newest CUDA), and only when the build inputs change. Manual dispatches
+#   build the full matrix (currently 32 legs).
+
+on:
+  push:
+    branches: ["dev"]
+    paths:
+      - ".github/workflows/build-cuda-wheels.yml"
+      - "cuda_wheel_matrix.json"
+      - "scripts/cuda_wheel_version.py"
+      - "setup.py"
+      - "build_support.py"
+      - "pyproject.toml"
+      - "MANIFEST.in"
+      - "philtorch/csrc/**"
+      - "third_party/**"
+  pull_request:
+    branches: ["dev"]
+    # Same list as push.
+    paths:
+      - ".github/workflows/build-cuda-wheels.yml"
+      - "cuda_wheel_matrix.json"
+      - "scripts/cuda_wheel_version.py"
+      - "setup.py"
+      - "build_support.py"
+      - "pyproject.toml"
+      - "MANIFEST.in"
+      - "philtorch/csrc/**"
+      - "third_party/**"
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+# A newer push supersedes the previous run's expensive builds.
+concurrency:
+  group: ${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  resolve-matrix:
+    runs-on: ubuntu-latest
+    outputs:
+      matrix: ${{ steps.matrix.outputs.matrix }}
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Expand CUDA wheel matrix
+        id: matrix
+        env:
+          GITHUB_EVENT_NAME: ${{ github.event_name }}
+        run: |
+          pip install -q packaging
+          MATRIX=$(python3 scripts/cuda_wheel_version.py --list)
+          if [ "${GITHUB_EVENT_NAME}" != "workflow_dispatch" ]; then
+            # Compare versions numerically ("3.9" < "3.13") and pick the newest
+            # Python, then torch, then CUDA, independent of file order.
+            MATRIX=$(python3 -c '
+          import json, sys
+          def key(leg):
+              return [tuple(int(p) for p in leg[k].split(".")) for k in ("python", "torch", "cuda")]
+          print(json.dumps([max(json.loads(sys.argv[1]), key=key)]))
+          ' "$MATRIX")
+          fi
+          echo "matrix=${MATRIX}" >> "$GITHUB_OUTPUT"
+
+  build:
+    # The leg is a single matrix dimension holding a JSON object; without this
+    # GitHub would print every field of the object into the job name.
+    name: build (py${{ matrix.leg.python }}, torch${{ matrix.leg.torch }}+cu${{ matrix.leg.cuda }})
+    needs: resolve-matrix
+    runs-on: ubuntu-latest
+    timeout-minutes: 120
+    strategy:
+      fail-fast: false
+      matrix:
+        leg: ${{ fromJSON(needs.resolve-matrix.outputs.matrix) }}
+    container:
+      image: ${{ matrix.leg.build_image }}
+    env:
+      CUDA_HOME: /usr/local/cuda-${{ matrix.leg.cuda }}
+    steps:
+      - name: Install CUDA toolkit
+        # Only nvcc and the headers the build includes (cudart, CCCL, CRT). The
+        # CUDA runtime libraries come from the matching torch install.
+        run: |
+          curl -fsSL -o /etc/yum.repos.d/cuda-rhel8.repo \
+            https://developer.download.nvidia.com/compute/cuda/repos/rhel8/x86_64/cuda-rhel8.repo
+          V=$(echo "${{ matrix.leg.cuda }}" | tr . -)
+          dnf install -y -q "cuda-nvcc-$V" "cuda-cudart-devel-$V" "cuda-cccl-$V" "cuda-crt-$V"
+          echo "$CUDA_HOME/bin" >> "$GITHUB_PATH"
+
+      # The container runs as root while the workspace belongs to the runner
+      # user, so git (used by actions/checkout and setuptools_scm) must be told
+      # to trust it.
+      - name: Trust the workspace for git
+        run: git config --global --add safe.directory "$GITHUB_WORKSPACE"
+
+      - uses: actions/checkout@v4
+        with:
+          # Full history so setuptools_scm can derive the base version, and
+          # submodules so the vendored CUDA sources are present.
+          fetch-depth: 0
+          submodules: recursive
+
+      - name: Set up Python
+        # The manylinux image ships every CPython under /opt/python, with
+        # headers, plus auditwheel and patchelf.
+        run: |
+          PY=cp$(echo "${{ matrix.leg.python }}" | tr -d .)
+          "/opt/python/${PY}-${PY}/bin/python" -m venv /opt/venv
+          echo /opt/venv/bin >> "$GITHUB_PATH"
+
+      - name: Install build dependencies
+        # ninja lets torch's extension build compile MAX_JOBS files at once.
+        run: |
+          pip install -q -U pip
+          pip install -q "setuptools>=77.0.3" "setuptools_scm>=8" wheel packaging ninja
+          pip install -q "torch==${{ matrix.leg.torch }}" --index-url "${{ matrix.leg.torch_index_url }}"
+
+      - name: Compute wheel version
+        id: version
+        run: |
+          VERSION=$(python scripts/cuda_wheel_version.py \
+            --torch "${{ matrix.leg.torch }}" --cuda "${{ matrix.leg.cuda }}")
+          echo "version=${VERSION}" >> "$GITHUB_OUTPUT"
+
+      - name: Build wheel
+        env:
+          PHILTORCH_FORCE_CUDA: "1"
+          # Pins the wheel to the torch minor it is compiled against.
+          PHILTORCH_TORCH_PIN: ${{ matrix.leg.torch }}
+          TORCH_CUDA_ARCH_LIST: ${{ matrix.leg.cuda_arch_list }}
+          MAX_JOBS: "4"
+          # The image puts clang first on PATH; build with its GCC toolset,
+          # which is what nvcc supports as a host compiler.
+          CC: gcc
+          CXX: g++
+          # CPython's default flags include -g. Strip the debug info at link
+          # time, as the CPU wheels do (LDFLAGS is appended, whereas CFLAGS
+          # would replace Python's flags, -O3 included).
+          LDFLAGS: -Wl,--strip-debug
+          SETUPTOOLS_SCM_PRETEND_VERSION_FOR_PHILTORCH: ${{ steps.version.outputs.version }}
+        # --no-build-isolation so setup.py can `import torch`; without it the
+        # build silently produces an extension-less wheel (same reason the CPU
+        # workflow passes it to cibuildwheel). --no-deps keeps pip from also
+        # writing torch and its CUDA wheels into wheelhouse/.
+        run: pip wheel . --no-build-isolation --no-deps -w wheelhouse/
+
+      - name: Repair wheel
+        # torch and the CUDA runtime are excluded: the matching torch install
+        # provides and loads them, so the wheel must not ship its own copies.
+        run: |
+          auditwheel repair \
+            --plat "${{ matrix.leg.platform }}" \
+            --exclude "libtorch*.so*" --exclude "libc10*.so*" --exclude "libcudart.so*" \
+            -w repaired/ wheelhouse/philtorch-*.whl
+
+      - name: Check wheel
+        env:
+          TORCH_VERSION: ${{ matrix.leg.torch }}
+        run: |
+          WHEEL=$(ls repaired/*.whl)
+          auditwheel show "$WHEEL"
+          mkdir check && python -m zipfile -e "$WHEEL" check/
+          if ls check/philtorch.libs 2>/dev/null | grep -E '^lib(cud|nv|cublas|torch|c10)'; then
+            echo "::error::$WHEEL bundles CUDA or torch libraries"
+            exit 1
+          fi
+          if readelf -S check/philtorch/_C*.so | grep -q '\.debug_info'; then
+            echo "::error::$WHEEL still carries debug info"
+            exit 1
+          fi
+          PIN="torch==${TORCH_VERSION%.*}.*"
+          if ! grep -qxF "Requires-Dist: ${PIN}" check/philtorch-*.dist-info/METADATA; then
+            echo "::error::$WHEEL does not require ${PIN}"
+            grep "^Requires-Dist" check/philtorch-*.dist-info/METADATA
+            exit 1
+          fi
+          ls -l "$WHEEL"
+
+      - name: Upload wheel artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: cuda-wheels-torch${{ matrix.leg.torch }}-cu${{ matrix.leg.cuda }}-py${{ matrix.leg.python }}
+          path: repaired/*.whl

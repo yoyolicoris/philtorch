@@ -7,7 +7,7 @@ from setuptools import setup
 
 # build_support.py sits next to setup.py; the setuptools.build_meta:__legacy__
 # backend puts this directory on sys.path, which this import relies on.
-from build_support import resolve_cuda_build
+from build_support import resolve_cuda_build, torch_requirement
 
 library_name = "philtorch"
 
@@ -169,6 +169,10 @@ def get_extensions():
         sources += cuda_sources
         sources += pararnn_sources
         extra_compile_args.setdefault("nvcc", []).append("--extended-lambda")
+        # Store the GPU code (one copy per target architecture) compressed in
+        # the binary, as PyTorch does for its own wheels. It is otherwise most
+        # of the extension's size, and is decompressed once at load.
+        extra_compile_args.setdefault("nvcc", []).extend(["-Xfatbin", "-compress-all"])
 
     if len(sources) == 0:
         return []
@@ -212,12 +216,15 @@ except ImportError:
             "sees it."
         )
 
+install_requires = [torch_requirement(os.environ.get("PHILTORCH_TORCH_PIN", ""))]
+
 if not ext_modules:
-    setup()
+    setup(install_requires=install_requires)
 else:
     from torch.utils.cpp_extension import BuildExtension
 
     setup(
+        install_requires=install_requires,
         ext_modules=ext_modules,
         cmdclass={"build_ext": BuildExtension},
     )

@@ -11,10 +11,6 @@ write_to = "philtorch/_version.py"
 [tool.setuptools.package-data]
 philtorch = ["VERSION.txt"]
 
-[tool.setuptools.exclude-package-data]
-# The extension sources are compiled into _C; nothing reads them at runtime.
-philtorch = ["csrc/*"]
-
 [tool.setuptools.packages.find]
 where = ["."]
 # Namespace discovery is on by default here, so without this every directory
@@ -25,11 +21,16 @@ exclude = ["philtorch.csrc"]
 
 [tool.setuptools]
 zip-safe = false
+# Ship only the package data listed above. The extension sources under csrc/
+# are compiled into _C, and with automatic inclusion setuptools would also
+# warn that philtorch.csrc looks importable but is not packaged.
+include-package-data = false
 
 [project]
-dynamic = ["version"]
+# Dependencies come from setup.py, so CUDA wheels can pin the torch minor
+# they were built against (see build_support.torch_requirement).
+dynamic = ["version", "dependencies"]
 name = "philtorch"
-dependencies = ["torch >= 2.4.0"]
 requires-python = ">=3.10"
 authors = [{ name = "Chin-Yun Yu", email = "chin-yun.yu@qmul.ac.uk" }]
 maintainers = [{ name = "Chin-Yun Yu", email = "chin-yun.yu@qmul.ac.uk" }]
