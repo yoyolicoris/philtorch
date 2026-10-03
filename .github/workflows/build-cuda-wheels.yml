@@ -75,6 +75,9 @@ jobs:
     outputs:
       matrix: ${{ steps.matrix.outputs.matrix }}
       smoke: ${{ steps.matrix.outputs.smoke }}
+      builds: ${{ steps.matrix.outputs.builds }}
+      build_image: ${{ steps.matrix.outputs.build_image }}
+      platform: ${{ steps.matrix.outputs.platform }}
     steps:
       - uses: actions/checkout@v4
 
@@ -100,17 +103,34 @@ jobs:
           if os.environ["GITHUB_EVENT_NAME"] not in ("release", "workflow_dispatch"):
               legs = [newest(legs)]
           # One GPU test per torch/CUDA build, on its newest Python.
-          builds = {}
+          groups = {}
           for leg in legs:
-              builds.setdefault((leg["torch"], leg["cuda"]), []).append(leg)
-          print("matrix=" + json.dumps(legs))
-          print("smoke=" + json.dumps([newest(group) for group in builds.values()]))
+              groups.setdefault((leg["torch"], leg["cuda"]), []).append(leg)
+
+          # GitHub appends every matrix value to a job's name, so matrix
+          # entries hold only what tells legs apart. Jobs look up the rest of
+          # a build in "builds", keyed "<torch>-<cuda>".
+          def entry(leg):
+              return {key: leg[key] for key in ("python", "torch", "cuda")}
+
+          builds = {
+              f"{leg['torch']}-{leg['cuda']}": {
+                  key: leg[key] for key in ("torch_index_url", "cuda_arch_list")
+              }
+              for leg in legs
+          }
+          print("matrix=" + json.dumps([entry(leg) for leg in legs]))
+          print("smoke=" + json.dumps([entry(newest(group)) for group in groups.values()]))
+          print("builds=" + json.dumps(builds))
+          # The same for every leg.
+          print("build_image=" + legs[0]["build_image"])
+          print("platform=" + legs[0]["platform"])
           EOF
 
   build:
-    # The leg is a single matrix dimension holding a JSON object; without this
-    # GitHub would print every field of the object into the job name.
-    name: build (py${{ matrix.leg.python }}, torch${{ matrix.leg.torch }}+cu${{ matrix.leg.cuda }})
+    # No custom name: GitHub names each job "build (<python>, <torch>,
+    # <cuda>)", and a job that never starts (in a cancelled or failed run)
+    # just "build". A name with ${{ }} in it would show unevaluated there.
     needs: resolve-matrix
     runs-on: ubuntu-latest
     timeout-minutes: 120
@@ -119,9 +139,11 @@ jobs:
       matrix:
         leg: ${{ fromJSON(needs.resolve-matrix.outputs.matrix) }}
     container:
-      image: ${{ matrix.leg.build_image }}
+      image: ${{ needs.resolve-matrix.outputs.build_image }}
     env:
       CUDA_HOME: /usr/local/cuda-${{ matrix.leg.cuda }}
+      TORCH_INDEX_URL: ${{ fromJSON(needs.resolve-matrix.outputs.builds)[format('{0}-{1}', matrix.leg.torch, matrix.leg.cuda)].torch_index_url }}
+      TORCH_CUDA_ARCH_LIST: ${{ fromJSON(needs.resolve-matrix.outputs.builds)[format('{0}-{1}', matrix.leg.torch, matrix.leg.cuda)].cuda_arch_list }}
     steps:
       - name: Install CUDA toolkit
         # Only nvcc and the headers the build includes (cudart, CCCL, CRT). The
@@ -159,7 +181,7 @@ jobs:
         run: |
           pip install -q -U pip
           pip install -q "setuptools>=77.0.3" "setuptools_scm>=8" wheel packaging ninja
-          pip install -q "torch==${{ matrix.leg.torch }}" --index-url "${{ matrix.leg.torch_index_url }}"
+          pip install -q "torch==${{ matrix.leg.torch }}" --index-url "$TORCH_INDEX_URL"
 
       - name: Compute wheel version
         id: version
@@ -173,7 +195,6 @@ jobs:
           PHILTORCH_FORCE_CUDA: "1"
           # Pins the wheel to the torch minor it is compiled against.
           PHILTORCH_TORCH_PIN: ${{ matrix.leg.torch }}
-          TORCH_CUDA_ARCH_LIST: ${{ matrix.leg.cuda_arch_list }}
           MAX_JOBS: "4"
           # The image puts clang first on PATH; build with its GCC toolset,
           # which is what nvcc supports as a host compiler.
@@ -195,7 +216,7 @@ jobs:
         # provides and loads them, so the wheel must not ship its own copies.
         run: |
           auditwheel repair \
-            --plat "${{ matrix.leg.platform }}" \
+            --plat "${{ needs.resolve-matrix.outputs.platform }}" \
             --exclude "libtorch*.so*" --exclude "libc10*.so*" --exclude "libcudart.so*" \
             -w repaired/ wheelhouse/philtorch-*.whl
 
@@ -232,7 +253,8 @@ jobs:
 
   gpu-test:
     # Runs the CUDA tests against the exact wheel built above, on a Modal GPU.
-    name: GPU test (py${{ matrix.leg.python }}, torch${{ matrix.leg.torch }}+cu${{ matrix.leg.cuda }})
+    # Plain text, for the same reason as build: GitHub appends the matrix values.
+    name: GPU test
     needs: [resolve-matrix, build]
     # Repository secrets are not available to pull requests from forks.
     if: github.event_name != 'pull_request' || github.event.pull_request.head.repo.full_name == github.repository
@@ -260,7 +282,7 @@ jobs:
           MODAL_TOKEN_SECRET: ${{ secrets.MODAL_TOKEN_SECRET }}
           SMOKE_PYTHON: ${{ matrix.leg.python }}
           SMOKE_TORCH: ${{ matrix.leg.torch }}
-          SMOKE_TORCH_INDEX_URL: ${{ matrix.leg.torch_index_url }}
+          SMOKE_TORCH_INDEX_URL: ${{ fromJSON(needs.resolve-matrix.outputs.builds)[format('{0}-{1}', matrix.leg.torch, matrix.leg.cuda)].torch_index_url }}
           # T4 (sm_75) is Modal's cheapest GPU and our oldest target
           # architecture. Set the MODAL_GPU repository variable to use another.
           SMOKE_GPU: ${{ vars.MODAL_GPU || 'T4' }}
