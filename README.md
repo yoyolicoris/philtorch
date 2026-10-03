@@ -29,7 +29,7 @@ PhilTorch requires its compiled `philtorch._C` extension; there is no pure-PyTor
 
 | Route | Platforms | Kernels | Python | PyTorch |
 | --- | --- | --- | --- | --- |
-| PyPI wheel | Linux x86_64 (manylinux_2_28), macOS 14+ arm64, Windows AMD64 | CPU, plus float32 scalar-LTI MPS on macOS | 3.10–3.13 | The latest stable release at publication, listed in the [release notes](https://github.com/yoyolicoris/philtorch/releases) |
+| PyPI wheel | Linux x86_64 (manylinux_2_28), macOS 14+ arm64, Windows AMD64 | CPU, plus float32 scalar-LTI MPS on macOS | 3.10–3.13 | The latest stable minor at publication, which each wheel requires (e.g. `torch == 2.14.*`); listed in the [release notes](https://github.com/yoyolicoris/philtorch/releases) |
 | Source build | Any platform with a C++ toolchain | CPU, MPS, or CUDA | 3.10+ | 2.4 or newer |
 
 ### PyPI wheels
@@ -39,7 +39,10 @@ python -m pip install philtorch
 ```
 
 Wheels contain no CUDA kernels.
-They are built against one PyTorch minor release and are not guaranteed to work with other minor releases, so build from source if you use CUDA or a different PyTorch minor release.
+Each wheel is built against one PyTorch minor release and requires it (e.g. `torch == 2.14.*`), because the compiled extension does not load with other minor releases.
+pip therefore installs that PyTorch minor with PhilTorch, replacing a different one if needed.
+If a different minor is installed anyway, for example with `--no-deps`, `import philtorch` raises an `ImportError` naming the minor it needs.
+To use CUDA, or to keep a different PyTorch minor release, build from source.
 
 ### Source builds
 
