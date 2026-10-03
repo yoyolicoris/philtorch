@@ -77,8 +77,10 @@ Releases are cut from `dev`. The package version comes from the latest `v*` tag 
 3. Publish a GitHub Release with a new three-part `vX.Y.Z` tag on the same commit, e.g. `v0.6.0` rather than `v0.6`:
 
    ```bash
-   gh release create vX.Y.Z --target <sha> --generate-notes
+   gh release create vX.Y.Z --target "$(git rev-parse <sha>)" --generate-notes
    ```
+
+   `--target` needs the full 40-character SHA: GitHub rejects an abbreviated one with "Release.target_commitish is invalid".
 
    Publishing the release triggers the PyPI upload in `build-wheels.yml`, which accepts tags starting with `v0.` or `v1.`.
 

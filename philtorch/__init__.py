@@ -5,16 +5,16 @@ from typing import Any
 import torch
 import torch.nn.functional as F
 
-from ._build_check import check_torch_build
+from ._build_check import check_torch_build, installed_torch_requirement
 
 try:
     from ._version import __version__ as __version__  # type: ignore
 except ImportError:
     __version__ = Path(__file__).parent.joinpath("VERSION.txt").read_text().strip()
 
-# Fail clearly on a CUDA wheel installed next to a different torch, before
+# Fail clearly on a wheel installed next to a torch it wasn't built for, before
 # loading the extension would fail with an undefined-symbol error.
-check_torch_build(__version__, torch.__version__, torch.version.cuda)
+check_torch_build(__version__, torch.__version__, torch.version.cuda, installed_torch_requirement())
 
 from . import _C  # noqa: E402, F401
 
