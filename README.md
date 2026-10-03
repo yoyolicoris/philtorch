@@ -47,7 +47,8 @@ For CUDA on Linux, use the [CUDA wheels](#cuda-wheels); for another PyTorch mino
 
 ### CUDA wheels
 
-Linux wheels with CUDA kernels are published on a separate package index, because PyPI holds only one build per platform and Python version.
+Linux wheels with CUDA kernels are published on a separate package index rather than PyPI.
+Wheel tags don't record which PyTorch and CUDA build a wheel is for, and PyPI rejects the local version labels that do (e.g. `+torch2.14.1.cu132`).
 There is one index per PyTorch minor and CUDA version that PyTorch publishes wheels for.
 Install PyTorch first, then install PhilTorch from the index that matches it:
 
