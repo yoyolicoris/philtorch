@@ -144,25 +144,28 @@ def matrices_cumdot(A: Tensor) -> Tensor:
     M = A.size(-3)
     if M == 1:
         return A
-    return _mat_cumdot_runner(A, factorint(M, multiple=True))
+    leading_dims = len(A.shape) - 3
+    factors = factorint(M, multiple=True)[::-1]
+    unfolded_A = A.unflatten(-3, factors)
+    return _mat_cumdot_runner(unfolded_A, leading_dims).flatten(leading_dims, -3)
 
 
-def _mat_cumdot_runner(A: Tensor, factors: list[int]) -> Tensor:
-    group, *factors = factors
-    if not factors:
-        return torch.stack(list(accumulate(A.unbind(-3), torch.matmul)), dim=-3)
-
-    # Split the M matrices into consecutive groups of `group`, take products
-    # within each group, then prefix the products of all earlier groups. The
-    # earlier groups multiply from the left, as the matrices don't commute.
-    A = A.unflatten(-3, (-1, group))
+def _mat_cumdot_runner(A: Tensor, leading_dims: int) -> Tensor:
     accums = torch.stack(list(accumulate(A.unbind(-3), torch.matmul)), dim=-3)
-    totals = _mat_cumdot_runner(accums[..., -1, :, :], factors)
-    tmp = totals[..., :-1, None, :, :] @ accums[..., 1:, :-1, :, :]
+    if A.dim() == leading_dims + 3:
+        return accums
+
+    higher_powers = _mat_cumdot_runner(accums[..., -1, :, :], leading_dims)
+    # Flatten the group dimensions so the group before group g is g - 1 in
+    # sequence order, and prefix each group's partial products with the
+    # product of all earlier groups, from the left as matrices don't commute.
+    accums = accums.flatten(leading_dims, -4)
+    higher_powers = higher_powers.flatten(leading_dims, -3)
+    tmp = higher_powers[..., :-1, None, :, :] @ accums[..., 1:, :-1, :, :]
     return torch.cat(
         [
             accums[..., :1, :, :, :],
-            torch.cat([tmp, totals[..., 1:, None, :, :]], dim=-3),
+            torch.cat([tmp, higher_powers[..., 1:, None, :, :]], dim=-3),
         ],
         dim=-4,
-    ).flatten(-4, -3)
+    ).reshape(A.shape)
