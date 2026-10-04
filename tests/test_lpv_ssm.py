@@ -59,11 +59,14 @@ def test_ssm_equivalence(device):
         ),
     ],
 )
-def test_ssm_unrolling(device):
+# Each block multiplies unroll_factor - 1 matrices with matrices_cumdot, so
+# 5, 9 and 13 cover products over 4 = 2 * 2, 8 = 2 * 2 * 2 and 12 = 2 * 2 * 3
+# matrices, which it used to multiply in the wrong order.
+@pytest.mark.parametrize("unroll_factor", [3, 5, 9, 13])
+def test_ssm_unrolling(device, unroll_factor):
     """Test that unrolling works correctly in LPV state_space."""
     batch_size = 2
     N = 17
-    unroll_factor = 3
     order = 2
 
     _, a = _generate_time_varying_coeffs(batch_size, N, order, order)
