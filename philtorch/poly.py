@@ -5,33 +5,43 @@ from torch import Tensor
 
 
 def polydiv(u: Tensor, v: Tensor) -> tuple[Tensor, Tensor]:
-    """Divide polynomials, returning the quotient and the remainder.
+    r"""Divide polynomials, returning the quotient and the remainder.
 
-    This performs long division of ``u`` by ``v`` along the last dimension.
+    This performs long division of :math:`u(x)` by :math:`v(x)` along the last
+    dimension, finding the quotient :math:`q(x)` and the remainder :math:`r(x)`
+    with
+
+    .. math::
+        u(x) = q(x) v(x) + r(x), \quad \deg r < \deg v.
+
     Coefficients run from the highest degree down, as in :func:`numpy.polydiv`.
 
     Args:
-        u (Tensor): Dividend coefficients with shape ``(..., M + 1)``.
-        v (Tensor): Divisor coefficients with shape ``(..., N + 1)``, where
-            ``N <= M``. Its batch dimensions must broadcast to those of ``u``, and
-            its leading coefficient ``v[..., 0]`` must be nonzero.
+        u (Tensor): dividend coefficients, of shape :math:`(*, M + 1)`, where
+            :math:`*` is zero or more batch dimensions.
+        v (Tensor): divisor coefficients, of shape :math:`(*, N + 1)`, where
+            :math:`N \le M`. Its batch dimensions must broadcast to those of
+            :attr:`u`, and its leading coefficient ``v[..., 0]`` must be
+            nonzero.
 
     Returns:
-        tuple[Tensor, Tensor]: The quotient, with shape ``(..., M - N + 1)``, and
-        the remainder, with shape ``(..., N)``.
+        tuple of Tensor: the quotient, of shape :math:`(*, M - N + 1)`, and the
+        remainder, of shape :math:`(*, N)`.
 
     Raises:
-        RuntimeError: If ``N > M``, or if ``u`` has an integer dtype.
+        RuntimeError: if :math:`N > M`, or if :attr:`u` has an integer dtype.
 
     Note:
-        Unlike :func:`numpy.polydiv`, the remainder always has ``N`` coefficients:
-        leading zeros are kept, not trimmed.
+        Unlike :func:`numpy.polydiv`, the remainder always has :math:`N`
+        coefficients: leading zeros are kept, not trimmed.
 
-    Example:
-        >>> import torch
+    Example::
+
         >>> from philtorch.poly import polydiv
         >>> # x^3 - 3x^2 + 4 = (x - 1)(x^2 - 2x - 2) + 2
-        >>> polydiv(torch.tensor([1.0, -3.0, 0.0, 4.0]), torch.tensor([1.0, -1.0]))
+        >>> u = torch.tensor([1.0, -3.0, 0.0, 4.0])
+        >>> v = torch.tensor([1.0, -1.0])
+        >>> polydiv(u, v)
         (tensor([ 1., -2., -2.]), tensor([2.]))
     """
     assert u.ndim >= 1 and v.ndim >= 1
