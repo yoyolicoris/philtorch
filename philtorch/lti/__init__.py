@@ -1,3 +1,9 @@
+"""Filters and state-space models with time-invariant coefficients.
+
+The filtering functions follow :mod:`scipy.signal` where they share a name,
+with the differences noted in each docstring.
+"""
+
 from .delay import delay_state_space
 from .filtering import comb_filter, filtfilt, fir, lfilter, lfilter_zi, lfiltic
 from .interp import cubic_spline
