@@ -1,20 +1,28 @@
+"""General-purpose helpers."""
+
 from collections.abc import Callable
 from functools import reduce
 
 
 def chain_functions(*functions: Callable) -> Callable:
-    """Chain multiple callables into a single callable.
+    """Compose callables from left to right into a single callable.
 
-    The returned function will invoke the first callable with the provided
-    arguments, then pass its result(s) to the next callable, and so on. If a
-    callable returns a tuple, that tuple is spread as positional arguments to
-    the next callable.
+    The returned function calls the first callable with its arguments and
+    passes each result on to the next callable. A tuple result is unpacked into
+    positional arguments; any other result is passed as the single argument.
 
     Args:
-        *functions: Callables to chain in invocation order.
+        *functions (Callable): the callables, in the order they are applied.
 
     Returns:
-        Callable: A function that executes the chain when called.
+        Callable: a function that returns the last callable's result.
+
+    Example::
+
+        >>> from philtorch.utils import chain_functions
+        >>> f = chain_functions(lambda x, y: (x + y, x - y), lambda s, d: s * d)
+        >>> f(3, 2)
+        5
     """
 
     def closure(*args: tuple) -> tuple:
