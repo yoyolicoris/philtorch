@@ -351,6 +351,11 @@ def test_diag_ssm_backend(
 ):
     """Test time-invariant filters against scipy.signal.lfilter"""
 
+    # Seeded: about 3 in 10,000 draws place two poles almost on top of each
+    # other, which makes diagonalizing the filter ill-conditioned and misses
+    # np.allclose's tolerance.
+    np.random.seed(0)
+
     # Generate test data
     # b, a = _generate_random_filter_coeffs(num_order, den_order, B)
     b = np.random.randn(B, num_order + 1)
