@@ -154,9 +154,9 @@ def matrix_power_accumulate(A: Tensor, n: int) -> Tensor:
     r"""Return the powers of square matrices up to :math:`A^n`.
 
     For :math:`n > 0`, this returns :math:`A, A^2, \dots, A^n` stacked along a
-    new dimension. The powers are computed in as many sequential
-    matrix-product steps as the sum of :math:`|n|`'s prime factors, rather than
-    :math:`|n|` steps.
+    new dimension. Its longest chain of dependent matrix products is one
+    shorter than the sum of :math:`|n|`'s prime factors, rather than the
+    :math:`|n| - 1` products of computing one power after another.
 
     Args:
         A (Tensor): square matrices of shape :math:`(*, N, N)`, where :math:`*`
@@ -224,9 +224,9 @@ def matrices_cumdot(A: Tensor) -> Tensor:
     .. math::
         P_k = A_1 A_2 \cdots A_k, \quad k = 1, \dots, M,
 
-    multiplying each new matrix on the right. It takes as many sequential
-    matrix-product steps as the sum of :math:`M`'s prime factors, rather than
-    :math:`M`.
+    multiplying each new matrix on the right. Its longest chain of dependent
+    matrix products is one shorter than the sum of :math:`M`'s prime factors,
+    rather than the :math:`M - 1` products of a running loop.
 
     Args:
         A (Tensor): sequences of square matrices of shape :math:`(*, M, N, N)`,
