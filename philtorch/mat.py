@@ -223,7 +223,7 @@ def matrices_cumdot(A: Tensor) -> Tensor:
     leading_dims = len(A.shape) - 3
     factors = factorint(M, multiple=True)[::-1]
     unfolded_A = A.unflatten(-3, factors)
-    return _mat_cumdot_runner(unfolded_A, leading_dims).flatten(leading_dims, -3)
+    return _mat_cumdot_runner(unfolded_A, leading_dims)
 
 
 def _mat_cumdot_runner(A: Tensor, leading_dims: int) -> Tensor:
@@ -232,11 +232,11 @@ def _mat_cumdot_runner(A: Tensor, leading_dims: int) -> Tensor:
         return accums
 
     higher_powers = _mat_cumdot_runner(accums[..., -1, :, :], leading_dims)
-    # Flatten the group dimensions so the group before group g is g - 1 in
-    # sequence order, and prefix each group's partial products with the
-    # product of all earlier groups, from the left as matrices don't commute.
+    # higher_powers comes back flattened, so flatten the groups too: the group
+    # before group g is then g - 1 in sequence order. Prefix each group's
+    # partial products with the product of all earlier groups, from the left
+    # as matrices don't commute.
     accums = accums.flatten(leading_dims, -4)
-    higher_powers = higher_powers.flatten(leading_dims, -3)
     tmp = higher_powers[..., :-1, None, :, :] @ accums[..., 1:, :-1, :, :]
     return torch.cat(
         [
@@ -244,4 +244,4 @@ def _mat_cumdot_runner(A: Tensor, leading_dims: int) -> Tensor:
             torch.cat([tmp, higher_powers[..., 1:, None, :, :]], dim=-3),
         ],
         dim=-4,
-    ).reshape(A.shape)
+    ).flatten(-4, -3)
