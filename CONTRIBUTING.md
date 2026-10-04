@@ -48,6 +48,17 @@ pixi run ruff format --check .
 
 Apply formatting only to files in the scope of your change.
 
+## Docstrings
+
+Public functions use Google-style docstrings, which Sphinx renders with the Napoleon extension. See `philtorch/mat.py` for examples.
+
+- **Summary:** start with a one-line summary in the imperative mood ("Return …", "Compute …") that ends with a period.
+- **Code and shapes:** wrap code, argument names and tensor shapes in double backticks, for example ``` ``(B, N, M)`` ```. Sphinx renders single backticks as italics, not code.
+- **Args:** write each argument as `name (type): description`. Mark optional arguments as `(Tensor, optional)` and say what happens when they're omitted.
+- **Returns and Raises:** give the return type, shapes, and, when it isn't simply the input's, the dtype and device. List the exceptions a caller can trigger with bad input.
+- **Differences from SciPy and NumPy:** call out argument-order or convention differences from the SciPy or NumPy function users would compare against, in a `Note:` section or next to the argument.
+- **Examples:** add an `Example:` section with doctest examples where it helps. Add the module to `MODULES` in `tests/test_docstrings.py`, which runs every example.
+
 ## Pull requests
 
 Open pull requests against `dev`, not `main`. A pull request should:

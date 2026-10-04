@@ -1,22 +1,38 @@
+"""Polynomial helpers for batched coefficient tensors."""
+
 import torch
 from torch import Tensor
 
 
 def polydiv(u: Tensor, v: Tensor) -> tuple[Tensor, Tensor]:
-    """Divide polynomials and return quotient and remainder.
+    """Divide polynomials, returning the quotient and the remainder.
 
-    Performs polynomial long division of `u` by `v` along the last dimension.
+    This performs long division of ``u`` by ``v`` along the last dimension.
+    Coefficients run from the highest degree down, as in :func:`numpy.polydiv`.
 
     Args:
-        u (Tensor): Dividend coefficients (..., M+1) where highest-degree
-            coefficient is at index 0.
-        v (Tensor): Divisor coefficients (..., N+1).
+        u (Tensor): Dividend coefficients with shape ``(..., M + 1)``.
+        v (Tensor): Divisor coefficients with shape ``(..., N + 1)``, where
+            ``N <= M``. Its batch dimensions must broadcast to those of ``u``, and
+            its leading coefficient ``v[..., 0]`` must be nonzero.
 
     Returns:
-        A 2-tuple where the first element is the quotient coefficients
-        (..., M-N+1) and the second element is the remainder coefficients
-        (..., N) if M >= N, otherwise the quotient is an empty tensor and the
-        remainder is `u`.
+        tuple[Tensor, Tensor]: The quotient, with shape ``(..., M - N + 1)``, and
+        the remainder, with shape ``(..., N)``.
+
+    Raises:
+        RuntimeError: If ``N > M``, or if ``u`` has an integer dtype.
+
+    Note:
+        Unlike :func:`numpy.polydiv`, the remainder always has ``N`` coefficients:
+        leading zeros are kept, not trimmed.
+
+    Example:
+        >>> import torch
+        >>> from philtorch.poly import polydiv
+        >>> # x^3 - 3x^2 + 4 = (x - 1)(x^2 - 2x - 2) + 2
+        >>> polydiv(torch.tensor([1.0, -3.0, 0.0, 4.0]), torch.tensor([1.0, -1.0]))
+        (tensor([ 1., -2., -2.]), tensor([2.]))
     """
     assert u.ndim >= 1 and v.ndim >= 1
 

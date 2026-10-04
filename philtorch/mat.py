@@ -1,3 +1,5 @@
+"""Batched matrix helpers for building and evaluating state-space filters."""
+
 from itertools import accumulate
 
 import torch
@@ -6,21 +8,36 @@ from torch import Tensor
 
 
 def find_eigenvectors(A: Tensor, eigenvalues: Tensor) -> Tensor:
-    """Construct normalised eigenvectors for a square matrix from its eigenvalues.
+    """Compute unit-norm eigenvectors of square matrices from known eigenvalues.
 
-    This solves (A - lambda I) v = 0 for each eigenvalue and returns normalised
-    right-eigenvectors. The output is shaped so that columns correspond to
-    eigenvectors.
+    For each eigenvalue ``lam``, this solves ``(A - lam * I) v = 0`` by least
+    squares with the first component of ``v`` fixed to 1, then scales ``v`` to
+    unit 2-norm.
 
     Args:
-        A (Tensor): Square matrix of shape (..., N, N).
-        eigenvalues (Tensor): Eigenvalues of shape (..., N).
+        A (Tensor): Square matrices with shape ``(..., N, N)``.
+        eigenvalues (Tensor): Eigenvalues of ``A`` with shape ``(..., N)``. Their
+            batch dimensions must broadcast to those of ``A``.
 
     Returns:
-        Tensor: Eigenvectors with shape (..., N, N) where columns are eigenvectors.
+        Tensor: Eigenvectors with shape ``(..., N, N)``. Column ``k`` is the
+        eigenvector for ``eigenvalues[..., k]``, and its first component is real
+        and positive. The dtype is the promotion of the inputs' dtypes, so a real
+        ``A`` with complex eigenvalues gives complex eigenvectors.
 
     Raises:
-        AssertionError: If inputs are not compatible.
+        AssertionError: If ``A`` is not square or the number of eigenvalues does
+            not match its size.
+        torch.linalg.LinAlgError: If an eigenvector's first component is zero,
+            or an eigenvalue has more than one independent eigenvector.
+
+    Example:
+        >>> import torch
+        >>> from philtorch.mat import find_eigenvectors
+        >>> A = torch.tensor([[2.0, 1.0], [0.0, 1.0]])
+        >>> find_eigenvectors(A, torch.tensor([2.0, 1.0]))
+        tensor([[ 1.0000,  0.7071],
+                [ 0.0000, -0.7071]])
     """
     assert A.dim() >= 2, "Matrix A must be at least 2D."
     assert eigenvalues.dim() >= 1, "Eigenvalues must be at least 1D."
@@ -43,17 +60,29 @@ def find_eigenvectors(A: Tensor, eigenvalues: Tensor) -> Tensor:
 
 
 def companion(a: Tensor) -> Tensor:
-    """Create the companion matrix from all-pole coefficients.
+    """Return the companion matrices of monic polynomials.
 
-    The companion matrix is commonly used to convert polynomial coefficients
-    into a state-space representation. Given coefficient vector `a` of length
-    M, the returned matrix has shape (..., M, M).
+    For ``a = [a_1, ..., a_M]``, the first row is ``[-a_1, ..., -a_M]``, the
+    subdiagonal is all ones, and every other entry is zero. Its eigenvalues are
+    the roots of ``z^M + a_1 z^(M-1) + ... + a_M``, which are the poles of the
+    all-pole filter ``1 / (1 + a_1 z^-1 + ... + a_M z^-M)``. That makes it the
+    state matrix of the filter in state-space form.
 
     Args:
-        a (Tensor): All-pole coefficients with shape (..., M).
+        a (Tensor): Polynomial coefficients without the leading 1, with shape
+            ``(..., M)``. This is the ``a`` that :func:`philtorch.lti.lfilter`
+            takes, which omits SciPy's leading ``a[0] = 1``.
 
     Returns:
-        Tensor: Companion matrix of shape (..., M, M).
+        Tensor: Companion matrices with shape ``(..., M, M)``, with the dtype and
+        device of ``a``.
+
+    Example:
+        >>> import torch
+        >>> from philtorch.mat import companion
+        >>> companion(torch.tensor([-0.25, -0.125]))
+        tensor([[0.2500, 0.1250],
+                [1.0000, 0.0000]])
     """
     assert a.dim() >= 1, "All-pole coefficients must be at least 1D."
     M = a.size(-1)
@@ -64,16 +93,33 @@ def companion(a: Tensor) -> Tensor:
 
 
 def vandermonde(poles: Tensor) -> Tensor:
-    """Return a Vandermonde matrix constructed from input poles.
+    """Return the Vandermonde matrix whose columns are descending powers of poles.
 
-    For a poles vector p = [p0, p1, ..., p_{M-1}], the Vandermonde matrix
-    returned has columns corresponding to successive powers of the poles.
+    For poles ``p = [p_0, ..., p_(M-1)]``, column ``j`` is
+    ``[p_j^(M-1), ..., p_j, 1]``. These columns are the eigenvectors of the
+    :func:`companion` matrix with those poles as roots, so the matrix
+    diagonalizes it. The result is the transpose of :func:`torch.vander`.
 
     Args:
-        poles (Tensor): Poles of shape (..., M).
+        poles (Tensor): Poles with shape ``(M,)``. Batched poles are not
+            supported.
 
     Returns:
-        Tensor: Vandermonde matrix of shape (..., M, M).
+        Tensor: Vandermonde matrix with shape ``(M, M)``, with the dtype and
+        device of ``poles``.
+
+    Example:
+        >>> import torch
+        >>> from philtorch.mat import companion, vandermonde
+        >>> poles = torch.tensor([0.5, -0.25])
+        >>> V = vandermonde(poles)
+        >>> V
+        tensor([[ 0.5000, -0.2500],
+                [ 1.0000,  1.0000]])
+        >>> # 1 - 0.25 z^-1 - 0.125 z^-2 has poles 0.5 and -0.25.
+        >>> A = companion(torch.tensor([-0.25, -0.125]))
+        >>> torch.allclose(A @ V, V @ torch.diag(poles))
+        True
     """
     if poles.size(-1) == 1:
         return torch.ones_like(poles).unsqueeze(-1)
@@ -81,17 +127,30 @@ def vandermonde(poles: Tensor) -> Tensor:
 
 
 def matrix_power_accumulate(A: Tensor, n: int) -> Tensor:
-    """Compute and return accumulated matrix powers [A, A^2, ..., A^n].
+    """Return the powers ``A, A^2, ..., A^n`` stacked along a new dimension.
 
-    If n == 0 the identity is returned (with a singleton -3 dimension).
-    Negative `n` values compute powers of the matrix inverse.
+    The powers are computed in as many sequential matrix-product steps as the sum
+    of ``abs(n)``'s prime factors, rather than ``abs(n)`` steps.
 
     Args:
-        A (Tensor): Square matrix of shape (..., N, N).
-        n (int): Exponent (may be negative).
+        A (Tensor): Square matrices with shape ``(..., N, N)``.
+        n (int): Highest power. A negative ``n`` returns the powers of ``A``'s
+            inverse, ``A^-1, ..., A^n``, and ``n = 0`` returns the identity.
 
     Returns:
-        Tensor: Accumulated powers with shape (..., K, N, N) where K == max(n, 1).
+        Tensor: Powers with shape ``(..., K, N, N)``, where ``K = abs(n)``, or 1 when
+        ``n = 0``. Entry ``[..., k, :, :]`` is ``A^(k+1)``, or ``A^-(k+1)`` for a
+        negative ``n``. The dtype and device are those of ``A``.
+
+    Raises:
+        AssertionError: If ``A`` is not a batch of square matrices.
+
+    Example:
+        >>> import torch
+        >>> from philtorch.mat import matrix_power_accumulate
+        >>> A = torch.tensor([[1.0, 1.0], [0.0, 1.0]])
+        >>> matrix_power_accumulate(A, 3)[:, 0, 1]
+        tensor([1., 2., 3.])
     """
     assert A.dim() >= 2, "Input matrix A must have at least 2 dimensions."
     assert A.size(-2) == A.size(-1), "Input matrix A must be square."
@@ -129,14 +188,31 @@ def _mat_pwr_accum_runner(A: Tensor, factors: list[int]) -> Tensor:
 
 
 def matrices_cumdot(A: Tensor) -> Tensor:
-    """Compute the cumulative dot product of matrices along the last third dimension.
-    Given a sequence of matrices [A_1, A_2, ..., A_M], this function returns
-    [A_1, A_1 @ A_2, A_1 @ A_2 @ A_3, ..., A_1 @ A_2 @ ... @ A_M].
+    """Return the running products ``A_1, A_1 A_2, ..., A_1 A_2 ... A_M``.
+
+    Each product multiplies the next matrix on the right. The products are
+    computed in as many sequential matrix-product steps as the sum of ``M``'s
+    prime factors, rather than ``M`` steps.
+
     Args:
-        A (Tensor): Input tensor of shape (..., M, N, N) where ... can be any
-            number of batch dimensions.
+        A (Tensor): Sequences of square matrices with shape ``(..., M, N, N)``,
+            where dimension ``-3`` runs over the sequence.
+
     Returns:
-        Tensor: Cumulative dot product of matrices with shape (..., M, N, N).
+        Tensor: Running products with shape ``(..., M, N, N)``. Entry
+        ``[..., k, :, :]`` is ``A_1 ... A_(k+1)``. The dtype and device are those
+        of ``A``.
+
+    Raises:
+        AssertionError: If ``A`` is not a batch of square-matrix sequences.
+
+    Example:
+        >>> import torch
+        >>> from philtorch.mat import matrices_cumdot
+        >>> A = torch.randn(6, 2, 2, dtype=torch.float64)
+        >>> P = matrices_cumdot(A)
+        >>> torch.allclose(P[3], A[0] @ A[1] @ A[2] @ A[3])
+        True
     """
     assert A.dim() >= 3, "Input tensor A must have at least 3 dimensions."
     assert A.size(-2) == A.size(-1), "Input tensor A must have square matrices."
