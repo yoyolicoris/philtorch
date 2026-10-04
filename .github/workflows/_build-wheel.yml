@@ -23,14 +23,14 @@ jobs:
     permissions:
       contents: read
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v7
         with:
           fetch-depth: 0
           # fetch-depth: 0 required so setuptools_scm can read full
           # git history and tags to derive the package version number.
           submodules: recursive
 
-      - uses: actions/setup-python@v5
+      - uses: actions/setup-python@v7
         with:
           python-version: "3.x"
 
@@ -67,10 +67,11 @@ jobs:
           # Linux builds run in a container, which doesn't inherit the runner's
           # environment; macOS and Windows build on the runner itself.
           CIBW_ENVIRONMENT_PASS_LINUX: PHILTORCH_TORCH_PIN
-          # PRs only need a quick sanity check against the latest stable
-          # Python; other events (push/tag/release/dispatch) build the full
-          # supported range.
-          CIBW_BUILD: ${{ github.event_name == 'pull_request' && 'cp313-*' || 'cp310-* cp311-* cp312-* cp313-*' }}
+          # PRs build the oldest and newest supported Python, which catches
+          # most version-specific breakage (e.g. NumPy 2.2 being the last
+          # release for 3.10, see #56); other events (push/tag/release/
+          # dispatch) build the full supported range.
+          CIBW_BUILD: ${{ github.event_name == 'pull_request' && 'cp310-* cp313-*' || 'cp310-* cp311-* cp312-* cp313-*' }}
           CIBW_SKIP: "*-musllinux_*"
           CIBW_ARCHS_LINUX: x86_64
           CIBW_ARCHS_MACOS: arm64
@@ -130,7 +131,7 @@ jobs:
           print(f"{len(wheels)} wheels require {pin}")
           EOF
 
-      - uses: actions/upload-artifact@v4
+      - uses: actions/upload-artifact@v7
         with:
           name: wheels-${{ inputs.os }}-torch${{ inputs.torch_version }}
           path: wheelhouse/*.whl
