@@ -138,9 +138,10 @@ jobs:
     uses: ./.github/workflows/_test-wheel.yml
     with:
       os: ubuntu-latest
-      # Mirrors the CIBW_BUILD selection in _build-wheel.yml: PRs only get a
-      # wheel for the latest Python, other events build/test the full range.
-      python_versions: ${{ github.event_name == 'pull_request' && '["3.13"]' || '["3.10", "3.11", "3.12", "3.13"]' }}
+      # Mirrors the CIBW_BUILD selection in _build-wheel.yml: PRs only get
+      # wheels for the oldest and newest Python, other events build/test the
+      # full range.
+      python_versions: ${{ github.event_name == 'pull_request' && '["3.10", "3.13"]' || '["3.10", "3.11", "3.12", "3.13"]' }}
       torch_version: ${{ matrix.torch-version }}
       # Only the leg for the latest resolved Torch minor (matrix[0]) uploads
       # coverage, to avoid duplicate reports for the same commit.
@@ -165,7 +166,7 @@ jobs:
     uses: ./.github/workflows/_test-wheel.yml
     with:
       os: macos-latest
-      python_versions: ${{ github.event_name == 'pull_request' && '["3.13"]' || '["3.10", "3.11", "3.12", "3.13"]' }}
+      python_versions: ${{ github.event_name == 'pull_request' && '["3.10", "3.13"]' || '["3.10", "3.11", "3.12", "3.13"]' }}
       torch_version: ${{ matrix.torch-version }}
     secrets:
       codecov_token: ${{ secrets.CODECOV_TOKEN }}
@@ -184,7 +185,7 @@ jobs:
     uses: ./.github/workflows/_test-wheel.yml
     with:
       os: windows-latest
-      python_versions: ${{ github.event_name == 'pull_request' && '["3.13"]' || '["3.10", "3.11", "3.12", "3.13"]' }}
+      python_versions: ${{ github.event_name == 'pull_request' && '["3.10", "3.13"]' || '["3.10", "3.11", "3.12", "3.13"]' }}
       torch_version: ${{ fromJson(needs.resolve-torch-versions.outputs.matrix)[0] }}
     secrets:
       codecov_token: ${{ secrets.CODECOV_TOKEN }}
@@ -194,13 +195,13 @@ jobs:
     permissions:
       contents: read
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v7
         with:
           fetch-depth: 0
           submodules: recursive
           # fetch-depth 0 + submodules required so setuptools_scm sees tags and vendored third_party.
 
-      - uses: actions/setup-python@v5
+      - uses: actions/setup-python@v7
         with:
           python-version: "3.x"
           cache: "pip"
@@ -211,7 +212,7 @@ jobs:
       - name: Build sdist
         run: python -m build --sdist
 
-      - uses: actions/upload-artifact@v4
+      - uses: actions/upload-artifact@v7
         with:
           name: sdist
           path: dist/*.tar.gz
@@ -259,7 +260,7 @@ jobs:
       name: ${{ github.event_name == 'release' && 'pypi' || 'testpypi' }}
     steps:
       - name: Download Linux wheel
-        uses: actions/download-artifact@v4
+        uses: actions/download-artifact@v8
         with:
           name: wheels-ubuntu-latest-torch${{ fromJson(needs.resolve-torch-versions.outputs.matrix)[0] }}
           path: dist/
@@ -268,18 +269,18 @@ jobs:
         if: >
           github.event_name == 'release' &&
           needs.build-wheels-macos.result == 'success'
-        uses: actions/download-artifact@v4
+        uses: actions/download-artifact@v8
         with:
           name: wheels-macos-latest-torch${{ fromJson(needs.resolve-torch-versions.outputs.matrix)[0] }}
           path: dist/
 
       - name: Download Windows wheel
-        uses: actions/download-artifact@v4
+        uses: actions/download-artifact@v8
         with:
           name: wheels-windows-latest-torch${{ fromJson(needs.resolve-torch-versions.outputs.matrix)[0] }}
           path: dist/
 
-      - uses: actions/download-artifact@v4
+      - uses: actions/download-artifact@v8
         with:
           name: sdist
           path: dist/

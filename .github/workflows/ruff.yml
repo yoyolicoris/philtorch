@@ -11,8 +11,8 @@ jobs:
     permissions:
       contents: read
     steps:
-      - uses: actions/checkout@v4
-      - uses: astral-sh/ruff-action@v3
+      - uses: actions/checkout@v7
+      - uses: astral-sh/ruff-action@v4.1.0
         with:
           # Keep in sync with ruff in pixi.toml.
           version: "0.16.9"

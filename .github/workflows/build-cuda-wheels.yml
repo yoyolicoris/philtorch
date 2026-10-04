@@ -79,7 +79,7 @@ jobs:
       build_image: ${{ steps.matrix.outputs.build_image }}
       platform: ${{ steps.matrix.outputs.platform }}
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v7
 
       - name: Expand CUDA wheel matrix
         id: matrix
@@ -161,7 +161,7 @@ jobs:
       - name: Trust the workspace for git
         run: git config --global --add safe.directory "$GITHUB_WORKSPACE"
 
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v7
         with:
           # Full history so setuptools_scm can derive the base version, and
           # submodules so the vendored CUDA sources are present.
@@ -246,7 +246,7 @@ jobs:
           ls -l "$WHEEL"
 
       - name: Upload wheel artifact
-        uses: actions/upload-artifact@v4
+        uses: actions/upload-artifact@v7
         with:
           name: cuda-wheels-torch${{ matrix.leg.torch }}-cu${{ matrix.leg.cuda }}-py${{ matrix.leg.python }}
           path: repaired/*.whl
@@ -265,13 +265,13 @@ jobs:
       matrix:
         leg: ${{ fromJSON(needs.resolve-matrix.outputs.smoke) }}
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v7
 
-      - uses: actions/setup-python@v5
+      - uses: actions/setup-python@v7
         with:
           python-version: "3.13"
 
-      - uses: actions/download-artifact@v4
+      - uses: actions/download-artifact@v8
         with:
           name: cuda-wheels-torch${{ matrix.leg.torch }}-cu${{ matrix.leg.cuda }}-py${{ matrix.leg.python }}
           path: wheel/
@@ -324,7 +324,7 @@ jobs:
     permissions:
       contents: write
     steps:
-      - uses: actions/download-artifact@v4
+      - uses: actions/download-artifact@v8
         with:
           pattern: cuda-wheels-*
           merge-multiple: true
