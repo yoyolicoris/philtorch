@@ -49,8 +49,9 @@ def fir(
 
     if transpose:
         shifted_b = diag_shift(b, discard_end=not return_zf)
+        # vecdot conjugates its first argument, so conjugate b to cancel it.
         y = torch.linalg.vecdot(
-            shifted_b.flip(2),
+            shifted_b.flip(2).conj(),
             F.pad(
                 x,
                 (shifted_b.size(2) - 1, 0 if not return_zf else shifted_b.size(2) - 1),
@@ -111,7 +112,7 @@ def allpole(
         return_zf = True
 
     if transpose:
-        a = diag_shift(a.conj(), offset=1, discard_end=not return_zf)
+        a = diag_shift(a, offset=1, discard_end=not return_zf)
         x = torch.cat(
             [zi + x[:, : a.size(2)], x[:, a.size(2) :]]
             + ([torch.zeros_like(zi)] if return_zf else []),
@@ -324,10 +325,10 @@ def _ssm_lfilter(
             D = b[..., 0]
             filt = partial(
                 state_space,
-                A.mT.conj(),
-                B=B.conj(),
+                A.mT,
+                B=B,
                 C=None,
-                D=D.conj(),
+                D=D,
                 zi=zi,
                 out_idx=0,
                 **kwargs,
@@ -353,12 +354,12 @@ def _ssm_lfilter(
             filt = chain_functions(
                 partial(
                     state_space_recursion,
-                    A.mT.conj(),
+                    A.mT,
                     zi,
                     out_idx=0,
                     **kwargs,
                 ),
-                partial(fir, b.conj().broadcast_to((x.size(0), -1, -1)), transpose=True),
+                partial(fir, b.broadcast_to((x.size(0), -1, -1)), transpose=True),
             )
         case _:
             raise ValueError(f"Unknown filter form: {form}")

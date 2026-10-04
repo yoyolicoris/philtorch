@@ -119,7 +119,7 @@ def lfilter_zi(a: Tensor, b: Tensor | None = None, transpose: bool = True) -> Te
             b = F.pad(b, (0, n - b.size(-1)), value=0.0)
         if a.size(-1) < n - 1:
             a = F.pad(a, (0, n - 1 - a.size(-1)), value=0.0)
-        A = companion(a).mT.conj()
+        A = companion(a).mT
         B = b[..., 1:] - b[..., :1] * a
     else:
         raise ValueError("Numerator coefficients b must be provided for transpose=True.")
@@ -168,7 +168,7 @@ def fir(
     if transpose:
         y = F.conv_transpose1d(
             x.unsqueeze(0),
-            b.unsqueeze(1).conj(),
+            b.unsqueeze(1),
             stride=1,
             groups=B,
         ).squeeze(0)
@@ -293,10 +293,10 @@ def _ssm_lfilter(
             D = b[..., 0]
             filt = partial(
                 state_space,
-                A.mT.conj(),
-                B=B.conj(),
+                A.mT,
+                B=B,
                 C=None,
-                D=D.conj(),
+                D=D,
                 zi=zi,
                 out_idx=0,
                 **kwargs,
@@ -310,8 +310,8 @@ def _ssm_lfilter(
         case "tdf1":
             zi = x.new_zeros((x.size(0), A.size(-1)))
             filt = chain_functions(
-                partial(state_space_recursion, A.mT.conj(), zi, out_idx=0, **kwargs),
-                partial(fir, b.conj().broadcast_to((x.size(0), -1)), transpose=True),
+                partial(state_space_recursion, A.mT, zi, out_idx=0, **kwargs),
+                partial(fir, b.broadcast_to((x.size(0), -1)), transpose=True),
             )
         case _:
             raise ValueError(f"Unknown filter form: {form}")
@@ -371,10 +371,10 @@ def _diag_ssm_lfilter(
             D = b[..., 0]
             filt = partial(
                 diag_state_space,
-                A=A.mT.conj(),
-                B=B.conj(),
+                A=A.mT,
+                B=B,
                 C=None,
-                D=D.conj(),
+                D=D,
                 zi=zi,
                 out_idx=0,
                 **kwargs,
