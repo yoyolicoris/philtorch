@@ -498,3 +498,26 @@ def test_lfiltic_matches_scipy(num_taps: int, y_len: int, x_len: int | None):
 def test_filtfilt_rejects_direct_form_one(form: str):
     with pytest.raises(ValueError, match="filtfilt needs form"):
         filtfilt(torch.ones(3), torch.tensor([-0.5]), torch.randn(50), form=form)
+
+
+@pytest.mark.parametrize("transpose", [True, False])
+@pytest.mark.parametrize("N", [2, 5, 9])
+def test_fir_state_with_signals_shorter_than_the_order(transpose: bool, N: int):
+    # With N < M, part of zi is still in the final state.
+    rng = np.random.default_rng(0)
+    b = rng.standard_normal(6)  # M = 5
+    x = rng.standard_normal((2, N))
+    zi = rng.standard_normal((2, 5))
+    y, zf = fir(
+        torch.from_numpy(np.stack([b, b])),
+        torch.from_numpy(x),
+        zi=torch.from_numpy(zi),
+        transpose=transpose,
+    )
+    if transpose:
+        y_ref, zf_ref = signal.lfilter(b, [1], x, zi=zi)
+    else:  # zi holds the past inputs, newest first
+        history = np.concatenate([zi[:, ::-1], x], axis=1)
+        y_ref, zf_ref = signal.lfilter(b, [1], history)[:, 5:], history[:, ::-1][:, :5]
+    assert np.allclose(y.numpy(), y_ref)
+    assert np.allclose(zf.numpy(), zf_ref)

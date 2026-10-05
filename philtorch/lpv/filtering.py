@@ -65,17 +65,10 @@ def fir(
             ).unfold(1, shifted_b.size(2), 1),
         )
         if return_zf:
-            y, zf = torch.split_with_sizes(y, [T, b.size(2) - 1], 1)
-            return (
-                torch.cat(
-                    [
-                        y[..., : b.size(2) - 1] + zi,
-                        y[..., b.size(2) - 1 :],
-                    ],
-                    dim=-1,
-                ),
-                zf,
-            )
+            # y holds T + M samples. zi adds to the first M, which reach into
+            # the final state when T < M.
+            y = y + F.pad(zi, (0, T))
+            return tuple(torch.split_with_sizes(y, [T, b.size(2) - 1], 1))
         return y
 
     unfolded_x = torch.cat([zi.flip(1), x], dim=1).unfold(1, b.size(2), 1)

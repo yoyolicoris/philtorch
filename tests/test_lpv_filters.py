@@ -426,3 +426,21 @@ def test_zi_rejected_for_direct_form_one(backend: str, form: str):
     x = torch.ones(2, 10, dtype=torch.float64)
     with pytest.raises(ValueError, match="does not take zi"):
         lfilter(b, a, x, zi=torch.zeros(2, 2, dtype=torch.float64), form=form, backend=backend)
+
+
+@pytest.mark.parametrize("N", [2, 5, 9])
+def test_tdf_fir_state_with_signals_shorter_than_the_order(N: int):
+    # With N < M, part of zi is still in the final state.
+    rng = np.random.default_rng(0)
+    b = rng.standard_normal(6)  # M = 5
+    x = rng.standard_normal((2, N))
+    zi = rng.standard_normal((2, 5))
+    y, zf = lpv_fir(
+        torch.from_numpy(np.broadcast_to(b, (2, N, 6)).copy()),
+        torch.from_numpy(x),
+        zi=torch.from_numpy(zi),
+        transpose=True,
+    )
+    y_ref, zf_ref = signal.lfilter(b, [1], x, zi=zi)
+    assert np.allclose(y.numpy(), y_ref)
+    assert np.allclose(zf.numpy(), zf_ref)

@@ -290,10 +290,10 @@ def fir(
         ).squeeze(0)
         # y holds N + M samples; slice by N, as -M is empty when M = 0.
         if zi is not None:
-            zf = y[:, N:]
-            y = y[:, :N]
-            y = torch.cat([zi + y[:, :M], y[:, M:]], dim=1)
-            return y, zf
+            # zi adds to the first M samples, which reach into the final state
+            # when N < M.
+            y = y + F.pad(zi, (0, N))
+            return y[:, :N], y[:, N:]
         return y[:, :N]
 
     if zi is None:
