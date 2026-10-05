@@ -404,8 +404,9 @@ def state_space(
     Each of :attr:`B`, :attr:`C` and :attr:`D` may be constant or time-varying,
     and shared or one per signal: its base shape below can be prefixed with
     :math:`N` for time-varying values, :math:`B` for one per signal, or
-    :math:`(B, N)` for both. When two readings fit, such as :math:`N = B`,
-    the time-varying one is tried first, then the per-signal one.
+    :math:`(B, N)` for both; the one exception is a scalar :attr:`D` with a
+    3-D :attr:`x`. When two readings fit, such as :math:`N = B`, the
+    time-varying one is tried first, then the per-signal one.
 
     Args:
         A (Tensor): state matrices :math:`A[n]`, of shape :math:`(N, M, M)` or
@@ -420,9 +421,14 @@ def state_space(
             for a scalar output or :math:`(P, M)` for :math:`P` outputs.
             Default: ``None``, which outputs the states.
         D (Tensor, optional): the feedthrough matrices, of base shape
-            :math:`()` or :math:`(P)` for a 2-D :attr:`x`, and :math:`()`,
-            :math:`(F)` or :math:`(P, F)` for a 3-D one; :math:`(1)` is also
-            accepted for a shared scalar. Default: ``None``, no feedthrough.
+            :math:`()` or :math:`(P)` for a 2-D :attr:`x`, where :math:`(1)`
+            is also accepted for a shared scalar, and :math:`(F)` or
+            :math:`(P, F)` for a 3-D one. For a 3-D :attr:`x`, a scalar
+            :math:`()` or :math:`(1)` is only accepted constant and shared,
+            as :math:`D` times the identity, so the output size must equal
+            :math:`F`; vary the feedthrough over time or per signal with the
+            :math:`(F)` or :math:`(P, F)` base shapes. Default: ``None``, no
+            feedthrough.
         zi (Tensor, optional): the initial state, of shape :math:`(B, M)` or
             :math:`(M)`. Default: ``None``, all zero.
         unroll_factor (int, optional): see :func:`state_space_recursion`.

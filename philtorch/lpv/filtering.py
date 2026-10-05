@@ -185,7 +185,8 @@ def allpole(
 
     y = lpc(x, a, zi)
     if return_zf:
-        return y, y[:, -a.size(2) :].flip(1)
+        # The last M outputs, which reach back into zi when T < M.
+        return y, torch.cat([zi.flip(1), y], dim=1)[:, -a.size(2) :].flip(1)
     return y  # type: ignore[return-value]
 
 
@@ -246,9 +247,15 @@ def lfilter(
             :func:`state_space`); ignored by ``"torchlpc"``.
 
     Returns:
-        Tensor or tuple of Tensor: the filtered signals, of the shape of
-        :attr:`x`, and with :attr:`zi`, the final state, of the shape of
-        :attr:`zi`.
+        Tensor or tuple of Tensor: the filtered signals, of shape
+        :math:`(B, N)`, and with :attr:`zi`, the final state, of shape
+        :math:`(B, M)`. :math:`B` is the batch size after broadcasting
+        :attr:`b`, :attr:`a`, :attr:`x` and :attr:`zi`, so a shared
+        :attr:`zi` still gives one final state per signal. Both outputs are
+        unbatched, :math:`(N)` and :math:`(M)`, only when all four inputs
+        are. The ``"torchlpc"`` backend also broadcasts a 1-D :attr:`x`
+        across batched coefficients or :attr:`zi`; ``"ssm"`` needs :attr:`x`
+        to carry the batch dimension then.
 
     Raises:
         ValueError: if :attr:`x` has more than 2 dimensions, :attr:`form` or

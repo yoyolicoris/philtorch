@@ -372,8 +372,11 @@ def lfilter(
 
     Returns:
         Tensor or tuple of Tensor: the filtered signals, of the shape of
-        :attr:`x`, and with :attr:`zi`, the final state, of the shape of
-        :attr:`zi`. A real filter gives real outputs with either backend.
+        :attr:`x`, and with :attr:`zi`, the final state, of shape
+        :math:`(B, M)`, or :math:`(M)` when :attr:`b`, :attr:`a`, :attr:`x`
+        and :attr:`zi` are all unbatched; a shared :attr:`zi` with batched
+        signals still gives one final state per signal. A real filter gives
+        real outputs with either backend.
 
     Raises:
         ValueError: if :attr:`form` or :attr:`backend` is unknown,

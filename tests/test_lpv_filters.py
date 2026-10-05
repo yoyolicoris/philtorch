@@ -499,3 +499,57 @@ def test_tdf_allpole_signals_shorter_than_the_order(N: int, with_zi: bool):
     else:
         y = lpv_allpole(a, x, transpose=True)
     assert torch.allclose(y, torch.stack(ys, 1))
+
+
+@pytest.mark.parametrize("N", [1, 2, 3, 6])
+def test_df_allpole_state_with_signals_shorter_than_the_order(N: int):
+    # With N < M, part of zi is still in the final state.
+    gen = torch.Generator().manual_seed(0)
+    a = torch.randn(2, N, 3, dtype=torch.float64, generator=gen) * 0.2
+    x = torch.randn(2, N, dtype=torch.float64, generator=gen)
+    zi = torch.randn(2, 3, dtype=torch.float64, generator=gen)  # y[-1], y[-2], y[-3]
+
+    history = list(zi.flip(1).unbind(1))  # oldest first
+    for n in range(N):
+        history.append(x[:, n] - sum(a[:, n, k] * history[-1 - k] for k in range(3)))
+
+    y, zf = lpv_allpole(a, x, zi=zi)
+    assert torch.allclose(y, torch.stack(history[3:], 1))
+    assert torch.allclose(zf, torch.stack(history[-3:], 1).flip(1))
+
+
+@pytest.mark.parametrize("backend", ["ssm", "torchlpc"])
+def test_df2_continues_from_a_short_chunk(backend: str):
+    # b is shorter than a, so torchlpc's final state comes from allpole.
+    gen = torch.Generator().manual_seed(0)
+    b = torch.randn(1, 6, 2, dtype=torch.float64, generator=gen) * 0.4
+    a = torch.randn(1, 6, 3, dtype=torch.float64, generator=gen) * 0.2
+    x = torch.randn(1, 6, dtype=torch.float64, generator=gen)
+    zi = torch.randn(1, 3, dtype=torch.float64, generator=gen)
+
+    y_all, _ = lfilter(b, a, x, zi=zi, form="df2", backend=backend)
+    y_head, zf = lfilter(b[:, :2], a[:, :2], x[:, :2], zi=zi, form="df2", backend=backend)
+    y_tail, _ = lfilter(b[:, 2:], a[:, 2:], x[:, 2:], zi=zf, form="df2", backend=backend)
+    assert torch.allclose(torch.cat([y_head, y_tail], 1), y_all)
+
+
+@pytest.mark.parametrize("backend", ["ssm", "torchlpc"])
+def test_lfilter_shared_zi_gives_one_state_per_signal(backend: str):
+    b = torch.ones(8, 3, dtype=torch.float64)
+    a = torch.full((8, 2), 0.1, dtype=torch.float64)
+    y, zf = lfilter(
+        b,
+        a,
+        torch.ones(4, 8, dtype=torch.float64),
+        zi=torch.zeros(2, dtype=torch.float64),
+        form="df2",
+        backend=backend,
+    )
+    assert y.shape == (4, 8)
+    assert zf.shape == (4, 2)
+
+
+def test_torchlpc_broadcasts_unbatched_signals():
+    b = torch.ones(4, 8, 3, dtype=torch.float64)
+    a = torch.full((4, 8, 2), 0.1, dtype=torch.float64)
+    assert lfilter(b, a, torch.ones(8, dtype=torch.float64), backend="torchlpc").shape == (4, 8)
