@@ -1,3 +1,5 @@
+"""IIR and FIR filtering with time-invariant coefficients."""
+
 from functools import partial
 
 import torch
@@ -12,15 +14,42 @@ from .ssm import diag_state_space, state_space, state_space_recursion
 
 
 def comb_filter(a: Tensor, delay: int, x: Tensor, zi: Tensor | None = None, **kwargs) -> Tensor:
-    """Apply a comb filter to the input signal.
+    r"""Filter signals with an all-pole comb filter.
+
+    This computes
+
+    .. math::
+        y[n] = x[n] - a\, y[n - D],
+
+    the filter :math:`1 / (1 + a z^{-D})` with delay :math:`D`, by running
+    :math:`D` interleaved first-order recurrences.
+
     Args:
-        a (Tensor): Coefficients of the all-pole filter, shape (B,) or (1,).
-        delay (int): Delay of the comb filter.
-        x (Tensor): Input signal, shape (B, N).
-        zi (Tensor, optional): Initial conditions for the filter, shape (delay,) or (B, delay).
-        **kwargs: Additional keyword arguments for `linear_recurrence`.
+        a (Tensor): the feedback coefficient, of shape :math:`()` to share it
+            or :math:`(B)` for one per signal.
+        delay (int): the delay :math:`D`, at least 1.
+        x (Tensor): input signals, of shape :math:`(B, N)`.
+        zi (Tensor, optional): the :math:`D` outputs before the signal, newest
+            first: :math:`y[-1], \dots, y[-D]`, of shape :math:`(D)` or
+            :math:`(B, D)`. Default: ``None``, all zero.
+        **kwargs: passed to :func:`linear_recurrence`, e.g. ``unroll_factor``.
+
     Returns:
-        Tensor: Filtered output signal, shape (B, N).
+        Tensor or tuple of Tensor: the filtered signals, of shape
+        :math:`(B, N)`. With :attr:`zi` and :math:`D > 1`, also the final
+        state, the last :math:`D` outputs newest first, of shape
+        :math:`(B, D)`.
+
+    Raises:
+        AssertionError: if :attr:`a` has the wrong shape or :attr:`x` is not
+            2-D.
+
+    Example::
+
+        >>> from philtorch.lti import comb_filter
+        >>> x = torch.tensor([[1.0, 0.0, 0.0, 0.0, 0.0, 0.0]])
+        >>> comb_filter(torch.tensor(-0.5), 2, x)
+        tensor([[1.0000, 0.0000, 0.5000, 0.0000, 0.2500, 0.0000]])
     """
     assert a.dim() <= 1, "Denominator coefficients a must be at most 1D."
     assert x.dim() == 2, "Input signal x must be 2D."
@@ -63,15 +92,45 @@ def comb_filter(a: Tensor, delay: int, x: Tensor, zi: Tensor | None = None, **kw
 
 
 def lfiltic(b: Tensor, a: Tensor, y: Tensor, x: Tensor | None = None) -> Tensor:
-    """Compute the initial conditions for a linear filter given its coefficients and output.
+    r"""Construct the initial state of :func:`lfilter` from a signal's past.
+
+    This returns the state, for ``form="tdf2"``, that continues a signal whose
+    most recent outputs and inputs were :attr:`y` and :attr:`x`, as
+    :func:`scipy.signal.lfiltic` does.
+
     Args:
-        b (Tensor): Coefficients of the FIR filter, shape (..., M+1).
-        a (Tensor): Coefficients of the all-pole filter, shape (..., N).
-        y (Tensor): Output signal, shape (..., N).
-        x (Tensor, optional): Input signal, shape (..., M). If not provided,
-            it will be initialized to zeros.
+        b (Tensor): numerator coefficients :math:`b_0, \dots, b_{M_b}`, of
+            shape :math:`(*, M_b + 1)` with :math:`M_b \ge 1`, where :math:`*`
+            is zero or more batch dimensions.
+        a (Tensor): denominator coefficients :math:`a_1, \dots, a_{M_a}`,
+            without the leading 1, of shape :math:`(*, M_a)`.
+        y (Tensor): past outputs, newest first:
+            :math:`y[-1], \dots, y[-M_a]`, of shape :math:`(*, M_a)`.
+        x (Tensor, optional): past inputs, newest first:
+            :math:`x[-1], \dots, x[-M_b]`, of shape :math:`(*, M_b)`.
+            Default: ``None``, all zero.
+
     Returns:
-        Tensor: Initial conditions for the filter, shape (..., max(M, N)).
+        Tensor: the initial state, of shape :math:`(*, \max(M_a, M_b))`.
+
+    Note:
+        Unlike :func:`scipy.signal.lfiltic`, :attr:`a` omits the leading
+        :math:`a_0 = 1`, and :attr:`y` and :attr:`x` must have exactly
+        :math:`M_a` and :math:`M_b` values; SciPy pads shorter ones with
+        zeros.
+
+    Example::
+
+        >>> from philtorch.lti import lfilter, lfiltic
+        >>> b, a = torch.tensor([0.5, 0.5]), torch.tensor([-0.5])
+        >>> x = torch.tensor([1.0, 2.0, 3.0, 4.0])
+        >>> y = lfilter(b, a, x)
+        >>> # Continue from the second sample. With longer histories, pass
+        >>> # the past values newest first, e.g. y[:k].flip(-1).
+        >>> zi = lfiltic(b, a, y[1:2], x[1:2])
+        >>> y_rest, _ = lfilter(b, a, x[2:], zi=zi)
+        >>> torch.allclose(y_rest, y[2:])
+        True
     """
     assert b.dim() >= 1, "Numerator coefficients b must be at least 1D."
     assert a.dim() >= 1, "Denominator coefficients a must be at least 1D."
@@ -96,14 +155,48 @@ def lfiltic(b: Tensor, a: Tensor, y: Tensor, x: Tensor | None = None) -> Tensor:
 
 
 def lfilter_zi(a: Tensor, b: Tensor | None = None, transpose: bool = True) -> Tensor:
-    """Compute the initial conditions for a linear filter given its coefficients.
+    r"""Return the initial state of :func:`lfilter` for a steady step response.
+
+    With this state, filtering a constant input of 1 starts in steady state.
+    Scale it by the first input sample for other signals, as
+    :func:`filtfilt` does.
+
+    With ``transpose=True``, this is the state for ``form="tdf2"``, the same
+    as :func:`scipy.signal.lfilter_zi`. With ``transpose=False``, it is the
+    state for ``form="df2"``, which depends on :attr:`a` alone: the solution
+    of :math:`(I - A) \mathbf{z} = \mathbf{e}_1` for the
+    :func:`~philtorch.mat.companion` matrix :math:`A`. It only fits
+    ``form="df2"`` when :math:`M_b \le M_a`.
+
     Args:
-        b (Tensor): Coefficients of the FIR filter, shape (..., M+1).
-        a (Tensor): Coefficients of the all-pole filter, shape (..., M).
-        transpose (bool): When set to `True`, the TDF-II form is used; otherwise
-            it's DF-II. Default to `True`.
+        a (Tensor): denominator coefficients :math:`a_1, \dots, a_{M_a}`,
+            without the leading 1, of shape :math:`(*, M_a)`, where :math:`*`
+            is zero or more batch dimensions.
+        b (Tensor, optional): numerator coefficients, of shape
+            :math:`(*, M_b + 1)`. Required with ``transpose=True`` and ignored
+            otherwise. Default: ``None``.
+        transpose (bool, optional): return the state for ``form="tdf2"`` if
+            ``True``, or for ``form="df2"`` if ``False``. Default: ``True``.
+
     Returns:
-        Tensor: Initial conditions for the filter, shape (..., M).
+        Tensor: the initial state, of shape :math:`(*, M)`, where
+        :math:`M = \max(M_a, M_b)` with ``transpose=True`` and :math:`M_a`
+        otherwise.
+
+    Raises:
+        ValueError: if ``transpose=True`` and :attr:`b` is ``None``.
+
+    Note:
+        The arguments are ``(a, b)``, the reverse of SciPy's ``(b, a)``, and
+        :attr:`a` omits the leading :math:`a_0 = 1`.
+
+    Example::
+
+        >>> from philtorch.lti import lfilter, lfilter_zi
+        >>> b, a = torch.tensor([0.5]), torch.tensor([-0.5])
+        >>> y, _ = lfilter(b, a, torch.ones(4), zi=lfilter_zi(a, b))
+        >>> y
+        tensor([1., 1., 1., 1.])
     """
     assert a.dim() >= 1, "Denominator coefficients a must be at least 1D."
 
@@ -138,21 +231,47 @@ def fir(
     zi: Tensor | None = None,
     transpose: bool = True,
 ) -> Tensor | tuple[Tensor, Tensor]:
-    """Apply a batch of time-invariant FIR filters.
+    r"""Filter signals with batched FIR filters.
 
-    This function supports both direct (convolution) and transposed forms via
-    the ``transpose`` flag.  When ``zi`` is provided the function will return
-    final states as a second output.
+    This computes
+
+    .. math::
+        y[n] = \sum_{k=0}^{M} b_k\, x[n - k]
+
+    with a grouped convolution, one filter per signal.
 
     Args:
-        b (Tensor): Filter coefficients of shape (B, M+1) where B is batch size.
-        x (Tensor): Input signal of shape (B, N).
-        zi (Tensor, optional): Initial conditions with shape (B, M).
-        transpose (bool): If True, use the transposed convolution implementation.
+        b (Tensor): filter coefficients :math:`b_0, \dots, b_M`, of shape
+            :math:`(B, M + 1)`.
+        x (Tensor): input signals, of shape :math:`(B, N)`.
+        zi (Tensor, optional): initial state, of shape :math:`(B, M)`. With
+            ``transpose=True``, it is the transposed direct-form state, the
+            same as SciPy's ``zi`` and :func:`lfiltic`; with
+            ``transpose=False``, the past inputs newest first,
+            :math:`x[-1], \dots, x[-M]`. Default: ``None``, all zero.
+        transpose (bool, optional): use the transposed direct form
+            (:func:`torch.nn.functional.conv_transpose1d`) if ``True``, or the
+            direct form (:func:`torch.nn.functional.conv1d`) if ``False``.
+            Default: ``True``.
 
     Returns:
-        Filtered output of shape (B, N) and,
-        if ``zi`` was provided, a second tensor containing the final state.
+        Tensor or tuple of Tensor: the filtered signals, of shape
+        :math:`(B, N)`, and with :attr:`zi`, the final state in the same
+        convention, of shape :math:`(B, M)`.
+
+    Raises:
+        AssertionError: if :attr:`b`, :attr:`x` or :attr:`zi` is not 2-D or
+            their shapes do not match.
+
+    Note:
+        Unlike :func:`lfilter`, :attr:`b` and :attr:`x` must both be 2-D,
+        with one filter per signal.
+
+    Example::
+
+        >>> from philtorch.lti import fir
+        >>> fir(torch.tensor([[1.0, 1.0]]), torch.tensor([[1.0, 2.0, 3.0]]))
+        tensor([[1., 3., 5.]])
     """
     assert b.dim() == 2, "Numerator coefficients b must be 2D."
     assert x.dim() == 2, "Input signal x must be 2D."
@@ -205,27 +324,75 @@ def lfilter(
     backend: str = "ssm",
     **kwargs,
 ) -> Tensor | tuple[Tensor, Tensor]:
-    """Apply a batch of time-invariant IIR filters.
+    r"""Filter signals with batched IIR filters.
 
-    This is a convenience wrapper that dispatches to different backends
-    (e.g. state-space) and supports several filter structures (direct/transpose
-    forms). If all inputs are 1-D and zi matches that shape, the leading batch
-    dimension is squeezed from the result.
+    Each filter computes the difference equation
+
+    .. math::
+        y[n] = \sum_{k=0}^{M_b} b_k\, x[n - k]
+             - \sum_{k=1}^{M_a} a_k\, y[n - k],
+
+    whose transfer function is
+
+    .. math::
+        H(z) = \frac{b_0 + b_1 z^{-1} + \cdots + b_{M_b} z^{-M_b}}
+                    {1 + a_1 z^{-1} + \cdots + a_{M_a} z^{-M_a}}.
+
+    Filtering runs along the last dimension. :attr:`b`, :attr:`a` and
+    :attr:`x` are batched along the first dimension, and coefficients without
+    one are shared by every signal. If all inputs are unbatched, so are the
+    outputs.
 
     Args:
-        b (Tensor): FIR coefficients with shape (B, M_b+1) or (M_b+1,).
-        a (Tensor): IIR denominator coefficients with shape (B, M_a) or (M_a,).
-        x (Tensor): Input signal with shape (B, N) or (N,).
-        zi (Tensor, optional): Initial conditions with shape (B, M_{zi}) or (M_{zi},).
-                            When `backend` = `ssm`, M_{zi} = `max(M_b, M_a)`.
-                            When `backend` = `diag_ssm`, M_{zi} = M_a.
-                            This parameter has no use when `form` is either `df1` or `tdf1`.
-        form (str): Filter form, one of {'df2','tdf2','df1','tdf1'}. Default is `tdf2`.
-        backend (str): Backend to execute the filter ('ssm', 'diag_ssm', ...). Default is `ssm`.
+        b (Tensor): numerator coefficients :math:`b_0, \dots, b_{M_b}`, of
+            shape :math:`(B, M_b + 1)` or :math:`(M_b + 1)`.
+        a (Tensor): denominator coefficients :math:`a_1, \dots, a_{M_a}`,
+            without the leading 1, of shape :math:`(B, M_a)` or :math:`(M_a)`.
+        x (Tensor): input signals, of shape :math:`(B, N)` or :math:`(N)`.
+        zi (Tensor, optional): initial state, of shape :math:`(B, M)` or
+            :math:`(M)` and the dtype of :attr:`x`, where
+            :math:`M = \max(M_a, M_b)`, or :math:`M_a` with
+            ``backend="diag_ssm"``. For ``form="tdf2"`` it is SciPy's ``zi``
+            (see :func:`lfiltic` and :func:`lfilter_zi`); for ``form="df2"``,
+            the direct form II state. It is ignored by ``"df1"`` and
+            ``"tdf1"``, and by ``"diag_ssm"`` when :math:`M_b > M_a`.
+            Default: ``None``, all zero.
+        form (str, optional): the filter structure: ``"df2"`` or ``"tdf2"``,
+            direct form II or its transpose, or ``"df1"`` or ``"tdf1"``,
+            direct form I or its transpose. Default: ``"tdf2"``.
+        backend (str, optional): ``"ssm"`` runs the filter as a state-space
+            model of the :func:`~philtorch.mat.companion` matrix (see
+            :func:`state_space`). ``"diag_ssm"`` diagonalizes it and runs one
+            first-order recurrence per pole (see :func:`diag_state_space`);
+            it supports ``"df2"`` and ``"tdf2"`` only. Default: ``"ssm"``.
+        **kwargs: passed to the backend: ``unroll_factor`` (see
+            :func:`state_space`) and, for ``"diag_ssm"``, ``L``, ``V`` and
+            ``Vinv`` (see :func:`diag_state_space`) and ``delayed_form``. When
+            :math:`M_b > M_a`, ``"diag_ssm"`` splits off an FIR part;
+            ``delayed_form=True`` delays the recursive part by
+            :math:`M_b - M_a + 1` samples instead. Both give the same output.
 
     Returns:
-        Filtered output and optionally final state if `zi` is given and `form`
-        is either `tdf2` or `df2`.
+        Tensor or tuple of Tensor: the filtered signals, of the shape of
+        :attr:`x`, and when the initial state is used, the final state, of the
+        shape of :attr:`zi`.
+
+    Raises:
+        ValueError: if :attr:`form` or :attr:`backend` is unknown, or
+            :attr:`x` has more than 2 dimensions.
+
+    Note:
+        Unlike :func:`scipy.signal.lfilter`, :attr:`a` omits the leading
+        :math:`a_0`, which is taken to be 1, so normalize the coefficients
+        first. There is no ``axis`` argument.
+
+    Example::
+
+        >>> from philtorch.lti import lfilter
+        >>> # y[n] = 0.5 x[n] + 0.5 y[n - 1]
+        >>> b, a = torch.tensor([0.5]), torch.tensor([-0.5])
+        >>> lfilter(b, a, torch.tensor([1.0, 0.0, 0.0, 0.0]))
+        tensor([0.5000, 0.2500, 0.1250, 0.0625])
     """
 
     squeeze_first = (
@@ -264,7 +431,7 @@ def _ssm_lfilter(
     form: str = "df2",
     **kwargs,
 ) -> Tensor | tuple[Tensor, Tensor]:
-    """Apply a batch of time-invariant linear filters to input signal using state-space model."""
+    """Run :func:`lfilter` with the ``"ssm"`` backend."""
     if b.size(-1) < a.size(-1) + 1:
         b = F.pad(b, (0, a.size(-1) + 1 - b.size(-1)))
     elif b.size(-1) > a.size(-1) + 1:
@@ -328,7 +495,7 @@ def _diag_ssm_lfilter(
     delayed_form: bool = False,
     **kwargs,
 ) -> Tensor | tuple[Tensor, Tensor]:
-    """Apply a batch of time-invariant linear filters to input signal using state-space model."""
+    """Run :func:`lfilter` with the ``"diag_ssm"`` backend."""
 
     if b.size(-1) > a.size(-1) + 1:
         zi = None
@@ -407,27 +574,57 @@ def filtfilt(
     form: str = "tdf2",
     **kwargs,
 ) -> Tensor | tuple[Tensor, Tensor]:
-    """Apply zero-phase filtering by processing the input signal in both
-    forward and backward directions.
+    r"""Apply a filter forward and backward for zero phase.
 
-    This function uses the `lfilter` function twice: first in the forward direction,
-    then in the reverse direction, to achieve zero-phase distortion. Padding is applied
-    to reduce edge effects.
+    This filters :attr:`x` with :func:`lfilter`, then filters the
+    time-reversed result again, so the output has zero phase and the squared
+    magnitude response of the filter. Each pass starts from the steady state
+    given by :func:`lfilter_zi`, scaled by its first sample, and the signal is
+    extended at both ends to reduce transients.
 
     Args:
-        b (Tensor): FIR coefficients with shape (B, M_b+1) or (M_b+1,).
-        a (Tensor): IIR denominator coefficients with shape (B, M_a) or (M_a,).
-        x (Tensor): Input signal with shape (B, N) or (N,).
-        padmode (str, optional): Padding mode for the input signal. Default is 'replicate'.
-        padlen (int, optional): Padding length. If None, set to 3 times the number of taps.
-        method (str, optional): Filtering method, one of {'pad', 'gust'}. Default is 'pad'.
-        irlen (int, optional): Impulse response length (unused). This parameter
-            is copied from SciPy and will be implemented in the future.
-        form (str, optional): Filter form, one of {'df2', 'tdf2', 'df1', 'tdf1'}. Default is 'tdf2'.
-        **kwargs: Additional keyword arguments for `lfilter`.
+        b (Tensor): numerator coefficients, of shape :math:`(B, M_b + 1)` or
+            :math:`(M_b + 1)`.
+        a (Tensor): denominator coefficients without the leading 1, of shape
+            :math:`(B, M_a)` or :math:`(M_a)`.
+        x (Tensor): input signals, of shape :math:`(B, N)` or :math:`(N)`.
+        padmode (str or None, optional): how to extend the signal, as a mode of
+            :func:`torch.nn.functional.pad`: ``"reflect"`` is SciPy's
+            ``padtype="even"``, ``"replicate"`` is SciPy's ``"constant"``, and
+            ``"constant"`` pads zeros. ``None`` disables the extension.
+            Default: ``"replicate"``.
+        padlen (int or None, optional): the number of samples to add at each
+            end, less than :math:`N`. Default: ``None``, which uses
+            :math:`3 \max(M_a + 1, M_b + 1)`, as SciPy does.
+        method (str, optional): only ``"pad"`` is implemented; ``"gust"``
+            raises :class:`NotImplementedError`. Default: ``"pad"``.
+        irlen (int or None, optional): unused, for compatibility with SciPy.
+            Default: ``None``.
+        form (str, optional): ``"df2"`` or ``"tdf2"``; see :func:`lfilter`.
+            Default: ``"tdf2"``.
+        **kwargs: passed to :func:`lfilter`, e.g. ``backend`` or
+            ``unroll_factor``.
 
     Returns:
-        Tensor: Zero-phase filtered output with the same shape as x.
+        Tensor: the filtered signals, of the shape of :attr:`x`.
+
+    Raises:
+        AssertionError: if :attr:`x` is not longer than the padding.
+        NotImplementedError: if :attr:`method` is ``"gust"``.
+
+    Note:
+        SciPy's default ``padtype="odd"`` has no equivalent here.
+
+    Example::
+
+        >>> from philtorch.lti import filtfilt
+        >>> b, a = torch.tensor([0.25, 0.5, 0.25]), torch.tensor([-0.2])
+        >>> x = torch.zeros(21)
+        >>> x[10] = 1.0
+        >>> y = filtfilt(b, a, x)
+        >>> # Zero phase: a symmetric input gives a symmetric output.
+        >>> torch.allclose(y, y.flip(0))
+        True
     """
     assert method in ("pad", "gust"), "Method must be either 'pad' or 'gust'."
 

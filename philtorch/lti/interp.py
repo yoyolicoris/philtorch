@@ -1,3 +1,5 @@
+"""Cubic B-spline interpolation."""
+
 import torch
 import torch.nn.functional as F
 from torch import Tensor
@@ -67,25 +69,28 @@ def cspline(
     lamb: float = 0.0,
     **kwargs,
 ) -> Tensor:
-    r"""
-    Compute the coefficients for cubic spline interpolation of the input tensor
-    `x` using the method described in "B-Spline Signal Processing: Part II:
-    Efficient Design and Applications" by M. Unser.
+    """Compute the cubic B-spline coefficients of signals.
+
+    The coefficients come from recursive filtering, as in M. Unser, "B-Spline
+    Signal Processing: Part II---Efficient Design and Applications," IEEE
+    Transactions on Signal Processing, 1993.
 
     Args:
-        x (Tensor): Input tensor of shape (B, L).
-        parallel_form (bool): If True, use the partial fraction expansion form
-            for cubic spline interpolation. If False, use cascaded form. Default
-            is True.
-        scipy_padding (bool): If True, use the same padding convention as
-            `scipy.signal.cspline1d` (mirrored padding). If False, use PyTorch's
-            reflect padding convention. Default is False.
-        lamb (float): Smoothing coefficient. Current implementation only
-            supports `lamb=0.0` (no smoothing). Default is 0.0.
-        **kwargs: Additional keyword arguments passed to the underlying
-            `linear_recurrence` function for inverse filtering.
+        x (Tensor): signals, of shape :math:`(B, L)`.
+        parallel_form (bool, optional): sum a causal and an anticausal filter
+            if ``True``, or cascade them if ``False``; both give the same
+            coefficients. Default: ``True``.
+        scipy_padding (bool, optional): see :func:`cubic_spline`.
+            Default: ``False``.
+        lamb (float, optional): the smoothing coefficient; only ``0.0`` is
+            implemented. Default: ``0.0``.
+        **kwargs: unused.
+
     Returns:
-        Tensor: Coefficients for cubic spline interpolation of shape (B, L).
+        Tensor: the coefficients, of shape :math:`(B, L)`.
+
+    Raises:
+        NotImplementedError: if :attr:`lamb` is not zero.
     """
     if lamb != 0.0:
         raise NotImplementedError(
@@ -95,22 +100,45 @@ def cspline(
 
 
 def cubic_spline(x: Tensor, m: int, scipy_padding: bool = False, **kwargs) -> Tensor:
-    r"""
-    Upsample the input tensor `x` by a factor of `m` using cubic spline interpolation
-    based on the method described in "B-Spline Signal Processing: Part II: Efficient Design
-    and Applications" by M. Unser.
+    """Upsample signals by an integer factor with cubic B-spline interpolation.
+
+    This computes the cubic B-spline coefficients of :attr:`x` by recursive
+    filtering, as in M. Unser, "B-Spline Signal Processing: Part II---Efficient
+    Design and Applications," IEEE Transactions on Signal Processing, 1993,
+    and evaluates the spline at :attr:`m` points per sample interval. The
+    spline passes through the original samples.
 
     Args:
-        x (Tensor): Input tensor of shape (B, L).
-        m (int): Interpolation factor (must be an integer >= 1).
-        scipy_padding (bool): If True, use the same padding convention as
-            `scipy.signal.cspline1d` (mirrored padding). If False, use PyTorch's
-            reflect padding convention. Default is False.
-        **kwargs: Additional keyword arguments passed to the underlying
-            `cspline` function for coefficient computation.
+        x (Tensor): signals, of shape :math:`(B, L)`.
+        m (int): the upsampling factor, at least 1.
+        scipy_padding (bool, optional): the boundary condition. If ``True``,
+            the signal is extended by mirror symmetry as in
+            :func:`scipy.signal.cspline1d`, and the output equals
+            :func:`scipy.signal.cspline1d_eval` on the upsampled grid. If
+            ``False``, it is extended like the ``"reflect"`` mode of
+            :func:`torch.nn.functional.pad`. Default: ``False``.
+        **kwargs: options for the coefficients: ``parallel_form`` (bool)
+            sums a causal and an anticausal filter if ``True``, the default,
+            or cascades them if ``False``, with the same result; ``lamb``
+            (float), the smoothing coefficient, must be ``0.0``.
 
     Returns:
-        Tensor: Upsampled tensor of shape (B, (L - 1) * m + 1).
+        Tensor: the upsampled signals, of shape :math:`(B, (L - 1) m + 1)`.
+        With ``m=1``, :attr:`x` itself.
+
+    Raises:
+        AssertionError: if :attr:`m` is not an integer of at least 1.
+        NotImplementedError: if ``lamb`` is not zero.
+
+    Example::
+
+        >>> from philtorch.lti import cubic_spline
+        >>> x = torch.randn(1, 16, dtype=torch.float64)
+        >>> y = cubic_spline(x, 4)
+        >>> y.shape
+        torch.Size([1, 61])
+        >>> torch.allclose(y[:, ::4], x)
+        True
     """
     assert m >= 1 and isinstance(m, int), "Interpolation factor m must be an integer >= 1."
     if m == 1:

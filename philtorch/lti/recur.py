@@ -1,3 +1,5 @@
+"""First-order linear recurrences with time-invariant coefficients."""
+
 from typing import Any
 
 import torch
@@ -7,10 +9,12 @@ from torch.nn import functional as F
 
 
 class LTIRecurrence(Function):
-    """Autograd Function for scalar LTI recurrences backed by compiled ops.
+    r"""Autograd function for :math:`h[n] = a\, h[n - 1] + x[n]`.
 
-    Wraps optimised compiled recurrence kernels and provides backward and
-    JVP implementations to support autograd and forward-mode differentiation.
+    The forward pass runs the native ``lti_recur`` kernel. The backward pass
+    runs the same recurrence backward in time with the conjugated
+    coefficient, and the JVP runs it forward on the tangents, so both
+    reverse- and forward-mode differentiation work.
     """
 
     @staticmethod
@@ -91,20 +95,43 @@ def _scalar_recursion_loop(
 
 
 def linear_recurrence(a: Tensor, init: Tensor, x: Tensor, *, unroll_factor: int = 1) -> Tensor:
-    """Compute a batched scalar linear recurrence efficiently in Python.
+    r"""Compute batched first-order linear recurrences.
 
-    Implements h[t] = a * h[t-1] + x[t] for scalar or per-batch coefficients
-    `a`. Supports optional loop unrolling to reduce Python overhead for long
-    sequences.
+    This computes
+
+    .. math::
+        h[n] = a\, h[n - 1] + x[n], \quad n = 0, \dots, N - 1,
+
+    starting from :math:`h[-1] = \text{init}`.
 
     Args:
-        a (Tensor): Scalar or 1-D tensor of coefficients (shape () or (B,)).
-        init (Tensor): Initial state (shape () or (B,)).
-        x (Tensor): Input sequence with shape (B, N).
-        unroll_factor (int): Unroll factor for blocked processing.
+        a (Tensor): the coefficient, of shape :math:`()` or :math:`(1)` to
+            share it, or :math:`(B)` for one per signal.
+        init (Tensor): the initial value :math:`h[-1]`, of shape :math:`()`,
+            :math:`(1)` or :math:`(B)`.
+        x (Tensor): input sequences, of shape :math:`(B, N)`.
+        unroll_factor (int, optional): ``1`` runs the native kernel. A value
+            greater than 1 and less than :math:`N` runs a block-unrolled
+            PyTorch recursion with blocks of this length, which parallelizes
+            over blocks, and :math:`N` or more runs a plain PyTorch loop; see
+            the README for guidance. Default: ``1``.
 
     Returns:
-        Tensor: Output sequence of shape (B, N).
+        Tensor: :math:`h[0], \dots, h[N - 1]`, of shape :math:`(B, N)`.
+
+    Raises:
+        ValueError: if :attr:`unroll_factor` is less than 1, or, with
+            ``unroll_factor > 1``, :attr:`a` or :attr:`init` has a batch size
+            other than 1 or that of :attr:`x`.
+        RuntimeError: with ``unroll_factor=1``, for the same batch-size
+            mismatch.
+
+    Example::
+
+        >>> from philtorch.lti import linear_recurrence
+        >>> x = torch.tensor([[1.0, 0.0, 0.0, 0.0]])
+        >>> linear_recurrence(torch.tensor(0.5), torch.tensor(0.0), x)
+        tensor([[1.0000, 0.5000, 0.2500, 0.1250]])
     """
     if unroll_factor == 1:
         return LTIRecurrence.apply(a.broadcast_to(x.shape[0]), init.broadcast_to(x.shape[0]), x)

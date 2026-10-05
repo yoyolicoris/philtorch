@@ -1,3 +1,5 @@
+"""State-space models with time-invariant coefficients."""
+
 from functools import partial
 from typing import Any
 
@@ -12,41 +14,44 @@ from .recur import LTIRecurrence, linear_recurrence
 
 
 def extension_backend_indicator(x: Tensor, M: int) -> bool:
-    """Decide whether to prefer the compiled extension backend.
+    r"""Return whether to dispatch this input to the native extension.
 
-    The indicator returns True when the compiled implementation supports the
-    requested device and state dimension.
+    This is a dispatch heuristic, not a check that a kernel exists: it
+    assumes kernels for :math:`M \le 2` on every device. Some are still
+    missing for a device or dtype, such as :math:`M = 2` on MPS, and calling
+    one raises an error; the README lists them.
 
     Args:
-        x (Tensor): Input tensor (used to inspect device/shape).
-        M (int): State dimension.
+        x (Tensor): the input, whose device is checked.
+        M (int): the state size.
 
     Returns:
-        bool: True when the extension backend can be used.
+        bool: ``True`` on CPU, or when :math:`M \le 2`.
     """
     return M <= 2 or x.is_cpu
 
 
 def helion_backend_indicator(x: Tensor) -> bool:
-    """Decide whether to prefer the Helion backend.
-
-    The indicator returns True when Helion is available and the input is on a
-    CUDA device.
+    """Return whether the Helion kernels can run on this input.
 
     Args:
-        x (Tensor): Input tensor (used to inspect device).
+        x (Tensor): the input, whose device and dtype are checked.
 
     Returns:
-        bool: True when the Helion backend can be used.
+        bool: ``True`` when Helion is loaded and :attr:`x` is a real tensor on
+        a CUDA device.
     """
     return HELION_LOADED and x.is_cuda and not x.is_complex()
 
 
 class LTIMatrixRecurrence(Function):
-    """Autograd Function wrapping optimised LTI matrix recurrence ops.
+    r"""Autograd function for the matrix recurrence of :func:`_ext_ss_recur`.
 
-    Dispatches to compiled ops for common small-M recurrences and implements
-    backward/JVP rules to support autograd and forward-mode.
+    The forward pass runs the native ``lti_recur2`` kernel for
+    :math:`M = 2`, the Helion kernel on CUDA when it is available, and the
+    ``lti_recurN`` kernel otherwise. The backward pass runs the recurrence
+    backward in time with :math:`A^H`, and the JVP runs it forward on the
+    tangents, so both reverse- and forward-mode differentiation work.
     """
 
     @staticmethod
@@ -120,20 +125,19 @@ def _recursion_loop(
     x: Tensor,
     out_idx: int | None = None,
 ) -> Tensor:
-    """Pure-Python recurrence loop for LTI systems.
-
-    Runs h_t = A @ h_{t-1} + x_t for time-invariant or batched A. Supports
-    returning a single output index via ``out_idx``.
+    """Run :math:`h[n] = A h[n - 1] + x[n]` with a loop over time steps.
 
     Args:
-        A (Tensor): State matrix of shape (M, M) or (B, M, M).
-        zi (Tensor): Initial state of shape (B, M).
-        x (Tensor): Input sequence of shape (B, T, M) or (B, T).
-        out_idx (int, optional): If provided, return only this state index
-            per timestep.
+        A (Tensor): state matrices, of shape :math:`(M, M)` or
+            :math:`(B, M, M)`.
+        zi (Tensor): the initial state, of shape :math:`(B, M)`.
+        x (Tensor): inputs, of shape :math:`(B, N, M)`, or :math:`(B, N)` to
+            feed the first state only.
+        out_idx (int, optional): return only this state. Default: ``None``.
 
     Returns:
-        Tensor: State sequence (B, T, M) or (B, T) when ``out_idx`` is set.
+        Tensor: the states, of shape :math:`(B, N, M)`, or :math:`(B, N)`
+        with :attr:`out_idx`.
     """
     results = []
     AT = A.mT
@@ -157,16 +161,9 @@ def _recursion_loop(
 
 
 def _ext_ss_recur(A: Tensor, zi: Tensor, x: Tensor, *, out_idx: int | None = None, **_) -> Tensor:
-    """Call the compiled extension for LTI recurrences.
+    """Run :math:`h[n] = A h[n - 1] + x[n]` with the native kernels.
 
-    Args:
-        A (Tensor): State matrix or batch of matrices.
-        zi (Tensor): Initial states.
-        x (Tensor): Input sequence.
-        out_idx (int, optional): Optional index of the state to return.
-
-    Returns:
-        Tensor: Output state sequence (B, T, M) or (B, T) if ``out_idx`` used.
+    Takes the same arguments and returns the same as :func:`_recursion_loop`.
     """
     if x.dim() == 2 and A.size(-1) == 1:
         y = LTIRecurrence.apply(A[..., 0, 0], zi.squeeze(-1), x).unsqueeze(-1)
@@ -198,21 +195,57 @@ def state_space_recursion(
     unroll_factor: int = 1,
     out_idx: int | None = None,
 ) -> Tensor:
-    """Compute internal state evolution for an LTI model.
+    r"""Compute the states of a linear time-invariant recurrence.
 
-    This is a pure Python-based implementation.
-    Supports block unrolling to accelerate long recurrences. Input A may be
-    batched depending on its dimensionality.
+    This computes
+
+    .. math::
+        \mathbf{h}[n] = A \mathbf{h}[n - 1] + \mathbf{x}[n],
+        \quad n = 0, \dots, N - 1,
+
+    starting from :math:`\mathbf{h}[-1] = \mathbf{z}_i`. A 2-D input feeds
+    the first state only: :math:`\mathbf{x}[n] = x[n] \mathbf{e}_1`.
+
+    With ``unroll_factor=1``, this calls the native extension on CPU, and on
+    other devices when :math:`M \le 2`, and otherwise runs a loop over time
+    steps. On other devices the extension may lack a kernel for the device or
+    dtype, such as :math:`M = 2` on MPS, which raises an error; the README
+    lists them. On any device, an :attr:`unroll_factor` greater than 1 and
+    less than :math:`N` runs a block-unrolled PyTorch recursion instead, and
+    one of :math:`N` or more runs a plain PyTorch loop.
 
     Args:
-        A (Tensor): State matrices with shape (M, M) or (B, M, M) when batched.
-        zi (Tensor): Initial states with shape (B, M).
-        x (Tensor): Input sequence with shape (B, T, ...) or (B, T).
-        unroll_factor (int): Block size for recursion acceleration (>=1).
-        out_idx (int, optional): If provided, return only this state index.
+        A (Tensor): state matrices, of shape :math:`(M, M)` or
+            :math:`(B, M, M)`.
+        zi (Tensor): the initial state :math:`\mathbf{h}[-1]`, of shape
+            :math:`(B, M)`.
+        x (Tensor): inputs, of shape :math:`(B, N, M)` or :math:`(B, N)`.
+        unroll_factor (int, optional): ``1`` for the dispatch described
+            above: the native extension on CPU, or for :math:`M \le 2` on other
+            devices, and a loop otherwise. A value less than :math:`N` is the
+            block length of the unrolled recursion, and :math:`N` or more
+            runs a plain loop. Default: ``1``.
+        out_idx (int, optional): return only this state. Default: ``None``.
 
     Returns:
-        Tensor: State sequence (B, T, M) or (B, T) when ``out_idx`` is used.
+        Tensor: the states :math:`\mathbf{h}[0], \dots, \mathbf{h}[N - 1]`,
+        of shape :math:`(B, N, M)`, or :math:`(B, N)` with :attr:`out_idx`.
+
+    Raises:
+        AssertionError: if the shapes do not match.
+        ValueError: if :attr:`unroll_factor` is less than 1.
+
+    Note:
+        Unlike :func:`state_space`, the state at step :math:`n` already
+        includes :math:`\mathbf{x}[n]`.
+
+    Example::
+
+        >>> from philtorch.lti import state_space_recursion
+        >>> A = torch.tensor([[1.0, 1.0], [1.0, 0.0]])
+        >>> x = torch.tensor([[1.0, 0.0, 0.0, 0.0, 0.0]])
+        >>> state_space_recursion(A, torch.zeros(1, 2), x, out_idx=0)
+        tensor([[1., 1., 2., 3., 5.]])
     """
     assert x.dim() in (
         2,
@@ -374,31 +407,66 @@ def state_space(
     out_idx: int | None = None,
     # **kwargs,
 ):
-    """Compute outputs from a discrete LTI state-space model.
+    r"""Compute the outputs of a linear time-invariant state-space model.
 
-    Evaluates the standard state-space equations:
+    This computes
 
-        h_{t+1} = A @ h_t + B x_t
-        y_t = C h_t + D x_t
+    .. math::
+        \mathbf{h}[n + 1] &= A \mathbf{h}[n] + B \mathbf{x}[n], \\
+        \mathbf{y}[n] &= C \mathbf{h}[n] + D \mathbf{x}[n],
 
-    The function accepts broadcastable shapes for B, C, and D. If ``zi`` is
-    provided the function also returns the final state ``zf`` as a second
-    return value: `(y, zf)`.
+    starting from :math:`\mathbf{h}[0] = \mathbf{z}_i`. The recursion runs as
+    in :func:`state_space_recursion`.
 
     Args:
-        A (Tensor): State matrix with shape (M, M) or (B, M, M) for batch.
-        x (Tensor): Input sequence with shape (B, N, ...) or (B, N).
-        B (Tensor, optional): Input matrix (broadcastable).
-        C (Tensor, optional): Output matrix (broadcastable).
-        D (Tensor, optional): Direct feedthrough matrix (broadcastable).
-        zi (Tensor, optional): Initial state (B, M) or (M,) (broadcastable).
-        unroll_factor (int): Recursion block size. The default of 1 selects a
-            compiled kernel when supported and otherwise uses the naive Python
-            loop. Setting it to >1 forces block-unrolled Python recursion.
-        out_idx (int, optional): If provided, return only this state index per timestep.
+        A (Tensor): state matrices, of shape :math:`(M, M)` or
+            :math:`(B, M, M)`.
+        x (Tensor): inputs, of shape :math:`(B, N, F)`, or :math:`(B, N)` for
+            a scalar input.
+        B (Tensor, optional): the input matrix, of shape :math:`(M)` or
+            :math:`(B, M)` for a 2-D :attr:`x`, and :math:`(M, F)` or
+            :math:`(B, M, F)` for a 3-D one. Default: ``None``: a 2-D
+            :attr:`x` feeds the first state, and a 3-D one needs
+            :math:`F = M`.
+        C (Tensor, optional): the output matrix, of shape :math:`(M)` or
+            :math:`(B, M)` for a scalar output, or :math:`(P, M)` or
+            :math:`(B, P, M)` for :math:`P` outputs. Default: ``None``, which
+            outputs the states.
+        D (Tensor, optional): the feedthrough matrix. For a 2-D :attr:`x`, of
+            shape :math:`()`, :math:`(1)`, :math:`(B)`, :math:`(P)` or
+            :math:`(B, P)`; for a 3-D one, :math:`()`, :math:`(1)`,
+            :math:`(F)`, :math:`(B, F)`, :math:`(P, F)` or :math:`(B, P, F)`.
+            When two readings fit, such as :math:`P = B`, the batched one wins.
+            Default: ``None``, no feedthrough.
+        zi (Tensor, optional): the initial state, of shape :math:`(B, M)` or
+            :math:`(M)`. Default: ``None``, all zero.
+        unroll_factor (int, optional): see :func:`state_space_recursion`.
+            Default: ``1``.
+        out_idx (int, optional): output only this state, instead of using
+            :attr:`C`. Default: ``None``.
 
     Returns:
-        Tensor or 2-tuple with the second Tenosr being the final state `zf` if `zi` is provided.
+        Tensor or tuple of Tensor: the outputs, of shape :math:`(B, N)`,
+        :math:`(B, N, P)`, or :math:`(B, N, M)` without :attr:`C`, and with
+        :attr:`zi`, the final state :math:`\mathbf{h}[N]`, of shape
+        :math:`(B, M)`.
+
+    Raises:
+        ValueError: if both :attr:`C` and :attr:`out_idx` are given, or
+            :attr:`B`, :attr:`C` or :attr:`D` has an unsupported shape.
+
+    Note:
+        This computes the same as :func:`scipy.signal.dlsim` with
+        ``x0=zi``, batched, without the time vector or the state sequence.
+
+    Example::
+
+        >>> from philtorch.lti import state_space
+        >>> # Fibonacci numbers from an impulse.
+        >>> A = torch.tensor([[1.0, 1.0], [1.0, 0.0]])
+        >>> x = torch.tensor([[1.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0]])
+        >>> state_space(A, x, C=torch.tensor([1.0, 0.0]))
+        tensor([[0., 1., 1., 2., 3., 5., 8.]])
     """
     assert x.dim() in (
         2,
@@ -448,17 +516,10 @@ def state_space(
 
 
 def _ssm_B(B, x, batch_size, M):
-    """Apply input matrix B to input sequence x.
+    r"""Return :math:`B \mathbf{x}[n]` for every step.
 
-    Args:
-        B (Tensor, optional): Input matrix or broadcastable variants. If None,
-            ``x`` is returned unchanged.
-        x (Tensor): Input sequence (B, N, F) or (B, N).
-        batch_size (int): Batch size B.
-        M (int): State dimension.
-
-    Returns:
-        Tensor: ``B x`` with shape (B, N, M), or ``x`` when B is None.
+    This takes the shapes :func:`state_space` accepts, and returns :attr:`x`
+    itself without :attr:`B`.
     """
     if B is None:
         return x
@@ -490,15 +551,9 @@ def _ssm_B_shape_error(B, x, batch_size, M):
 
 
 def _ssm_D(D, x, batch_size):
-    """Apply feedthrough matrix D to input sequence x.
+    r"""Return :math:`D \mathbf{x}[n]` for every step.
 
-    Args:
-        D (Tensor): Feedthrough matrix or broadcastable variants.
-        x (Tensor): Input sequence (B, N, F) or (B, N).
-        batch_size (int): Batch size B.
-
-    Returns:
-        Tensor: ``D x`` with shape (B, N), (B, N, F), or (B, N, P).
+    This takes the shapes :func:`state_space` accepts.
     """
     features = x.size(-1)
     match x.dim(), tuple(D.shape):
@@ -533,22 +588,11 @@ def _ssm_D(D, x, batch_size):
 
 
 def _ssm_C_D(h, x, C, D, batch_size, M):
-    """Apply output matrix C and feedthrough D to state sequence h.
+    r"""Return :math:`C \mathbf{h}[n] + D \mathbf{x}[n]` for every step.
 
-    Handles many broadcastable shapes for C and D to compute y = C h + D x.
-    Where a batched and an unbatched shape coincide (e.g. P == B), the batched
-    interpretation wins.
-
-    Args:
-        h (Tensor): State sequence (B, N, M).
-        x (Tensor): Input sequence (B, N, F) or (B, N).
-        C (Tensor, optional): Output matrix or broadcastable variants.
-        D (Tensor, optional): Direct feedthrough matrix or broadcastable variants.
-        batch_size (int): Batch size B.
-        M (int): State dimension.
-
-    Returns:
-        Tensor: Output sequence y with appropriate broadcasted shape.
+    This takes the shapes :func:`state_space` accepts. Where a batched and an
+    unbatched shape coincide, such as :math:`P = B`, the batched reading
+    wins.
     """
     Dx = None if D is None else _ssm_D(D, x, batch_size)
 
@@ -590,32 +634,67 @@ def diag_state_space(
     out_idx: int | None = None,
     unroll_factor: int = 1,
 ):
-    """Compute outputs from a diagonalised (eigen) state-space model.
+    r"""Compute a state-space model's outputs through its eigendecomposition.
 
-    Evaluates the state-space equations using the diagonalisation:
+    With :math:`A = V \operatorname{diag}(\boldsymbol{\lambda}) V^{-1}`, the
+    state :math:`\mathbf{z} = V^{-1} \mathbf{h}` evolves as :math:`M`
+    independent first-order recurrences,
 
-        A = V diag(L) V^{-1}
+    .. math::
+        z_i[n + 1] = \lambda_i z_i[n] + (V^{-1} B \mathbf{x}[n])_i,
 
-    Accepts either eigenvalues `L` (and optionally `V`/`Vinv`) or a full matrix `A`.
-    Computes the state evolution in the diagonal basis for efficiency.
+    which run with :func:`linear_recurrence`. The outputs are those of
+    :func:`state_space` for a diagonalizable :math:`A`.
+
+    Give the decomposition in one of these ways:
+
+    - :attr:`A` alone: the eigenvalues come from
+      :func:`torch.linalg.eigvals` and the eigenvectors from
+      :func:`~philtorch.mat.find_eigenvectors`.
+    - :attr:`L` with :attr:`A`, :attr:`V` or :attr:`Vinv`: the missing
+      matrices are computed from it.
+    - :attr:`L` with both :attr:`V` and :attr:`Vinv`: used as given.
+    - :attr:`L` alone: :math:`A` is diagonal and :math:`V = I`.
 
     Args:
-        x (Tensor): Input sequence with shape (B, N, ...) or (B, N).
-        L (Tensor, optional): Eigenvalues (vector or batch of vectors).
-        V (Tensor, optional): Eigenvector matrix or batch thereof.
-        Vinv (Tensor, optional): Inverse eigenvector matrix or batch thereof.
-        A (Tensor, optional): Full state matrix if eigen-decomposition is not provided.
-        B (Tensor, optional): Input matrix (broadcastable).
-        C (Tensor, optional): Output matrix (broadcastable).
-        D (Tensor, optional): Direct feedthrough matrix (broadcastable).
-        zi (Tensor, optional): Initial state (B, M) or (M,) (broadcastable).
-        out_idx (int, optional): If provided, return only this state index per timestep.
-        unroll_factor (int): Recursion block size. The default of 1 selects the
-            compiled kernel. Setting it to >1 forces block-unrolled Python
-            recursion.
+        x (Tensor): inputs, of shape :math:`(B, N, F)` or :math:`(B, N)`.
+        L (Tensor, optional): the eigenvalues :math:`\boldsymbol{\lambda}`,
+            of shape :math:`(M)` or :math:`(B, M)`. Batched eigenvalues need
+            :attr:`V` or :attr:`Vinv`. Default: ``None``.
+        V (Tensor, optional): the eigenvectors as columns, of shape
+            :math:`(M, M)` or :math:`(B, M, M)`. Default: ``None``.
+        Vinv (Tensor, optional): the inverse of :attr:`V`, of the same shape.
+            Default: ``None``.
+        A (Tensor, optional): the state matrix, of shape :math:`(M, M)` or
+            :math:`(B, M, M)`. Default: ``None``.
+        B (Tensor, optional): see :func:`state_space`. Default: ``None``.
+        C (Tensor, optional): see :func:`state_space`. Default: ``None``.
+        D (Tensor, optional): see :func:`state_space`. Default: ``None``.
+        zi (Tensor, optional): see :func:`state_space`. Default: ``None``.
+        out_idx (int, optional): see :func:`state_space`. Default: ``None``.
+        unroll_factor (int, optional): see :func:`linear_recurrence`.
+            Default: ``1``.
 
     Returns:
-        Tensor or 2-tuple with the second Tensor being the final state `zf` if `zi` is provided.
+        Tensor or tuple of Tensor: as :func:`state_space`. With complex
+        eigenvalues, for example a real filter with complex poles, the
+        computation is complex: a real :attr:`C` returns the real part, and
+        otherwise the outputs are complex.
+
+    Raises:
+        AssertionError: if neither :attr:`L` nor :attr:`A` is given, or the
+            shapes do not match.
+        ValueError: if both :attr:`C` and :attr:`out_idx` are given.
+
+    Example::
+
+        >>> from philtorch.lti import diag_state_space, state_space
+        >>> A = torch.tensor([[0.5, 0.2], [0.0, -0.3]])
+        >>> C = torch.tensor([1.0, 1.0])
+        >>> x = torch.randn(1, 8, 2)
+        >>> y = diag_state_space(x, A=A, C=C)
+        >>> torch.allclose(y, state_space(A, x, C=C), atol=1e-6)
+        True
     """
     assert x.dim() in (
         2,

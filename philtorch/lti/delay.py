@@ -1,3 +1,5 @@
+"""State-space models with delay lines."""
+
 import operator
 from collections.abc import Iterable, Sequence
 from typing import Any
@@ -11,7 +13,7 @@ _OUTPUT_CHUNK = 4096
 
 
 def _as_int(value: Any, message: str) -> int:
-    """Convert Python, NumPy, or single-element integer tensor scalars to ``int``."""
+    """Convert a Python, NumPy or one-element integer tensor scalar to ``int``."""
     # Booleans are integers to operator.index, so reject them first: Python
     # bools, bool tensors, and NumPy bools (dtype kind "b"), which NumPy
     # before 2.3 still converts to 0 or 1, with only a DeprecationWarning.
@@ -65,44 +67,62 @@ def delay_state_space(
     block_size: int | None = None,
     out_idx: int | None = None,
 ):
-    """Compute a structured state-space model with explicit delay lines.
+    r"""Compute the outputs of a state-space model with delay lines.
 
-    For delay lengths ``m_i``, this evaluates
+    For delay lengths :math:`m_1, \dots, m_M`, this computes
 
-        r_i[n] = s_i[n - m_i]
-        s[n] = A @ r[n] + B @ x[n]
-        y[n] = C @ r[n] + D @ x[n]
+    .. math::
+        r_i[n] &= s_i[n - m_i], \\
+        \mathbf{s}[n] &= A \mathbf{r}[n] + B \mathbf{x}[n], \\
+        \mathbf{y}[n] &= C \mathbf{r}[n] + D \mathbf{x}[n].
 
-    With all delays equal to one this is :func:`state_space` with ``h = r``;
-    ``B``, ``C``, ``D``, ``out_idx`` and the return value follow the same
-    conventions. Each delay state is an output-first queue, so
-    ``zi[i][..., 0]`` is the next value emitted by delay line ``i``. The
+    With every delay equal to 1, this is :func:`state_space` with
+    :math:`\mathbf{h} = \mathbf{r}`; :attr:`B`, :attr:`C`, :attr:`D`,
+    :attr:`out_idx` and the return value follow the same conventions. The
     sequence is processed in blocks no longer than the shortest delay, so each
     block only reads values written by earlier blocks.
 
     Args:
-        A (Tensor): Feedback matrix with shape ``(M, M)`` or ``(B, M, M)``.
-        x (Tensor): Input sequence with shape ``(B, N)`` or ``(B, N, F)``.
-        delays (Sequence[int] or Tensor): Positive integer delay lengths for
-            the ``M`` lines. Python, NumPy, and integer tensor values are
-            accepted; a scalar gives a single delay line.
-        B (Tensor, optional): Input matrix with the same shapes as in
-            :func:`state_space`. If omitted, scalar input enters the first
-            delay line, or vector input must have ``M`` features.
-        C (Tensor, optional): Output matrix with the same shapes as in
-            :func:`state_space`. If omitted, all delay outputs are returned.
-        D (Tensor, optional): Direct matrix with the same shapes as in
-            :func:`state_space`.
-        zi (Sequence[Tensor], optional): One initial queue per delay line. Each
-            queue has shape ``(m_i,)`` or ``(B, m_i)``. Zero when omitted.
-        block_size (int, optional): Processing block length. It must be no
-            greater than ``min(delays)`` and defaults to that value.
-        out_idx (int, optional): If provided, return only this delay line's
-            output per timestep. Cannot be combined with ``C``.
+        A (Tensor): the feedback matrix, of shape :math:`(M, M)` or
+            :math:`(B, M, M)`.
+        x (Tensor): inputs, of shape :math:`(B, N)` or :math:`(B, N, F)`.
+        delays (int, Sequence[int], or Tensor): the positive integer delay
+            lengths of the :math:`M` lines, as Python, NumPy or integer tensor
+            values; a scalar gives a single delay line.
+        B (Tensor, optional): see :func:`state_space`. Default: ``None``: a
+            2-D :attr:`x` enters the first delay line, and a 3-D one needs
+            :math:`F = M`.
+        C (Tensor, optional): see :func:`state_space`. Default: ``None``,
+            which outputs every delay line.
+        D (Tensor, optional): see :func:`state_space`. Default: ``None``.
+        zi (Sequence[Tensor], optional): one initial queue per delay line, of
+            shape :math:`(m_i)` or :math:`(B, m_i)`. Each queue is output first,
+            so ``zi[i][..., 0]`` is the next value delay line :math:`i` emits.
+            Default: ``None``, all zero.
+        block_size (int, optional): the processing block length, at most
+            :math:`\min_i m_i`. Default: ``None``, which uses
+            :math:`\min_i m_i`.
+        out_idx (int, optional): output only this delay line, instead of using
+            :attr:`C`. Default: ``None``.
 
     Returns:
-        Tensor or 2-tuple ``(y, zf)`` when ``zi`` is provided, where ``zf``
-        is a tuple containing one final queue per delay line.
+        Tensor or tuple: the outputs, as :func:`state_space`, and with
+        :attr:`zi`, a tuple holding one final queue per delay line.
+
+    Raises:
+        ValueError: if a delay or :attr:`block_size` is invalid, :attr:`zi`
+            does not hold one queue per delay line, or both :attr:`C` and
+            :attr:`out_idx` are given.
+        TypeError: if a queue in :attr:`zi` is not a tensor.
+        AssertionError: if the shapes do not match.
+
+    Example::
+
+        >>> from philtorch.lti import delay_state_space
+        >>> # One delay line of 3 samples that feeds back half its output.
+        >>> x = torch.tensor([[1.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0]])
+        >>> delay_state_space(torch.tensor([[0.5]]), x, [3]).squeeze(-1)
+        tensor([[0.0000, 0.0000, 0.0000, 1.0000, 0.0000, 0.0000, 0.5000]])
     """
     assert x.dim() in (
         2,
