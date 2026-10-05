@@ -36,13 +36,12 @@ def comb_filter(a: Tensor, delay: int, x: Tensor, zi: Tensor | None = None, **kw
 
     Returns:
         Tensor or tuple of Tensor: the filtered signals, of shape
-        :math:`(B, N)`. With :attr:`zi` and :math:`D > 1`, also the final
-        state, the last :math:`D` outputs newest first, of shape
-        :math:`(B, D)`.
+        :math:`(B, N)`, and with :attr:`zi`, the final state: the last
+        :math:`D` outputs newest first, of shape :math:`(B, D)`.
 
     Raises:
-        AssertionError: if :attr:`a` has the wrong shape or :attr:`x` is not
-            2-D.
+        AssertionError: if :attr:`delay` is less than 1, :attr:`a` has the
+            wrong shape, or :attr:`x` is not 2-D.
 
     Example::
 
@@ -53,14 +52,15 @@ def comb_filter(a: Tensor, delay: int, x: Tensor, zi: Tensor | None = None, **kw
     """
     assert a.dim() <= 1, "Denominator coefficients a must be at most 1D."
     assert x.dim() == 2, "Input signal x must be 2D."
-    assert delay >= 0, "Delay must be non-negative."
+    assert delay >= 1, "Delay must be at least 1."
     if a.dim() == 1:
         assert a.size(0) == x.size(0), "The first dimension of a must match the batch size of x."
 
     if delay == 1:
-        return linear_recurrence(
+        y = linear_recurrence(
             -a, torch.zeros_like(a) if zi is None else zi.squeeze(-1), x, **kwargs
         )
+        return y if zi is None else (y, y[:, -1:])
 
     remainder = x.size(1) % delay
     if remainder != 0:
@@ -100,24 +100,24 @@ def lfiltic(b: Tensor, a: Tensor, y: Tensor, x: Tensor | None = None) -> Tensor:
 
     Args:
         b (Tensor): numerator coefficients :math:`b_0, \dots, b_{M_b}`, of
-            shape :math:`(*, M_b + 1)` with :math:`M_b \ge 1`, where :math:`*`
-            is zero or more batch dimensions.
+            shape :math:`(*, M_b + 1)`, where :math:`*` is zero or more batch
+            dimensions.
         a (Tensor): denominator coefficients :math:`a_1, \dots, a_{M_a}`,
             without the leading 1, of shape :math:`(*, M_a)`.
         y (Tensor): past outputs, newest first:
-            :math:`y[-1], \dots, y[-M_a]`, of shape :math:`(*, M_a)`.
+            :math:`y[-1], \dots, y[-M_a]`, of shape :math:`(*, M_a)`. As in
+            SciPy, fewer values are padded with zeros, and only the first
+            :math:`M_a` are used.
         x (Tensor, optional): past inputs, newest first:
-            :math:`x[-1], \dots, x[-M_b]`, of shape :math:`(*, M_b)`.
-            Default: ``None``, all zero.
+            :math:`x[-1], \dots, x[-M_b]`, of shape :math:`(*, M_b)`, padded
+            or truncated like :attr:`y`. Default: ``None``, all zero.
 
     Returns:
         Tensor: the initial state, of shape :math:`(*, \max(M_a, M_b))`.
 
     Note:
         Unlike :func:`scipy.signal.lfiltic`, :attr:`a` omits the leading
-        :math:`a_0 = 1`, and :attr:`y` and :attr:`x` must have exactly
-        :math:`M_a` and :math:`M_b` values; SciPy pads shorter ones with
-        zeros.
+        :math:`a_0 = 1`.
 
     Example::
 
@@ -139,18 +139,18 @@ def lfiltic(b: Tensor, a: Tensor, y: Tensor, x: Tensor | None = None) -> Tensor:
     m = b.size(-1) - 1
     k = max(n, m)
 
-    if x is None:
-        x = b.new_zeros(m)
+    # As in SciPy, a shorter history is padded with zeros and a longer one is
+    # truncated to the values the filter uses.
+    y = F.pad(y, (0, n - y.size(-1)))
+    x = b.new_zeros(m) if x is None else F.pad(x, (0, m - x.size(-1)))
 
-    b_mat = F.pad(b[..., 1:], (0, m - 1), value=0.0).unfold(-1, m, 1)
-    a_mat = F.pad(a, (0, n - 1), value=0.0).unfold(-1, n, 1)
-    zi_b = (b_mat @ x.unsqueeze(-1)).squeeze(-1)
-    zi_a = (a_mat @ y.unsqueeze(-1)).squeeze(-1)
-    if zi_b.size(-1) < k:
-        zi_b = F.pad(zi_b, (0, k - zi_b.size(-1)), value=0.0)
-    if zi_a.size(-1) < k:
-        zi_a = F.pad(zi_a, (0, k - zi_a.size(-1)), value=0.0)
-    zi = zi_b - zi_a
+    zi = y.new_zeros(y.shape[:-1] + (k,))
+    if m > 0:
+        b_mat = F.pad(b[..., 1:], (0, m - 1), value=0.0).unfold(-1, m, 1)
+        zi = zi + F.pad((b_mat @ x.unsqueeze(-1)).squeeze(-1), (0, k - m))
+    if n > 0:
+        a_mat = F.pad(a, (0, n - 1), value=0.0).unfold(-1, n, 1)
+        zi = zi - F.pad((a_mat @ y.unsqueeze(-1)).squeeze(-1), (0, k - n))
     return zi
 
 
@@ -291,19 +291,20 @@ def fir(
             stride=1,
             groups=B,
         ).squeeze(0)
+        # y holds N + M samples; slice by N, as -M is empty when M = 0.
         if zi is not None:
-            zf = y[:, -M:]
-            y = y[:, :-M]
+            zf = y[:, N:]
+            y = y[:, :N]
             y = torch.cat([zi + y[:, :M], y[:, M:]], dim=1)
             return y, zf
-        return y[:, :-M]
+        return y[:, :N]
 
     if zi is None:
         zf = None
         padded_x = F.pad(x, (M, 0))
     else:
         padded_x = torch.cat([zi.flip(1), x], dim=1)
-        zf = padded_x[:, -M:].flip(1)
+        zf = padded_x[:, N:].flip(1)
 
     y = F.conv1d(
         padded_x.unsqueeze(0),
@@ -354,8 +355,8 @@ def lfilter(
             :math:`M = \max(M_a, M_b)`, or :math:`M_a` with
             ``backend="diag_ssm"``. For ``form="tdf2"`` it is SciPy's ``zi``
             (see :func:`lfiltic` and :func:`lfilter_zi`); for ``form="df2"``,
-            the direct form II state. It is ignored by ``"df1"`` and
-            ``"tdf1"``, and by ``"diag_ssm"`` when :math:`M_b > M_a`.
+            the direct form II state. ``"df1"`` and ``"tdf1"`` do not take
+            it, nor does ``"diag_ssm"`` when :math:`M_b > M_a`.
             Default: ``None``, all zero.
         form (str, optional): the filter structure: ``"df2"`` or ``"tdf2"``,
             direct form II or its transpose, or ``"df1"`` or ``"tdf1"``,
@@ -374,12 +375,13 @@ def lfilter(
 
     Returns:
         Tensor or tuple of Tensor: the filtered signals, of the shape of
-        :attr:`x`, and when the initial state is used, the final state, of the
-        shape of :attr:`zi`.
+        :attr:`x`, and with :attr:`zi`, the final state, of the shape of
+        :attr:`zi`. A real filter gives real outputs with either backend.
 
     Raises:
-        ValueError: if :attr:`form` or :attr:`backend` is unknown, or
-            :attr:`x` has more than 2 dimensions.
+        ValueError: if :attr:`form` or :attr:`backend` is unknown,
+            :attr:`x` has more than 2 dimensions, or :attr:`zi` is given to
+            a form or backend that does not take it.
 
     Note:
         Unlike :func:`scipy.signal.lfilter`, :attr:`a` omits the leading
@@ -436,6 +438,9 @@ def _ssm_lfilter(
         b = F.pad(b, (0, a.size(-1) + 1 - b.size(-1)))
     elif b.size(-1) > a.size(-1) + 1:
         a = F.pad(a, (0, b.size(-1) - a.size(-1) - 1))
+
+    if zi is not None and form in ("df1", "tdf1"):
+        raise ValueError(f"form={form!r} does not take zi; use 'df2' or 'tdf2'.")
 
     A = companion(a)
 
@@ -496,9 +501,18 @@ def _diag_ssm_lfilter(
     **kwargs,
 ) -> Tensor | tuple[Tensor, Tensor]:
     """Run :func:`lfilter` with the ``"diag_ssm"`` backend."""
+    # The eigendecomposition is complex for complex poles, but a real filter
+    # still has a real output and state.
+    real = not any(t.is_complex() for t in (b, a, x) + (() if zi is None else (zi,)))
 
     if b.size(-1) > a.size(-1) + 1:
-        zi = None
+        if zi is not None:
+            raise ValueError(
+                "backend='diag_ssm' does not take zi when b has more than "
+                "len(a) + 1 coefficients; use backend='ssm'."
+            )
+        # fir takes one filter per signal.
+        b = b.broadcast_to((x.size(0), b.size(-1)))
         if delayed_form:
             q, r = polydiv(b, F.pad(a, (1, 0), value=1.0))
             direct_filt = partial(fir, q)
@@ -551,8 +565,9 @@ def _diag_ssm_lfilter(
 
     results = filt(x)
     if isinstance(results, tuple):
-        return results
-    y = results
+        y, zf = results
+        return (y.real, zf.real) if real else (y, zf)
+    y = results.real if real else results
 
     if delay > 0:
         y = F.pad(y[:, :-delay], (delay, 0))
@@ -610,6 +625,7 @@ def filtfilt(
 
     Raises:
         AssertionError: if :attr:`x` is not longer than the padding.
+        ValueError: if :attr:`form` is not ``"df2"`` or ``"tdf2"``.
         NotImplementedError: if :attr:`method` is ``"gust"``.
 
     Note:
@@ -630,6 +646,8 @@ def filtfilt(
 
     if method == "gust":
         raise NotImplementedError("Gustafsson's method is not implemented yet.")
+    if form not in ("df2", "tdf2"):
+        raise ValueError(f"filtfilt needs form 'df2' or 'tdf2', got {form!r}.")
 
     if padmode is None:
         padlen = 0

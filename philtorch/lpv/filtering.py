@@ -47,6 +47,11 @@ def fir(
 
         return_zf = True
 
+    if b.size(2) == 1:
+        # A one-tap filter is a gain and keeps no state.
+        y = b[..., 0] * x
+        return (y, zi) if return_zf else y
+
     if transpose:
         shifted_b = diag_shift(b, discard_end=not return_zf)
         # vecdot conjugates its first argument, so conjugate b to cancel it.
@@ -169,6 +174,8 @@ def lfilter(
 
     if form is None:
         form = "df2" if backend == "torchlpc" else "tdf2"
+    if zi is not None and form in ("df1", "tdf1"):
+        raise ValueError(f"form={form!r} does not take zi; use 'df2' or 'tdf2'.")
 
     match backend:
         case "ssm":
@@ -265,13 +272,13 @@ def _torchlpc_lfilter(
         case "tdf2":
             raise NotImplementedError("Transposed Direct Form II (tdf2) is not implemented yet.")
         case "df1":
-            # In Direct Form I, the initial conditions are neglected.
+            # lfilter rejects zi for direct form I.
             filt = chain_functions(
                 partial(fir, broadcasted_b, transpose=False),
                 partial(allpole, broadcasted_a),
             )
         case "tdf1":
-            # In Transposed Direct Form I, the initial conditions are neglected.
+            # lfilter rejects zi for transposed direct form I.
             filt = chain_functions(
                 partial(
                     allpole,

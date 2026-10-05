@@ -406,3 +406,23 @@ def test_zi_continuation(filt, transpose: bool):
     assert y1.shape == y2.shape, "Output shape mismatch between passes"
     assert torch.allclose(y1, y2), "Output mismatch between passes"
     assert torch.allclose(zf1, zf), "Final state mismatch between passes"
+
+
+@pytest.mark.parametrize("transpose", [True, False])
+def test_fir_one_tap(transpose: bool):
+    x = torch.randn(2, 10, dtype=torch.float64)
+    b = torch.full((2, 10, 1), 2.0, dtype=torch.float64)
+    assert torch.allclose(lpv_fir(b, x, transpose=transpose), 2 * x)
+    y, zf = lpv_fir(b, x, zi=x.new_zeros(2, 0), transpose=transpose)
+    assert torch.allclose(y, 2 * x)
+    assert zf.shape == (2, 0)
+
+
+@pytest.mark.parametrize("backend", ["ssm", "torchlpc"])
+@pytest.mark.parametrize("form", ["df1", "tdf1"])
+def test_zi_rejected_for_direct_form_one(backend: str, form: str):
+    b = torch.ones(2, 10, 3, dtype=torch.float64)
+    a = torch.full((2, 10, 2), 0.1, dtype=torch.float64)
+    x = torch.ones(2, 10, dtype=torch.float64)
+    with pytest.raises(ValueError, match="does not take zi"):
+        lfilter(b, a, x, zi=torch.zeros(2, 2, dtype=torch.float64), form=form, backend=backend)

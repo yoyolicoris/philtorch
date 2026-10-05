@@ -63,3 +63,13 @@ def test_cspline(n, device, pfe):
     assert torch.allclose(y_philtorch, torch.from_numpy(y_scipy)), (
         f"Max abs diff: {(y_philtorch - torch.from_numpy(y_scipy)).abs().max()}"
     )
+
+
+def test_cubic_spline_unbatched():
+    x = torch.randn(16, dtype=torch.float64)
+    assert torch.equal(cubic_spline(x, 4), cubic_spline(x[None], 4)[0])
+
+
+def test_cubic_spline_rejects_3d():
+    with pytest.raises(ValueError, match="1D or 2D"):
+        cubic_spline(torch.randn(2, 2, 16), 4)

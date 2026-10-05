@@ -40,3 +40,16 @@ def test_comb_filter(delay, batch_a, zi_shape):
         assert torch.allclose(comb_zf, lfilter_zf), torch.max(torch.abs(comb_zf - lfilter_zf))
 
     assert torch.allclose(comb_y, lfilter_y), torch.max(torch.abs(comb_y - lfilter_y))
+
+
+def test_delay_one_returns_final_state():
+    x = torch.randn(2, 10, dtype=torch.float64)
+    a = torch.tensor([0.4, -0.3], dtype=torch.float64)
+    y, zf = comb_filter(a, 1, x, zi=torch.zeros(2, 1, dtype=torch.float64))
+    assert torch.allclose(y, comb_filter(a, 1, x))
+    assert torch.equal(zf, y[:, -1:])
+
+
+def test_delay_zero_raises():
+    with pytest.raises(AssertionError, match="at least 1"):
+        comb_filter(torch.tensor(0.4), 0, torch.randn(2, 10))

@@ -109,7 +109,7 @@ def cubic_spline(x: Tensor, m: int, scipy_padding: bool = False, **kwargs) -> Te
     spline passes through the original samples.
 
     Args:
-        x (Tensor): signals, of shape :math:`(B, L)`.
+        x (Tensor): signals, of shape :math:`(B, L)` or :math:`(L)`.
         m (int): the upsampling factor, at least 1.
         scipy_padding (bool, optional): the boundary condition. If ``True``,
             the signal is extended by mirror symmetry as in
@@ -123,11 +123,13 @@ def cubic_spline(x: Tensor, m: int, scipy_padding: bool = False, **kwargs) -> Te
             (float), the smoothing coefficient, must be ``0.0``.
 
     Returns:
-        Tensor: the upsampled signals, of shape :math:`(B, (L - 1) m + 1)`.
-        With ``m=1``, :attr:`x` itself.
+        Tensor: the upsampled signals, of shape :math:`(B, (L - 1) m + 1)`,
+        or :math:`((L - 1) m + 1)` for a 1-D :attr:`x`. With ``m=1``,
+        :attr:`x` itself.
 
     Raises:
         AssertionError: if :attr:`m` is not an integer of at least 1.
+        ValueError: if :attr:`x` has more than 2 dimensions.
         NotImplementedError: if ``lamb`` is not zero.
 
     Example::
@@ -141,6 +143,10 @@ def cubic_spline(x: Tensor, m: int, scipy_padding: bool = False, **kwargs) -> Te
         True
     """
     assert m >= 1 and isinstance(m, int), "Interpolation factor m must be an integer >= 1."
+    if x.dim() == 1:
+        return cubic_spline(x.unsqueeze(0), m, scipy_padding, **kwargs).squeeze(0)
+    if x.dim() != 2:
+        raise ValueError(f"Input signal x must be 1D or 2D, got {x.shape}")
     if m == 1:
         return x
 
