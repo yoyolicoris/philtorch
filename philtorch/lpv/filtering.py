@@ -113,11 +113,10 @@ def allpole(
 
     if transpose:
         a = diag_shift(a, offset=1, discard_end=not return_zf)
-        x = torch.cat(
-            [zi + x[:, : a.size(2)], x[:, a.size(2) :]]
-            + ([torch.zeros_like(zi)] if return_zf else []),
-            dim=1,
-        )
+        if return_zf:
+            # Run M steps past the signal to read out the final state. zi adds
+            # to the first M samples, which reach past the signal when T < M.
+            x = torch.cat([x, torch.zeros_like(zi)], dim=1) + F.pad(zi, (0, T))
         y = lpc(x, a, a.new_zeros(a.size(0), a.size(2)))
         if return_zf:
             return torch.split_with_sizes(y, [T, a.size(2)], 1)
@@ -358,10 +357,14 @@ def _ssm_lfilter(
             )
         case "tdf1":
             zi = x.new_zeros((x.size(0), A.size(-1)))
+            # The recursion applies A[n] to the state from step n - 1, so pass
+            # A one step late: like tdf2, each step updates the state with the
+            # coefficients at that step. A[0] is never used, as zi is zero.
+            A_late = torch.cat([A[..., :1, :, :], A[..., :-1, :, :]], dim=-3)
             filt = chain_functions(
                 partial(
                     state_space_recursion,
-                    A.mT,
+                    A_late.mT,
                     zi,
                     out_idx=0,
                     **kwargs,

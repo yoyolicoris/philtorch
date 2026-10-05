@@ -444,3 +444,58 @@ def test_tdf_fir_state_with_signals_shorter_than_the_order(N: int):
     y_ref, zf_ref = signal.lfilter(b, [1], x, zi=zi)
     assert np.allclose(y.numpy(), y_ref)
     assert np.allclose(zf.numpy(), zf_ref)
+
+
+def _tdf1_reference(b, a, x):
+    """Transposed direct form I, updating each state with the coefficients at
+    that step: an all-pole section, then an FIR section."""
+    B, N = x.shape
+    M = a.size(-1)
+    s = [x.new_zeros(B) for _ in range(M + 1)]
+    r = [x.new_zeros(B) for _ in range(b.size(-1))]
+    ys = []
+    for n in range(N):
+        w = x[:, n] + s[0]
+        s = [s[k + 1] - a[:, n, k] * w for k in range(M)] + [x.new_zeros(B)]
+        ys.append(b[:, n, 0] * w + r[0])
+        r = [r[k + 1] + b[:, n, k + 1] * w for k in range(b.size(-1) - 1)] + [x.new_zeros(B)]
+    return torch.stack(ys, 1)
+
+
+@pytest.mark.parametrize("backend", ["ssm", "torchlpc"])
+def test_tdf1_time_varying(backend: str):
+    # The ssm backend used to apply each a[n] one step late.
+    gen = torch.Generator().manual_seed(0)
+    b = torch.randn(2, 16, 4, dtype=torch.float64, generator=gen) * 0.4
+    a = torch.randn(2, 16, 3, dtype=torch.float64, generator=gen) * 0.2
+    x = torch.randn(2, 16, dtype=torch.float64, generator=gen)
+    y = lfilter(b, a, x, form="tdf1", backend=backend)
+    assert torch.allclose(y, _tdf1_reference(b, a, x))
+
+
+@pytest.mark.parametrize("N", [1, 2, 3, 6])
+@pytest.mark.parametrize("with_zi", [True, False])
+def test_tdf_allpole_signals_shorter_than_the_order(N: int, with_zi: bool):
+    gen = torch.Generator().manual_seed(0)
+    a = torch.randn(2, N, 3, dtype=torch.float64, generator=gen) * 0.2
+    x = torch.randn(2, N, dtype=torch.float64, generator=gen)
+    zi = (
+        torch.randn(2, 3, dtype=torch.float64, generator=gen)
+        if with_zi
+        else torch.zeros(2, 3, dtype=torch.float64)
+    )
+
+    # w[n] = x[n] + s_1; s_k <- s_{k+1} - a_k[n] w[n], starting from zi
+    s = list(zi.unbind(1)) + [x.new_zeros(2)]
+    ys = []
+    for n in range(N):
+        w = x[:, n] + s[0]
+        s = [s[k + 1] - a[:, n, k] * w for k in range(3)] + [x.new_zeros(2)]
+        ys.append(w)
+
+    if with_zi:
+        y, zf = lpv_allpole(a, x, zi=zi, transpose=True)
+        assert torch.allclose(zf, torch.stack(s[:3], 1))
+    else:
+        y = lpv_allpole(a, x, transpose=True)
+    assert torch.allclose(y, torch.stack(ys, 1))
