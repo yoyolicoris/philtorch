@@ -185,8 +185,10 @@ def allpole(
 
     y = lpc(x, a, zi)
     if return_zf:
-        # The last M outputs, which reach back into zi when T < M.
-        return y, torch.cat([zi.flip(1), y], dim=1)[:, -a.size(2) :].flip(1)
+        # The last M outputs, which reach back into zi when T < M. Only the
+        # last M of y can be part of it, so copy just those.
+        M = a.size(2)
+        return y, torch.cat([zi.flip(1), y[:, -M:]], dim=1)[:, -M:].flip(1)
     return y  # type: ignore[return-value]
 
 

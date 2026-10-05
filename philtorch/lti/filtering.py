@@ -83,8 +83,9 @@ def comb_filter(a: Tensor, delay: int, x: Tensor, zi: Tensor | None = None, **kw
     if remainder != 0:
         y = y[:, : -(delay - remainder)]
     if return_zf:
-        # The last D outputs, which reach back into zi when N < D.
-        return y, torch.cat([history.flip(1), y], dim=1)[:, -delay:].flip(1)
+        # The last D outputs, which reach back into zi when N < D. Only the
+        # last D of y can be part of it, so copy just those.
+        return y, torch.cat([history.flip(1), y[:, -delay:]], dim=1)[:, -delay:].flip(1)
     return y
 
 
