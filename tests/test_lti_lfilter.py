@@ -404,8 +404,8 @@ _COMPLEX_POLES = np.array([-1.0, 0.5])
 
 @pytest.mark.parametrize("form", ["df2", "tdf2"])
 @pytest.mark.parametrize("delayed_form", [False, True])
-# delayed_form delays the recursive part by M_b - M_a = 6 samples, more than
-# the shortest signal.
+# delayed_form delays the recursive part by b.size(-1) - a.size(-1) =
+# M_b - M_a + 1 = 7 samples, more than the shortest signal.
 @pytest.mark.parametrize("T", [4, 40])
 def test_diag_ssm_unbatched_long_numerator(form: str, delayed_form: bool, T: int):
     rng = np.random.default_rng(0)
