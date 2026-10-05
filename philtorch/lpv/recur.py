@@ -26,14 +26,15 @@ def linear_recurrence(a: Tensor, init: Tensor, x: Tensor, *, unroll_factor: int 
     This computes
 
     .. math::
-        h[n] = a[n]\, h[n - 1] + x[n], \quad n = 0, \dots, N - 1,
+        h[n + 1] = a[n]\, h[n] + x[n], \quad n = 0, \dots, N - 1,
 
-    starting from :math:`h[-1] = \text{init}`.
+    starting from :math:`h[0] = \text{init}`, and returns
+    :math:`h[1], \dots, h[N]`.
 
     Args:
         a (Tensor): the coefficients, of shape :math:`(N)` to share them or
             :math:`(B, N)` for one sequence per signal.
-        init (Tensor): the initial value :math:`h[-1]`, of shape :math:`()`,
+        init (Tensor): the initial value :math:`h[0]`, of shape :math:`()`,
             :math:`(1)` or :math:`(B)`.
         x (Tensor): input sequences, of shape :math:`(B, N)`.
         unroll_factor (int, optional): ``1`` runs the native scan kernel. A
@@ -43,7 +44,7 @@ def linear_recurrence(a: Tensor, init: Tensor, x: Tensor, *, unroll_factor: int 
             Default: ``1``.
 
     Returns:
-        Tensor: :math:`h[0], \dots, h[N - 1]`, of shape :math:`(B, N)`.
+        Tensor: :math:`h[1], \dots, h[N]`, of shape :math:`(B, N)`.
 
     Raises:
         ValueError: if :attr:`unroll_factor` is less than 1.

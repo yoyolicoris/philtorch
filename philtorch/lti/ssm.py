@@ -125,7 +125,7 @@ def _recursion_loop(
     x: Tensor,
     out_idx: int | None = None,
 ) -> Tensor:
-    """Run :math:`h[n] = A h[n - 1] + x[n]` with a loop over time steps.
+    """Run :math:`h[n + 1] = A h[n] + x[n]` with a loop over time steps.
 
     Args:
         A (Tensor): state matrices, of shape :math:`(M, M)` or
@@ -161,7 +161,7 @@ def _recursion_loop(
 
 
 def _ext_ss_recur(A: Tensor, zi: Tensor, x: Tensor, *, out_idx: int | None = None, **_) -> Tensor:
-    """Run :math:`h[n] = A h[n - 1] + x[n]` with the native kernels.
+    """Run :math:`h[n + 1] = A h[n] + x[n]` with the native kernels.
 
     Takes the same arguments and returns the same as :func:`_recursion_loop`.
     """
@@ -200,11 +200,12 @@ def state_space_recursion(
     This computes
 
     .. math::
-        \mathbf{h}[n] = A \mathbf{h}[n - 1] + \mathbf{x}[n],
+        \mathbf{h}[n + 1] = A \mathbf{h}[n] + \mathbf{x}[n],
         \quad n = 0, \dots, N - 1,
 
-    starting from :math:`\mathbf{h}[-1] = \mathbf{z}_i`. A 2-D input feeds
-    the first state only: :math:`\mathbf{x}[n] = x[n] \mathbf{e}_1`.
+    starting from :math:`\mathbf{h}[0] = \mathbf{z}_i`, and returns
+    :math:`\mathbf{h}[1], \dots, \mathbf{h}[N]`. A 2-D input feeds the
+    first state only: :math:`\mathbf{x}[n] = x[n] \mathbf{e}_1`.
 
     With ``unroll_factor=1``, this calls the native extension on CPU, and on
     other devices when :math:`M \le 2`, and otherwise runs a loop over time
@@ -217,7 +218,7 @@ def state_space_recursion(
     Args:
         A (Tensor): state matrices, of shape :math:`(M, M)` or
             :math:`(B, M, M)`.
-        zi (Tensor): the initial state :math:`\mathbf{h}[-1]`, of shape
+        zi (Tensor): the initial state :math:`\mathbf{h}[0]`, of shape
             :math:`(B, M)`.
         x (Tensor): inputs, of shape :math:`(B, N, M)` or :math:`(B, N)`.
         unroll_factor (int, optional): ``1`` for the dispatch described
@@ -228,16 +229,18 @@ def state_space_recursion(
         out_idx (int, optional): return only this state. Default: ``None``.
 
     Returns:
-        Tensor: the states :math:`\mathbf{h}[0], \dots, \mathbf{h}[N - 1]`,
-        of shape :math:`(B, N, M)`, or :math:`(B, N)` with :attr:`out_idx`.
+        Tensor: the states :math:`\mathbf{h}[1], \dots, \mathbf{h}[N]`, of
+        shape :math:`(B, N, M)`, or :math:`(B, N)` with :attr:`out_idx`.
 
     Raises:
         AssertionError: if the shapes do not match.
         ValueError: if :attr:`unroll_factor` is less than 1.
 
     Note:
-        Unlike :func:`state_space`, the state at step :math:`n` already
-        includes :math:`\mathbf{x}[n]`.
+        These are the states after each input, :math:`\mathbf{h}[1]` to
+        :math:`\mathbf{h}[N]`: the state that :func:`state_space` uses at
+        step :math:`n` is :math:`\mathbf{h}[n]`, one step earlier, and its
+        final state is :math:`\mathbf{h}[N]`.
 
     Example::
 

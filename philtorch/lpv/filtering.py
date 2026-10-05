@@ -470,9 +470,11 @@ def _ssm_lfilter(
             )
         case "tdf1":
             zi = x.new_zeros((x.size(0), A.size(-1)))
-            # The recursion applies A[n] to the state from step n - 1, so pass
-            # A one step late: like tdf2, each step updates the state with the
-            # coefficients at that step. A[0] is never used, as zi is zero.
+            # state_space_recursion(A, ...) returns h[1..N] of
+            # h[n + 1] = A[n] h[n] + x[n], so its output at step n uses A[n].
+            # The textbook update, as in tdf2, uses A[n] to go from step n to
+            # n + 1, so the output at step n must use A[n - 1]: pass A one
+            # step late. A[0] is never used, as zi is zero.
             A_late = torch.cat([A[..., :1, :, :], A[..., :-1, :, :]], dim=-3)
             filt = chain_functions(
                 partial(
