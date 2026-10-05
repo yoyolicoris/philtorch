@@ -395,3 +395,129 @@ def test_diag_ssm_backend(
 
     # Compare outputs
     assert np.allclose(y_torch.numpy(), y_scipy), np.max(np.abs(y_torch.numpy() - y_scipy))
+
+
+# 1 - z^-1 + 0.5 z^-2 has complex poles, so the diag_ssm eigendecomposition is
+# complex even though the filter is real.
+_COMPLEX_POLES = np.array([-1.0, 0.5])
+
+
+@pytest.mark.parametrize("form", ["df2", "tdf2"])
+@pytest.mark.parametrize("delayed_form", [False, True])
+# delayed_form delays the recursive part by b.size(-1) - a.size(-1) =
+# M_b - M_a + 1 = 7 samples, more than the shortest signal.
+@pytest.mark.parametrize("T", [4, 40])
+def test_diag_ssm_unbatched_long_numerator(form: str, delayed_form: bool, T: int):
+    rng = np.random.default_rng(0)
+    b = rng.standard_normal(9)  # M_b = 8 > M_a = 2, split into an FIR part
+    x = rng.standard_normal((3, T))
+    y = lfilter(
+        torch.from_numpy(b),
+        torch.from_numpy(_COMPLEX_POLES),
+        torch.from_numpy(x),
+        form=form,
+        backend="diag_ssm",
+        delayed_form=delayed_form,
+    )
+    assert np.allclose(y.numpy(), signal.lfilter(b, np.r_[1, _COMPLEX_POLES], x))
+
+
+@pytest.mark.parametrize("form", ["df2", "tdf2"])
+def test_diag_ssm_real_filter_gives_real_output(form: str):
+    rng = np.random.default_rng(0)
+    b = rng.standard_normal(3)
+    x = rng.standard_normal((3, 40))
+    zi = rng.standard_normal((3, 2))
+    a = torch.from_numpy(_COMPLEX_POLES)
+
+    y = lfilter(torch.from_numpy(b), a, torch.from_numpy(x), form=form, backend="diag_ssm")
+    assert not y.is_complex()
+    assert np.allclose(y.numpy(), signal.lfilter(b, np.r_[1, _COMPLEX_POLES], x))
+
+    y, zf = lfilter(
+        torch.from_numpy(b),
+        a,
+        torch.from_numpy(x),
+        zi=torch.from_numpy(zi),
+        form=form,
+        backend="diag_ssm",
+    )
+    assert not y.is_complex() and not zf.is_complex()
+    if form == "tdf2":
+        y_ref, zf_ref = signal.lfilter(b, np.r_[1, _COMPLEX_POLES], x, zi=zi)
+        assert np.allclose(y.numpy(), y_ref) and np.allclose(zf.numpy(), zf_ref)
+
+
+@pytest.mark.parametrize(
+    ("form", "backend", "num_taps"),
+    [("df1", "ssm", 3), ("tdf1", "ssm", 3), ("df2", "diag_ssm", 5), ("tdf2", "diag_ssm", 5)],
+)
+def test_zi_rejected_where_unsupported(form: str, backend: str, num_taps: int):
+    b = torch.ones(num_taps, dtype=torch.float64)
+    a = torch.from_numpy(_COMPLEX_POLES)
+    x = torch.ones(2, 10, dtype=torch.float64)
+    zi = torch.zeros(2, max(num_taps - 1, 2), dtype=torch.float64)
+    with pytest.raises(ValueError, match="does not take zi"):
+        lfilter(b, a, x, zi=zi, form=form, backend=backend)
+
+
+@pytest.mark.parametrize("transpose", [True, False])
+def test_fir_one_tap(transpose: bool):
+    x = torch.randn(2, 10, dtype=torch.float64)
+    b = torch.full((2, 1), 2.0, dtype=torch.float64)
+    assert torch.allclose(fir(b, x, transpose=transpose), 2 * x)
+    y, zf = fir(b, x, zi=x.new_zeros(2, 0), transpose=transpose)
+    assert torch.allclose(y, 2 * x)
+    assert zf.shape == (2, 0)
+
+
+@pytest.mark.parametrize(
+    ("num_taps", "y_len", "x_len"),
+    [
+        (1, 2, None),  # one-tap b
+        (4, 1, 2),  # short histories are padded with zeros
+        (4, 3, 4),  # long histories are truncated
+        (4, 2, 3),  # exact
+    ],
+)
+def test_lfiltic_matches_scipy(num_taps: int, y_len: int, x_len: int | None):
+    rng = np.random.default_rng(0)
+    b = rng.standard_normal(num_taps)
+    y = rng.standard_normal(y_len)
+    x = None if x_len is None else rng.standard_normal(x_len)
+    zi = lfiltic(
+        torch.from_numpy(b),
+        torch.from_numpy(_COMPLEX_POLES),
+        torch.from_numpy(y),
+        None if x is None else torch.from_numpy(x),
+    )
+    assert np.allclose(zi.numpy(), signal.lfiltic(b, np.r_[1, _COMPLEX_POLES], y, x))
+
+
+@pytest.mark.parametrize("form", ["df1", "tdf1"])
+def test_filtfilt_rejects_direct_form_one(form: str):
+    with pytest.raises(ValueError, match="filtfilt needs form"):
+        filtfilt(torch.ones(3), torch.tensor([-0.5]), torch.randn(50), form=form)
+
+
+@pytest.mark.parametrize("transpose", [True, False])
+@pytest.mark.parametrize("N", [2, 5, 9])
+def test_fir_state_with_signals_shorter_than_the_order(transpose: bool, N: int):
+    # With N < M, part of zi is still in the final state.
+    rng = np.random.default_rng(0)
+    b = rng.standard_normal(6)  # M = 5
+    x = rng.standard_normal((2, N))
+    zi = rng.standard_normal((2, 5))
+    y, zf = fir(
+        torch.from_numpy(np.stack([b, b])),
+        torch.from_numpy(x),
+        zi=torch.from_numpy(zi),
+        transpose=transpose,
+    )
+    if transpose:
+        y_ref, zf_ref = signal.lfilter(b, [1], x, zi=zi)
+    else:  # zi holds the past inputs, newest first
+        history = np.concatenate([zi[:, ::-1], x], axis=1)
+        y_ref, zf_ref = signal.lfilter(b, [1], history)[:, 5:], history[:, ::-1][:, :5]
+    assert np.allclose(y.numpy(), y_ref)
+    assert np.allclose(zf.numpy(), zf_ref)

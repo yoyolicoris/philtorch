@@ -63,3 +63,9 @@ def test_cspline(n, device, pfe):
     assert torch.allclose(y_philtorch, torch.from_numpy(y_scipy)), (
         f"Max abs diff: {(y_philtorch - torch.from_numpy(y_scipy)).abs().max()}"
     )
+
+
+@pytest.mark.parametrize("shape", [(16,), (2, 2, 16)])
+def test_cubic_spline_requires_batched_signals(shape):
+    with pytest.raises(ValueError, match="must be 2D"):
+        cubic_spline(torch.randn(shape), 4)

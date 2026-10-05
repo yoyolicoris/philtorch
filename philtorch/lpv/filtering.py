@@ -47,6 +47,13 @@ def fir(
 
         return_zf = True
 
+    if b.size(2) == 1:
+        # A one-tap filter is a gain and keeps no state, so its final state
+        # is empty, (B, 0), as in lti.fir. It is a tensor rather than None so
+        # callers can chain it and compare its size with other states.
+        y = b[..., 0] * x
+        return (y, zi) if return_zf else y
+
     if transpose:
         shifted_b = diag_shift(b, discard_end=not return_zf)
         # vecdot conjugates its first argument, so conjugate b to cancel it.
@@ -58,17 +65,10 @@ def fir(
             ).unfold(1, shifted_b.size(2), 1),
         )
         if return_zf:
-            y, zf = torch.split_with_sizes(y, [T, b.size(2) - 1], 1)
-            return (
-                torch.cat(
-                    [
-                        y[..., : b.size(2) - 1] + zi,
-                        y[..., b.size(2) - 1 :],
-                    ],
-                    dim=-1,
-                ),
-                zf,
-            )
+            # y holds T + M samples. zi adds to the first M, which reach into
+            # the final state when T < M.
+            y = y + F.pad(zi, (0, T))
+            return tuple(torch.split_with_sizes(y, [T, b.size(2) - 1], 1))
         return y
 
     unfolded_x = torch.cat([zi.flip(1), x], dim=1).unfold(1, b.size(2), 1)
@@ -144,7 +144,8 @@ def lfilter(
         a (Tensor): Coefficients of the all-pole filters, shape (B, N, M_a) or (N, M_a).
         x (Tensor): Input signal, shape (B, N) or (N).
         zi (Tensor, optional): Initial conditions for the filter,
-            shape (B, max(M_a, M_b)) or (max(M_a, M_b)).
+            shape (B, max(M_a, M_b)) or (max(M_a, M_b)). Only the 'df2' and
+            'tdf2' forms take it.
         form (str, optional): The filter form to use. Defaults to 'tdf2' for the
             SSM backend and 'df2' for torchlpc. Options are 'df2', 'tdf2',
             'df1', 'tdf1'.
@@ -153,6 +154,10 @@ def lfilter(
     Returns:
         Filtered output signal with the same time steps as x and optionally the
         final state of the filter.
+
+    Raises:
+        ValueError: If x has more than 2 dimensions, the backend or form is
+            unknown, or zi is given with form 'df1' or 'tdf1'.
     """
 
     squeeze_first = (
@@ -169,6 +174,8 @@ def lfilter(
 
     if form is None:
         form = "df2" if backend == "torchlpc" else "tdf2"
+    if zi is not None and form in ("df1", "tdf1"):
+        raise ValueError(f"form={form!r} does not take zi; use 'df2' or 'tdf2'.")
 
     match backend:
         case "ssm":
@@ -265,13 +272,13 @@ def _torchlpc_lfilter(
         case "tdf2":
             raise NotImplementedError("Transposed Direct Form II (tdf2) is not implemented yet.")
         case "df1":
-            # In Direct Form I, the initial conditions are neglected.
+            # lfilter rejects zi for direct form I.
             filt = chain_functions(
                 partial(fir, broadcasted_b, transpose=False),
                 partial(allpole, broadcasted_a),
             )
         case "tdf1":
-            # In Transposed Direct Form I, the initial conditions are neglected.
+            # lfilter rejects zi for transposed direct form I.
             filt = chain_functions(
                 partial(
                     allpole,
