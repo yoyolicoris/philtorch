@@ -3,6 +3,9 @@ import doctest
 import pytest
 import torch
 
+import philtorch.lpv.filtering
+import philtorch.lpv.recur
+import philtorch.lpv.ssm
 import philtorch.lti.delay
 import philtorch.lti.filtering
 import philtorch.lti.interp
@@ -23,6 +26,9 @@ MODULES = [
     philtorch.lti.interp,
     philtorch.lti.recur,
     philtorch.lti.ssm,
+    philtorch.lpv.filtering,
+    philtorch.lpv.recur,
+    philtorch.lpv.ssm,
 ]
 
 
