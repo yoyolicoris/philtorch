@@ -53,3 +53,19 @@ def test_delay_one_returns_final_state():
 def test_delay_zero_raises():
     with pytest.raises(AssertionError, match="at least 1"):
         comb_filter(torch.tensor(0.4), 0, torch.randn(2, 10))
+
+
+@pytest.mark.parametrize("N", [3, 5, 12])
+def test_final_state_reaches_into_zi(N: int):
+    # With fewer samples than the delay, the final state still holds part of zi.
+    delay = 5
+    x = torch.randn(1, N, dtype=torch.float64)
+    zi = torch.randn(1, delay, dtype=torch.float64)
+    a = torch.tensor(0.4, dtype=torch.float64)
+    y, zf = comb_filter(a, delay, x, zi=zi)
+
+    history = list(zi[0].flip(0))  # oldest first: y[-D], ..., y[-1]
+    for n in range(N):
+        history.append(x[0, n] - a * history[-delay])
+    assert torch.allclose(y[0], torch.stack(history[delay:]))
+    assert torch.allclose(zf[0], torch.stack(history[-delay:]).flip(0))

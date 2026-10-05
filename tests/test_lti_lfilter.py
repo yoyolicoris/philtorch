@@ -404,10 +404,13 @@ _COMPLEX_POLES = np.array([-1.0, 0.5])
 
 @pytest.mark.parametrize("form", ["df2", "tdf2"])
 @pytest.mark.parametrize("delayed_form", [False, True])
-def test_diag_ssm_unbatched_long_numerator(form: str, delayed_form: bool):
+# delayed_form delays the recursive part by M_b - M_a = 6 samples, more than
+# the shortest signal.
+@pytest.mark.parametrize("T", [4, 40])
+def test_diag_ssm_unbatched_long_numerator(form: str, delayed_form: bool, T: int):
     rng = np.random.default_rng(0)
-    b = rng.standard_normal(5)  # M_b = 4 > M_a = 2, split into an FIR part
-    x = rng.standard_normal((3, 40))
+    b = rng.standard_normal(9)  # M_b = 8 > M_a = 2, split into an FIR part
+    x = rng.standard_normal((3, T))
     y = lfilter(
         torch.from_numpy(b),
         torch.from_numpy(_COMPLEX_POLES),

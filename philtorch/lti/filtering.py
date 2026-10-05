@@ -65,6 +65,8 @@ def comb_filter(a: Tensor, delay: int, x: Tensor, zi: Tensor | None = None, **kw
         a = a.repeat_interleave(delay)
     if zi is not None:
         return_zf = True
+        # The outputs before the signal, newest first, for the final state.
+        history = zi.expand(x.size(0), -1)
         if zi.dim() == 1:
             zi = zi.flip(0).repeat(x.size(0))
         else:
@@ -81,7 +83,8 @@ def comb_filter(a: Tensor, delay: int, x: Tensor, zi: Tensor | None = None, **kw
     if remainder != 0:
         y = y[:, : -(delay - remainder)]
     if return_zf:
-        return y, y[:, -delay:].flip(1)
+        # The last D outputs, which reach back into zi when N < D.
+        return y, torch.cat([history.flip(1), y], dim=1)[:, -delay:].flip(1)
     return y
 
 
@@ -564,7 +567,8 @@ def _diag_ssm_lfilter(
     y = results.real if real else results
 
     if delay > 0:
-        y = F.pad(y[:, :-delay], (delay, 0))
+        # Delay by padding and truncating, which also works when delay > N.
+        y = F.pad(y, (delay, 0))[:, : y.size(1)]
 
     if direct_filt is not None:
         y = y + direct_filt(x)

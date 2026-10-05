@@ -151,7 +151,8 @@ def lfilter(
         a (Tensor): Coefficients of the all-pole filters, shape (B, N, M_a) or (N, M_a).
         x (Tensor): Input signal, shape (B, N) or (N).
         zi (Tensor, optional): Initial conditions for the filter,
-            shape (B, max(M_a, M_b)) or (max(M_a, M_b)).
+            shape (B, max(M_a, M_b)) or (max(M_a, M_b)). Only the 'df2' and
+            'tdf2' forms take it.
         form (str, optional): The filter form to use. Defaults to 'tdf2' for the
             SSM backend and 'df2' for torchlpc. Options are 'df2', 'tdf2',
             'df1', 'tdf1'.
@@ -160,6 +161,10 @@ def lfilter(
     Returns:
         Filtered output signal with the same time steps as x and optionally the
         final state of the filter.
+
+    Raises:
+        ValueError: If x has more than 2 dimensions, the backend or form is
+            unknown, or zi is given with form 'df1' or 'tdf1'.
     """
 
     squeeze_first = (
