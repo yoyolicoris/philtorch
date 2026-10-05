@@ -370,7 +370,7 @@ def lfilter(
             ``Vinv`` (see :func:`diag_state_space`) and ``delayed_form``. When
             :math:`M_b > M_a`, ``"diag_ssm"`` splits off an FIR part;
             ``delayed_form=True`` delays the recursive part by
-            :math:`M_b - M_a` samples instead. Both give the same output.
+            :math:`M_b - M_a + 1` samples instead. Both give the same output.
 
     Returns:
         Tensor or tuple of Tensor: the filtered signals, of the shape of

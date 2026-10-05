@@ -220,9 +220,11 @@ def state_space_recursion(
         zi (Tensor): the initial state :math:`\mathbf{h}[-1]`, of shape
             :math:`(B, M)`.
         x (Tensor): inputs, of shape :math:`(B, N, M)` or :math:`(B, N)`.
-        unroll_factor (int, optional): ``1`` for the native kernels, the
-            block length of the unrolled recursion if less than :math:`N`, or
-            :math:`N` or more for a plain loop. Default: ``1``.
+        unroll_factor (int, optional): ``1`` for the dispatch described
+            above: the native extension on CPU, or for :math:`M \le 2` on other
+            devices, and a loop otherwise. A value less than :math:`N` is the
+            block length of the unrolled recursion, and :math:`N` or more
+            runs a plain loop. Default: ``1``.
         out_idx (int, optional): return only this state. Default: ``None``.
 
     Returns:
