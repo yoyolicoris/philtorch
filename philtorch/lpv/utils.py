@@ -33,5 +33,7 @@ def diag_shift(coef: Tensor, offset: int = 0, discard_end: bool = False) -> Tens
         .unflatten(-1, (M, T + M + offset - 1))
     )
     if discard_end:
-        y = y[..., : -(M - 1 + offset)]
+        # Slice to T rather than dropping M - 1 + offset steps, which is
+        # zero, and so would drop everything, for one column with offset 0.
+        y = y[..., :T]
     return y.mT
