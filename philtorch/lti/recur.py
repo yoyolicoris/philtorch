@@ -105,10 +105,10 @@ def linear_recurrence(a: Tensor, init: Tensor, x: Tensor, *, unroll_factor: int 
     starting from :math:`h[-1] = \text{init}`.
 
     Args:
-        a (Tensor): the coefficient, of shape :math:`()` to share it or
-            :math:`(B)` for one per signal.
-        init (Tensor): the initial value :math:`h[-1]`, of shape :math:`()` or
-            :math:`(B)`.
+        a (Tensor): the coefficient, of shape :math:`()` or :math:`(1)` to
+            share it, or :math:`(B)` for one per signal.
+        init (Tensor): the initial value :math:`h[-1]`, of shape :math:`()`,
+            :math:`(1)` or :math:`(B)`.
         x (Tensor): input sequences, of shape :math:`(B, N)`.
         unroll_factor (int, optional): ``1`` runs the native kernel. A larger
             value runs a block-unrolled PyTorch recursion with blocks of this
@@ -119,8 +119,11 @@ def linear_recurrence(a: Tensor, init: Tensor, x: Tensor, *, unroll_factor: int 
         Tensor: :math:`h[0], \dots, h[N - 1]`, of shape :math:`(B, N)`.
 
     Raises:
-        ValueError: if :attr:`unroll_factor` is less than 1, or :attr:`a` or
-            :attr:`init` has a batch size other than that of :attr:`x`.
+        ValueError: if :attr:`unroll_factor` is less than 1, or, with
+            ``unroll_factor > 1``, :attr:`a` or :attr:`init` has a batch size
+            other than 1 or that of :attr:`x`.
+        RuntimeError: with ``unroll_factor=1``, for the same batch-size
+            mismatch.
 
     Example::
 

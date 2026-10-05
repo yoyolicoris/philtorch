@@ -14,7 +14,12 @@ from .recur import LTIRecurrence, linear_recurrence
 
 
 def extension_backend_indicator(x: Tensor, M: int) -> bool:
-    r"""Return whether the native extension has a kernel for this input.
+    r"""Return whether to dispatch this input to the native extension.
+
+    This is a dispatch heuristic, not a check that a kernel exists: it
+    assumes kernels for :math:`M \le 2` on every device. Some are still
+    missing for a device or dtype, such as :math:`M = 2` on MPS, and calling
+    one raises an error; the README lists them.
 
     Args:
         x (Tensor): the input, whose device is checked.
@@ -201,10 +206,12 @@ def state_space_recursion(
     starting from :math:`\mathbf{h}[-1] = \mathbf{z}_i`. A 2-D input feeds
     the first state only: :math:`\mathbf{x}[n] = x[n] \mathbf{e}_1`.
 
-    With ``unroll_factor=1``, this runs a native kernel when one exists for
-    the device and :math:`M`, and otherwise a loop over time steps; the
-    README lists which. A larger :attr:`unroll_factor` runs a block-unrolled
-    PyTorch recursion instead.
+    With ``unroll_factor=1``, this calls the native extension on CPU, and on
+    other devices when :math:`M \le 2`, and otherwise runs a loop over time
+    steps. On other devices the extension may lack a kernel for the device or
+    dtype, such as :math:`M = 2` on MPS, which raises an error; the README
+    lists them. A larger :attr:`unroll_factor` runs a block-unrolled PyTorch
+    recursion instead, on any device.
 
     Args:
         A (Tensor): state matrices, of shape :math:`(M, M)` or
