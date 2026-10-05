@@ -110,10 +110,11 @@ def linear_recurrence(a: Tensor, init: Tensor, x: Tensor, *, unroll_factor: int 
         init (Tensor): the initial value :math:`h[-1]`, of shape :math:`()`,
             :math:`(1)` or :math:`(B)`.
         x (Tensor): input sequences, of shape :math:`(B, N)`.
-        unroll_factor (int, optional): ``1`` runs the native kernel. A larger
-            value runs a block-unrolled PyTorch recursion with blocks of this
-            length, which parallelizes over blocks; see the README for
-            guidance. Default: ``1``.
+        unroll_factor (int, optional): ``1`` runs the native kernel. A value
+            greater than 1 and less than :math:`N` runs a block-unrolled
+            PyTorch recursion with blocks of this length, which parallelizes
+            over blocks, and :math:`N` or more runs a plain PyTorch loop; see
+            the README for guidance. Default: ``1``.
 
     Returns:
         Tensor: :math:`h[0], \dots, h[N - 1]`, of shape :math:`(B, N)`.

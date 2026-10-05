@@ -210,8 +210,9 @@ def state_space_recursion(
     other devices when :math:`M \le 2`, and otherwise runs a loop over time
     steps. On other devices the extension may lack a kernel for the device or
     dtype, such as :math:`M = 2` on MPS, which raises an error; the README
-    lists them. A larger :attr:`unroll_factor` runs a block-unrolled PyTorch
-    recursion instead, on any device.
+    lists them. On any device, an :attr:`unroll_factor` greater than 1 and
+    less than :math:`N` runs a block-unrolled PyTorch recursion instead, and
+    one of :math:`N` or more runs a plain PyTorch loop.
 
     Args:
         A (Tensor): state matrices, of shape :math:`(M, M)` or
@@ -219,8 +220,9 @@ def state_space_recursion(
         zi (Tensor): the initial state :math:`\mathbf{h}[-1]`, of shape
             :math:`(B, M)`.
         x (Tensor): inputs, of shape :math:`(B, N, M)` or :math:`(B, N)`.
-        unroll_factor (int, optional): ``1`` for the native kernels, or the
-            block length of the unrolled recursion. Default: ``1``.
+        unroll_factor (int, optional): ``1`` for the native kernels, the
+            block length of the unrolled recursion if less than :math:`N`, or
+            :math:`N` or more for a plain loop. Default: ``1``.
         out_idx (int, optional): return only this state. Default: ``None``.
 
     Returns:
