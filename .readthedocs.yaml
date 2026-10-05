@@ -15,7 +15,8 @@ build:
     install:
       - python -m pip install torch --index-url https://download.pytorch.org/whl/cpu
       - python -m pip install "setuptools>=77.0.3" "setuptools_scm>=8" wheel ninja
-      - MAX_JOBS=2 python -m pip install --no-build-isolation --editable ".[docs]"
+      - MAX_JOBS=2 python -m pip install --no-build-isolation --editable .
+      - python -m pip install -r docs/requirements.txt
 
 submodules:
   include: all

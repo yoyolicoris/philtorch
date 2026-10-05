@@ -4,12 +4,13 @@ The [contribution guide](https://github.com/yoyolicoris/philtorch/blob/dev/CONTR
 
 ## Building these docs
 
-The docs import the real package, so PhilTorch must be built with its compiled extension. From a checkout with submodules, install a CPU build of PyTorch, then PhilTorch in editable mode with the docs dependencies:
+The docs import the real package, so PhilTorch must be built with its compiled extension. From a checkout with submodules, install a CPU build of PyTorch, then PhilTorch in editable mode and the docs dependencies:
 
 ```bash
 python -m pip install torch --index-url https://download.pytorch.org/whl/cpu
 python -m pip install "setuptools>=77.0.3" "setuptools_scm>=8" wheel ninja
-python -m pip install --no-build-isolation --editable ".[docs]"
+python -m pip install --no-build-isolation --editable .
+python -m pip install -r docs/requirements.txt
 sphinx-build -W --keep-going -b html docs docs/_build/html
 ```
 
