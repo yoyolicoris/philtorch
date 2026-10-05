@@ -1,3 +1,9 @@
+"""Differentiable, time-domain linear digital filters for PyTorch.
+
+Time-invariant filters live in :mod:`philtorch.lti`, and time-varying (linear
+parameter-varying) filters in :mod:`philtorch.lpv`.
+"""
+
 import warnings
 from pathlib import Path
 from typing import Any
