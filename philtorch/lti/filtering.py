@@ -56,12 +56,6 @@ def comb_filter(a: Tensor, delay: int, x: Tensor, zi: Tensor | None = None, **kw
     if a.dim() == 1:
         assert a.size(0) == x.size(0), "The first dimension of a must match the batch size of x."
 
-    if delay == 1:
-        y = linear_recurrence(
-            -a, torch.zeros_like(a) if zi is None else zi.squeeze(-1), x, **kwargs
-        )
-        return y if zi is None else (y, y[:, -1:])
-
     remainder = x.size(1) % delay
     if remainder != 0:
         x = F.pad(x, (0, delay - remainder))

@@ -48,7 +48,9 @@ def fir(
         return_zf = True
 
     if b.size(2) == 1:
-        # A one-tap filter is a gain and keeps no state.
+        # A one-tap filter is a gain and keeps no state, so its final state
+        # is empty, (B, 0), as in lti.fir. It is a tensor rather than None so
+        # callers can chain it and compare its size with other states.
         y = b[..., 0] * x
         return (y, zi) if return_zf else y
 

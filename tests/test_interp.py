@@ -65,11 +65,7 @@ def test_cspline(n, device, pfe):
     )
 
 
-def test_cubic_spline_unbatched():
-    x = torch.randn(16, dtype=torch.float64)
-    assert torch.equal(cubic_spline(x, 4), cubic_spline(x[None], 4)[0])
-
-
-def test_cubic_spline_rejects_3d():
-    with pytest.raises(ValueError, match="1D or 2D"):
-        cubic_spline(torch.randn(2, 2, 16), 4)
+@pytest.mark.parametrize("shape", [(16,), (2, 2, 16)])
+def test_cubic_spline_requires_batched_signals(shape):
+    with pytest.raises(ValueError, match="must be 2D"):
+        cubic_spline(torch.randn(shape), 4)
