@@ -83,8 +83,9 @@ def comb_filter(a: Tensor, delay: int, x: Tensor, zi: Tensor | None = None, **kw
     if remainder != 0:
         y = y[:, : -(delay - remainder)]
     if return_zf:
-        # The last D outputs, which reach back into zi when N < D.
-        return y, torch.cat([history.flip(1), y], dim=1)[:, -delay:].flip(1)
+        # The last D outputs, which reach back into zi when N < D. Only the
+        # last D of y can be part of it, so copy just those.
+        return y, torch.cat([history.flip(1), y[:, -delay:]], dim=1)[:, -delay:].flip(1)
     return y
 
 
@@ -372,8 +373,11 @@ def lfilter(
 
     Returns:
         Tensor or tuple of Tensor: the filtered signals, of the shape of
-        :attr:`x`, and with :attr:`zi`, the final state, of the shape of
-        :attr:`zi`. A real filter gives real outputs with either backend.
+        :attr:`x`, and with :attr:`zi`, the final state, of shape
+        :math:`(B, M)`, or :math:`(M)` when :attr:`b`, :attr:`a`, :attr:`x`
+        and :attr:`zi` are all unbatched; a shared :attr:`zi` with batched
+        signals still gives one final state per signal. A real filter gives
+        real outputs with either backend.
 
     Raises:
         ValueError: if :attr:`form` or :attr:`backend` is unknown,

@@ -1,3 +1,5 @@
+"""IIR and FIR filtering with time-varying coefficients."""
+
 from functools import partial
 
 import torch
@@ -14,20 +16,49 @@ from .utils import diag_shift
 def fir(
     b: Tensor, x: Tensor, zi: Tensor | None = None, transpose: bool = True
 ) -> Tensor | tuple[Tensor, Tensor]:
-    """Apply a batch of parameter-varying FIR filters.
+    r"""Filter signals with time-varying FIR filters.
 
-    This supports time-varying (parameter-varying) FIR coefficients where the
-    coefficients can change at each time step. The tensors `b` and `x` must
-    share their leading batch/time dimensions.
+    The direct form, ``transpose=False``, weights each input with the
+    coefficients of the output's step:
+
+    .. math::
+        y[n] = \sum_{k=0}^{M} b_k[n]\, x[n - k].
+
+    The transposed direct form weights each input with the coefficients of its
+    own step:
+
+    .. math::
+        y[n] = \sum_{k=0}^{M} b_k[n - k]\, x[n - k].
+
+    The two agree for constant coefficients.
 
     Args:
-        b (Tensor): Time-varying FIR coefficients with shape (B, N, M + 1).
-        x (Tensor): Input signal with shape (B, N).
-        zi (Tensor, optional): Initial conditions with shape (B, M).
-        transpose (bool): If True, compute the transpose implementation. Defaults to True.
+        b (Tensor): coefficients :math:`b_k[n]`, of shape :math:`(B, N, M + 1)`.
+        x (Tensor): input signals, of shape :math:`(B, N)`.
+        zi (Tensor, optional): initial state, of shape :math:`(B, M)`. With
+            ``transpose=True``, the transposed direct-form state; with
+            ``transpose=False``, the past inputs newest first,
+            :math:`x[-1], \dots, x[-M]`. Default: ``None``, all zero.
+        transpose (bool, optional): use the transposed direct form if
+            ``True``, or the direct form if ``False``. Default: ``True``.
 
     Returns:
-        Filtered output and optionally final state.
+        Tensor or tuple of Tensor: the filtered signals, of shape
+        :math:`(B, N)`, and with :attr:`zi`, the final state in the same
+        convention, of shape :math:`(B, M)`.
+
+    Raises:
+        AssertionError: if the shapes do not match.
+
+    Example::
+
+        >>> from philtorch.lpv import fir
+        >>> b = torch.tensor([[[1.0, 1.0], [2.0, 2.0], [3.0, 3.0]]])
+        >>> x = torch.ones(1, 3)
+        >>> fir(b, x, transpose=False)  # y[n] = b_0[n] x[n] + b_1[n] x[n - 1]
+        tensor([[1., 4., 6.]])
+        >>> fir(b, x)  # y[n] = b_0[n] x[n] + b_1[n - 1] x[n - 1]
+        tensor([[1., 3., 5.]])
     """
     assert b.dim() == 3, "Numerator coefficients b must be 3D."
     assert x.dim() == 2, "Input signal x must be 2D."
@@ -82,16 +113,46 @@ def fir(
 def allpole(
     a: Tensor, x: Tensor, zi: Tensor | None = None, transpose: bool = False
 ) -> Tensor | tuple[Tensor, Tensor]:
-    """Apply a batch of parameter-varying all-pole filters.
+    r"""Filter signals with time-varying all-pole filters.
+
+    The direct form, the default, uses the coefficients of the output's step:
+
+    .. math::
+        y[n] = x[n] - \sum_{k=1}^{M} a_k[n]\, y[n - k].
+
+    The transposed direct form, ``transpose=True``, uses the coefficients of
+    the step each past output was produced at:
+
+    .. math::
+        y[n] = x[n] - \sum_{k=1}^{M} a_k[n - k]\, y[n - k].
+
+    The two agree for constant coefficients. Both run the vendored torchlpc
+    kernel.
 
     Args:
-        a (Tensor): Time-varying denominator coefficients with shape (B, N, M).
-        x (Tensor): Input signal with shape (B, N).
-        zi (Tensor, optional): Initial conditions with shape (B, M).
-        transpose (bool): If True, use the transposed implementation.
+        a (Tensor): coefficients :math:`a_k[n]`, of shape :math:`(B, N, M)`.
+        x (Tensor): input signals, of shape :math:`(B, N)`.
+        zi (Tensor, optional): initial state, of shape :math:`(B, M)`. With
+            ``transpose=False``, the past outputs newest first,
+            :math:`y[-1], \dots, y[-M]`; with ``transpose=True``, the
+            transposed direct-form state. Default: ``None``, all zero.
+        transpose (bool, optional): use the transposed direct form if
+            ``True``, or the direct form if ``False``. Default: ``False``.
 
     Returns:
-        Tensor or (Tensor, Tensor): Filtered output and optionally final state.
+        Tensor or tuple of Tensor: the filtered signals, of shape
+        :math:`(B, N)`, and with :attr:`zi`, the final state in the same
+        convention, of shape :math:`(B, M)`.
+
+    Raises:
+        AssertionError: if the shapes do not match.
+
+    Example::
+
+        >>> from philtorch.lpv import allpole
+        >>> a = torch.full((1, 4, 1), -0.5)  # y[n] = x[n] + 0.5 y[n - 1]
+        >>> allpole(a, torch.tensor([[1.0, 0.0, 0.0, 0.0]]))
+        tensor([[1.0000, 0.5000, 0.2500, 0.1250]])
     """
     assert a.dim() == 3, "Denominator coefficients a must be 3D."
     assert x.dim() == 2, "Input signal x must be 2D."
@@ -113,11 +174,10 @@ def allpole(
 
     if transpose:
         a = diag_shift(a, offset=1, discard_end=not return_zf)
-        x = torch.cat(
-            [zi + x[:, : a.size(2)], x[:, a.size(2) :]]
-            + ([torch.zeros_like(zi)] if return_zf else []),
-            dim=1,
-        )
+        if return_zf:
+            # Run M steps past the signal to read out the final state. zi adds
+            # to the first M samples, which reach past the signal when T < M.
+            x = torch.cat([x, torch.zeros_like(zi)], dim=1) + F.pad(zi, (0, T))
         y = lpc(x, a, a.new_zeros(a.size(0), a.size(2)))
         if return_zf:
             return torch.split_with_sizes(y, [T, a.size(2)], 1)
@@ -125,7 +185,10 @@ def allpole(
 
     y = lpc(x, a, zi)
     if return_zf:
-        return y, y[:, -a.size(2) :].flip(1)
+        # The last M outputs, which reach back into zi when T < M. Only the
+        # last M of y can be part of it, so copy just those.
+        M = a.size(2)
+        return y, torch.cat([zi.flip(1), y[:, -M:]], dim=1)[:, -M:].flip(1)
     return y  # type: ignore[return-value]
 
 
@@ -138,26 +201,84 @@ def lfilter(
     backend: str = "ssm",
     **kwargs: dict | None,
 ) -> Tensor | tuple[Tensor, Tensor]:
-    """Apply a batch of parameter-varying linear filters to input signal.
+    r"""Filter signals with time-varying IIR filters.
+
+    The coefficients carry a time dimension aligned with :attr:`x`, so the
+    filter can change at every sample. With constant coefficients, every form
+    computes what :func:`philtorch.lti.lfilter` does. With time-varying ones,
+    the forms are different filters:
+
+    - ``"df1"``, direct form I:
+      :math:`v[n] = \sum_{k=0}^{M_b} b_k[n]\, x[n - k]` and
+      :math:`y[n] = v[n] - \sum_{k=1}^{M_a} a_k[n]\, y[n - k]`.
+    - ``"df2"``, direct form II:
+      :math:`w[n] = x[n] - \sum_{k=1}^{M_a} a_k[n]\, w[n - k]` and
+      :math:`y[n] = \sum_{k=0}^{M_b} b_k[n]\, w[n - k]`.
+    - ``"tdf2"``, transposed direct form II, with
+      :math:`M = \max(M_a, M_b)` states and :math:`s_{M+1} = 0`:
+
+      .. math::
+          y[n] &= b_0[n]\, x[n] + s_1[n], \\
+          s_k[n + 1] &= s_{k+1}[n] + b_k[n]\, x[n] - a_k[n]\, y[n].
+
+    - ``"tdf1"``, transposed direct form I: :func:`allpole` then
+      :func:`fir`, both with ``transpose=True``.
+
+    The transposed forms update each state with the coefficients at that
+    step.
+
     Args:
-        b (Tensor): Coefficients of the FIR filters, shape (B, N, M_b + 1) or (N, M_b + 1).
-        a (Tensor): Coefficients of the all-pole filters, shape (B, N, M_a) or (N, M_a).
-        x (Tensor): Input signal, shape (B, N) or (N).
-        zi (Tensor, optional): Initial conditions for the filter,
-            shape (B, max(M_a, M_b)) or (max(M_a, M_b)). Only the 'df2' and
-            'tdf2' forms take it.
-        form (str, optional): The filter form to use. Defaults to 'tdf2' for the
-            SSM backend and 'df2' for torchlpc. Options are 'df2', 'tdf2',
-            'df1', 'tdf1'.
-        backend (str): The backend to use for filtering. Options are 'ssm', 'torchlpc'.
-        **kwargs: Additional keyword arguments for the backend-specific filtering function.
+        b (Tensor): numerator coefficients :math:`b_k[n]`, of shape
+            :math:`(B, N, M_b + 1)`, or :math:`(N, M_b + 1)` to share them.
+        a (Tensor): denominator coefficients :math:`a_k[n]`, without the
+            leading 1, of shape :math:`(B, N, M_a)` or :math:`(N, M_a)`.
+        x (Tensor): input signals, of shape :math:`(B, N)` or :math:`(N)`.
+        zi (Tensor, optional): initial state, of shape :math:`(B, M)` or
+            :math:`(M)`, where :math:`M = \max(M_a, M_b)`. For ``"tdf2"``, the
+            states :math:`s_k[0]`; for ``"df2"``, the past values of :math:`w`
+            newest first, :math:`w[-1], \dots, w[-M]`. ``"df1"`` and
+            ``"tdf1"`` do not take it. Default: ``None``, all zero.
+        form (str or None, optional): ``"df2"``, ``"tdf2"``, ``"df1"`` or
+            ``"tdf1"``. Default: ``None``, which uses ``"tdf2"`` with the
+            ``"ssm"`` backend and ``"df2"`` with ``"torchlpc"``.
+        backend (str, optional): ``"ssm"`` runs the filter as a state-space
+            model of the :func:`~philtorch.mat.companion` matrices (see
+            :func:`state_space`); ``"torchlpc"`` runs :func:`allpole` and
+            :func:`fir`, and has no ``"tdf2"``. Default: ``"ssm"``.
+        **kwargs: ``unroll_factor`` for the ``"ssm"`` backend (see
+            :func:`state_space`); ignored by ``"torchlpc"``.
+
     Returns:
-        Filtered output signal with the same time steps as x and optionally the
-        final state of the filter.
+        Tensor or tuple of Tensor: the filtered signals, of shape
+        :math:`(B, N)`, and with :attr:`zi`, the final state, of shape
+        :math:`(B, M)`. :math:`B` is the batch size after broadcasting
+        :attr:`b`, :attr:`a`, :attr:`x` and :attr:`zi`, so a shared
+        :attr:`zi` still gives one final state per signal. Both outputs are
+        unbatched, :math:`(N)` and :math:`(M)`, only when all four inputs
+        are. The ``"torchlpc"`` backend also broadcasts a 1-D :attr:`x`
+        across batched coefficients or :attr:`zi`; ``"ssm"`` needs :attr:`x`
+        to carry the batch dimension then.
 
     Raises:
-        ValueError: If x has more than 2 dimensions, the backend or form is
-            unknown, or zi is given with form 'df1' or 'tdf1'.
+        ValueError: if :attr:`x` has more than 2 dimensions, :attr:`form` or
+            :attr:`backend` is unknown, or :attr:`zi` is given with ``"df1"``
+            or ``"tdf1"``.
+        NotImplementedError: for ``form="tdf2"`` with ``backend="torchlpc"``.
+        AssertionError: if the shapes do not match.
+
+    Note:
+        Unlike :func:`philtorch.lti.lfilter`, :attr:`b` and :attr:`a` always
+        have a time dimension. As there, :attr:`a` omits the leading
+        :math:`a_0 = 1`.
+
+    Example::
+
+        >>> from philtorch.lpv import lfilter
+        >>> # Constant coefficients: y[n] = 0.5 x[n] + 0.5 y[n - 1]
+        >>> b = torch.tensor([0.5]).expand(4, 1)
+        >>> a = torch.tensor([-0.5]).expand(4, 1)
+        >>> lfilter(b, a, torch.tensor([1.0, 0.0, 0.0, 0.0]))
+        tensor([0.5000, 0.2500, 0.1250, 0.0625])
     """
 
     squeeze_first = (
@@ -206,7 +327,7 @@ def _torchlpc_lfilter(
     zi: Tensor | None = None,
     form: str = "df2",
 ) -> Tensor | tuple[Tensor, Tensor]:
-
+    """Run :func:`lfilter` with the ``"torchlpc"`` backend."""
     _, T = x.shape
 
     if b.dim() == 2:
@@ -303,7 +424,7 @@ def _ssm_lfilter(
     form: str = "df2",
     **kwargs,
 ) -> Tensor | tuple[Tensor, Tensor]:
-    """Apply a batch of time-invariant linear filters to input signal using state-space model."""
+    """Run :func:`lfilter` with the ``"ssm"`` backend."""
     if b.size(-1) < a.size(-1) + 1:
         b = F.pad(b, (0, a.size(-1) + 1 - b.size(-1)))
     elif b.size(-1) > a.size(-1) + 1:
@@ -358,10 +479,16 @@ def _ssm_lfilter(
             )
         case "tdf1":
             zi = x.new_zeros((x.size(0), A.size(-1)))
+            # state_space_recursion(A, ...) returns h[1..N] of
+            # h[n + 1] = A[n] h[n] + x[n], so its output at step n uses A[n].
+            # The textbook update, as in tdf2, uses A[n] to go from step n to
+            # n + 1, so the output at step n must use A[n - 1]: pass A one
+            # step late. A[0] is never used, as zi is zero.
+            A_late = torch.cat([A[..., :1, :, :], A[..., :-1, :, :]], dim=-3)
             filt = chain_functions(
                 partial(
                     state_space_recursion,
-                    A.mT,
+                    A_late.mT,
                     zi,
                     out_idx=0,
                     **kwargs,

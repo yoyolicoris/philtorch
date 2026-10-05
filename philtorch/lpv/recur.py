@@ -1,3 +1,5 @@
+"""First-order linear recurrences with time-varying coefficients."""
+
 import torch
 from torch import Tensor
 from torch.nn import functional as F
@@ -19,21 +21,43 @@ def _scalar_recursion_loop(
 
 
 def linear_recurrence(a: Tensor, init: Tensor, x: Tensor, *, unroll_factor: int = 1) -> Tensor:
-    """A pure-Python implementation of a linear recurrence with time-varying
-    coefficients.
+    r"""Compute batched first-order recurrences with time-varying coefficients.
 
-    Implements elementwise recurrence h[t] = a[t] * h[t-1] + x[t] where `a`
-    is a time-varying coefficient sequence. The function supports block
-    unrolling to accelerate long recurrences.
+    This computes
+
+    .. math::
+        h[n + 1] = a[n]\, h[n] + x[n], \quad n = 0, \dots, N - 1,
+
+    starting from :math:`h[0] = \text{init}`, and returns
+    :math:`h[1], \dots, h[N]`.
 
     Args:
-        a (Tensor): Coefficients with shape (N,) or (B, N).
-        init (Tensor): Initial state (scalar or vector matching batch dims).
-        x (Tensor): Input of shape (B, N).
-        unroll_factor (int): Unroll factor for blocked processing.
+        a (Tensor): the coefficients, of shape :math:`(N)` to share them or
+            :math:`(B, N)` for one sequence per signal.
+        init (Tensor): the initial value :math:`h[0]`, of shape :math:`()`,
+            :math:`(1)` or :math:`(B)`.
+        x (Tensor): input sequences, of shape :math:`(B, N)`.
+        unroll_factor (int, optional): ``1`` runs the native scan kernel. A
+            value greater than 1 and less than :math:`N` runs a block-unrolled
+            PyTorch recursion with blocks of this length, and :math:`N` or more
+            runs a plain PyTorch loop; see the README for guidance.
+            Default: ``1``.
 
     Returns:
-        Tensor: Output sequence of shape (B, N).
+        Tensor: :math:`h[1], \dots, h[N]`, of shape :math:`(B, N)`.
+
+    Raises:
+        ValueError: if :attr:`unroll_factor` is less than 1.
+        ValueError or RuntimeError: if :attr:`a` or :attr:`init` does not
+            match :attr:`x`; which one depends on :attr:`unroll_factor`.
+
+    Example::
+
+        >>> from philtorch.lpv import linear_recurrence
+        >>> a = torch.tensor([0.5, 0.5, 0.0, 0.5])
+        >>> x = torch.tensor([[1.0, 0.0, 1.0, 0.0]])
+        >>> linear_recurrence(a, torch.tensor(0.0), x)
+        tensor([[1.0000, 0.5000, 1.0000, 0.5000]])
     """
 
     if unroll_factor == 1:
