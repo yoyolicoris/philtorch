@@ -1,0 +1,26 @@
+# Read the Docs build: compile a CPU-only PhilTorch, since importing the
+# package needs its native extension. An editable install builds it in place,
+# so `python -m sphinx`, run from the repository root, imports it. The build
+# takes about a minute on two cores.
+version: 2
+
+build:
+  os: ubuntu-24.04
+  tools:
+    python: "3.12"
+  jobs:
+    post_checkout:
+      # setuptools_scm derives the version from the latest tag.
+      - git fetch --unshallow --tags || true
+    install:
+      - python -m pip install torch --index-url https://download.pytorch.org/whl/cpu
+      - python -m pip install "setuptools>=77.0.3" "setuptools_scm>=8" wheel ninja
+      - MAX_JOBS=2 python -m pip install --no-build-isolation --editable ".[docs]"
+
+submodules:
+  include: all
+  recursive: true
+
+sphinx:
+  configuration: docs/conf.py
+  fail_on_warning: true

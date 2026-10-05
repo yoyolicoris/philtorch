@@ -25,6 +25,15 @@ _PARARNN_OPS = (
 )
 
 
+@pytest.fixture(autouse=True)
+def _fresh_dynamo():
+    # Each test compiles its own functions. Without a reset, the compiles left
+    # by earlier tests in the session, such as test_pt2_comp.py's, can reach
+    # Dynamo's recompile limit and fail fullgraph=True tests here.
+    torch._dynamo.reset()
+    yield
+
+
 def _has_dispatch_kernel(op: str, dispatch_key: str) -> bool:
     try:
         return torch._C._dispatch_has_kernel_for_dispatch_key(op, dispatch_key)

@@ -7,12 +7,15 @@
 [![OpenReview](https://img.shields.io/badge/OpenReview-ZhwIyvtBNB-8c1b13.svg)](https://openreview.net/forum?id=ZhwIyvtBNB)
 [![License: MIT](https://img.shields.io/badge/License-MIT-yellow.svg)](LICENSE)
 
+<!-- docs-intro-start -->
 PhilTorch provides differentiable, time-domain linear digital filters for PyTorch.
 
 - Differentiate through filter coefficients, inputs, and initial states with PyTorch autograd.
 - Process batched signals and filters whose coefficients vary at every time step.
 - Compute in the time domain without FFTs, through a pure functional API with no stateful objects.
 - Run on native CPU, CUDA, and MPS kernels.
+
+<!-- docs-intro-end -->
 
 ## News
 
@@ -23,6 +26,7 @@ PhilTorch provides differentiable, time-domain linear digital filters for PyTorc
 - **2025-10-31:** Our short paper describing the LTI filter implementation in PhilTorch was accepted by the [Differentiable Systems and Scientific Machine Learning Workshop at EurIPS 2025](https://differentiable-systems.github.io/workshop-eurips-2025/).
   The [preprint is available here](https://arxiv.org/abs/2511.14390).
 
+<!-- docs-install-start -->
 ## Installation
 
 PhilTorch requires its compiled `philtorch._C` extension; there is no pure-PyTorch fallback when the extension is missing.
@@ -108,6 +112,9 @@ Development builds from `dev` are published to TestPyPI:
 python -m pip install -i https://test.pypi.org/simple/ philtorch
 ```
 
+<!-- docs-install-end -->
+
+<!-- docs-quickstart-start -->
 ## Quickstart
 
 ### Filtering with SciPy-designed coefficients
@@ -131,6 +138,8 @@ zi = lfilter_zi(a, b)
 y, _ = lfilter(b, a, x, zi=zi * x[0])
 y_zero_phase = filtfilt(b, a, x)
 ```
+
+<!-- docs-quickstart-end -->
 
 ## Module overview
 
@@ -179,9 +188,10 @@ y_zero_phase = filtfilt(b, a, x)
 
 For detailed API reference, please refer to the docstring of each function.
 
+<!-- docs-api-guide-start -->
 ## Choose the right API
 
-The supported high-level interfaces are exported from [`philtorch.lti`](philtorch/lti/__init__.py) for fixed coefficients and [`philtorch.lpv`](philtorch/lpv/__init__.py) for coefficients that vary over time.
+The supported high-level interfaces are exported from [`philtorch.lti`](https://github.com/yoyolicoris/philtorch/blob/main/philtorch/lti/__init__.py) for fixed coefficients and [`philtorch.lpv`](https://github.com/yoyolicoris/philtorch/blob/main/philtorch/lpv/__init__.py) for coefficients that vary over time.
 
 | Intent | API | Notes |
 | --- | --- | --- |
@@ -198,7 +208,7 @@ The supported high-level interfaces are exported from [`philtorch.lti`](philtorc
 ## Comparison with `scipy.signal`
 
 PhilTorch functions take PyTorch tensors, support autograd and batching, and keep the input dtype and device.
-Coefficients are normalized so that `a0 = 1`: divide SciPy's `b` and `a` by `a[0]`, then pass `a[1:]` as the denominator, as in the [Quickstart](#quickstart) example.
+Coefficients are normalized so that `a0 = 1`: divide SciPy's `b` and `a` by `a[0]`, then pass `a[1:]` as the denominator, as in the Quickstart example.
 
 | SciPy | PhilTorch | Differences |
 | --- | --- | --- |
@@ -214,6 +224,9 @@ Coefficients are normalized so that `a0 = 1`: divide SciPy's `b` and `a` by `a[0
 | — | `philtorch.lti.comb_filter` | Delayed all-pole comb recurrence with a given coefficient and delay; it does not design filters like `iircomb`. |
 
 
+<!-- docs-api-guide-end -->
+
+<!-- docs-performance-start -->
 ## Performance
 
 Recursive filters are hard to parallelize, so PhilTorch implements custom C++ and CUDA kernels.
@@ -233,8 +246,11 @@ It is slower than the native kernels but much faster than a naive loop.
 Good starting points are 8 on CPU and 16–32 on CUDA, but benchmark your own batch size, sequence length, state size, dtype, and device, for example with `torch.utils.benchmark`.
 Native kernels are fastest for first- and second-order filters, so prefer cascades or parallel banks of such sections, especially on CUDA.
 
+<!-- docs-performance-end -->
+
 ## Examples
 
+<!-- docs-fibonacci-start -->
 ### Fibonacci numbers with `state_space`
 
 `philtorch.lti.state_space` computes
@@ -273,6 +289,8 @@ tensor([[ 1,  1,  2,  3,  5,  8, 13, 21, 34, 55]])
 
 This produces the first ten Fibonacci numbers, where $F_n = F_{n-1} + F_{n-2}$ with $F_0 = F_1 = 1$.
 
+<!-- docs-fibonacci-end -->
+
 ### Learning filter parameters
 
 The [low-pass estimation notebook](examples/estimate_lowpass.ipynb) demonstrates learning filter parameters by gradient descent.
@@ -283,6 +301,7 @@ The [low-pass estimation notebook](examples/estimate_lowpass.ipynb) demonstrates
 - The [issue tracker](https://github.com/yoyolicoris/philtorch/issues) is the place for bug reports and feature requests.
 - PhilTorch is distributed under the [MIT License](LICENSE); third-party notices are in [`LICENSES`](LICENSES/README.md).
 
+<!-- docs-citation-start -->
 ## Paper and citation
 
 PhilTorch's LTI direct-form filtering work is described in [Accelerating Automatic Differentiation of Direct Form Digital Filters](https://openreview.net/forum?id=ZhwIyvtBNB) by Chin-Yun Yu and György Fazekas.
@@ -296,3 +315,5 @@ PhilTorch's LTI direct-form filtering work is described in [Accelerating Automat
   url={https://openreview.net/forum?id=ZhwIyvtBNB}
 }
 ```
+
+<!-- docs-citation-end -->
