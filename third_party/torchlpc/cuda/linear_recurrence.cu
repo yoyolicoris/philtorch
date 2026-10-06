@@ -4,6 +4,9 @@
 #include <c10/cuda/CUDAGuard.h>
 #include <c10/cuda/CUDAStream.h>
 #include <stdio.h>
+
+#include <algorithm>
+#include <limits>
 #include <torch/script.h>
 #include <torch/torch.h>
 
@@ -223,11 +226,17 @@ __global__ void warp_scan_kernel(const scalar_t *decays,
 template <typename scalar_t>
 void compute_linear_recurrence(const scalar_t *decays, const scalar_t *impulses,
                                const scalar_t *initial_state, scalar_t *out,
-                               int n_dims, int n_steps) {
+                               int64_t n_dims, int64_t n_steps) {
     // we want at least 32 elements per block, but no reason to run
     // with more than the maximum number of concurrent blocks
     // NOTE: 128 is decided empirically.
-    int n_blocks = min(CEIL_DIV(n_steps, 32), 128);
+    int64_t n_blocks = std::min<int64_t>(CEIL_DIV(n_steps, 32), 128);
+
+    // The kernels index the input and their working memory in int.
+    TORCH_CHECK(n_dims * n_steps <= std::numeric_limits<int>::max() &&
+                    2 * n_blocks * 33 * n_dims <= std::numeric_limits<int>::max(),
+                "scan supports at most INT_MAX elements, got ", n_dims, " x ",
+                n_steps);
 
     // Working memory from PyTorch's caching allocator, freed when the kernels
     // on the current stream are done with it.
@@ -263,6 +272,10 @@ at::Tensor scan_cuda_wrapper(const at::Tensor &input, const at::Tensor &weights,
                 "Initials must have the same scalar type as input");
     TORCH_CHECK(weights.scalar_type() == input.scalar_type(),
                 "Weights must have the same scalar type as input");
+    TORCH_CHECK(weights.device() == input.device(),
+                "Weights must be on the same device as input");
+    TORCH_CHECK(initials.device() == input.device(),
+                "Initials must be on the same device as input");
 
     auto input_contiguous = input.contiguous();
     auto weights_contiguous = weights.contiguous();

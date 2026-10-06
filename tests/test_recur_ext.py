@@ -475,6 +475,7 @@ def test_cuda_scan_runs_on_the_current_stream(case: str):
     stream = torch.cuda.Stream()
     with torch.cuda.stream(stream):
         cuda_args = [arg.cuda() for arg in args]
+        # About 0.4 s of GPU time, far longer than launching the op takes.
         torch.cuda._sleep(1_000_000_000)
         cuda_args = [arg * 1 for arg in cuda_args]
         actual = op(*cuda_args)
@@ -482,3 +483,61 @@ def test_cuda_scan_runs_on_the_current_stream(case: str):
     stream.synchronize()
 
     assert torch.allclose(actual.cpu(), expected), torch.max(torch.abs(actual.cpu() - expected))
+
+
+@pytest.mark.skipif(not torch.cuda.is_available(), reason="CUDA not available")
+@pytest.mark.parametrize(
+    ("M", "dtype", "max_steps"),
+    [
+        (2, torch.float64, 2**21),
+        (2, torch.float32, 2**21),
+        (3, torch.float64, 2**20),
+        (3, torch.float32, 2**21),
+    ],
+)
+def test_pararnn_applicable_within_launch_limits(M, dtype, max_steps):
+    """ParaRNN is used only within the batch and length its launches allow."""
+
+    def x(B, T):
+        return torch.zeros((), device="cuda", dtype=dtype).expand(B, T, M)
+
+    # T steps plus the initial state.
+    assert lpv_ssm._pararnn_applicable(x(1, max_steps - 1), M)
+    assert not lpv_ssm._pararnn_applicable(x(1, max_steps), M)
+    assert lpv_ssm._pararnn_applicable(x(65535, 4), M)
+    assert not lpv_ssm._pararnn_applicable(x(65536, 4), M)
+
+
+@pytest.mark.skipif(not torch.cuda.is_available(), reason="CUDA not available")
+@pytest.mark.parametrize(
+    ("B", "T", "M"),
+    [(70_000, 8, 2), (70_000, 8, 3), (1, 2**21, 2)],
+    ids=["batch-2x2", "batch-3x3", "length-2x2"],
+)
+def test_lpv_state_space_recursion_past_pararnn_limits(B, T, M):
+    """Inputs ParaRNN can't launch for fall back to the other kernels."""
+    gen = torch.Generator().manual_seed(0)
+    A = torch.randn(B, T, M, M, generator=gen, dtype=torch.float64)
+    A = A * 0.9 / torch.linalg.matrix_norm(A, ord=2)[..., None, None]
+    zi = torch.randn(B, M, generator=gen, dtype=torch.float64)
+    x = torch.randn(B, T, M, generator=gen, dtype=torch.float64)
+
+    expected = lpv_state_space(A, zi, x)
+    actual = lpv_state_space(A.cuda(), zi.cuda(), x.cuda())
+
+    assert torch.allclose(actual.cpu(), expected), torch.max(torch.abs(actual.cpu() - expected))
+
+
+@pytest.mark.skipif(not torch.cuda.is_available(), reason="CUDA not available")
+@pytest.mark.parametrize(
+    "case",
+    ["lti_recur-shared", "lti_recur2-batched", "recur2-batched", "lpc", "scan"],
+)
+def test_cuda_ops_reject_coefficients_on_another_device(case: str):
+    """Coefficients the kernels read directly must be on the input's device."""
+    op, args, _ = _cuda_scan_case(case)
+    # Coefficients first for the recurrences, second for lpc and scan.
+    coefficient = 1 if case in ("lpc", "scan") else 0
+    cuda_args = [arg if i == coefficient else arg.cuda() for i, arg in enumerate(args)]
+    with pytest.raises(RuntimeError, match="same device"):
+        op(*cuda_args)

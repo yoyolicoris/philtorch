@@ -60,6 +60,8 @@ at::Tensor lti_mat_recur_second_order_cuda_impl(const at::Tensor &A,
                 "zi must have the same scalar type as input");
     TORCH_CHECK(A.scalar_type() == x.scalar_type(),
                 "A must have the same scalar type as input");
+    TORCH_CHECK(A.device() == x.device(),
+                "A must be on the same device as input");
     TORCH_CHECK(A.dim() == 2 || A.dim() == 3, "A must be a 2D or 3D tensor");
     TORCH_CHECK(x.size(2) == 2, "Input x must have a last dimension of size 2");
     TORCH_CHECK(A.size(-1) == 2 && A.size(-2) == 2,

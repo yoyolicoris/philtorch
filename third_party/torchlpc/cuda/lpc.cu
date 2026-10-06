@@ -119,6 +119,8 @@ at::Tensor lpc_cuda_wrapper(const at::Tensor& x, const at::Tensor& a,
                 "Input must be floating point or complex");
     TORCH_CHECK(a.scalar_type() == x.scalar_type(),
                 "Coefficients must have the same scalar type as input");
+    TORCH_CHECK(a.device() == x.device(),
+                "Coefficients must be on the same device as input");
     TORCH_CHECK(zi.scalar_type() == x.scalar_type(),
                 "Initial conditions must have the same scalar type as input");
 

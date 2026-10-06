@@ -31,13 +31,35 @@ def extension_backend_indicator(x: Tensor, M: int) -> bool:
     return x.is_cpu or M <= 2 or _pararnn_applicable(x, M)
 
 
+# Launch limits of the vendored ParaRNN kernels (third_party/pararnn/csrc).
+# The batch runs along grid dimension y, which CUDA caps at 65535. A sequence
+# is split into blocks of 1024 threads that each take `chunk` steps, and one
+# block of at most 1024 threads combines the blocks' results. The chunk sizes
+# are dtype2chunkSizeBlockDiag in helpers.h: 1 for 3x3 float64, 2 otherwise.
+_PARARNN_MAX_BATCH = 65535
+_PARARNN_THREADS_PER_BLOCK = 1024
+
+
+def _pararnn_max_steps(M: int, dtype: torch.dtype) -> int:
+    chunk = 1 if M == 3 and dtype == torch.float64 else 2
+    return _PARARNN_THREADS_PER_BLOCK * _PARARNN_THREADS_PER_BLOCK * chunk
+
+
 def _pararnn_applicable(x: Tensor, M: int) -> bool:
     """Return whether the vendored ParaRNN kernels support this input.
 
     They need a real floating-point input on CUDA, with :math:`M = 2` or
-    :math:`3`.
+    :math:`3`, at most 65535 batch items, and at most :math:`2^{21} - 1`
+    steps (:math:`2^{20} - 1` for :math:`M = 3` in float64), counting the
+    initial state as one more.
     """
-    return x.is_cuda and x.is_floating_point() and M in (2, 3)
+    return (
+        x.is_cuda
+        and x.is_floating_point()
+        and M in (2, 3)
+        and x.size(0) <= _PARARNN_MAX_BATCH
+        and x.size(1) + 1 <= _pararnn_max_steps(M, x.dtype)
+    )
 
 
 class MatrixRecurrence(Function):
