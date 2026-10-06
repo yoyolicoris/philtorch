@@ -64,11 +64,9 @@ linkcheck_anchors_ignore_for_url = [r"https://docs\.pytorch\.org/.*"]
 
 # -- Markdown pages ----------------------------------------------------------
 
-myst_enable_extensions = ["dollarmath", "amsmath"]
-# The README's GitHub-style ```math blocks render as display math.
-myst_fence_as_directive = ["math"]
 myst_heading_anchors = 3
-# Pages built from README sections start at a level-2 heading.
+# The installation page is built from a README section, which starts at a
+# level-2 heading.
 suppress_warnings = ["myst.header"]
 
 # -- HTML --------------------------------------------------------------------
@@ -76,10 +74,25 @@ suppress_warnings = ["myst.header"]
 html_theme = "pydata_sphinx_theme"
 html_title = "PhilTorch"
 html_theme_options = {
-    "github_url": "https://github.com/yoyolicoris/philtorch",
     "navigation_with_keys": False,
     "show_toc_level": 2,
+    "icon_links": [
+        {
+            "name": "GitHub",
+            "url": "https://github.com/yoyolicoris/philtorch",
+            "icon": "fa-brands fa-github",
+        },
+        {
+            "name": "PyPI",
+            "url": "https://pypi.org/project/philtorch",
+            "icon": "fa-brands fa-python",
+        },
+    ],
+    "footer_start": ["copyright"],
+    "footer_center": ["sphinx-version"],
+    "footer_end": ["theme-version"],
 }
+html_show_sourcelink = False
 
 
 # -- Short type names --------------------------------------------------------

@@ -1,25 +1,22 @@
 # PhilTorch
 
-```{include} ../README.md
-:start-after: <!-- docs-intro-start -->
-:end-before: <!-- docs-intro-end -->
-```
-
-Start with [](install) and the [](quickstart), read [](concepts) for the conventions shared by every function, and look functions up in the [](api/index).
+[PhilTorch](https://github.com/yoyolicoris/philtorch) provides differentiable, time-domain linear digital filters for PyTorch.
 
 ```{toctree}
-:maxdepth: 2
+:maxdepth: 1
 :hidden:
 
-install
-quickstart
-concepts
-api/index
-development
-changelog
+Installation <install>
+API reference <api/index>
+Development <development>
+Changelog <changelog>
 ```
 
-```{include} ../README.md
-:start-after: <!-- docs-citation-start -->
-:end-before: <!-- docs-citation-end -->
-```
+- [Installation](install)
+- [API reference](api/index)
+- [Development](development)
+- [Changelog](changelog)
+
+## References
+
+- {ref}`genindex`

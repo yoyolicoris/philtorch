@@ -12,6 +12,7 @@ on:
       - "README.md"
       - "pyproject.toml"
       - "setup.py"
+      - "build_support.py"
       - ".readthedocs.yaml"
       - ".github/workflows/docs.yml"
   pull_request:
@@ -22,6 +23,7 @@ on:
       - "README.md"
       - "pyproject.toml"
       - "setup.py"
+      - "build_support.py"
       - ".readthedocs.yaml"
       - ".github/workflows/docs.yml"
   schedule:
