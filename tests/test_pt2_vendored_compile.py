@@ -27,10 +27,12 @@ _PARARNN_OPS = (
 
 @pytest.fixture(autouse=True)
 def _fresh_dynamo():
-    # Each test compiles its own functions. Without a reset, the compiles left
-    # by earlier tests in the session, such as test_pt2_comp.py's, can reach
-    # Dynamo's recompile limit and fail fullgraph=True tests here.
-    torch._dynamo.reset()
+    # Several tests here compile the same function, such as
+    # state_space_recursion, each with a different device or shape, so each
+    # adds a compiled version. Dynamo keeps at most 8 per function (its
+    # recompile_limit), and past that a fullgraph=True compile fails. Start
+    # each test from an empty cache.
+    torch.compiler.reset()
     yield
 
 
