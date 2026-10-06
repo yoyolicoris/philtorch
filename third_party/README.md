@@ -44,4 +44,19 @@ Copyright (C) 2025 Apple Inc. (`pararnn/LICENSE`).
 
 ## Local changes
 
-None: the files are copied unchanged.
+Every kernel runs on PyTorch's current stream. Upstream launched them on the
+legacy default stream, which PyTorch's streams don't wait for, so on any other
+stream they could read inputs before they were written and return wrong
+results.
+
+- `torchlpc/cuda/lpc.cu`: launch on the current stream, check each launch, and
+  check the order limit with `TORCH_CHECK` instead of `assert`.
+- `torchlpc/cuda/linear_recurrence.cu`: launch on the current stream, check
+  each launch, take the working memory from PyTorch's caching allocator
+  instead of `cudaMalloc`/`cudaFree` (which synchronized the device and
+  ignored errors), size it in `size_t`, and make the initial states
+  contiguous.
+- `pararnn/csrc/parallel_reduction_kernel.h`: launch on the current stream,
+  check each launch, and drop the `cudaDeviceSynchronize()` calls between the
+  kernels, which the stream already orders.
+- `pararnn/csrc/parallel_reduce.cu`: guard the device of the inputs.

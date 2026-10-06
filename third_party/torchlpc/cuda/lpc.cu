@@ -1,6 +1,7 @@
 #include <assert.h>
 #include <c10/cuda/CUDAException.h>
 #include <c10/cuda/CUDAGuard.h>
+#include <c10/cuda/CUDAStream.h>
 #include <stdio.h>
 #include <torch/script.h>
 #include <torch/torch.h>
@@ -132,8 +133,9 @@ at::Tensor lpc_cuda_wrapper(const at::Tensor& x, const at::Tensor& a,
 
     at::Tensor out;
     auto order = a_contiguous.size(2);
-    assert(order <= 1024 && "LPC order must be less than or equal to 1024");
+    TORCH_CHECK(order <= 1024, "LPC order must be less than or equal to 1024");
     auto threads_per_block = order;
+    auto stream = c10::cuda::getCurrentCUDAStream();
 
     if (x.is_floating_point()) {
         out = at::cat({zi.flip(1), x}, 1).contiguous();
@@ -144,8 +146,9 @@ at::Tensor lpc_cuda_wrapper(const at::Tensor& x, const at::Tensor& a,
             auto T = x.size(1);
 
             lpc_cuda_kernel<scalar_t><<<B, threads_per_block,
-                                        threads_per_block * sizeof(scalar_t)>>>(
-                padded_y, A, B, T, order);
+                                        threads_per_block * sizeof(scalar_t),
+                                        stream>>>(padded_y, A, B, T, order);
+            C10_CUDA_KERNEL_LAUNCH_CHECK();
         });
     } else {
         auto out_real =
@@ -165,9 +168,10 @@ at::Tensor lpc_cuda_wrapper(const at::Tensor& x, const at::Tensor& a,
 
                 lpc_cuda_kernel_complex<scalar_t>
                     <<<B, threads_per_block,
-                       2 * threads_per_block * sizeof(scalar_t)>>>(
+                       2 * threads_per_block * sizeof(scalar_t), stream>>>(
                         padded_y_real, padded_y_imag, A_real, A_imag, B, T,
                         order);
+                C10_CUDA_KERNEL_LAUNCH_CHECK();
             });
         out = at::view_as_complex(at::stack({out_real, out_imag}, -1));
     }

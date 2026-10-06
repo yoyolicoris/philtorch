@@ -1,22 +1,13 @@
 #include <assert.h>
+#include <c10/cuda/CUDACachingAllocator.h>
 #include <c10/cuda/CUDAException.h>
 #include <c10/cuda/CUDAGuard.h>
+#include <c10/cuda/CUDAStream.h>
 #include <stdio.h>
 #include <torch/script.h>
 #include <torch/torch.h>
 
 #define CEIL_DIV(x, y) ((x + y - 1) / y)
-
-#define gpuErrChk(ans)                        \
-    {                                         \
-        gpuAssert((ans), __FILE__, __LINE__); \
-    }
-void gpuAssert(cudaError_t code, const char *file, int line) {
-    if (code != cudaSuccess) {
-        fprintf(stderr, "GPUassert: %s %s %d\n", cudaGetErrorString(code), file,
-                line);
-    }
-}
 
 __device__ int2 divide_work(int n_jobs, int n_workers, int worker_idx) {
     // Each worker will do a continuous slice of either n_jobs / n_workers
@@ -238,27 +229,30 @@ void compute_linear_recurrence(const scalar_t *decays, const scalar_t *impulses,
     // NOTE: 128 is decided empirically.
     int n_blocks = min(CEIL_DIV(n_steps, 32), 128);
 
-    // TODO: make user pass in working memory? This allows integration
-    //       with CNMeM (used by Theano)
-    int reduction_mem_sz = 2 * n_blocks * 33 * n_dims * sizeof(scalar_t);
-    scalar_t *d_reduction_mem;
-    gpuErrChk(cudaMalloc(&d_reduction_mem, reduction_mem_sz));
+    // Working memory from PyTorch's caching allocator, freed when the kernels
+    // on the current stream are done with it.
+    size_t reduction_mem_sz =
+        size_t(2) * n_blocks * 33 * n_dims * sizeof(scalar_t);
+    auto reduction_mem =
+        c10::cuda::CUDACachingAllocator::get()->allocate(reduction_mem_sz);
+    scalar_t *d_reduction_mem = static_cast<scalar_t *>(reduction_mem.get());
     scalar_t *d_decay_storage = &d_reduction_mem[0 * n_blocks * 33 * n_dims];
     scalar_t *d_h_storage = &d_reduction_mem[1 * n_blocks * 33 * n_dims];
 
-    // TODO: run kernels on non-default stream?
-    reduction_kernel<<<n_blocks, 1024>>>(decays, impulses, initial_state,
-                                         d_decay_storage, d_h_storage, n_dims,
-                                         n_steps);
+    auto stream = c10::cuda::getCurrentCUDAStream();
+    reduction_kernel<<<n_blocks, 1024, 0, stream>>>(
+        decays, impulses, initial_state, d_decay_storage, d_h_storage, n_dims,
+        n_steps);
+    C10_CUDA_KERNEL_LAUNCH_CHECK();
 
-    block_scan_kernel<<<n_blocks, 1024>>>(d_decay_storage, d_h_storage, n_dims,
-                                          n_blocks);
+    block_scan_kernel<<<n_blocks, 1024, 0, stream>>>(
+        d_decay_storage, d_h_storage, n_dims, n_blocks);
+    C10_CUDA_KERNEL_LAUNCH_CHECK();
 
-    warp_scan_kernel<<<n_blocks, 1024>>>(decays, impulses, initial_state, out,
-                                         d_decay_storage, d_h_storage, n_dims,
-                                         n_steps);
-
-    gpuErrChk(cudaFree(d_reduction_mem));
+    warp_scan_kernel<<<n_blocks, 1024, 0, stream>>>(
+        decays, impulses, initial_state, out, d_decay_storage, d_h_storage,
+        n_dims, n_steps);
+    C10_CUDA_KERNEL_LAUNCH_CHECK();
 }
 
 at::Tensor scan_cuda_wrapper(const at::Tensor &input, const at::Tensor &weights,
@@ -272,6 +266,7 @@ at::Tensor scan_cuda_wrapper(const at::Tensor &input, const at::Tensor &weights,
 
     auto input_contiguous = input.contiguous();
     auto weights_contiguous = weights.contiguous();
+    auto initials_contiguous = initials.contiguous();
     auto output = at::empty_like(input_contiguous);
 
     const at::cuda::OptionalCUDAGuard device_guard(device_of(input));
@@ -281,7 +276,7 @@ at::Tensor scan_cuda_wrapper(const at::Tensor &input, const at::Tensor &weights,
             compute_linear_recurrence<scalar_t>(
                 weights_contiguous.const_data_ptr<scalar_t>(),
                 input_contiguous.const_data_ptr<scalar_t>(),
-                initials.const_data_ptr<scalar_t>(),
+                initials_contiguous.const_data_ptr<scalar_t>(),
                 output.mutable_data_ptr<scalar_t>(), input_contiguous.size(0),
                 input_contiguous.size(1));
         });

@@ -2,6 +2,7 @@ from unittest.mock import Mock
 
 import pytest
 import torch
+import torch.nn.functional as F
 
 import philtorch.lpv.ssm as lpv_ssm
 import philtorch.lti.ssm as lti_ssm
@@ -392,6 +393,7 @@ def test_lpv_pararnn_order3_matches_fallback():
 
 
 def _cuda_scan_case(name: str):
+    """Return an op, its CPU arguments, and the output it should give."""
     B, T = 4, 4096
     gen = torch.Generator().manual_seed(0)
 
@@ -404,17 +406,39 @@ def _cuda_scan_case(name: str):
             return a * 0.9 / torch.linalg.matrix_norm(a, ord=2)[..., None, None]
         return torch.tanh(a) * 0.9
 
-    op, a_shape = {
-        "lti_recur-batched": (torch.ops.philtorch.lti_recur, (B,)),
-        "lti_recur-shared": (torch.ops.philtorch.lti_recur, ()),
-        "lti_recur2-batched": (torch.ops.philtorch.lti_recur2, (B, 2, 2)),
-        "lti_recur2-shared": (torch.ops.philtorch.lti_recur2, (2, 2)),
-        "recur2-batched": (torch.ops.philtorch.recur2, (B, T, 2, 2)),
-        "recur2-shared": (torch.ops.philtorch.recur2, (T, 2, 2)),
-    }[name]
-    if op is torch.ops.philtorch.lti_recur:
-        return op, (stable(randn(*a_shape)), randn(B), randn(B, T))
-    return op, (stable(randn(*a_shape)), randn(B, 2), randn(B, T, 2))
+    if name.startswith("pararnn"):
+        # ParaRNN solves h[t] = A[t] h[t - 1] + x[t] with jac = -A and the
+        # initial state as the first right-hand side; it has no CPU kernel.
+        # Past 8 blocks of steps it switches to three dependent kernels.
+        K = int(name.split("-")[1])
+        if name.endswith("long"):
+            T = 40_000
+        A, zi, x = stable(randn(B, T, K, K)), randn(B, K), randn(B, T, K)
+        reduce = getattr(torch.ops.parallel_reduce_cuda, f"parallel_reduce_block_diag_{K}x{K}_cuda")
+        expected = (torch.ops.philtorch.recur2 if K == 2 else torch.ops.philtorch.recurN)(A, zi, x)
+        return (
+            lambda jac, rhs: reduce(jac, rhs)[:, 1:],
+            (F.pad(-A, (0, 0, 0, 0, 1, 0)), torch.cat([zi.unsqueeze(1), x], dim=1)),
+            expected,
+        )
+    if name == "lpc":
+        op, args = torch.ops.philtorch.lpc, (randn(B, T), randn(B, T, 2) * 0.2, randn(B, 2))
+    elif name == "scan":
+        op, args = torch.ops.philtorch.scan, (randn(B, T), stable(randn(B, T)), randn(B))
+    else:
+        op, a_shape = {
+            "lti_recur-batched": (torch.ops.philtorch.lti_recur, (B,)),
+            "lti_recur-shared": (torch.ops.philtorch.lti_recur, ()),
+            "lti_recur2-batched": (torch.ops.philtorch.lti_recur2, (B, 2, 2)),
+            "lti_recur2-shared": (torch.ops.philtorch.lti_recur2, (2, 2)),
+            "recur2-batched": (torch.ops.philtorch.recur2, (B, T, 2, 2)),
+            "recur2-shared": (torch.ops.philtorch.recur2, (T, 2, 2)),
+        }[name]
+        if op is torch.ops.philtorch.lti_recur:
+            args = (stable(randn(*a_shape)), randn(B), randn(B, T))
+        else:
+            args = (stable(randn(*a_shape)), randn(B, 2), randn(B, T, 2))
+    return op, args, op(*args)
 
 
 @pytest.mark.skipif(not torch.cuda.is_available(), reason="CUDA not available")
@@ -427,18 +451,23 @@ def _cuda_scan_case(name: str):
         "lti_recur2-shared",
         "recur2-batched",
         "recur2-shared",
+        "lpc",
+        "scan",
+        "pararnn-2",
+        "pararnn-3",
+        "pararnn-2-long",
+        "pararnn-3-long",
     ],
 )
 def test_cuda_scan_runs_on_the_current_stream(case: str):
-    """The CUDA scans run asynchronously on PyTorch's current stream.
+    """The CUDA recurrences run asynchronously on PyTorch's current stream.
 
     The inputs are produced on a side stream after a long delay. The call must
     return before the stream finishes, rather than synchronize the device, and
     once it finishes, the outputs must be right, which they wouldn't be if the
     scan ran on another stream and read the inputs before they were written.
     """
-    op, args = _cuda_scan_case(case)
-    expected = op(*args)
+    op, args, expected = _cuda_scan_case(case)
     # A kernel's first launch loads its module lazily, which synchronizes.
     op(*[arg.cuda() * 1 for arg in args])
     torch.cuda.synchronize()

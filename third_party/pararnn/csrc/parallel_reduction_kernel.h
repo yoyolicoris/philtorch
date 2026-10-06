@@ -8,6 +8,9 @@
 #include <cuda.h>
 #include <cuda_runtime.h>
 
+#include <c10/cuda/CUDAException.h>
+#include <c10/cuda/CUDAStream.h>
+
 #include "helpers.h"
 #include "rnn_cell_impl.h"
 
@@ -818,6 +821,9 @@ void parallelReduceLauncher(
     const int warpsPerBlock = 1 + ((threads_per_block - 1) / (threads_per_warp)); // = ceil((float)THREADS_PER_BLOCK/THREADS_PER_WARP)
     unsigned int sharedMemSize =  ( sizeof(typename pimpl_t::jac_t) + sizeof(typename pimpl_t::rhs_t) ) * warpsPerBlock;
 
+    // Run on PyTorch's current stream, which also orders the kernels below.
+    const cudaStream_t stream = c10::cuda::getCurrentCUDAStream();
+
 //    std::cout<<"Launching kernel on gridsize  ("<< gridSize.x  <<","<< gridSize.y  <<","<< gridSize.z  <<",)"<<std::endl
 //             <<"with blocks of size blockSize ("<< blockSize.x <<","<< blockSize.y <<","<< blockSize.z <<",)"<<std::endl
 //             <<"for tensors ot size (B,N,T):  ("<< batchSize   <<","<< hiddenDim   <<","<< seqLength   <<",)"<<std::endl
@@ -826,19 +832,20 @@ void parallelReduceLauncher(
     if ( blocksPerSeq <= max_sequential_steps ){
         dim3 gridSize( 1, hiddenDim, batchSize );
         parallelReductionShared< pimpl_t >
-                          <<<gridSize, blockSize, sharedMemSize>>>(
+                          <<<gridSize, blockSize, sharedMemSize, stream>>>(
                           jac, rhs, jacTemp, rhsTemp,
                           seqLength, hiddenDim, batchSize,
                           false, blocksPerSeq );
+        C10_CUDA_KERNEL_LAUNCH_CHECK();
     } else {
         dim3 gridSize( blocksPerSeq, hiddenDim, batchSize );
         parallelReductionShared< pimpl_t >
-                          <<<gridSize, blockSize, sharedMemSize>>>(
+                          <<<gridSize, blockSize, sharedMemSize, stream>>>(
                           jac, rhs, jacTemp, rhsTemp,
                           seqLength, hiddenDim, batchSize,
                           true, 1 );
+        C10_CUDA_KERNEL_LAUNCH_CHECK();
 
-        cudaDeviceSynchronize();                          // wait for previous reduction to complete
         const dim3 gridSize2( 1, hiddenDim, batchSize );
         const dim3 blockSize2(blocksPerSeq, 1, 1);        // TODO: must put a check to ensure whole T is covered
         const int warpsPerBlock2 = 1 + ((blocksPerSeq - 1) / (threads_per_warp)); // = ceil((float)blocksPerSeq/THREADS_PER_WARP)
@@ -851,10 +858,10 @@ void parallelReduceLauncher(
 //                 <<"Total memory allocated: "       << sharedMemSize2 <<" for "<<warpsPerBlock2<< " warps."<<std::endl;
 
         parallelReductionGlobal< pimpl_t >
-                          <<<gridSize2, blockSize2, sharedMemSize2>>>(
+                          <<<gridSize2, blockSize2, sharedMemSize2, stream>>>(
                           jacTemp, rhsTemp, seqLength, hiddenDim, batchSize
                           );
-        cudaDeviceSynchronize();  // TODO: same here. seqLength must be massive to need multiple blocks to reduce
+        C10_CUDA_KERNEL_LAUNCH_CHECK();
 
         const dim3 gridSize3( blocksPerSeq-1, hiddenDim, batchSize );
         const dim3 blockSize3(threads_per_block, 1, 1);
@@ -864,8 +871,9 @@ void parallelReduceLauncher(
 //                 <<"for tensors ot size (B,N,T):  ("<< batchSize    <<","<< hiddenDim    <<","<< seqLength    <<",)"<<std::endl;
 
         finalReduction< pimpl_t >
-                      <<<gridSize3, blockSize3, 0>>>(
+                      <<<gridSize3, blockSize3, 0, stream>>>(
                       jacTemp, rhsTemp, seqLength, hiddenDim, batchSize);
+        C10_CUDA_KERNEL_LAUNCH_CHECK();
     }
 }
 

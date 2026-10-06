@@ -8,6 +8,7 @@
 #include <cstdio>
 
 #include <torch/extension.h>
+#include <c10/cuda/CUDAGuard.h>
 #include <cuda_fp16.h>          // Required for __half
 #include <cuda_bf16.h>          // Required for __nv_bfloat16
 #include <c10/util/Half.h>      // Defines c10::Half
@@ -27,6 +28,7 @@ torch::Tensor parallel_reduce_block_diag_cuda(
         torch::Tensor rhs     // (B,) N, T, K
     ) {
     TORCH_CHECK(jac.scalar_type() == rhs.scalar_type(), "Input tensors must have the same type");
+    const at::cuda::OptionalCUDAGuard device_guard(rhs.is_cuda() ? rhs.device() : jac.device());
 
     // Tweak to make this func work with both batched and non-batched inputs
     const bool batched = rhs.dim() > 3;
@@ -90,6 +92,7 @@ torch::Tensor parallel_reduce_diag_cuda(
         torch::Tensor rhs     // (B,) N, T
     ) {
     TORCH_CHECK(jac.scalar_type() == rhs.scalar_type(), "Input tensors must have the same type");
+    const at::cuda::OptionalCUDAGuard device_guard(rhs.is_cuda() ? rhs.device() : jac.device());
 
     // Tweak to make this func work with both batched and non-batched inputs
     const bool batched = rhs.dim() > 2;
