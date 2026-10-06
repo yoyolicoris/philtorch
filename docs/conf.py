@@ -65,9 +65,6 @@ linkcheck_anchors_ignore_for_url = [r"https://docs\.pytorch\.org/.*"]
 # -- Markdown pages ----------------------------------------------------------
 
 myst_heading_anchors = 3
-# The installation page is built from a README section, which starts at a
-# level-2 heading.
-suppress_warnings = ["myst.header"]
 
 # -- HTML --------------------------------------------------------------------
 
@@ -116,5 +113,26 @@ def _resolve_type_alias(app, env, node, contnode):
     return missing_reference(app, env, node, contnode)
 
 
+# -- README sections ---------------------------------------------------------
+
+# A page built from a README section gives it the page's own level-1 title in
+# place of the section's level-2 heading, so lift the section's subsections
+# from level 3 to level 2. Lines in fenced code blocks are left alone.
+
+
+def _lift_readme_headings(app, relative_path, parent_docname, content):
+    if relative_path.name != "README.md":
+        return
+    lines, fenced = [], False
+    for line in content[0].splitlines(keepends=True):
+        if line.startswith("```"):
+            fenced = not fenced
+        elif not fenced and line.startswith("##"):
+            line = line[1:]
+        lines.append(line)
+    content[0] = "".join(lines)
+
+
 def setup(app):
     app.connect("missing-reference", _resolve_type_alias)
+    app.connect("include-read", _lift_readme_headings)

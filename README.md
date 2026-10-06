@@ -23,8 +23,8 @@ PhilTorch provides differentiable, time-domain linear digital filters for PyTorc
 - **2025-10-31:** Our short paper describing the LTI filter implementation in PhilTorch was accepted by the [Differentiable Systems and Scientific Machine Learning Workshop at EurIPS 2025](https://differentiable-systems.github.io/workshop-eurips-2025/).
   The [preprint is available here](https://arxiv.org/abs/2511.14390).
 
-<!-- docs-install-start -->
 ## Installation
+<!-- docs-install-start -->
 
 PhilTorch requires its compiled `philtorch._C` extension; there is no pure-PyTorch fallback when the extension is missing.
 

@@ -12,7 +12,7 @@ pixi run docs
 
 and open `docs/_build/html/index.html`. `pixi run docs-linkcheck` checks the external links.
 
-Without pixi, from a checkout with submodules, install a CPU build of PyTorch, then PhilTorch in editable mode and the docs dependencies:
+Without pixi, from a checkout, install a CPU build of PyTorch, then PhilTorch in editable mode and the docs dependencies:
 
 ```bash
 python -m pip install torch --index-url https://download.pytorch.org/whl/cpu

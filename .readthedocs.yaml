@@ -18,10 +18,6 @@ build:
       - MAX_JOBS=2 python -m pip install --no-build-isolation --editable .
       - python -m pip install -r docs/requirements.txt
 
-submodules:
-  include: all
-  recursive: true
-
 sphinx:
   configuration: docs/conf.py
   fail_on_warning: true
