@@ -269,6 +269,8 @@ environments:
       - conda: https://prefix.dev/conda-forge/linux-64/zlib-ng-2.3.2-hceb46e0_1.conda
       - conda: https://prefix.dev/conda-forge/linux-64/zstd-1.5.7-hb78ec9c_6.conda
       - conda: https://prefix.dev/conda-forge/noarch/_python_abi3_support-1.0-hd8ed1ab_2.conda
+      - conda: https://prefix.dev/conda-forge/noarch/accessible-pygments-0.0.5-pyhd8ed1ab_1.conda
+      - conda: https://prefix.dev/conda-forge/noarch/alabaster-1.0.0-pyhd8ed1ab_1.conda
       - conda: https://prefix.dev/conda-forge/noarch/anyio-4.12.0-pyhcf101f3_0.conda
       - conda: https://prefix.dev/conda-forge/noarch/argon2-cffi-25.1.0-pyhd8ed1ab_0.conda
       - conda: https://prefix.dev/conda-forge/noarch/arrow-1.4.0-pyhcf101f3_0.conda
@@ -302,6 +304,7 @@ environments:
       - conda: https://prefix.dev/conda-forge/noarch/cycler-0.12.1-pyhcf101f3_2.conda
       - conda: https://prefix.dev/conda-forge/noarch/decorator-5.2.1-pyhd8ed1ab_0.conda
       - conda: https://prefix.dev/conda-forge/noarch/defusedxml-0.7.1-pyhd8ed1ab_0.tar.bz2
+      - conda: https://prefix.dev/conda-forge/noarch/docutils-0.22.4-pyhd8ed1ab_0.conda
       - conda: https://prefix.dev/conda-forge/noarch/exceptiongroup-1.3.1-pyhd8ed1ab_0.conda
       - conda: https://prefix.dev/conda-forge/noarch/executing-2.2.1-pyhd8ed1ab_0.conda
       - conda: https://prefix.dev/conda-forge/noarch/filelock-3.20.1-pyhd8ed1ab_0.conda
@@ -320,6 +323,7 @@ environments:
       - conda: https://prefix.dev/conda-forge/noarch/httpx-0.28.1-pyhd8ed1ab_0.conda
       - conda: https://prefix.dev/conda-forge/noarch/hyperframe-6.1.0-pyhd8ed1ab_0.conda
       - conda: https://prefix.dev/conda-forge/noarch/idna-3.11-pyhd8ed1ab_0.conda
+      - conda: https://prefix.dev/conda-forge/noarch/imagesize-2.0.1-pyhd8ed1ab_0.conda
       - conda: https://prefix.dev/conda-forge/noarch/importlib-metadata-8.7.0-pyhe01879c_1.conda
       - conda: https://prefix.dev/conda-forge/noarch/importlib_resources-6.5.2-pyhd8ed1ab_0.conda
       - conda: https://prefix.dev/conda-forge/noarch/iniconfig-2.3.0-pyhd8ed1ab_0.conda
@@ -352,10 +356,14 @@ environments:
       - conda: https://prefix.dev/conda-forge/noarch/libgcc-devel_linux-64-14.3.0-hf649bbc_116.conda
       - conda: https://prefix.dev/conda-forge/noarch/libnvptxcompiler-dev_linux-64-13.2.78-ha770c72_0.conda
       - conda: https://prefix.dev/conda-forge/noarch/libstdcxx-devel_linux-64-14.3.0-h9f08a49_116.conda
+      - conda: https://prefix.dev/conda-forge/noarch/markdown-it-py-4.2.0-pyhd8ed1ab_0.conda
       - conda: https://prefix.dev/conda-forge/noarch/matplotlib-inline-0.2.1-pyhd8ed1ab_0.conda
+      - conda: https://prefix.dev/conda-forge/noarch/mdit-py-plugins-0.6.1-pyhd8ed1ab_0.conda
+      - conda: https://prefix.dev/conda-forge/noarch/mdurl-0.1.2-pyhd8ed1ab_1.conda
       - conda: https://prefix.dev/conda-forge/noarch/mistune-3.1.4-pyhcf101f3_0.conda
       - conda: https://prefix.dev/conda-forge/noarch/mpmath-1.3.0-pyhd8ed1ab_1.conda
       - conda: https://prefix.dev/conda-forge/noarch/munkres-1.1.4-pyhd8ed1ab_1.conda
+      - conda: https://prefix.dev/conda-forge/noarch/myst-parser-5.1.0-pyhd8ed1ab_0.conda
       - conda: https://prefix.dev/conda-forge/noarch/nbclient-0.10.2-pyhd8ed1ab_0.conda
       - conda: https://prefix.dev/conda-forge/noarch/nbconvert-core-7.16.6-pyhcf101f3_1.conda
       - conda: https://prefix.dev/conda-forge/noarch/nbformat-5.10.4-pyhd8ed1ab_1.conda
@@ -379,6 +387,7 @@ environments:
       - conda: https://prefix.dev/conda-forge/noarch/pybind11-abi-11-hc364b38_1.conda
       - conda: https://prefix.dev/conda-forge/noarch/pybind11-global-3.0.1-pyhc7ab6ef_0.conda
       - conda: https://prefix.dev/conda-forge/noarch/pycparser-2.22-pyh29332c3_1.conda
+      - conda: https://prefix.dev/conda-forge/noarch/pydata-sphinx-theme-0.22.0-pyh5ded981_0.conda
       - conda: https://prefix.dev/conda-forge/noarch/pygments-2.19.2-pyhd8ed1ab_0.conda
       - conda: https://prefix.dev/conda-forge/noarch/pyparsing-3.3.0-pyhcf101f3_0.conda
       - conda: https://prefix.dev/conda-forge/noarch/pysocks-1.7.1-pyha55dd90_7.conda
@@ -396,11 +405,20 @@ environments:
       - conda: https://prefix.dev/conda-forge/noarch/rfc3339-validator-0.1.4-pyhd8ed1ab_1.conda
       - conda: https://prefix.dev/conda-forge/noarch/rfc3986-validator-0.1.1-pyh9f0ad1d_0.tar.bz2
       - conda: https://prefix.dev/conda-forge/noarch/rfc3987-syntax-1.1.0-pyhe01879c_1.conda
+      - conda: https://prefix.dev/conda-forge/noarch/roman-numerals-4.1.0-pyhd8ed1ab_0.conda
       - conda: https://prefix.dev/conda-forge/noarch/send2trash-1.8.3-pyh0d859eb_1.conda
       - conda: https://prefix.dev/conda-forge/noarch/setuptools-80.9.0-pyhff2d567_0.conda
       - conda: https://prefix.dev/conda-forge/noarch/six-1.17.0-pyhe01879c_1.conda
       - conda: https://prefix.dev/conda-forge/noarch/sniffio-1.3.1-pyhd8ed1ab_2.conda
+      - conda: https://prefix.dev/conda-forge/noarch/snowballstemmer-3.1.1-pyhd8ed1ab_0.conda
       - conda: https://prefix.dev/conda-forge/noarch/soupsieve-2.8.1-pyhd8ed1ab_0.conda
+      - conda: https://prefix.dev/conda-forge/noarch/sphinx-9.1.0-pyhd8ed1ab_0.conda
+      - conda: https://prefix.dev/conda-forge/noarch/sphinxcontrib-applehelp-2.0.0-pyhd8ed1ab_1.conda
+      - conda: https://prefix.dev/conda-forge/noarch/sphinxcontrib-devhelp-2.0.0-pyhd8ed1ab_1.conda
+      - conda: https://prefix.dev/conda-forge/noarch/sphinxcontrib-htmlhelp-2.1.0-pyhd8ed1ab_1.conda
+      - conda: https://prefix.dev/conda-forge/noarch/sphinxcontrib-jsmath-1.0.1-pyhd8ed1ab_1.conda
+      - conda: https://prefix.dev/conda-forge/noarch/sphinxcontrib-qthelp-2.0.0-pyhd8ed1ab_1.conda
+      - conda: https://prefix.dev/conda-forge/noarch/sphinxcontrib-serializinghtml-2.0.0-pyhd8ed1ab_0.conda
       - conda: https://prefix.dev/conda-forge/noarch/stack_data-0.6.3-pyhd8ed1ab_1.conda
       - conda: https://prefix.dev/conda-forge/noarch/sympy-1.14.0-pyh2585a3b_105.conda
       - conda: https://prefix.dev/conda-forge/noarch/sysroot_linux-64-2.28-h4ee821c_9.conda
@@ -429,11 +447,11 @@ environments:
       - pypi: https://files.pythonhosted.org/packages/82/3b/64d4899d73f91ba49a8c18a8ff3f0ea8f1c1d75481760df8c68ef5235bf5/rich-15.0.0-py3-none-any.whl
       - pypi: https://files.pythonhosted.org/packages/97/74/b7a304feb2b49df9fafa9382d4d09061a96ee9a9449a7cbea7988dda0828/scikit_learn-1.8.0-cp312-cp312-manylinux_2_27_x86_64.manylinux_2_28_x86_64.whl
       - pypi: https://files.pythonhosted.org/packages/ab/ac/8f96ba9b4cfe3e4ea201f23f4f97165862395e9331a424ed325ae37024a8/setuptools_scm-8.3.1-py3-none-any.whl
-      - pypi: https://files.pythonhosted.org/packages/b3/38/89ba8ad64ae25be8de66a6d463314cf1eb366222074cfda9ee839c56a4b4/mdurl-0.1.2-py3-none-any.whl
-      - pypi: https://files.pythonhosted.org/packages/b3/81/4da04ced5a082363ecfa159c010d200ecbd959ae410c10c0264a38cac0f5/markdown_it_py-4.2.0-py3-none-any.whl
       - pypi: https://files.pythonhosted.org/packages/fa/21/981f63285184636822662aca74e4b570a3b9b4fb2ec2efa0852cb8ef9f09/helion-1.2.0-py3-none-any.whl
       osx-arm64:
       - conda: https://prefix.dev/conda-forge/noarch/_python_abi3_support-1.0-hd8ed1ab_2.conda
+      - conda: https://prefix.dev/conda-forge/noarch/accessible-pygments-0.0.5-pyhd8ed1ab_1.conda
+      - conda: https://prefix.dev/conda-forge/noarch/alabaster-1.0.0-pyhd8ed1ab_1.conda
       - conda: https://prefix.dev/conda-forge/noarch/anyio-4.13.0-pyhcf101f3_0.conda
       - conda: https://prefix.dev/conda-forge/noarch/appnope-0.1.4-pyhd8ed1ab_1.conda
       - conda: https://prefix.dev/conda-forge/noarch/argon2-cffi-25.1.0-pyhd8ed1ab_0.conda
@@ -457,6 +475,7 @@ environments:
       - conda: https://prefix.dev/conda-forge/noarch/cycler-0.12.1-pyhcf101f3_2.conda
       - conda: https://prefix.dev/conda-forge/noarch/decorator-5.2.1-pyhd8ed1ab_0.conda
       - conda: https://prefix.dev/conda-forge/noarch/defusedxml-0.7.1-pyhd8ed1ab_0.tar.bz2
+      - conda: https://prefix.dev/conda-forge/noarch/docutils-0.22.4-pyhd8ed1ab_0.conda
       - conda: https://prefix.dev/conda-forge/noarch/exceptiongroup-1.3.1-pyhd8ed1ab_0.conda
       - conda: https://prefix.dev/conda-forge/noarch/executing-2.2.1-pyhd8ed1ab_0.conda
       - conda: https://prefix.dev/conda-forge/noarch/filelock-3.29.0-pyhd8ed1ab_0.conda
@@ -470,6 +489,7 @@ environments:
       - conda: https://prefix.dev/conda-forge/noarch/httpx-0.28.1-pyhd8ed1ab_0.conda
       - conda: https://prefix.dev/conda-forge/noarch/hyperframe-6.1.0-pyhd8ed1ab_0.conda
       - conda: https://prefix.dev/conda-forge/noarch/idna-3.13-pyhcf101f3_0.conda
+      - conda: https://prefix.dev/conda-forge/noarch/imagesize-2.0.1-pyhd8ed1ab_0.conda
       - conda: https://prefix.dev/conda-forge/noarch/importlib-metadata-8.8.0-pyhcf101f3_0.conda
       - conda: https://prefix.dev/conda-forge/noarch/importlib_resources-7.1.0-pyhd8ed1ab_0.conda
       - conda: https://prefix.dev/conda-forge/noarch/iniconfig-2.3.0-pyhd8ed1ab_0.conda
@@ -498,10 +518,14 @@ environments:
       - conda: https://prefix.dev/conda-forge/noarch/jupyterlab_server-2.28.0-pyhcf101f3_0.conda
       - conda: https://prefix.dev/conda-forge/noarch/jupyterlab_widgets-3.0.16-pyhcf101f3_1.conda
       - conda: https://prefix.dev/conda-forge/noarch/lark-1.3.1-pyhd8ed1ab_0.conda
+      - conda: https://prefix.dev/conda-forge/noarch/markdown-it-py-4.2.0-pyhd8ed1ab_0.conda
       - conda: https://prefix.dev/conda-forge/noarch/matplotlib-inline-0.2.2-pyhd8ed1ab_0.conda
+      - conda: https://prefix.dev/conda-forge/noarch/mdit-py-plugins-0.6.1-pyhd8ed1ab_0.conda
+      - conda: https://prefix.dev/conda-forge/noarch/mdurl-0.1.2-pyhd8ed1ab_1.conda
       - conda: https://prefix.dev/conda-forge/noarch/mistune-3.2.1-pyhcf101f3_0.conda
       - conda: https://prefix.dev/conda-forge/noarch/mpmath-1.3.0-pyhd8ed1ab_1.conda
       - conda: https://prefix.dev/conda-forge/noarch/munkres-1.1.4-pyhd8ed1ab_1.conda
+      - conda: https://prefix.dev/conda-forge/noarch/myst-parser-5.1.0-pyhd8ed1ab_0.conda
       - conda: https://prefix.dev/conda-forge/noarch/nbclient-0.10.4-pyhd8ed1ab_0.conda
       - conda: https://prefix.dev/conda-forge/noarch/nbconvert-core-7.17.1-pyhcf101f3_0.conda
       - conda: https://prefix.dev/conda-forge/noarch/nbformat-5.10.4-pyhd8ed1ab_1.conda
@@ -526,6 +550,7 @@ environments:
       - conda: https://prefix.dev/conda-forge/noarch/pybind11-abi-11-hc364b38_1.conda
       - conda: https://prefix.dev/conda-forge/noarch/pybind11-global-3.0.1-pyhc7ab6ef_0.conda
       - conda: https://prefix.dev/conda-forge/noarch/pycparser-2.22-pyh29332c3_1.conda
+      - conda: https://prefix.dev/conda-forge/noarch/pydata-sphinx-theme-0.22.0-pyh5ded981_0.conda
       - conda: https://prefix.dev/conda-forge/noarch/pygments-2.20.0-pyhd8ed1ab_0.conda
       - conda: https://prefix.dev/conda-forge/noarch/pyparsing-3.3.2-pyhcf101f3_0.conda
       - conda: https://prefix.dev/conda-forge/noarch/pysocks-1.7.1-pyha55dd90_7.conda
@@ -542,11 +567,20 @@ environments:
       - conda: https://prefix.dev/conda-forge/noarch/rfc3339-validator-0.1.4-pyhd8ed1ab_1.conda
       - conda: https://prefix.dev/conda-forge/noarch/rfc3986-validator-0.1.1-pyh9f0ad1d_0.tar.bz2
       - conda: https://prefix.dev/conda-forge/noarch/rfc3987-syntax-1.1.0-pyhe01879c_1.conda
+      - conda: https://prefix.dev/conda-forge/noarch/roman-numerals-4.1.0-pyhd8ed1ab_0.conda
       - conda: https://prefix.dev/conda-forge/noarch/send2trash-2.1.0-pyh5552912_1.conda
       - conda: https://prefix.dev/conda-forge/noarch/setuptools-82.0.1-pyh332efcf_0.conda
       - conda: https://prefix.dev/conda-forge/noarch/six-1.17.0-pyhe01879c_1.conda
       - conda: https://prefix.dev/conda-forge/noarch/sniffio-1.3.1-pyhd8ed1ab_2.conda
+      - conda: https://prefix.dev/conda-forge/noarch/snowballstemmer-3.1.1-pyhd8ed1ab_0.conda
       - conda: https://prefix.dev/conda-forge/noarch/soupsieve-2.8.3-pyhd8ed1ab_0.conda
+      - conda: https://prefix.dev/conda-forge/noarch/sphinx-9.1.0-pyhd8ed1ab_0.conda
+      - conda: https://prefix.dev/conda-forge/noarch/sphinxcontrib-applehelp-2.0.0-pyhd8ed1ab_1.conda
+      - conda: https://prefix.dev/conda-forge/noarch/sphinxcontrib-devhelp-2.0.0-pyhd8ed1ab_1.conda
+      - conda: https://prefix.dev/conda-forge/noarch/sphinxcontrib-htmlhelp-2.1.0-pyhd8ed1ab_1.conda
+      - conda: https://prefix.dev/conda-forge/noarch/sphinxcontrib-jsmath-1.0.1-pyhd8ed1ab_1.conda
+      - conda: https://prefix.dev/conda-forge/noarch/sphinxcontrib-qthelp-2.0.0-pyhd8ed1ab_1.conda
+      - conda: https://prefix.dev/conda-forge/noarch/sphinxcontrib-serializinghtml-2.0.0-pyhd8ed1ab_0.conda
       - conda: https://prefix.dev/conda-forge/noarch/stack_data-0.6.3-pyhd8ed1ab_1.conda
       - conda: https://prefix.dev/conda-forge/noarch/sympy-1.14.0-pyh2585a3b_106.conda
       - conda: https://prefix.dev/conda-forge/noarch/terminado-0.18.1-pyhc90fa1f_1.conda
@@ -660,8 +694,6 @@ environments:
       - pypi: https://files.pythonhosted.org/packages/82/3b/64d4899d73f91ba49a8c18a8ff3f0ea8f1c1d75481760df8c68ef5235bf5/rich-15.0.0-py3-none-any.whl
       - pypi: https://files.pythonhosted.org/packages/a8/25/01c0af38fe969473fb292bba9dc2b8f9b451f3112ff242c647fee3d0dfe7/scikit_learn-1.8.0-cp314-cp314-macosx_12_0_arm64.whl
       - pypi: https://files.pythonhosted.org/packages/ab/ac/8f96ba9b4cfe3e4ea201f23f4f97165862395e9331a424ed325ae37024a8/setuptools_scm-8.3.1-py3-none-any.whl
-      - pypi: https://files.pythonhosted.org/packages/b3/38/89ba8ad64ae25be8de66a6d463314cf1eb366222074cfda9ee839c56a4b4/mdurl-0.1.2-py3-none-any.whl
-      - pypi: https://files.pythonhosted.org/packages/b3/81/4da04ced5a082363ecfa159c010d200ecbd959ae410c10c0264a38cac0f5/markdown_it_py-4.2.0-py3-none-any.whl
       - pypi: https://files.pythonhosted.org/packages/fa/21/981f63285184636822662aca74e4b570a3b9b4fb2ec2efa0852cb8ef9f09/helion-1.2.0-py3-none-any.whl
 packages:
 - conda: https://conda.anaconda.org/nvidia/noarch/cuda-13.2.1-ha63b06e_0.conda
@@ -4168,6 +4200,31 @@ packages:
   purls: []
   size: 8191
   timestamp: 1744137672556
+- conda: https://prefix.dev/conda-forge/noarch/accessible-pygments-0.0.5-pyhd8ed1ab_1.conda
+  sha256: 1307719f0d8ee694fc923579a39c0621c23fdaa14ccdf9278a5aac5665ac58e9
+  md5: 74ac5069774cdbc53910ec4d631a3999
+  depends:
+  - pygments
+  - python >=3.9
+  license: BSD-3-Clause
+  license_family: BSD
+  purls:
+  - pkg:pypi/accessible-pygments?source=hash-mapping
+  run_exports: {}
+  size: 1326096
+  timestamp: 1734956217254
+- conda: https://prefix.dev/conda-forge/noarch/alabaster-1.0.0-pyhd8ed1ab_1.conda
+  sha256: 6c4456a138919dae9edd3ac1a74b6fbe5fd66c05675f54df2f8ab8c8d0cc6cea
+  md5: 1fd9696649f65fd6611fcdb4ffec738a
+  depends:
+  - python >=3.10
+  license: BSD-3-Clause
+  license_family: BSD
+  purls:
+  - pkg:pypi/alabaster?source=hash-mapping
+  run_exports: {}
+  size: 18684
+  timestamp: 1733750512696
 - conda: https://prefix.dev/conda-forge/noarch/anyio-4.12.0-pyhcf101f3_0.conda
   sha256: 830fc81970cd9d19869909b9b16d241f4d557e4f201a1030aa6ed87c6aa8b930
   md5: 9958d4a1ee7e9c768fe8f4fb51bd07ea
@@ -4698,6 +4755,17 @@ packages:
   - pkg:pypi/defusedxml?source=hash-mapping
   size: 24062
   timestamp: 1615232388757
+- conda: https://prefix.dev/conda-forge/noarch/docutils-0.22.4-pyhd8ed1ab_0.conda
+  sha256: 0d605569a77350fb681f9ed8d357cc71649b59a304099dc9d09fbeec5e84a65e
+  md5: d6bd3cd217e62bbd7efe67ff224cd667
+  depends:
+  - python >=3.10
+  license: CC-PDDC AND BSD-3-Clause AND BSD-2-Clause AND ZPL-2.1
+  purls:
+  - pkg:pypi/docutils?source=hash-mapping
+  run_exports: {}
+  size: 438002
+  timestamp: 1766092633160
 - conda: https://prefix.dev/conda-forge/noarch/exceptiongroup-1.3.1-pyhd8ed1ab_0.conda
   sha256: ee6cf346d017d954255bbcbdb424cddea4d14e4ed7e9813e429db1d795d01144
   md5: 8e662bd460bda79b1ea39194e3c4c9ab
@@ -4961,6 +5029,18 @@ packages:
   - pkg:pypi/idna?source=hash-mapping
   size: 59038
   timestamp: 1776947141407
+- conda: https://prefix.dev/conda-forge/noarch/imagesize-2.0.1-pyhd8ed1ab_0.conda
+  sha256: 4e787f9ccc31053ccea56d98ecd284a4f788988a3f9c4627db72fdd0b127529b
+  md5: ebc56022e4ef7e74a829be94c53797ca
+  depends:
+  - python >=3.10
+  license: MIT
+  license_family: MIT
+  purls:
+  - pkg:pypi/imagesize?source=hash-mapping
+  run_exports: {}
+  size: 21467
+  timestamp: 1787649248672
 - conda: https://prefix.dev/conda-forge/noarch/importlib-metadata-8.7.0-pyhe01879c_1.conda
   sha256: c18ab120a0613ada4391b15981d86ff777b5690ca461ea7e9e49531e8f374745
   md5: 63ccfdc3a3ce25b027b8767eb722fca8
@@ -5710,6 +5790,19 @@ packages:
   purls: []
   size: 20538116
   timestamp: 1765255773242
+- conda: https://prefix.dev/conda-forge/noarch/markdown-it-py-4.2.0-pyhd8ed1ab_0.conda
+  sha256: 0c4c35376fe920714390d46e4b8d31c876d65f18e1655899e0763ec25f2a902f
+  md5: 6d03368f2b2b0a5fb6839df53b2eb5e0
+  depends:
+  - mdurl >=0.1,<1
+  - python >=3.10
+  license: MIT
+  license_family: MIT
+  purls:
+  - pkg:pypi/markdown-it-py?source=hash-mapping
+  run_exports: {}
+  size: 69017
+  timestamp: 1778169663339
 - conda: https://prefix.dev/conda-forge/noarch/matplotlib-inline-0.2.1-pyhd8ed1ab_0.conda
   sha256: 9d690334de0cd1d22c51bc28420663f4277cfa60d34fa5cad1ce284a13f1d603
   md5: 00e120ce3e40bad7bfc78861ce3c4a25
@@ -5734,6 +5827,31 @@ packages:
   - pkg:pypi/matplotlib-inline?source=hash-mapping
   size: 15725
   timestamp: 1778264403247
+- conda: https://prefix.dev/conda-forge/noarch/mdit-py-plugins-0.6.1-pyhd8ed1ab_0.conda
+  sha256: 49db23cbfb1c1d414a14d7540195208b994ebd747beba0f15c903f3a0a2dc446
+  md5: ad6821df7a98510117db06e9a833281f
+  depends:
+  - markdown-it-py >=2.0.0,<5.0.0
+  - python >=3.10
+  license: MIT
+  license_family: MIT
+  purls:
+  - pkg:pypi/mdit-py-plugins?source=hash-mapping
+  run_exports: {}
+  size: 50460
+  timestamp: 1778692223625
+- conda: https://prefix.dev/conda-forge/noarch/mdurl-0.1.2-pyhd8ed1ab_1.conda
+  sha256: 78c1bbe1723449c52b7a9df1af2ee5f005209f67e40b6e1d3c7619127c43b1c7
+  md5: 592132998493b3ff25fd7479396e8351
+  depends:
+  - python >=3.9
+  license: MIT
+  license_family: MIT
+  purls:
+  - pkg:pypi/mdurl?source=hash-mapping
+  run_exports: {}
+  size: 14465
+  timestamp: 1733255681319
 - conda: https://prefix.dev/conda-forge/noarch/mistune-3.1.4-pyhcf101f3_0.conda
   sha256: 609ea628ace5c6cdbdce772704e6cb159ead26969bb2f386ca1757632b0f74c6
   md5: f5a4d548d1d3bdd517260409fc21e205
@@ -5782,6 +5900,24 @@ packages:
   - pkg:pypi/munkres?source=hash-mapping
   size: 15851
   timestamp: 1749895533014
+- conda: https://prefix.dev/conda-forge/noarch/myst-parser-5.1.0-pyhd8ed1ab_0.conda
+  sha256: 94235bc1f769cf35029942ecb2ca796f18e730c1bf5aeef95e72680ebcfacfef
+  md5: 580615e59fc7c07741e4d2ab052cfc8b
+  depends:
+  - docutils >=0.20,<0.23
+  - jinja2
+  - markdown-it-py >=4.2.0,<4.3.0
+  - mdit-py-plugins >=0.6.1,<0.7
+  - python >=3.11
+  - pyyaml
+  - sphinx >=8,<10
+  license: MIT
+  license_family: MIT
+  purls:
+  - pkg:pypi/myst-parser?source=hash-mapping
+  run_exports: {}
+  size: 74888
+  timestamp: 1778696564508
 - conda: https://prefix.dev/conda-forge/noarch/nbclient-0.10.2-pyhd8ed1ab_0.conda
   sha256: a20cff739d66c2f89f413e4ba4c6f6b59c50d5c30b5f0d840c13e8c9c2df9135
   md5: 6bb0d77277061742744176ab555b723c
@@ -6208,6 +6344,27 @@ packages:
   - pkg:pypi/pycparser?source=hash-mapping
   size: 110100
   timestamp: 1733195786147
+- conda: https://prefix.dev/conda-forge/noarch/pydata-sphinx-theme-0.22.0-pyh5ded981_0.conda
+  sha256: 51d82ebaba5319405d77cf02c89c89f7b6e6b9fd3267961b65a1c3b6fa6165c6
+  md5: 018f5c806c198bb46b0169920bb7da0b
+  depends:
+  - accessible-pygments
+  - babel
+  - beautifulsoup4
+  - docutils !=0.17.0
+  - jinja2
+  - pygments >=2.7
+  - python >=3.11
+  - requests
+  - sphinx >=8.2,<10.0
+  - python
+  license: BSD-3-Clause
+  license_family: BSD
+  purls:
+  - pkg:pypi/pydata-sphinx-theme?source=compressed-mapping
+  run_exports: {}
+  size: 1321198
+  timestamp: 1790347491086
 - conda: https://prefix.dev/conda-forge/noarch/pygments-2.19.2-pyhd8ed1ab_0.conda
   sha256: 5577623b9f6685ece2697c6eb7511b4c9ac5fb607c9babc2646c811b428fd46a
   md5: 6b6ece66ebcae2d5f326c77ef2c5a066
@@ -6546,6 +6703,17 @@ packages:
   - pkg:pypi/rfc3987-syntax?source=hash-mapping
   size: 22913
   timestamp: 1752876729969
+- conda: https://prefix.dev/conda-forge/noarch/roman-numerals-4.1.0-pyhd8ed1ab_0.conda
+  sha256: 30f3c04fcfb64c44d821d392a4a0b8915650dbd900c8befc20ade8fde8ec6aa2
+  md5: 0dc48b4b570931adc8641e55c6c17fe4
+  depends:
+  - python >=3.10
+  license: 0BSD OR CC0-1.0
+  purls:
+  - pkg:pypi/roman-numerals?source=hash-mapping
+  run_exports: {}
+  size: 13814
+  timestamp: 1766003022813
 - conda: https://prefix.dev/conda-forge/noarch/send2trash-1.8.3-pyh0d859eb_1.conda
   sha256: 00926652bbb8924e265caefdb1db100f86a479e8f1066efe395d5552dde54d02
   md5: 938c8de6b9de091997145b3bf25cdbf9
@@ -6617,6 +6785,18 @@ packages:
   - pkg:pypi/sniffio?source=hash-mapping
   size: 15698
   timestamp: 1762941572482
+- conda: https://prefix.dev/conda-forge/noarch/snowballstemmer-3.1.1-pyhd8ed1ab_0.conda
+  sha256: ad89284ea94821c20ff87e64b948e4afc690cf5202d14c009355b0594cf23aea
+  md5: 46b6abe31482f6bca064b965696ae807
+  depends:
+  - python >=3.10
+  license: BSD-3-Clause
+  license_family: BSD
+  purls:
+  - pkg:pypi/snowballstemmer?source=hash-mapping
+  run_exports: {}
+  size: 74456
+  timestamp: 1780468201547
 - conda: https://prefix.dev/conda-forge/noarch/soupsieve-2.8.1-pyhd8ed1ab_0.conda
   sha256: 4ba9b8c45862e54d05ed9a04cc6aab5a17756ab9865f57cbf2836e47144153d2
   md5: 7de28c27fe620a4f7dbfaea137c6232b
@@ -6638,6 +6818,112 @@ packages:
   - pkg:pypi/soupsieve?source=hash-mapping
   size: 38187
   timestamp: 1769034509657
+- conda: https://prefix.dev/conda-forge/noarch/sphinx-9.1.0-pyhd8ed1ab_0.conda
+  sha256: 035ca4b17afca3d53650380dd94c564555b7ec2b4f8818111f98c15c7a991b7b
+  md5: aabfbc2813712b71ba8beb217a978498
+  depends:
+  - alabaster >=0.7.14
+  - babel >=2.13
+  - colorama >=0.4.6
+  - docutils >=0.21,<0.23
+  - imagesize >=1.3
+  - jinja2 >=3.1
+  - packaging >=23.0
+  - pygments >=2.17
+  - python >=3.12
+  - requests >=2.30.0
+  - roman-numerals >=1.0.0
+  - snowballstemmer >=2.2
+  - sphinxcontrib-applehelp >=1.0.7
+  - sphinxcontrib-devhelp >=1.0.6
+  - sphinxcontrib-htmlhelp >=2.0.6
+  - sphinxcontrib-jsmath >=1.0.1
+  - sphinxcontrib-qthelp >=1.0.6
+  - sphinxcontrib-serializinghtml >=1.1.9
+  license: BSD-2-Clause
+  license_family: BSD
+  purls:
+  - pkg:pypi/sphinx?source=hash-mapping
+  run_exports: {}
+  size: 1584836
+  timestamp: 1767271941650
+- conda: https://prefix.dev/conda-forge/noarch/sphinxcontrib-applehelp-2.0.0-pyhd8ed1ab_1.conda
+  sha256: d7433a344a9ad32a680b881c81b0034bc61618d12c39dd6e3309abeffa9577ba
+  md5: 16e3f039c0aa6446513e94ab18a8784b
+  depends:
+  - python >=3.9
+  - sphinx >=5
+  license: BSD-2-Clause
+  license_family: BSD
+  purls:
+  - pkg:pypi/sphinxcontrib-applehelp?source=hash-mapping
+  run_exports: {}
+  size: 29752
+  timestamp: 1733754216334
+- conda: https://prefix.dev/conda-forge/noarch/sphinxcontrib-devhelp-2.0.0-pyhd8ed1ab_1.conda
+  sha256: 55d5076005d20b84b20bee7844e686b7e60eb9f683af04492e598a622b12d53d
+  md5: 910f28a05c178feba832f842155cbfff
+  depends:
+  - python >=3.9
+  - sphinx >=5
+  license: BSD-2-Clause
+  license_family: BSD
+  purls:
+  - pkg:pypi/sphinxcontrib-devhelp?source=hash-mapping
+  run_exports: {}
+  size: 24536
+  timestamp: 1733754232002
+- conda: https://prefix.dev/conda-forge/noarch/sphinxcontrib-htmlhelp-2.1.0-pyhd8ed1ab_1.conda
+  sha256: c1492c0262ccf16694bdcd3bb62aa4627878ea8782d5cd3876614ffeb62b3996
+  md5: e9fb3fe8a5b758b4aff187d434f94f03
+  depends:
+  - python >=3.9
+  - sphinx >=5
+  license: BSD-2-Clause
+  license_family: BSD
+  purls:
+  - pkg:pypi/sphinxcontrib-htmlhelp?source=hash-mapping
+  run_exports: {}
+  size: 32895
+  timestamp: 1733754385092
+- conda: https://prefix.dev/conda-forge/noarch/sphinxcontrib-jsmath-1.0.1-pyhd8ed1ab_1.conda
+  sha256: 578bef5ec630e5b2b8810d898bbbf79b9ae66d49b7938bcc3efc364e679f2a62
+  md5: fa839b5ff59e192f411ccc7dae6588bb
+  depends:
+  - python >=3.9
+  license: BSD-2-Clause
+  license_family: BSD
+  purls:
+  - pkg:pypi/sphinxcontrib-jsmath?source=hash-mapping
+  run_exports: {}
+  size: 10462
+  timestamp: 1733753857224
+- conda: https://prefix.dev/conda-forge/noarch/sphinxcontrib-qthelp-2.0.0-pyhd8ed1ab_1.conda
+  sha256: c664fefae4acdb5fae973bdde25836faf451f41d04342b64a358f9a7753c92ca
+  md5: 00534ebcc0375929b45c3039b5ba7636
+  depends:
+  - python >=3.9
+  - sphinx >=5
+  license: BSD-2-Clause
+  license_family: BSD
+  purls:
+  - pkg:pypi/sphinxcontrib-qthelp?source=hash-mapping
+  run_exports: {}
+  size: 26959
+  timestamp: 1733753505008
+- conda: https://prefix.dev/conda-forge/noarch/sphinxcontrib-serializinghtml-2.0.0-pyhd8ed1ab_0.conda
+  sha256: 20b49741065fd7d3fabf98caf6d19b6436badb06b6d41f66b58f1fc2b52f37a1
+  md5: f77df1fcf9af03b7287342638befca77
+  depends:
+  - python >=3.10
+  - sphinx >=5
+  license: BSD-2-Clause
+  license_family: BSD
+  purls:
+  - pkg:pypi/sphinxcontrib-serializinghtml?source=hash-mapping
+  run_exports: {}
+  size: 30640
+  timestamp: 1781260357443
 - conda: https://prefix.dev/conda-forge/noarch/stack_data-0.6.3-pyhd8ed1ab_1.conda
   sha256: 570da295d421661af487f1595045760526964f41471021056e993e73089e9c41
   md5: b1b505328da7a6b246787df4b5a49fbc
@@ -8350,45 +8636,6 @@ packages:
   - typing-extensions ; python_full_version < '3.11' and extra == 'test'
   - wheel ; extra == 'test'
   requires_python: '>=3.8'
-- pypi: https://files.pythonhosted.org/packages/b3/38/89ba8ad64ae25be8de66a6d463314cf1eb366222074cfda9ee839c56a4b4/mdurl-0.1.2-py3-none-any.whl
-  name: mdurl
-  version: 0.1.2
-  sha256: 84008a41e51615a49fc9966191ff91509e3c40b939176e643fd50a5c2196b8f8
-  requires_python: '>=3.7'
-- pypi: https://files.pythonhosted.org/packages/b3/81/4da04ced5a082363ecfa159c010d200ecbd959ae410c10c0264a38cac0f5/markdown_it_py-4.2.0-py3-none-any.whl
-  name: markdown-it-py
-  version: 4.2.0
-  sha256: 9f7ebbcd14fe59494226453aed97c1070d83f8d24b6fc3a3bcf9a38092641c4a
-  requires_dist:
-  - mdurl~=0.1
-  - psutil ; extra == 'benchmarking'
-  - pytest ; extra == 'benchmarking'
-  - pytest-benchmark ; extra == 'benchmarking'
-  - commonmark~=0.9 ; extra == 'compare'
-  - markdown~=3.4 ; extra == 'compare'
-  - mistletoe~=1.0 ; extra == 'compare'
-  - mistune~=3.0 ; extra == 'compare'
-  - panflute~=2.3 ; extra == 'compare'
-  - markdown-it-pyrs ; extra == 'compare'
-  - linkify-it-py>=1,<3 ; extra == 'linkify'
-  - mdit-py-plugins>=0.5.0 ; extra == 'plugins'
-  - gprof2dot ; extra == 'profiling'
-  - mdit-py-plugins>=0.5.0 ; extra == 'rtd'
-  - myst-parser ; extra == 'rtd'
-  - pyyaml ; extra == 'rtd'
-  - sphinx ; extra == 'rtd'
-  - sphinx-copybutton ; extra == 'rtd'
-  - sphinx-design ; extra == 'rtd'
-  - sphinx-book-theme~=1.0 ; extra == 'rtd'
-  - jupyter-sphinx ; extra == 'rtd'
-  - ipykernel ; extra == 'rtd'
-  - coverage ; extra == 'testing'
-  - pytest ; extra == 'testing'
-  - pytest-cov ; extra == 'testing'
-  - pytest-regressions ; extra == 'testing'
-  - pytest-timeout ; extra == 'testing'
-  - requests ; extra == 'testing'
-  requires_python: '>=3.10'
 - pypi: https://files.pythonhosted.org/packages/fa/21/981f63285184636822662aca74e4b570a3b9b4fb2ec2efa0852cb8ef9f09/helion-1.2.0-py3-none-any.whl
   name: helion
   version: 1.2.0
