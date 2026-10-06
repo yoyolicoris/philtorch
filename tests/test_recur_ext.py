@@ -389,3 +389,67 @@ def test_lpv_pararnn_order3_matches_fallback():
     native_output = lpv_state_space(A, zi, x, unroll_factor=1)
     torch_output = lpv_state_space(A, zi, x, unroll_factor=2)
     torch.testing.assert_close(native_output, torch_output)
+
+
+def _cuda_scan_case(name: str):
+    B, T = 4, 4096
+    gen = torch.Generator().manual_seed(0)
+
+    def randn(*shape):
+        return torch.randn(shape, generator=gen, dtype=torch.float64)
+
+    def stable(a):
+        # Keep the recurrence bounded over T steps: |a| < 1, ||A||_2 < 1.
+        if a.dim() >= 2:
+            return a * 0.9 / torch.linalg.matrix_norm(a, ord=2)[..., None, None]
+        return torch.tanh(a) * 0.9
+
+    op, a_shape = {
+        "lti_recur-batched": (torch.ops.philtorch.lti_recur, (B,)),
+        "lti_recur-shared": (torch.ops.philtorch.lti_recur, ()),
+        "lti_recur2-batched": (torch.ops.philtorch.lti_recur2, (B, 2, 2)),
+        "lti_recur2-shared": (torch.ops.philtorch.lti_recur2, (2, 2)),
+        "recur2-batched": (torch.ops.philtorch.recur2, (B, T, 2, 2)),
+        "recur2-shared": (torch.ops.philtorch.recur2, (T, 2, 2)),
+    }[name]
+    if op is torch.ops.philtorch.lti_recur:
+        return op, (stable(randn(*a_shape)), randn(B), randn(B, T))
+    return op, (stable(randn(*a_shape)), randn(B, 2), randn(B, T, 2))
+
+
+@pytest.mark.skipif(not torch.cuda.is_available(), reason="CUDA not available")
+@pytest.mark.parametrize(
+    "case",
+    [
+        "lti_recur-batched",
+        "lti_recur-shared",
+        "lti_recur2-batched",
+        "lti_recur2-shared",
+        "recur2-batched",
+        "recur2-shared",
+    ],
+)
+def test_cuda_scan_runs_on_the_current_stream(case: str):
+    """The CUDA scans run asynchronously on PyTorch's current stream.
+
+    The inputs are produced on a side stream after a long delay. The call must
+    return before the stream finishes, rather than synchronize the device, and
+    once it finishes, the outputs must be right, which they wouldn't be if the
+    scan ran on another stream and read the inputs before they were written.
+    """
+    op, args = _cuda_scan_case(case)
+    expected = op(*args)
+    # A kernel's first launch loads its module lazily, which synchronizes.
+    op(*[arg.cuda() * 1 for arg in args])
+    torch.cuda.synchronize()
+
+    stream = torch.cuda.Stream()
+    with torch.cuda.stream(stream):
+        cuda_args = [arg.cuda() for arg in args]
+        torch.cuda._sleep(1_000_000_000)
+        cuda_args = [arg * 1 for arg in cuda_args]
+        actual = op(*cuda_args)
+        assert not stream.query(), "the call waited for the stream to finish"
+    stream.synchronize()
+
+    assert torch.allclose(actual.cpu(), expected), torch.max(torch.abs(actual.cpu() - expected))

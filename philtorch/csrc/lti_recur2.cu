@@ -2,14 +2,11 @@
 #include <c10/cuda/CUDAException.h>
 #include <c10/cuda/CUDAGuard.h>
 #include <stdio.h>
-#include <thrust/copy.h>
-#include <thrust/device_vector.h>
-#include <thrust/execution_policy.h>
-#include <thrust/functional.h>
+#include <thrust/iterator/counting_iterator.h>
+#include <thrust/iterator/transform_iterator.h>
 #include <thrust/iterator/transform_output_iterator.h>
-#include <thrust/pair.h>
-#include <thrust/scan.h>
-#include <thrust/transform.h>
+#include <thrust/iterator/zip_iterator.h>
+#include <thrust/zip_function.h>
 #include <torch/script.h>
 #include <torch/torch.h>
 
@@ -17,50 +14,42 @@
 
 template <typename scalar_t>
 void lti_batch_mat_recur_second_order(const scalar_t *A, const scalar_t *x,
-                                      scalar_t *out, int n_steps, int total_steps)
+                                      scalar_t *out, int n_steps, int64_t total_steps)
 {
     thrust::counting_iterator<int> iter(0);
     auto batch_input_op =
         thrust::make_zip_function(lti_batch_A_input_op<scalar_t>{A, n_steps});
     index2key key_op{n_steps};
-    ::cuda::std::equal_to<int> binary_pred;
 
-    thrust::inclusive_scan_by_key(
-        thrust::device,
+    scan_by_key_on_current_stream(
         thrust::make_transform_iterator(iter, key_op),
-        thrust::make_transform_iterator(iter + total_steps, key_op),
         thrust::make_transform_iterator(
             thrust::make_zip_iterator(iter, x, x + total_steps),
             batch_input_op),
         thrust::make_transform_output_iterator(
             thrust::make_zip_iterator(out, out + total_steps),
             output_unary_op<scalar_t>()),
-        binary_pred,
-        recur2_binary_op<scalar_t>());
+        recur2_binary_op<scalar_t>(), total_steps);
 }
 
 template <typename scalar_t>
 void lti_share_mat_recur_second_order(const scalar_t *A, const scalar_t *x,
-                                      scalar_t *out, int n_steps, int total_steps)
+                                      scalar_t *out, int n_steps, int64_t total_steps)
 {
     thrust::counting_iterator<int> iter(0);
     auto share_input_op =
         thrust::make_zip_function(lti_share_A_input_op<scalar_t>{A, n_steps});
     index2key key_op{n_steps};
-    ::cuda::std::equal_to<int> binary_pred;
 
-    thrust::inclusive_scan_by_key(
-        thrust::device,
+    scan_by_key_on_current_stream(
         thrust::make_transform_iterator(iter, key_op),
-        thrust::make_transform_iterator(iter + total_steps, key_op),
         thrust::make_transform_iterator(
             thrust::make_zip_iterator(iter, x, x + total_steps),
             share_input_op),
         thrust::make_transform_output_iterator(
             thrust::make_zip_iterator(out, out + total_steps),
             output_unary_op<scalar_t>()),
-        binary_pred,
-        recur2_binary_op<scalar_t>());
+        recur2_binary_op<scalar_t>(), total_steps);
 }
 
 at::Tensor lti_mat_recur_second_order_cuda_impl(const at::Tensor &A,

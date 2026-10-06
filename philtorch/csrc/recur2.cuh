@@ -1,4 +1,14 @@
+#pragma once
+
+#include <c10/cuda/CUDACachingAllocator.h>
+#include <c10/cuda/CUDAException.h>
+#include <c10/cuda/CUDAStream.h>
+#include <cub/device/device_scan.cuh>
+#include <cuda/std/functional>
 #include <thrust/tuple.h>
+
+#include <cstdint>
+#include <limits>
 
 // Six-entry tuple used by second-order recurrence (A0,A1,A2,A3,x0,x1)
 template <typename T>
@@ -38,9 +48,12 @@ struct share_A_input_op
     __host__ __device__ sqm2_pair<T> operator()(int i, const T &x_0,
                                                 const T &x_1) const
     {
-        int idx = i % n_steps;
-        return thrust::make_tuple(A[idx], A[idx + n_steps],
-                                  A[idx + n_steps * 2], A[idx + n_steps * 3],
+        // A holds four rows of n_steps entries; index in 64 bits, since
+        // 4 * n_steps can exceed INT_MAX.
+        int64_t idx = i % n_steps;
+        int64_t stride = n_steps;
+        return thrust::make_tuple(A[idx], A[idx + stride],
+                                  A[idx + stride * 2], A[idx + stride * 3],
                                   x_0, x_1);
     }
 };
@@ -53,7 +66,7 @@ struct lti_batch_A_input_op
     __host__ __device__ sqm2_pair<T> operator()(int i, const T &x_0,
                                                 const T &x_1) const
     {
-        int idx = i / n_steps * 4;
+        int64_t idx = static_cast<int64_t>(i / n_steps) * 4;
         int offset = i % n_steps;
         if (offset > 0)
             return thrust::make_tuple(A[idx], A[idx + 1], A[idx + 2], A[idx + 3], x_0, x_1);
@@ -81,3 +94,29 @@ struct index2key
     int n_steps;
     __host__ __device__ int operator()(int i) const { return i / n_steps; }
 };
+
+// Scan each run of equal keys with scan_op, like thrust::inclusive_scan_by_key,
+// but asynchronously on PyTorch's current stream, with scratch memory from its
+// caching allocator. thrust::device runs on the legacy default stream and
+// allocates with cudaMalloc, which synchronized the whole device on every call.
+template <typename KeysIt, typename InputIt, typename OutputIt, typename ScanOp>
+void scan_by_key_on_current_stream(KeysIt keys, InputIt input, OutputIt output,
+                                   ScanOp scan_op, int64_t num_items)
+{
+    TORCH_CHECK(num_items <= std::numeric_limits<int>::max(),
+                "the recurrence has ", num_items,
+                " steps over all batches, but at most INT_MAX are supported");
+    if (num_items == 0)
+        return;
+    auto stream = c10::cuda::getCurrentCUDAStream();
+    ::cuda::std::equal_to<int> equality_op;
+    size_t temp_storage_bytes = 0;
+    C10_CUDA_CHECK(cub::DeviceScan::InclusiveScanByKey(
+        nullptr, temp_storage_bytes, keys, input, output, scan_op,
+        static_cast<int>(num_items), equality_op, stream));
+    auto temp_storage =
+        c10::cuda::CUDACachingAllocator::get()->allocate(temp_storage_bytes);
+    C10_CUDA_CHECK(cub::DeviceScan::InclusiveScanByKey(
+        temp_storage.get(), temp_storage_bytes, keys, input, output, scan_op,
+        static_cast<int>(num_items), equality_op, stream));
+}
