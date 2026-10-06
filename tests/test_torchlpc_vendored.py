@@ -5,9 +5,9 @@ Chin-Yun Yu), which is vendored into philtorch._C. They cover only the ops
 redefined in philtorch's shim (AllPole / ScanRecurrence), since those are what
 philtorch owns and may revise in the future.
 
-Original sources:
-- third_party/torchlpc/torchlpc/tests/test_grad.py
-- third_party/torchlpc/torchlpc/tests/test_vmap.py
+Original sources, in https://github.com/DiffAPF/torchlpc:
+- torchlpc/tests/test_grad.py
+- torchlpc/tests/test_vmap.py
 """
 
 import subprocess

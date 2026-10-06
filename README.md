@@ -88,10 +88,10 @@ On a headless build server with no visible GPU, set `PHILTORCH_FORCE_CUDA=1` to 
 In that case the installed PyTorch must be a CUDA build, and `TORCH_CUDA_ARCH_LIST` must also be set to the target architectures (e.g. `TORCH_CUDA_ARCH_LIST="8.0 8.6"`), because there is no GPU to infer them from.
 On macOS, when the installed PyTorch supports OpenMP, the build also needs Homebrew `llvm` and `libomp`, unless `PHILTORCH_DISABLE_OPENMP=1` is set.
 
-For an editable install from Git, clone with submodules:
+For an editable install from Git:
 
 ```bash
-git clone --branch main --recurse-submodules https://github.com/yoyolicoris/philtorch.git
+git clone --branch main https://github.com/yoyolicoris/philtorch.git
 cd philtorch
 python -m pip install torch  # Choose the correct CPU or CUDA build first.
 python -m pip install "setuptools>=77.0.3" "setuptools_scm>=8" wheel

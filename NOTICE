@@ -1,10 +1,11 @@
 =======================================================================
 Software under third_party
 =======================================================================
-Software libraries under `third_party` are provided as git submodule
-links, and their content is not part of the philtorch codebase. Their
-licenses can be found under the respective software repositories and are
-mirrored in `LICENSES/` for redistribution:
+Source files under `third_party` are copied from the projects below and
+modified by PhilTorch, as listed in `third_party/README.md`. They keep
+their upstream licenses, which are mirrored in `LICENSES/` for
+redistribution:
 
-- `third_party/torchlpc` — https://github.com/DiffAPF/torchlpc (MIT, Copyright (c) 2023 Chin-Yun Yu)
+- `third_party/torchlpc` — https://github.com/DiffAPF/torchlpc (MIT, Copyright (c) 2023 Chin-Yun Yu);
+  `linear_recurrence.cu` is MIT, Copyright (c) 2017 Eric Martin
 - `third_party/pararnn`  — https://github.com/apple/ml-pararnn  (Copyright (C) 2025 Apple Inc.)

@@ -1,28 +1,14 @@
-# setuptools_scm already adds every git-tracked file. This file adds what it
-# can't see (the vendored submodule sources) and drops what neither building
-# nor testing from the sdist needs.
+# setuptools_scm already adds every git-tracked file, including the vendored
+# sources under third_party/. This file adds the package's build inputs and
+# drops what neither building nor testing from the sdist needs.
 
 recursive-include philtorch *.txt *.h *.cpp *.cuh *.cu *.mm
 include README.md build_support.py
-
-# Vendored sources: only what setup.py compiles or includes, plus licenses.
-prune third_party
-include third_party/README.md
-include third_party/torchlpc/LICENSE
-include third_party/torchlpc/torchlpc/csrc/cuda/LICENSE.txt
-include third_party/torchlpc/torchlpc/csrc/cuda/lpc.cu
-include third_party/torchlpc/torchlpc/csrc/cuda/linear_recurrence.cu
-include third_party/pararnn/LICENSE
-include third_party/pararnn/pararnn/csrc/parallel_reduce.cu
-include third_party/pararnn/pararnn/csrc/helpers.h
-include third_party/pararnn/pararnn/csrc/nonlinearities.h
-include third_party/pararnn/pararnn/csrc/parallel_reduction_kernel.h
-include third_party/pararnn/pararnn/csrc/rnn_cell_impl.h
 
 # Development-only files. tests/ stays, along with the scripts and matrix file
 # that the build-tooling tests load.
 prune .github
 prune benchmarks
 prune examples
-exclude .gitattributes .gitignore .gitmodules
+exclude .gitattributes .gitignore
 exclude pixi.toml pixi.lock CONTRIBUTING.md scripts/run-limited

@@ -121,26 +121,12 @@ def get_extensions():
             f"CUDA compilation was selected, but no .cu sources were found in {extensions_dir}."
         )
 
-    torchlpc_root = os.path.join(this_dir, "third_party", "torchlpc", "torchlpc", "csrc")
-    torchlpc_sources = [
-        os.path.join(torchlpc_root, "cuda", name) for name in ("lpc.cu", "linear_recurrence.cu")
+    # The vendored torchlpc kernels are compiled through csrc/torchlpc_cuda.cu.
+    pararnn_sources = [
+        os.path.join(this_dir, "third_party", "pararnn", "csrc", "parallel_reduce.cu")
     ]
-    pararnn_root = os.path.join(this_dir, "third_party", "pararnn", "pararnn", "csrc")
-    pararnn_sources = [os.path.join(pararnn_root, "parallel_reduce.cu")]
 
     if use_cuda:
-        vendored_sources = [*torchlpc_sources, *pararnn_sources]
-        missing_sources = [path for path in vendored_sources if not os.path.isfile(path)]
-        if missing_sources:
-            relative_paths = [os.path.relpath(path, this_dir) for path in missing_sources]
-            raise RuntimeError(
-                "CUDA builds require initialized third-party submodules. Run "
-                "'git submodule update --init --recursive'. Missing: " + ", ".join(relative_paths)
-            )
-
-        extra_compile_args.setdefault("cxx", []).append(f"-I{torchlpc_root}")
-        extra_compile_args.setdefault("cxx", []).append(f"-I{os.path.join(torchlpc_root, 'cuda')}")
-        extra_compile_args.setdefault("cxx", []).append(f"-I{pararnn_root}")
         extra_compile_args.setdefault("cxx", []).extend(
             ["-DFLOAT64_CHUNK_SIZE_DIAG=4", "-DFLOAT64_CHUNK_SIZE_BLOCK_DIAG_2x2=1"]
         )
