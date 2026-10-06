@@ -1,25 +1,47 @@
 # third_party
 
-Vendored extensions built as part of `philtorch._C` (single shared library).
+Third-party CUDA kernels compiled into `philtorch._C`. They used to be git
+submodules. Since neither upstream takes changes any more, the files PhilTorch
+compiles are now kept here, and PhilTorch maintains them. Each keeps its
+upstream license, which `LICENSES/` mirrors so that wheels carry it too.
 
-Both projects are pinned git submodules (see `.gitmodules`). Their full license
-texts are mirrored in `LICENSES/` and summarized in the top-level `NOTICE`, so
-the required copyright and permission notices ship in source distributions and
-wheels even when the submodules are not checked out.
+## torchlpc
 
-- `torchlpc` — `https://github.com/DiffAPF/torchlpc.git` at `1bfde4a` (`v0.7.2-18-g1bfde4a`, `origin/dev`)
-  LICENSE: `LICENSES/torchlpc-LICENSE` (MIT, Copyright (c) 2023 Chin-Yun Yu)
-  Sources used: `third_party/torchlpc/torchlpc/csrc/scan_cpu.cpp` (via shim `philtorch/csrc/torchlpc_shim.cpp` to avoid duplicate `PyInit__C`), `third_party/torchlpc/torchlpc/csrc/cuda/{lpc.cu,linear_recurrence.cu}`
-  Python wrappers vendored as `philtorch/_torchlpc.py` (mirrors `sample_wise_lpc`).
+From <https://github.com/DiffAPF/torchlpc> at `1bfde4a` (`v0.7.2-18-g1bfde4a`).
+MIT, Copyright (c) 2023 Chin-Yun Yu (`torchlpc/LICENSE`).
 
-- `pararnn` — `https://github.com/apple/ml-pararnn.git` at `513d75d` (`origin/main`)
-  LICENSE: `LICENSES/pararnn-LICENSE` (Copyright (C) 2025 Apple Inc.)
-  Sources used (CUDA only): `third_party/pararnn/pararnn/csrc/parallel_reduce.cu` (only the
-  block-diagonal parallel-reduce kernels philtorch uses; registered via shim
-  `philtorch/csrc/pararnn_shim.cpp`) with flags `-DFLOAT64_CHUNK_SIZE_DIAG=4 -DFLOAT64_CHUNK_SIZE_BLOCK_DIAG_2x2=1`. The fused GRU/LSTM and diag kernels are not compiled.
+| File | Upstream path |
+| --- | --- |
+| `torchlpc/cuda/lpc.cu` | `torchlpc/csrc/cuda/lpc.cu` |
+| `torchlpc/cuda/linear_recurrence.cu` | `torchlpc/csrc/cuda/linear_recurrence.cu` |
+| `torchlpc/cuda/LICENSE.txt` | `torchlpc/csrc/cuda/LICENSE.txt` |
 
-Build: `setup.py:get_extensions()` compiles them into `philtorch._C`. The
-torchlpc kernels are registered privately as `philtorch::lpc` and
-`philtorch::scan`, avoiding conflicts with an independently installed torchlpc
-extension. The PararNN kernels remain under
+`linear_recurrence.cu` comes from Eric Martin's linear recurrence kernels,
+MIT, Copyright (c) 2017 Eric Martin (`torchlpc/cuda/LICENSE.txt`).
+
+`philtorch/csrc/torchlpc_cuda.cu` compiles both files and registers the
+kernels as `philtorch::lpc` and `philtorch::scan`, so they don't conflict with
+an installed torchlpc. The CPU kernels are in `philtorch/csrc/torchlpc_shim.cpp`
+and the autograd wrappers in `philtorch/_torchlpc.py`.
+
+## pararnn
+
+From <https://github.com/apple/ml-pararnn> at `513d75d`.
+Copyright (C) 2025 Apple Inc. (`pararnn/LICENSE`).
+
+| File | Upstream path |
+| --- | --- |
+| `pararnn/csrc/parallel_reduce.cu` | `pararnn/csrc/parallel_reduce.cu` |
+| `pararnn/csrc/parallel_reduction_kernel.h` | `pararnn/csrc/parallel_reduction_kernel.h` |
+| `pararnn/csrc/rnn_cell_impl.h` | `pararnn/csrc/rnn_cell_impl.h` |
+| `pararnn/csrc/helpers.h` | `pararnn/csrc/helpers.h` |
+| `pararnn/csrc/nonlinearities.h` | `pararnn/csrc/nonlinearities.h` |
+
+`setup.py` compiles `parallel_reduce.cu` for CUDA builds, with
+`-DFLOAT64_CHUNK_SIZE_DIAG=4 -DFLOAT64_CHUNK_SIZE_BLOCK_DIAG_2x2=1`, and
+`philtorch/csrc/pararnn_shim.cpp` registers the block-diagonal kernels as
 `parallel_reduce_cuda::parallel_reduce_block_diag_{2x2,3x3}_cuda`.
+
+## Local changes
+
+None: the files are copied unchanged.

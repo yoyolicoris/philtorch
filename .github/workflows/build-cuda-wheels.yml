@@ -163,10 +163,8 @@ jobs:
 
       - uses: actions/checkout@v7
         with:
-          # Full history so setuptools_scm can derive the base version, and
-          # submodules so the vendored CUDA sources are present.
+          # Full history so setuptools_scm can derive the base version.
           fetch-depth: 0
-          submodules: recursive
 
       - name: Set up Python
         # The manylinux image ships every CPython under /opt/python, with

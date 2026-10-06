@@ -198,8 +198,7 @@ jobs:
       - uses: actions/checkout@v7
         with:
           fetch-depth: 0
-          submodules: recursive
-          # fetch-depth 0 + submodules required so setuptools_scm sees tags and vendored third_party.
+          # fetch-depth 0 so setuptools_scm sees the tags.
 
       - uses: actions/setup-python@v7
         with:
