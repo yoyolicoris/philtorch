@@ -62,7 +62,8 @@ results.
   check each launch, drop the `cudaDeviceSynchronize()` calls between the
   kernels, which the stream already orders, and raise a clear error past the
   launch limits below.
-- `pararnn/csrc/parallel_reduce.cu`: guard the device of the inputs.
+- `pararnn/csrc/parallel_reduce.cu`: guard the device of the inputs, and
+  reject two CUDA inputs on different devices.
 
 The ParaRNN kernels can't launch for more than 65535 batch items or more than
 `1024 * 1024 * chunk` steps; `philtorch/lpv/ssm.py` routes such inputs to the

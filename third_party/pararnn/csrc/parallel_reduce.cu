@@ -28,6 +28,10 @@ torch::Tensor parallel_reduce_block_diag_cuda(
         torch::Tensor rhs     // (B,) N, T, K
     ) {
     TORCH_CHECK(jac.scalar_type() == rhs.scalar_type(), "Input tensors must have the same type");
+    // A CPU input is copied to the other's device below; two CUDA inputs must
+    // already share one, since the kernels read both directly.
+    TORCH_CHECK(!(jac.is_cuda() && rhs.is_cuda()) || jac.device() == rhs.device(),
+                "jac and rhs must be on the same CUDA device, got ", jac.device(), " and ", rhs.device());
     const at::cuda::OptionalCUDAGuard device_guard(rhs.is_cuda() ? rhs.device() : jac.device());
 
     // Tweak to make this func work with both batched and non-batched inputs
@@ -92,6 +96,10 @@ torch::Tensor parallel_reduce_diag_cuda(
         torch::Tensor rhs     // (B,) N, T
     ) {
     TORCH_CHECK(jac.scalar_type() == rhs.scalar_type(), "Input tensors must have the same type");
+    // A CPU input is copied to the other's device below; two CUDA inputs must
+    // already share one, since the kernels read both directly.
+    TORCH_CHECK(!(jac.is_cuda() && rhs.is_cuda()) || jac.device() == rhs.device(),
+                "jac and rhs must be on the same CUDA device, got ", jac.device(), " and ", rhs.device());
     const at::cuda::OptionalCUDAGuard device_guard(rhs.is_cuda() ? rhs.device() : jac.device());
 
     // Tweak to make this func work with both batched and non-batched inputs

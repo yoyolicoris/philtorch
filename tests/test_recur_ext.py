@@ -551,3 +551,11 @@ def test_pararnn_op_rejects_inputs_past_its_launch_limits(B, steps):
     rhs = torch.zeros(B, steps, 2, device="cuda")
     with pytest.raises(RuntimeError, match="ParaRNN supports at most"):
         torch.ops.parallel_reduce_cuda.parallel_reduce_block_diag_2x2_cuda(jac, rhs)
+
+
+@pytest.mark.skipif(torch.cuda.device_count() < 2, reason="needs two CUDA devices")
+def test_pararnn_op_rejects_inputs_on_different_cuda_devices():
+    jac = torch.zeros(1, 4, 2, 2, device="cuda:0")
+    rhs = torch.zeros(1, 4, 2, device="cuda:1")
+    with pytest.raises(RuntimeError, match="same CUDA device"):
+        torch.ops.parallel_reduce_cuda.parallel_reduce_block_diag_2x2_cuda(jac, rhs)
