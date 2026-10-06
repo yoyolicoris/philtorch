@@ -15,6 +15,7 @@ and open `docs/_build/html/index.html`. `pixi run docs-linkcheck` checks the ext
 Without pixi, from a checkout, install a CPU build of PyTorch, then PhilTorch in editable mode and the docs dependencies:
 
 ```bash
+python -m pip install --upgrade pip
 python -m pip install torch --index-url https://download.pytorch.org/whl/cpu
 python -m pip install "setuptools>=77.0.3" "setuptools_scm>=8" wheel ninja
 python -m pip install --no-build-isolation --editable .

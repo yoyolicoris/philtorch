@@ -13,6 +13,10 @@ build:
       # setuptools_scm derives the version from the latest tag.
       - git fetch --unshallow --tags || true
     install:
+      # Read the Docs seeds the environment with an old pip (23.1), which
+      # rejects the typing_extensions wheel on PyTorch's CPU index and then
+      # can't build it from source there.
+      - python -m pip install --upgrade pip
       - python -m pip install torch --index-url https://download.pytorch.org/whl/cpu
       - python -m pip install "setuptools>=77.0.3" "setuptools_scm>=8" wheel ninja
       - MAX_JOBS=2 python -m pip install --no-build-isolation --editable .
