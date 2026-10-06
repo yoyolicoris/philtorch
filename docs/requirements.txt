@@ -1,0 +1,6 @@
+# Docs toolchain. Kept here rather than as a pyproject.toml extra, so docs
+# changes don't touch the build files, which would start the CUDA workflow.
+# Keep in sync with the docs dependencies in pixi.toml.
+sphinx>=9.1,<10
+myst-parser>=5,<6
+pydata-sphinx-theme>=0.22,<1

@@ -24,6 +24,7 @@ PhilTorch provides differentiable, time-domain linear digital filters for PyTorc
   The [preprint is available here](https://arxiv.org/abs/2511.14390).
 
 ## Installation
+<!-- docs-install-start -->
 
 PhilTorch requires its compiled `philtorch._C` extension; there is no pure-PyTorch fallback when the extension is missing.
 
@@ -107,6 +108,8 @@ Development builds from `dev` are published to TestPyPI:
 ```bash
 python -m pip install -i https://test.pypi.org/simple/ philtorch
 ```
+
+<!-- docs-install-end -->
 
 ## Quickstart
 

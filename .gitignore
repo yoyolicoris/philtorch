@@ -12,3 +12,7 @@ philtorch/_version.py
 # pixi environments
 .pixi/*
 !.pixi/config.toml
+
+# Sphinx
+docs/_build/
+docs/api/generated/

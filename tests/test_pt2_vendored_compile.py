@@ -25,6 +25,17 @@ _PARARNN_OPS = (
 )
 
 
+@pytest.fixture(autouse=True)
+def _fresh_dynamo():
+    # Several tests here compile the same function, such as
+    # state_space_recursion, each with a different device or shape, so each
+    # adds a compiled version. Dynamo keeps at most 8 per function (its
+    # recompile_limit), and past that a fullgraph=True compile fails. Start
+    # each test from an empty cache.
+    torch.compiler.reset()
+    yield
+
+
 def _has_dispatch_kernel(op: str, dispatch_key: str) -> bool:
     try:
         return torch._C._dispatch_has_kernel_for_dispatch_key(op, dispatch_key)
