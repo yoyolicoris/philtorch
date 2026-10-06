@@ -541,3 +541,13 @@ def test_cuda_ops_reject_coefficients_on_another_device(case: str):
     cuda_args = [arg if i == coefficient else arg.cuda() for i, arg in enumerate(args)]
     with pytest.raises(RuntimeError, match="same device"):
         op(*cuda_args)
+
+
+@pytest.mark.skipif(not torch.cuda.is_available(), reason="CUDA not available")
+@pytest.mark.parametrize(("B", "steps"), [(65536, 4), (1, 2**21 + 1)], ids=["batch", "length"])
+def test_pararnn_op_rejects_inputs_past_its_launch_limits(B, steps):
+    """Called directly, the ParaRNN op names the limit instead of failing to launch."""
+    jac = torch.zeros(B, steps, 2, 2, device="cuda")
+    rhs = torch.zeros(B, steps, 2, device="cuda")
+    with pytest.raises(RuntimeError, match="ParaRNN supports at most"):
+        torch.ops.parallel_reduce_cuda.parallel_reduce_block_diag_2x2_cuda(jac, rhs)

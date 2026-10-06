@@ -821,6 +821,15 @@ void parallelReduceLauncher(
     const int warpsPerBlock = 1 + ((threads_per_block - 1) / (threads_per_warp)); // = ceil((float)THREADS_PER_BLOCK/THREADS_PER_WARP)
     unsigned int sharedMemSize =  ( sizeof(typename pimpl_t::jac_t) + sizeof(typename pimpl_t::rhs_t) ) * warpsPerBlock;
 
+    // CUDA caps grid dimensions y and z at 65535 and blocks at 1024 threads.
+    // A long sequence's blocks are combined by one block with a thread each.
+    TORCH_CHECK(hiddenDim <= 65535 && batchSize <= 65535,
+                "ParaRNN supports at most 65535 sequences along each batch "
+                "dimension, got ", batchSize, " x ", hiddenDim);
+    TORCH_CHECK(blocksPerSeq <= 1024,
+                "ParaRNN supports at most ", 1024 * threads_per_block * chunk_size,
+                " steps for this dtype and state size, got ", seqLength);
+
     // Run on PyTorch's current stream, which also orders the kernels below.
     const cudaStream_t stream = c10::cuda::getCurrentCUDAStream();
 

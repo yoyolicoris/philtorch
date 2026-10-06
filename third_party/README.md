@@ -59,8 +59,9 @@ results.
   require the decays and initial states on the input's device, and raise
   instead of overflowing past `INT_MAX` elements.
 - `pararnn/csrc/parallel_reduction_kernel.h`: launch on the current stream,
-  check each launch, and drop the `cudaDeviceSynchronize()` calls between the
-  kernels, which the stream already orders.
+  check each launch, drop the `cudaDeviceSynchronize()` calls between the
+  kernels, which the stream already orders, and raise a clear error past the
+  launch limits below.
 - `pararnn/csrc/parallel_reduce.cu`: guard the device of the inputs.
 
 The ParaRNN kernels can't launch for more than 65535 batch items or more than
