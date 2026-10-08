@@ -137,20 +137,41 @@ def dtw_rowwise(
         return -gamma * _logsumexp(torch.stack([-a / gamma, -b / gamma]), dim=0)
 
     inf = torch.full_like(cost[:, 0, :1], float("inf"))
+    # Split into rows once: indexing cost[:, n] in the loop would make every
+    # row's backward write a gradient the size of the whole cost matrix.
+    costs = cost.unbind(1)
+    prefixes = cost.cumsum(-1).unbind(1)  # every row's prefix sums at once
     if step_pattern == "symmetric":
-        row = cost[:, 0].cumsum(-1)
+        row = prefixes[0]
     else:
-        row = torch.cat([cost[:, 0, :1], inf.expand(-1, cost.size(-1) - 1)], dim=-1)
+        row = torch.cat([costs[0][:, :1], inf.expand(-1, cost.size(-1) - 1)], dim=-1)
     for n in range(1, cost.size(1)):
         # From the previous row: straight down, or diagonally from m - 1.
-        t = cost[:, n] + softmin(row, torch.cat([inf, row[:, :-1]], dim=-1))
+        t = costs[n] + softmin(row, torch.cat([inf, row[:, :-1]], dim=-1))
         if step_pattern == "asymmetric":
             row = t
             continue
-        y = cost[:, n].cumsum(-1)
+        y = prefixes[n]
         z = t - y
         if soft:
             row = y - gamma * torch.logcumsumexp(-z / gamma, dim=-1)
         else:
             row = y + z.cummin(-1).values
     return row[:, -1]
+
+
+def dtw_fused(cost: Tensor) -> Tensor:
+    """The DTW distance with symmetric steps, in a single Helion kernel.
+
+    The row-wise prefix method of :func:`dtw_rowwise`, with the loop over the
+    shorter sequence inside one kernel. Experimental: hard DTW and the forward
+    pass only, so no gradient. Inputs must be CUDA tensors.
+    """
+    from ._dtw_helion import dtw_rows_kernel
+
+    assert cost.dim() == 3, f"cost must be (B, N, M), got {tuple(cost.shape)}"
+    if not cost.is_cuda:
+        raise ValueError("dtw_fused runs a Helion kernel, which needs CUDA tensors.")
+    if cost.size(1) > cost.size(2):
+        cost = cost.mT
+    return dtw_rows_kernel(cost.detach().contiguous())[:, -1]

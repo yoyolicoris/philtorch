@@ -1,7 +1,7 @@
 import pytest
 import torch
 
-from philtorch.prototype.dtw import dtw, dtw_rowwise
+from philtorch.prototype.dtw import dtw, dtw_fused, dtw_rowwise
 
 # dtw runs Helion kernels, so it needs CUDA.
 pytestmark = pytest.mark.skipif(not torch.cuda.is_available(), reason="CUDA not available")
@@ -94,3 +94,9 @@ def test_dtw_rowwise_matches_sequential(step_pattern, gamma, N, M):
 def test_soft_dtw_rowwise_second_derivatives():
     cost = _cost(2, 4, 5).requires_grad_()
     assert torch.autograd.gradgradcheck(lambda c: dtw_rowwise(c, 0.5), (cost,))
+
+
+@pytest.mark.parametrize("N, M", [(9, 6), (6, 9), (300, 40)])
+def test_dtw_fused_matches_rowwise(N, M):
+    cost = _cost(3, N, M, dtype=torch.float32)
+    torch.testing.assert_close(dtw_fused(cost), dtw_rowwise(cost), rtol=1e-5, atol=1e-4)
