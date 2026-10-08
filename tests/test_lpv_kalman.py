@@ -24,10 +24,9 @@ def _model(batch_size, N, M, P, *, seed=0, dtype=torch.float64):
         X = randn(*shape)
         return X @ X.mT + 0.1 * torch.eye(shape[-1], dtype=dtype)
 
-    # N - 1 transitions between N measurements.
-    A = 0.99 * torch.linalg.qr(randn(batch_size, N - 1, M, M))[0]
+    A = 0.99 * torch.linalg.qr(randn(batch_size, N, M, M))[0]
     C = randn(batch_size, N, P, M)
-    Q = covariance(batch_size, N - 1, M, M)
+    Q = covariance(batch_size, N, M, M)
     R = covariance(batch_size, N, P, P)
     m0 = randn(batch_size, M)
     P0 = covariance(batch_size, M, M)
@@ -41,9 +40,8 @@ def _reference(y, A, C, Q, R, m0, P0):
     m, P = m0, P0
     means, covs = [], []
     for n in range(N):
-        if n > 0:
-            m = (A[:, n - 1] @ m[..., None]).squeeze(-1)
-            P = A[:, n - 1] @ P @ A[:, n - 1].mT + Q[:, n - 1]
+        m = (A[:, n] @ m[..., None]).squeeze(-1)
+        P = A[:, n] @ P @ A[:, n].mT + Q[:, n]
         S = C[:, n] @ P @ C[:, n].mT + R[:, n]
         K = torch.linalg.solve(S, C[:, n] @ P).mT
         m = m + (K @ (y[:, n] - (C[:, n] @ m[..., None]).squeeze(-1))[..., None]).squeeze(-1)
@@ -53,9 +51,9 @@ def _reference(y, A, C, Q, R, m0, P0):
 
     smoothed_means, smoothed_covs = [means[-1]], [covs[-1]]
     for n in range(N - 2, -1, -1):
-        m_pred = (A[:, n] @ means[n][..., None]).squeeze(-1)
-        P_pred = A[:, n] @ covs[n] @ A[:, n].mT + Q[:, n]
-        G = torch.linalg.solve(P_pred, A[:, n] @ covs[n]).mT
+        m_pred = (A[:, n + 1] @ means[n][..., None]).squeeze(-1)
+        P_pred = A[:, n + 1] @ covs[n] @ A[:, n + 1].mT + Q[:, n + 1]
+        G = torch.linalg.solve(P_pred, A[:, n + 1] @ covs[n]).mT
         smoothed_means.append(means[n] + (G @ (smoothed_means[-1] - m_pred)[..., None]).squeeze(-1))
         smoothed_covs.append(covs[n] + G @ (smoothed_covs[-1] - P_pred) @ G.mT)
     return (
@@ -95,31 +93,15 @@ def test_kalman_coefficient_shapes(fn):
         torch.testing.assert_close(a, e)
 
     # Constant per-signal and constant shared coefficients.
-    def over_time(t, steps):
-        return t.unsqueeze(-3).expand(*t.shape[:-2], steps, -1, -1)
+    def over_time(t):
+        return t.unsqueeze(-3).expand(*t.shape[:-2], N, -1, -1)
 
     per_signal = fn(y, A[:, 0], C[:, 0], Q[:, 0], R[:, 0], m0, P0)
-    expanded = fn(
-        y,
-        over_time(A[:, 0], N - 1),
-        over_time(C[:, 0], N),
-        over_time(Q[:, 0], N - 1),
-        over_time(R[:, 0], N),
-        m0,
-        P0,
-    )
+    expanded = fn(y, *(over_time(t[:, 0]) for t in (A, C, Q, R)), m0, P0)
     for a, e in zip(per_signal, expanded):
         torch.testing.assert_close(a, e)
     constant = fn(y, A[0, 0], C[0, 0], Q[0, 0], R[0, 0], m0, P0)
-    expanded = fn(
-        y,
-        over_time(A[0, 0], N - 1),
-        over_time(C[0, 0], N),
-        over_time(Q[0, 0], N - 1),
-        over_time(R[0, 0], N),
-        m0,
-        P0,
-    )
+    expanded = fn(y, *(over_time(t[0, 0]) for t in (A, C, Q, R)), m0, P0)
     for a, e in zip(constant, expanded):
         torch.testing.assert_close(a, e)
 
@@ -127,9 +109,8 @@ def test_kalman_coefficient_shapes(fn):
         torch.testing.assert_close(a, e)
 
 
-def test_kalman_reads_steps_equal_to_batch_size_as_time_varying():
-    # Four signals of five measurements, so A has as many steps as signals.
-    y, A, C, Q, R, m0, P0 = _model(4, 5, 2, 1)
+def test_kalman_reads_n_equal_b_as_time_varying():
+    y, A, C, Q, R, m0, P0 = _model(4, 4, 2, 1)
     means, _ = kalman_filter(y, A[0], C, Q, R, m0, P0)
     expected, _ = kalman_filter(y, A[:1].expand(4, -1, -1, -1), C, Q, R, m0, P0)
     torch.testing.assert_close(means, expected)
@@ -139,8 +120,8 @@ def test_kalman_reads_steps_equal_to_batch_size_as_time_varying():
     "name, shape",
     [
         ("A", (3, 2, 2)),
-        ("A", (5, 2, 2)),  # one per measurement, not per transition
-        ("Q", (2, 5, 2, 2)),
+        ("A", (4, 2, 2)),
+        ("Q", (2, 4, 2, 2)),
         ("C", (2, 2)),
         ("Q", (3, 5, 2, 2)),
         ("R", (1, 2)),

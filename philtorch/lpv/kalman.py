@@ -60,10 +60,9 @@ def _parse(
     assert A.dim() >= 2 and A.size(-1) == A.size(-2), f"A must be square, got {A.shape}"
     M = A.size(-1)
 
-    # N measurements have N - 1 transitions between them.
-    A = _coefficient("A", A, (M, M), batch_size, N - 1)
+    A = _coefficient("A", A, (M, M), batch_size, N)
     C = _coefficient("C", C, (P, M), batch_size, N)
-    Q = _coefficient("Q", Q, (M, M), batch_size, N - 1)
+    Q = _coefficient("Q", Q, (M, M), batch_size, N)
     R = _coefficient("R", R, (P, P), batch_size, N)
     match tuple(m0.shape):
         case (m,) if m == M:
@@ -82,17 +81,10 @@ def _parse(
                 f"P0 must be of shape {(M, M)} or {(batch_size, M, M)}, got {P0.shape}"
             )
 
-    def full(t: Tensor, steps: int, *base: int) -> Tensor:
-        return t.expand(batch_size, steps, *base)
+    def full(t: Tensor, *base: int) -> Tensor:
+        return t.expand(batch_size, N, *base)
 
-    return (
-        full(A, N - 1, M, M),
-        full(C, N, P, M),
-        full(Q, N - 1, M, M),
-        full(R, N, P, P),
-        m0,
-        P0,
-    )
+    return full(A, M, M), full(C, P, M), full(Q, M, M), full(R, P, P), m0, P0
 
 
 def _mv(A: Tensor, x: Tensor) -> Tensor:
@@ -107,42 +99,30 @@ def _filtering_elements(
     These are the paper's (A, b, C, eta, J), renamed so they don't clash with
     the model's A and C.
 
-    Element n describes x[n] given x[n - 1] and y[n] (eqs. 42-45 of the GPU
-    paper, one index earlier): x[n] | x[n - 1], y[n] ~ N(F x[n - 1] + b, G),
-    and the likelihood of y[n] given x[n - 1] in information form (eta, J).
-    Element 0 holds the update of the prior with y[0].
+    Element n + 1 describes step n (eqs. 42-45 of the GPU paper, with their
+    k = n + 1): x[n + 1] | x[n], y[n] ~ N(F x[n] + b, G), and the likelihood
+    of y[n] given x[n] in information form (eta, J). Element 0 is the prior,
+    which doesn't depend on any earlier state, so its F, eta and J are zero.
     """
     batch_size, M = y.size(0), A.size(-1)
-    # Steps 1, ..., N - 1 predict through A[n - 1] and Q[n - 1], then update.
-    C_n, R_n, y_n = C[:, 1:], R[:, 1:], y[:, 1:]
-    CA = C_n @ A
-    S = C_n @ Q @ C_n.mT + R_n
-    K = torch.linalg.solve(S, C_n @ Q).mT
+    CA = C @ A
+    S = C @ Q @ C.mT + R
+    K = torch.linalg.solve(S, C @ Q).mT
     F = A - K @ CA
-    b = _mv(K, y_n)
+    b = _mv(K, y)
     G = Q - K @ S @ K.mT
-    eta = _mv(CA.mT, torch.linalg.solve(S, y_n))
+    eta = _mv(CA.mT, torch.linalg.solve(S, y))
     J = CA.mT @ torch.linalg.solve(S, CA)
 
-    # Step 0 updates the prior N(m0, P0) with y[0]; it doesn't depend on any
-    # earlier state, so its F, eta and J are zero.
     m0 = m0.expand(batch_size, 1, M)
     P0 = P0.expand(batch_size, 1, M, M)
-    C_0, R_0, y_0 = C[:, :1], R[:, :1], y[:, :1]
-    S_0 = C_0 @ P0 @ C_0.mT + R_0
-    K_0 = torch.linalg.solve(S_0, C_0 @ P0).mT
-    b_0 = m0 + _mv(K_0, y_0 - _mv(C_0, m0))
-    G_0 = P0 - K_0 @ S_0 @ K_0.mT
-
-    def first(t0: Tensor, t: Tensor) -> Tensor:
-        return torch.cat([t0, t], dim=1)
-
+    zero = torch.zeros_like(P0)
     return (
-        first(torch.zeros_like(P0), F),
-        first(b_0, b),
-        first(G_0, G),
-        first(torch.zeros_like(m0), eta),
-        first(torch.zeros_like(P0), J),
+        torch.cat([zero, F], dim=1),
+        torch.cat([m0, b], dim=1),
+        torch.cat([P0, G], dim=1),
+        torch.cat([torch.zeros_like(m0), eta], dim=1),
+        torch.cat([zero, J], dim=1),
     )
 
 
@@ -172,7 +152,8 @@ def _filter(
 ) -> tuple[Tensor, Tensor]:
     elements = _filtering_elements(y, A, C, Q, R, m0, P0)
     _, means, covs, _, _ = _scan(_filtering_operator, elements)
-    return means, covs
+    # Drop the prior: the scan's first output is x[0] before any measurement.
+    return means[:, 1:], covs[:, 1:]
 
 
 def _smoothing_operator(
@@ -197,25 +178,31 @@ def kalman_filter(
     .. math::
         \mathbf{x}[n + 1] &= A[n] \mathbf{x}[n] + \mathbf{w}[n],
         & \mathbf{w}[n] &\sim \mathcal{N}(\mathbf{0}, Q[n]), \\
-        \mathbf{y}[n] &= C[n] \mathbf{x}[n] + \mathbf{v}[n],
+        \mathbf{y}[n] &= C[n] \mathbf{x}[n + 1] + \mathbf{v}[n],
         & \mathbf{v}[n] &\sim \mathcal{N}(\mathbf{0}, R[n]),
 
     with prior :math:`\mathbf{x}[0] \sim \mathcal{N}(\mathbf{m}_0, P_0)`,
     this returns the mean and covariance of each state given the measurements
-    up to it, :math:`p(\mathbf{x}[n] \mid \mathbf{y}[0], \dots,
-    \mathbf{y}[n])`. These are the results of the sequential Kalman filter,
+    up to it, :math:`p(\mathbf{x}[n + 1] \mid \mathbf{y}[0], \dots,
+    \mathbf{y}[n])`, for the states :math:`\mathbf{x}[1], \dots,
+    \mathbf{x}[N]`. These are the results of the sequential Kalman filter,
     computed instead with an associative scan of depth :math:`O(\log N)`, as
     in Särkkä and García-Fernández (2021). The scan is PyTorch's
     ``associative_scan`` in its generic mode, which needs PyTorch 2.5 or later.
 
     Each of :attr:`A`, :attr:`C`, :attr:`Q` and :attr:`R` may be constant or
     time-varying, and shared or one per signal: its base shape below can be
-    prefixed with the number of steps for time-varying values, :math:`B` for
-    one per signal, or both. That number is :math:`N` for :attr:`C` and
-    :attr:`R`, one per measurement, and :math:`N - 1` for :attr:`A` and
-    :attr:`Q`, one per transition between measurements. When two readings
-    fit, such as :math:`N = B`, the time-varying one is taken. Even with
-    constant matrices, the Kalman gain varies over time.
+    prefixed with :math:`N` for time-varying values, :math:`B` for one per
+    signal, or :math:`(B, N)` for both. When two readings fit, such as
+    :math:`N = B`, the time-varying one is taken. Even with constant
+    matrices, the Kalman gain varies over time.
+
+    Note:
+        As in :func:`state_space_recursion`, the prior is the state before
+        the first step, and step :math:`n` returns :math:`\mathbf{x}[n + 1]`.
+        So :math:`\mathbf{y}[n]` measures the state after :math:`A[n]`,
+        unlike the output of :func:`state_space`, which reads
+        :math:`\mathbf{x}[n]`.
 
     Args:
         y (Tensor): measurements :math:`\mathbf{y}[n]`, of shape
@@ -245,12 +232,13 @@ def kalman_filter(
 
         >>> from philtorch.lpv import kalman_filter
         >>> # A random walk with unit steps, measured with noise variance 2.
+        >>> # Its prior covariance is the steady state, so the gain stays 0.5.
         >>> y = torch.ones(1, 3, 1, dtype=torch.float64)
         >>> one = torch.ones(1, 1, dtype=torch.float64)
         >>> m0 = torch.zeros(1, dtype=torch.float64)
         >>> means, covs = kalman_filter(y, one, one, one, 2 * one, m0, one)
         >>> means.squeeze()
-        tensor([0.3333, 0.6364, 0.8140], dtype=torch.float64)
+        tensor([0.5000, 0.7500, 0.8750], dtype=torch.float64)
     """
     return _filter(y, *_parse(y, A, C, Q, R, m0, P0))
 
@@ -262,7 +250,9 @@ def kalman_smoother(
 
     For the model of :func:`kalman_filter`, this returns the mean and
     covariance of each state given all the measurements,
-    :math:`p(\mathbf{x}[n] \mid \mathbf{y}[0], \dots, \mathbf{y}[N - 1])`.
+    :math:`p(\mathbf{x}[n + 1] \mid \mathbf{y}[0], \dots,
+    \mathbf{y}[N - 1])`, for the states :math:`\mathbf{x}[1], \dots,
+    \mathbf{x}[N]`.
     These are the results of the Rauch--Tung--Striebel smoother, computed
     with a reverse associative scan after :func:`kalman_filter`, as in
     Särkkä and García-Fernández (2021). The arguments are those of
@@ -299,18 +289,19 @@ def kalman_smoother(
         >>> m0 = torch.zeros(1, dtype=torch.float64)
         >>> means, covs = kalman_smoother(y, one, one, one, 2 * one, m0, one)
         >>> means.squeeze()  # the last state has no later measurements
-        tensor([0.4884, 0.7209, 0.8140], dtype=torch.float64)
+        tensor([0.6562, 0.8125, 0.8750], dtype=torch.float64)
     """
     A, C, Q, R, m0, P0 = _parse(y, A, C, Q, R, m0, P0)
     means, covs = _filter(y, A, C, Q, R, m0, P0)
 
-    # Element n describes x[n] given x[n + 1] and y[0], ..., y[n]
-    # (eqs. 48-50): x[n] | x[n + 1] ~ N(E x[n + 1] + g, L). The last one is
-    # the filtering result itself.
+    # Element n describes x[n + 1] given x[n + 2] and y[0], ..., y[n]
+    # (eqs. 48-50): x[n + 1] | x[n + 2] ~ N(E x[n + 2] + g, L), through
+    # A[n + 1] and Q[n + 1]. The last one is the filtering result itself.
+    A_next, Q_next = A[:, 1:], Q[:, 1:]
     m_n, P_n = means[:, :-1], covs[:, :-1]
-    P_pred = A @ P_n @ A.mT + Q
-    E = torch.linalg.solve(P_pred, A @ P_n).mT
-    g = m_n - _mv(E @ A, m_n)
+    P_pred = A_next @ P_n @ A_next.mT + Q_next
+    E = torch.linalg.solve(P_pred, A_next @ P_n).mT
+    g = m_n - _mv(E @ A_next, m_n)
     L = P_n - E @ P_pred @ E.mT
     elements = (
         torch.cat([E, torch.zeros_like(covs[:, -1:])], dim=1),
