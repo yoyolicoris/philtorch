@@ -21,11 +21,6 @@ from torch import Tensor
 
 from ._semiring_helion import log_bmm, max_bmm
 
-try:
-    from torch._higher_order_ops.associative_scan import associative_scan
-except ImportError:  # pragma: no cover - PyTorch without associative_scan
-    associative_scan = None
-
 
 def _batched(op):
     """Apply a (P, K, K) x (P, K, K) product to (B, n, K, K) tensors."""
@@ -46,14 +41,28 @@ _max_matmul = _batched(max_bmm)
 
 
 def _scan(combine_fn, x: Tensor, reverse: bool = False) -> Tensor:
-    """Inclusive scan over dimension 1; in reverse, combine_fn gets (later, earlier).
+    """Inclusive scan of (B, N, K, K) matrices over dimension 1.
 
-    torch's generic associative_scan vmaps combine_fn over the scan dimension;
-    the semiring ops' vmap rules turn each vmapped call into one kernel launch.
+    combine_fn(earlier, later) combines adjacent prefixes; in reverse it gets
+    (later, earlier), as in torch's associative_scan. This is the odd/even
+    recursion of torch's generic associative_scan, O(N) combines in O(log N)
+    rounds, but without its vmap: the products see whole batches, which is
+    over twice as fast when launch overhead dominates.
     """
-    if x.size(1) == 0:
+    if reverse:
+        # Scanning the flipped sequence hands combine_fn (later, earlier).
+        return _scan(combine_fn, x.flip(1)).flip(1)
+    N = x.size(1)
+    if N < 2:
         return x
-    return associative_scan(combine_fn, x, dim=1, reverse=reverse, combine_mode="generic")
+    # Combine adjacent pairs, scan the pairs, then fill in the even positions.
+    odd = _scan(combine_fn, combine_fn(x[:, 0:-1:2], x[:, 1::2]))
+    even = combine_fn(odd[:, : (N - 1) // 2], x[:, 2::2])
+    out = torch.empty_like(x)
+    out[:, 0] = x[:, 0]
+    out[:, 2::2] = even
+    out[:, 1::2] = odd
+    return out
 
 
 def _parse(log_emit: Tensor, log_trans: Tensor, log_init: Tensor) -> tuple[Tensor, Tensor]:
