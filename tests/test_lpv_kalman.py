@@ -197,10 +197,12 @@ def test_kalman_float32_long_sequence():
     [
         ("2.4.1", False),
         # 2.5 needs every leaf to have one shape; 2.6 and 2.7 always compile
-        # the scan, which fails on these elements.
+        # the scan, which fails on these elements; and vmapped solve fails on
+        # the scan's empty slices before 2.11.
         ("2.5.1+cpu", False),
         ("2.7.1", False),
-        ("2.8.0", True),
+        ("2.10.0", False),
+        ("2.11.0", True),
         ("2.13.0+cu130", True),
         ("3.0.0", True),
     ],
@@ -209,7 +211,7 @@ def test_kalman_generic_scan_support_by_version(torch_version, supported):
     assert kalman._supports_generic_scan(torch_version) is supported
 
 
-def test_kalman_rejects_pytorch_before_2_8(monkeypatch):
-    monkeypatch.setattr(torch, "__version__", "2.7.1")
-    with pytest.raises(RuntimeError, match="PyTorch 2.8"):
+def test_kalman_rejects_pytorch_before_2_11(monkeypatch):
+    monkeypatch.setattr(torch, "__version__", "2.10.0")
+    with pytest.raises(RuntimeError, match="PyTorch 2.11"):
         kalman_filter(*_model(1, 3, 1, 1))

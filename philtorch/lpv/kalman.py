@@ -16,13 +16,15 @@ try:
 except ImportError:  # pragma: no cover - PyTorch without associative_scan
     _associative_scan = None
 
-# The generic mode of associative_scan takes any combine function. From
-# PyTorch 2.8 it runs eagerly: the combine function is vmapped over the scan
+# The generic mode of associative_scan takes any combine function. It runs
+# eagerly from PyTorch 2.8: the combine function is vmapped over the scan
 # dimension and applied O(log N) times, so autograd follows it as usual.
 # Earlier releases fail on these elements: 2.5 requires every leaf to have the
 # same shape, and these mix matrices and vectors, while 2.6 and 2.7 always run
 # the scan under torch.compile, which fails on the batched matrix products.
-_MIN_TORCH_VERSION = (2, 8)
+# The scan also calls the combine function on empty slices, and vmapped
+# torch.linalg.solve fails on those before PyTorch 2.11.
+_MIN_TORCH_VERSION = (2, 11)
 
 
 def _supports_generic_scan(torch_version: str) -> bool:
@@ -34,7 +36,7 @@ def _scan(combine_fn, xs: tuple[Tensor, ...], reverse: bool = False) -> tuple[Te
     if not _supports_generic_scan(torch.__version__):
         raise RuntimeError(
             "Kalman filtering needs the generic mode of PyTorch's associative_scan "
-            f"from PyTorch 2.8; this is PyTorch {torch.__version__}."
+            f"from PyTorch 2.11; this is PyTorch {torch.__version__}."
         )
     return tuple(_associative_scan(combine_fn, xs, dim=1, reverse=reverse, combine_mode="generic"))
 
@@ -138,12 +140,9 @@ def _filtering_operator(
     F_i, b_i, G_i, eta_i, J_i = earlier
     F_j, b_j, G_j, eta_j, J_j = later
     eye = torch.eye(F_i.size(-1), dtype=F_i.dtype, device=F_i.device)
-    # X = F_j (I + G_i J_j)^-1 and Y = F_i^T (I + J_j G_i)^-1. These use inv,
-    # not solve: the generic scan also calls this on empty slices, which
-    # vmapped solve fails on before PyTorch 2.11. With G and J positive
-    # semi-definite, I + G J has eigenvalues of at least 1, so inv is safe.
-    X = F_j @ torch.linalg.inv(eye + G_i @ J_j)
-    Y = F_i.mT @ torch.linalg.inv(eye + J_j @ G_i)
+    # X = F_j (I + G_i J_j)^-1 and Y = F_i^T (I + J_j G_i)^-1, as left solves.
+    X = torch.linalg.solve((eye + G_i @ J_j).mT, F_j.mT).mT
+    Y = torch.linalg.solve((eye + J_j @ G_i).mT, F_i).mT
     return (
         X @ F_i,
         _mv(X, b_i + _mv(G_i, eta_j)) + b_j,
@@ -194,7 +193,7 @@ def kalman_filter(
     \mathbf{x}[N]`. These are the results of the sequential Kalman filter,
     computed instead with an associative scan of depth :math:`O(\log N)`, as
     in Särkkä and García-Fernández (2021). The scan is PyTorch's
-    ``associative_scan`` in its generic mode, which needs PyTorch 2.8 or later.
+    ``associative_scan`` in its generic mode, which needs PyTorch 2.11 or later.
 
     Each of :attr:`A`, :attr:`C`, :attr:`Q` and :attr:`R` may be constant or
     time-varying, and shared or one per signal: its base shape below can be
@@ -252,7 +251,7 @@ def kalman_filter(
     Raises:
         ValueError: if a coefficient has an unsupported shape.
         AssertionError: if :attr:`y` is not 3-D or :attr:`A` is not square.
-        RuntimeError: on PyTorch older than 2.8.
+        RuntimeError: on PyTorch older than 2.11.
 
     Example::
 
@@ -282,7 +281,7 @@ def kalman_smoother(
     These are the results of the Rauch--Tung--Striebel smoother, computed
     with a reverse associative scan after :func:`kalman_filter`, as in
     Särkkä and García-Fernández (2021). The arguments are those of
-    :func:`kalman_filter`, and the same PyTorch 2.8 requirement applies.
+    :func:`kalman_filter`, and the same PyTorch 2.11 requirement applies.
 
     Args:
         y (Tensor): measurements, of shape :math:`(B, N, P)`.
@@ -304,7 +303,7 @@ def kalman_smoother(
     Raises:
         ValueError: if a coefficient has an unsupported shape.
         AssertionError: if :attr:`y` is not 3-D or :attr:`A` is not square.
-        RuntimeError: on PyTorch older than 2.8.
+        RuntimeError: on PyTorch older than 2.11.
 
     Example::
 
