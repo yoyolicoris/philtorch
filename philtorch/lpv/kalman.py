@@ -216,9 +216,13 @@ def kalman_filter(
         \mathbf{w}[n]` and :math:`\mathbf{y}[n] = C[n] \mathbf{x}[n + 1] +
         \mathbf{d}[n] + \mathbf{v}[n]`, filter the part of the state that
         :math:`\mathbf{u}` doesn't drive, then add the part it does, which
-        :func:`state_space_recursion` computes from zero::
+        :func:`state_space_recursion` computes from zero. With :attr:`u` of
+        shape :math:`(B, N, M)`, :attr:`d` of shape :math:`(B, N, P)`, and
+        :attr:`A` and :attr:`C` expanded to their full shapes
+        :math:`(B, N, M, M)` and :math:`(B, N, P, M)`, such as
+        ``A.expand(B, N, M, M)`` for a constant :attr:`A`::
 
-            x_u = state_space_recursion(A, torch.zeros_like(m0), u)
+            x_u = state_space_recursion(A, y.new_zeros(B, M), u)
             y_s = y - d - (C @ x_u.unsqueeze(-1)).squeeze(-1)
             means, covs = kalman_filter(y_s, A, C, Q, R, m0, P0)
             means = means + x_u

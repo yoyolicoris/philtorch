@@ -3,6 +3,7 @@ import torch
 
 import philtorch.lpv.kalman as kalman
 from philtorch.lpv import kalman_filter, kalman_smoother
+from philtorch.lpv import state_space_recursion as lpv_state_space_recursion
 
 DEVICES = [
     "cpu",
@@ -34,24 +35,30 @@ def _model(batch_size, N, M, P, *, seed=0, dtype=torch.float64):
     return y, A, C, Q, R, m0, P0
 
 
-def _reference(y, A, C, Q, R, m0, P0):
-    """The sequential Kalman filter and Rauch-Tung-Striebel smoother."""
+def _reference(y, A, C, Q, R, m0, P0, u=None, d=None):
+    """The sequential Kalman filter and Rauch-Tung-Striebel smoother.
+
+    The optional u and d are known offsets of the state and the measurements.
+    """
     N = y.size(1)
+    u = torch.zeros_like(A[..., 0]) if u is None else u
+    d = torch.zeros_like(y) if d is None else d
     m, P = m0, P0
     means, covs = [], []
     for n in range(N):
-        m = (A[:, n] @ m[..., None]).squeeze(-1)
+        m = (A[:, n] @ m[..., None]).squeeze(-1) + u[:, n]
         P = A[:, n] @ P @ A[:, n].mT + Q[:, n]
         S = C[:, n] @ P @ C[:, n].mT + R[:, n]
         K = torch.linalg.solve(S, C[:, n] @ P).mT
-        m = m + (K @ (y[:, n] - (C[:, n] @ m[..., None]).squeeze(-1))[..., None]).squeeze(-1)
+        innovation = y[:, n] - d[:, n] - (C[:, n] @ m[..., None]).squeeze(-1)
+        m = m + (K @ innovation[..., None]).squeeze(-1)
         P = P - K @ S @ K.mT
         means.append(m)
         covs.append(P)
 
     smoothed_means, smoothed_covs = [means[-1]], [covs[-1]]
     for n in range(N - 2, -1, -1):
-        m_pred = (A[:, n + 1] @ means[n][..., None]).squeeze(-1)
+        m_pred = (A[:, n + 1] @ means[n][..., None]).squeeze(-1) + u[:, n + 1]
         P_pred = A[:, n + 1] @ covs[n] @ A[:, n + 1].mT + Q[:, n + 1]
         G = torch.linalg.solve(P_pred, A[:, n + 1] @ covs[n]).mT
         smoothed_means.append(means[n] + (G @ (smoothed_means[-1] - m_pred)[..., None]).squeeze(-1))
@@ -147,6 +154,30 @@ def test_kalman_gradcheck(fn):
 
     inputs = [t.clone().requires_grad_() for t in (y, A, C, Q_factor, m0)]
     assert torch.autograd.gradcheck(run, inputs)
+
+
+@pytest.mark.parametrize(
+    "fn, outputs", [(kalman_filter, slice(0, 2)), (kalman_smoother, slice(2, 4))]
+)
+def test_kalman_known_inputs_recipe(fn, outputs):
+    """The recipe in kalman_filter's docstring, from shapes it says to expand."""
+    B, N, M, P = 3, 9, 3, 2
+    y, A, C, Q, R, m0, P0 = _model(B, N, M, P)
+    gen = torch.Generator().manual_seed(1)
+    u = torch.randn(B, N, M, dtype=torch.float64, generator=gen)
+    d = torch.randn(B, N, P, dtype=torch.float64, generator=gen)
+    # A constant A, a constant C per signal, and a shared prior mean.
+    A, C, m0 = A[0, 0], C[:, 0], m0[0]
+    A_full, C_full = A.expand(B, N, M, M), C[:, None].expand(B, N, P, M)
+
+    x_u = lpv_state_space_recursion(A_full, y.new_zeros(B, M), u)
+    y_s = y - d - (C_full @ x_u.unsqueeze(-1)).squeeze(-1)
+    means, covs = fn(y_s, A_full, C_full, Q, R, m0, P0)
+    means = means + x_u
+
+    expected = _reference(y, A_full, C_full, Q, R, m0.expand(B, M), P0, u, d)[outputs]
+    torch.testing.assert_close(means, expected[0], rtol=1e-9, atol=1e-9)
+    torch.testing.assert_close(covs, expected[1], rtol=1e-9, atol=1e-9)
 
 
 @pytest.mark.skipif(not torch.cuda.is_available(), reason="CUDA not available")
