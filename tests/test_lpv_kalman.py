@@ -24,9 +24,10 @@ def _model(batch_size, N, M, P, *, seed=0, dtype=torch.float64):
         X = randn(*shape)
         return X @ X.mT + 0.1 * torch.eye(shape[-1], dtype=dtype)
 
-    A = 0.99 * torch.linalg.qr(randn(batch_size, N, M, M))[0]
+    # N - 1 transitions between N measurements.
+    A = 0.99 * torch.linalg.qr(randn(batch_size, N - 1, M, M))[0]
     C = randn(batch_size, N, P, M)
-    Q = covariance(batch_size, N, M, M)
+    Q = covariance(batch_size, N - 1, M, M)
     R = covariance(batch_size, N, P, P)
     m0 = randn(batch_size, M)
     P0 = covariance(batch_size, M, M)
@@ -94,12 +95,31 @@ def test_kalman_coefficient_shapes(fn):
         torch.testing.assert_close(a, e)
 
     # Constant per-signal and constant shared coefficients.
+    def over_time(t, steps):
+        return t.unsqueeze(-3).expand(*t.shape[:-2], steps, -1, -1)
+
     per_signal = fn(y, A[:, 0], C[:, 0], Q[:, 0], R[:, 0], m0, P0)
-    expanded = fn(y, *(t[:, :1].expand(-1, N, -1, -1) for t in (A, C, Q, R)), m0, P0)
+    expanded = fn(
+        y,
+        over_time(A[:, 0], N - 1),
+        over_time(C[:, 0], N),
+        over_time(Q[:, 0], N - 1),
+        over_time(R[:, 0], N),
+        m0,
+        P0,
+    )
     for a, e in zip(per_signal, expanded):
         torch.testing.assert_close(a, e)
     constant = fn(y, A[0, 0], C[0, 0], Q[0, 0], R[0, 0], m0, P0)
-    expanded = fn(y, *(t[0, 0].expand(batch_size, N, -1, -1) for t in (A, C, Q, R)), m0, P0)
+    expanded = fn(
+        y,
+        over_time(A[0, 0], N - 1),
+        over_time(C[0, 0], N),
+        over_time(Q[0, 0], N - 1),
+        over_time(R[0, 0], N),
+        m0,
+        P0,
+    )
     for a, e in zip(constant, expanded):
         torch.testing.assert_close(a, e)
 
@@ -107,8 +127,9 @@ def test_kalman_coefficient_shapes(fn):
         torch.testing.assert_close(a, e)
 
 
-def test_kalman_reads_n_equal_b_as_time_varying():
-    y, A, C, Q, R, m0, P0 = _model(4, 4, 2, 1)
+def test_kalman_reads_steps_equal_to_batch_size_as_time_varying():
+    # Four signals of five measurements, so A has as many steps as signals.
+    y, A, C, Q, R, m0, P0 = _model(4, 5, 2, 1)
     means, _ = kalman_filter(y, A[0], C, Q, R, m0, P0)
     expected, _ = kalman_filter(y, A[:1].expand(4, -1, -1, -1), C, Q, R, m0, P0)
     torch.testing.assert_close(means, expected)
@@ -118,6 +139,8 @@ def test_kalman_reads_n_equal_b_as_time_varying():
     "name, shape",
     [
         ("A", (3, 2, 2)),
+        ("A", (5, 2, 2)),  # one per measurement, not per transition
+        ("Q", (2, 5, 2, 2)),
         ("C", (2, 2)),
         ("Q", (3, 5, 2, 2)),
         ("R", (1, 2)),

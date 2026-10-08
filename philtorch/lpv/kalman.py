@@ -60,9 +60,10 @@ def _parse(
     assert A.dim() >= 2 and A.size(-1) == A.size(-2), f"A must be square, got {A.shape}"
     M = A.size(-1)
 
-    A = _coefficient("A", A, (M, M), batch_size, N)
+    # N measurements have N - 1 transitions between them.
+    A = _coefficient("A", A, (M, M), batch_size, N - 1)
     C = _coefficient("C", C, (P, M), batch_size, N)
-    Q = _coefficient("Q", Q, (M, M), batch_size, N)
+    Q = _coefficient("Q", Q, (M, M), batch_size, N - 1)
     R = _coefficient("R", R, (P, P), batch_size, N)
     match tuple(m0.shape):
         case (m,) if m == M:
@@ -81,10 +82,17 @@ def _parse(
                 f"P0 must be of shape {(M, M)} or {(batch_size, M, M)}, got {P0.shape}"
             )
 
-    def full(t: Tensor, *base: int) -> Tensor:
-        return t.expand(batch_size, N, *base)
+    def full(t: Tensor, steps: int, *base: int) -> Tensor:
+        return t.expand(batch_size, steps, *base)
 
-    return full(A, M, M), full(C, P, M), full(Q, M, M), full(R, P, P), m0, P0
+    return (
+        full(A, N - 1, M, M),
+        full(C, N, P, M),
+        full(Q, N - 1, M, M),
+        full(R, N, P, P),
+        m0,
+        P0,
+    )
 
 
 def _mv(A: Tensor, x: Tensor) -> Tensor:
@@ -106,14 +114,13 @@ def _filtering_elements(
     """
     batch_size, M = y.size(0), A.size(-1)
     # Steps 1, ..., N - 1 predict through A[n - 1] and Q[n - 1], then update.
-    A_prev, Q_prev = A[:, :-1], Q[:, :-1]
     C_n, R_n, y_n = C[:, 1:], R[:, 1:], y[:, 1:]
-    CA = C_n @ A_prev
-    S = C_n @ Q_prev @ C_n.mT + R_n
-    K = torch.linalg.solve(S, C_n @ Q_prev).mT
-    F = A_prev - K @ CA
+    CA = C_n @ A
+    S = C_n @ Q @ C_n.mT + R_n
+    K = torch.linalg.solve(S, C_n @ Q).mT
+    F = A - K @ CA
     b = _mv(K, y_n)
-    G = Q_prev - K @ S @ K.mT
+    G = Q - K @ S @ K.mT
     eta = _mv(CA.mT, torch.linalg.solve(S, y_n))
     J = CA.mT @ torch.linalg.solve(S, CA)
 
@@ -131,7 +138,7 @@ def _filtering_elements(
         return torch.cat([t0, t], dim=1)
 
     return (
-        first(torch.zeros_like(A[:, :1]), F),
+        first(torch.zeros_like(P0), F),
         first(b_0, b),
         first(G_0, G),
         first(torch.zeros_like(m0), eta),
@@ -203,16 +210,19 @@ def kalman_filter(
 
     Each of :attr:`A`, :attr:`C`, :attr:`Q` and :attr:`R` may be constant or
     time-varying, and shared or one per signal: its base shape below can be
-    prefixed with :math:`N` for time-varying values, :math:`B` for one per
-    signal, or :math:`(B, N)` for both. When two readings fit, such as
-    :math:`N = B`, the time-varying one is taken. Even with constant
-    matrices, the Kalman gain varies over time. :math:`A[N - 1]` and
-    :math:`Q[N - 1]` only predict :math:`\mathbf{x}[N]`, so they are unused.
+    prefixed with the number of steps for time-varying values, :math:`B` for
+    one per signal, or both. That number is :math:`N` for :attr:`C` and
+    :attr:`R`, one per measurement, and :math:`N - 1` for :attr:`A` and
+    :attr:`Q`, one per transition between measurements. When two readings
+    fit, such as :math:`N = B`, the time-varying one is taken. Even with
+    constant matrices, the Kalman gain varies over time.
 
     Args:
         y (Tensor): measurements :math:`\mathbf{y}[n]`, of shape
             :math:`(B, N, P)`.
-        A (Tensor): state transition matrices, of base shape :math:`(M, M)`.
+        A (Tensor): state transition matrices :math:`A[n]`, taking
+            :math:`\mathbf{x}[n]` to :math:`\mathbf{x}[n + 1]`, of base shape
+            :math:`(M, M)`.
         C (Tensor): measurement matrices, of base shape :math:`(P, M)`.
         Q (Tensor): process noise covariances, of base shape :math:`(M, M)`.
         R (Tensor): measurement noise covariances, of base shape
@@ -260,7 +270,9 @@ def kalman_smoother(
 
     Args:
         y (Tensor): measurements, of shape :math:`(B, N, P)`.
-        A (Tensor): state transition matrices, of base shape :math:`(M, M)`.
+        A (Tensor): state transition matrices :math:`A[n]`, taking
+            :math:`\mathbf{x}[n]` to :math:`\mathbf{x}[n + 1]`, of base shape
+            :math:`(M, M)`.
         C (Tensor): measurement matrices, of base shape :math:`(P, M)`.
         Q (Tensor): process noise covariances, of base shape :math:`(M, M)`.
         R (Tensor): measurement noise covariances, of base shape
@@ -295,10 +307,10 @@ def kalman_smoother(
     # Element n describes x[n] given x[n + 1] and y[0], ..., y[n]
     # (eqs. 48-50): x[n] | x[n + 1] ~ N(E x[n + 1] + g, L). The last one is
     # the filtering result itself.
-    A_n, Q_n, m_n, P_n = A[:, :-1], Q[:, :-1], means[:, :-1], covs[:, :-1]
-    P_pred = A_n @ P_n @ A_n.mT + Q_n
-    E = torch.linalg.solve(P_pred, A_n @ P_n).mT
-    g = m_n - _mv(E @ A_n, m_n)
+    m_n, P_n = means[:, :-1], covs[:, :-1]
+    P_pred = A @ P_n @ A.mT + Q
+    E = torch.linalg.solve(P_pred, A @ P_n).mT
+    g = m_n - _mv(E @ A, m_n)
     L = P_n - E @ P_pred @ E.mT
     elements = (
         torch.cat([E, torch.zeros_like(covs[:, -1:])], dim=1),
