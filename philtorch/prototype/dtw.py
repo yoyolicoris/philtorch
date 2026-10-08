@@ -160,18 +160,22 @@ def dtw_rowwise(
     return row[:, -1]
 
 
-def dtw_fused(cost: Tensor) -> Tensor:
-    """The DTW distance with symmetric steps, in a single Helion kernel.
+def dtw_fused(cost: Tensor, gamma: float = 0.0) -> Tensor:
+    """The (soft-)DTW distance with symmetric steps, in single Helion kernels.
 
     The row-wise prefix method of :func:`dtw_rowwise`, with the loop over the
-    shorter sequence inside one kernel. Experimental: hard DTW and the forward
-    pass only, so no gradient. Inputs must be CUDA tensors.
+    shorter sequence inside one kernel. The gradient, the alignment, is the
+    reverse accumulation over the grid with each step's weight, another
+    one-kernel op, and every backward differentiates again. Inputs must be
+    CUDA tensors.
     """
-    from ._dtw_helion import dtw_rows_kernel
+    from ._dtw_helion import dtw_dp
 
     assert cost.dim() == 3, f"cost must be (B, N, M), got {tuple(cost.shape)}"
     if not cost.is_cuda:
-        raise ValueError("dtw_fused runs a Helion kernel, which needs CUDA tensors.")
+        raise ValueError("dtw_fused runs Helion kernels, which need CUDA tensors.")
     if cost.size(1) > cost.size(2):
         cost = cost.mT
-    return dtw_rows_kernel(cost.detach().contiguous())[:, -1]
+    scale = 1.0 / gamma if gamma > 0 else 1.0
+    D = dtw_dp(cost * scale, gamma > 0)
+    return D[:, -1, -1] / scale

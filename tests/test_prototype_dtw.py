@@ -96,7 +96,19 @@ def test_soft_dtw_rowwise_second_derivatives():
     assert torch.autograd.gradgradcheck(lambda c: dtw_rowwise(c, 0.5), (cost,))
 
 
-@pytest.mark.parametrize("N, M", [(9, 6), (6, 9), (300, 40)])
-def test_dtw_fused_matches_rowwise(N, M):
-    cost = _cost(3, N, M, dtype=torch.float32)
-    torch.testing.assert_close(dtw_fused(cost), dtw_rowwise(cost), rtol=1e-5, atol=1e-4)
+@pytest.mark.parametrize("gamma", [0.0, 0.5])
+@pytest.mark.parametrize("N, M", [(1, 4), (9, 6), (6, 9), (300, 40)])
+def test_dtw_fused_matches_rowwise(gamma, N, M):
+    cost = _cost(3, N, M, dtype=torch.float32).requires_grad_()
+    expected = dtw_rowwise(cost, gamma)
+    actual = dtw_fused(cost, gamma)
+    torch.testing.assert_close(actual, expected, rtol=1e-5, atol=1e-4)
+    (grad,) = torch.autograd.grad(actual.sum(), cost)
+    (expected_grad,) = torch.autograd.grad(expected.sum(), cost)
+    torch.testing.assert_close(grad, expected_grad, rtol=1e-4, atol=1e-4)
+
+
+@pytest.mark.parametrize("N, M", [(4, 5), (5, 3)])
+def test_dtw_fused_second_derivatives(N, M):
+    cost = _cost(2, N, M).requires_grad_()
+    assert torch.autograd.gradgradcheck(lambda c: dtw_fused(c, 0.5), (cost,))
