@@ -23,7 +23,7 @@ def _model(batch_size, N, M, P, *, seed=0, dtype=torch.float64):
 
     def covariance(*shape):
         X = randn(*shape)
-        return X @ X.mT + 0.1 * torch.eye(shape[-1], dtype=dtype)
+        return X @ X.mH + 0.1 * torch.eye(shape[-1], dtype=dtype)
 
     A = 0.99 * torch.linalg.qr(randn(batch_size, N, M, M))[0]
     C = randn(batch_size, N, P, M)
@@ -47,22 +47,22 @@ def _reference(y, A, C, Q, R, m0, P0, u=None, d=None):
     means, covs = [], []
     for n in range(N):
         m = (A[:, n] @ m[..., None]).squeeze(-1) + u[:, n]
-        P = A[:, n] @ P @ A[:, n].mT + Q[:, n]
-        S = C[:, n] @ P @ C[:, n].mT + R[:, n]
-        K = torch.linalg.solve(S, C[:, n] @ P).mT
+        P = A[:, n] @ P @ A[:, n].mH + Q[:, n]
+        S = C[:, n] @ P @ C[:, n].mH + R[:, n]
+        K = torch.linalg.solve(S, C[:, n] @ P).mH
         innovation = y[:, n] - d[:, n] - (C[:, n] @ m[..., None]).squeeze(-1)
         m = m + (K @ innovation[..., None]).squeeze(-1)
-        P = P - K @ S @ K.mT
+        P = P - K @ S @ K.mH
         means.append(m)
         covs.append(P)
 
     smoothed_means, smoothed_covs = [means[-1]], [covs[-1]]
     for n in range(N - 2, -1, -1):
         m_pred = (A[:, n + 1] @ means[n][..., None]).squeeze(-1) + u[:, n + 1]
-        P_pred = A[:, n + 1] @ covs[n] @ A[:, n + 1].mT + Q[:, n + 1]
-        G = torch.linalg.solve(P_pred, A[:, n + 1] @ covs[n]).mT
+        P_pred = A[:, n + 1] @ covs[n] @ A[:, n + 1].mH + Q[:, n + 1]
+        G = torch.linalg.solve(P_pred, A[:, n + 1] @ covs[n]).mH
         smoothed_means.append(means[n] + (G @ (smoothed_means[-1] - m_pred)[..., None]).squeeze(-1))
-        smoothed_covs.append(covs[n] + G @ (smoothed_covs[-1] - P_pred) @ G.mT)
+        smoothed_covs.append(covs[n] + G @ (smoothed_covs[-1] - P_pred) @ G.mH)
     return (
         torch.stack(means, 1),
         torch.stack(covs, 1),
@@ -82,6 +82,28 @@ def test_kalman_matches_sequential(device, N, M, P):
         ["filter mean", "filter cov", "smoother mean", "smoother cov"], actual, expected
     ):
         torch.testing.assert_close(a, e, rtol=1e-9, atol=1e-9, msg=name)
+
+
+@pytest.mark.parametrize("device", DEVICES)
+@pytest.mark.parametrize("M, P", [(1, 1), (4, 2), (2, 3)])
+def test_kalman_complex_matches_sequential(device, M, P):
+    args = [t.to(device) for t in _model(3, 7, M, P, dtype=torch.complex128)]
+    expected = _reference(*args)
+    actual = (*kalman_filter(*args), *kalman_smoother(*args))
+    for name, a, e in zip(
+        ["filter mean", "filter cov", "smoother mean", "smoother cov"], actual, expected
+    ):
+        torch.testing.assert_close(a, e, rtol=1e-9, atol=1e-9, msg=name)
+
+
+@pytest.mark.parametrize("fn", [kalman_filter, kalman_smoother])
+@pytest.mark.parametrize("batch_size, N", [(0, 5), (2, 0)])
+def test_kalman_empty_inputs(fn, batch_size, N):
+    y, A, C, Q, R, m0, P0 = _model(2, 5, 3, 2)
+    y = y.new_zeros(batch_size, N, 2)
+    means, covs = fn(y, A[0, 0], C[0, 0], Q[0, 0], R[0, 0], m0[0], P0[0])
+    assert means.shape == (batch_size, N, 3)
+    assert covs.shape == (batch_size, N, 3, 3)
 
 
 @pytest.mark.parametrize("fn", [kalman_filter, kalman_smoother])

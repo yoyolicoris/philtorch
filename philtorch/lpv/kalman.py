@@ -38,6 +38,10 @@ def _scan(combine_fn, xs: tuple[Tensor, ...], reverse: bool = False) -> tuple[Te
             "Kalman filtering needs the generic mode of PyTorch's associative_scan "
             f"from PyTorch 2.11; this is PyTorch {torch.__version__}."
         )
+    # With no signals, steps or states there is nothing to combine, and the
+    # scan itself rejects an empty scan dimension and fails on an empty batch.
+    if any(x.numel() == 0 for x in xs):
+        return xs
     return tuple(_associative_scan(combine_fn, xs, dim=1, reverse=reverse, combine_mode="generic"))
 
 
@@ -113,13 +117,13 @@ def _filtering_elements(
     """
     batch_size, M = y.size(0), A.size(-1)
     CA = C @ A
-    S = C @ Q @ C.mT + R
-    K = torch.linalg.solve(S, C @ Q).mT
+    S = C @ Q @ C.mH + R
+    K = torch.linalg.solve(S, C @ Q).mH
     F = A - K @ CA
     b = _mv(K, y)
-    G = Q - K @ S @ K.mT
-    eta = _mv(CA.mT, torch.linalg.solve(S, y))
-    J = CA.mT @ torch.linalg.solve(S, CA)
+    G = Q - K @ S @ K.mH
+    eta = _mv(CA.mH, torch.linalg.solve(S, y))
+    J = CA.mH @ torch.linalg.solve(S, CA)
 
     m0 = m0.expand(batch_size, 1, M)
     P0 = P0.expand(batch_size, 1, M, M)
@@ -140,13 +144,13 @@ def _filtering_operator(
     F_i, b_i, G_i, eta_i, J_i = earlier
     F_j, b_j, G_j, eta_j, J_j = later
     eye = torch.eye(F_i.size(-1), dtype=F_i.dtype, device=F_i.device)
-    # X = F_j (I + G_i J_j)^-1 and Y = F_i^T (I + J_j G_i)^-1, as left solves.
-    X = torch.linalg.solve((eye + G_i @ J_j).mT, F_j.mT).mT
-    Y = torch.linalg.solve((eye + J_j @ G_i).mT, F_i).mT
+    # X = F_j (I + G_i J_j)^-1 and Y = F_i^H (I + J_j G_i)^-1, as left solves.
+    X = torch.linalg.solve((eye + G_i @ J_j).mH, F_j.mH).mH
+    Y = torch.linalg.solve((eye + J_j @ G_i).mH, F_i).mH
     return (
         X @ F_i,
         _mv(X, b_i + _mv(G_i, eta_j)) + b_j,
-        X @ G_i @ F_j.mT + G_j,
+        X @ G_i @ F_j.mH + G_j,
         _mv(Y, eta_j - _mv(J_j, b_i)) + eta_i,
         Y @ J_j @ F_i + J_i,
     )
@@ -170,7 +174,7 @@ def _smoothing_operator(
     """
     E_j, g_j, L_j = later
     E_i, g_i, L_i = earlier
-    return E_i @ E_j, _mv(E_i, g_j) + g_i, E_i @ L_j @ E_i.mT + L_i
+    return E_i @ E_j, _mv(E_i, g_j) + g_i, E_i @ L_j @ E_i.mH + L_i
 
 
 def kalman_filter(
@@ -200,7 +204,9 @@ def kalman_filter(
     prefixed with :math:`N` for time-varying values, :math:`B` for one per
     signal, or :math:`(B, N)` for both. When two readings fit, such as
     :math:`N = B`, the time-varying one is taken. Even with constant
-    matrices, the Kalman gain varies over time.
+    matrices, the Kalman gain varies over time. Complex tensors describe
+    circularly symmetric complex Gaussian noise, with conjugate transposes in
+    place of transposes.
 
     Note:
         As in :func:`state_space_recursion`, the prior is the state before
@@ -324,10 +330,10 @@ def kalman_smoother(
     # A[n + 1] and Q[n + 1]. The last one is the filtering result itself.
     A_next, Q_next = A[:, 1:], Q[:, 1:]
     m_n, P_n = means[:, :-1], covs[:, :-1]
-    P_pred = A_next @ P_n @ A_next.mT + Q_next
-    E = torch.linalg.solve(P_pred, A_next @ P_n).mT
+    P_pred = A_next @ P_n @ A_next.mH + Q_next
+    E = torch.linalg.solve(P_pred, A_next @ P_n).mH
     g = m_n - _mv(E @ A_next, m_n)
-    L = P_n - E @ P_pred @ E.mT
+    L = P_n - E @ P_pred @ E.mH
     elements = (
         torch.cat([E, torch.zeros_like(covs[:, -1:])], dim=1),
         torch.cat([g, means[:, -1:]], dim=1),
