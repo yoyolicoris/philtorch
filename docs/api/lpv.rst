@@ -25,6 +25,16 @@ State-space models
 
    state_space
 
+State estimation
+----------------
+
+.. autosummary::
+   :toctree: generated
+   :nosignatures:
+
+   kalman_filter
+   kalman_smoother
+
 Recurrences
 -----------
 

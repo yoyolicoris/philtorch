@@ -6,6 +6,7 @@ use :mod:`philtorch.lti`.
 """
 
 from .filtering import allpole, fir, lfilter
+from .kalman import kalman_filter, kalman_smoother
 from .recur import linear_recurrence
 from .ssm import state_space, state_space_recursion
 
@@ -16,4 +17,6 @@ __all__ = [
     "state_space_recursion",
     "allpole",
     "fir",
+    "kalman_filter",
+    "kalman_smoother",
 ]
