@@ -5,5 +5,6 @@
 
 lti
 lpv
+estimation
 utilities
 ```

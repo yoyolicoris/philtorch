@@ -3,6 +3,7 @@ import doctest
 import pytest
 import torch
 
+import philtorch.estimation.kalman
 import philtorch.lpv.filtering
 import philtorch.lpv.recur
 import philtorch.lpv.ssm
@@ -29,6 +30,7 @@ MODULES = [
     philtorch.lpv.filtering,
     philtorch.lpv.recur,
     philtorch.lpv.ssm,
+    philtorch.estimation.kalman,
 ]
 
 
