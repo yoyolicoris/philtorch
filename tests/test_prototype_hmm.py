@@ -12,11 +12,7 @@ DEVICES = [
         marks=pytest.mark.skipif(not torch.cuda.is_available(), reason="CUDA not available"),
     ),
 ]
-METHODS = [
-    ("sequential", "logsumexp"),
-    ("parallel", "logsumexp"),
-    ("parallel", "matmul"),
-]
+METHODS = ["sequential", "parallel"]
 
 
 def _model(batch_size, N, K, *, time_varying=True, seed=0, dtype=torch.float64):
@@ -47,19 +43,19 @@ def _brute_force(log_emit, log_trans, log_init):
 
 
 @pytest.mark.parametrize("device", DEVICES)
-@pytest.mark.parametrize("method, log_matmul", METHODS)
+@pytest.mark.parametrize("method", METHODS)
 @pytest.mark.parametrize("time_varying", [True, False])
 @pytest.mark.parametrize("N", [1, 2, 5])
-def test_hmm_matches_brute_force(device, method, log_matmul, time_varying, N):
+def test_hmm_matches_brute_force(device, method, time_varying, N):
     args = [t.to(device) for t in _model(2, N, 3, time_varying=time_varying)]
     log_likelihood, log_post, best_score, best_path = _brute_force(*args)
 
-    ll, log_filtered = hmm_forward(*args, method=method, log_matmul=log_matmul)
+    ll, log_filtered = hmm_forward(*args, method=method)
     torch.testing.assert_close(ll, log_likelihood)
     # The last filtered distribution is also the last posterior.
     torch.testing.assert_close(log_filtered[:, -1], log_post[:, -1])
 
-    ll, posteriors = hmm_posteriors(*args, method=method, log_matmul=log_matmul)
+    ll, posteriors = hmm_posteriors(*args, method=method)
     torch.testing.assert_close(ll, log_likelihood)
     torch.testing.assert_close(posteriors, log_post)
 
@@ -68,27 +64,24 @@ def test_hmm_matches_brute_force(device, method, log_matmul, time_varying, N):
     torch.testing.assert_close(path, best_path)
 
 
-@pytest.mark.parametrize("method, log_matmul", METHODS)
-def test_hmm_posteriors_are_the_gradient_of_the_log_likelihood(method, log_matmul):
+@pytest.mark.parametrize("method", METHODS)
+def test_hmm_posteriors_are_the_gradient_of_the_log_likelihood(method):
     log_emit, log_trans, log_init = _model(2, 7, 4)
     log_emit.requires_grad_()
-    ll, _ = hmm_forward(log_emit, log_trans, log_init, method=method, log_matmul=log_matmul)
+    ll, _ = hmm_forward(log_emit, log_trans, log_init, method=method)
     (grad,) = torch.autograd.grad(ll.sum(), log_emit)
-    _, log_post = hmm_posteriors(
-        log_emit, log_trans, log_init, method=method, log_matmul=log_matmul
-    )
+    _, log_post = hmm_posteriors(log_emit, log_trans, log_init, method=method)
     torch.testing.assert_close(grad, log_post.exp())
 
 
 @pytest.mark.parametrize("device", DEVICES)
-@pytest.mark.parametrize("log_matmul", ["logsumexp", "matmul"])
-def test_hmm_parallel_matches_sequential_in_float32(device, log_matmul):
+def test_hmm_parallel_matches_sequential_in_float32(device):
     args = [t.to(device) for t in _model(3, 1000, 8, dtype=torch.float32)]
     # Over 1000 steps the log-messages reach thousands, so compare the
     # log-likelihood relatively and the distributions as probabilities.
     for fn in (hmm_forward, hmm_posteriors):
         expected_ll, expected = fn(*args, method="sequential")
-        ll, actual = fn(*args, method="parallel", log_matmul=log_matmul)
+        ll, actual = fn(*args, method="parallel")
         torch.testing.assert_close(ll, expected_ll, rtol=1e-5, atol=0)
         torch.testing.assert_close(actual.exp(), expected.exp(), rtol=0, atol=2e-4)
     score, path = viterbi(*args, method="parallel")

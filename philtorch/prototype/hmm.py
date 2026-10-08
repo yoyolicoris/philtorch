@@ -25,20 +25,15 @@ except ImportError:  # pragma: no cover - PyTorch without associative_scan
     associative_scan = None
 
 Method = Literal["parallel", "sequential"]
-LogMatmul = Literal["logsumexp", "matmul"]
 
 
-def _logsumexp_matmul(a: Tensor, b: Tensor) -> Tensor:
-    """(a ⊗ b)[i, k] = logsumexp_j a[i, j] + b[j, k], exactly, with a K^3 temporary."""
-    return torch.logsumexp(a.unsqueeze(-1) + b.unsqueeze(-3), dim=-2)
+def _log_matmul(a: Tensor, b: Tensor) -> Tensor:
+    """(a ⊗ b)[i, k] = logsumexp_j a[i, j] + b[j, k], as a matrix multiply.
 
-
-def _rescaled_matmul(a: Tensor, b: Tensor) -> Tensor:
-    """The same product as a matrix multiply of rescaled exponentials.
-
-    It needs no K^3 temporary, but a term underflows to zero when it is more
-    than about 87 (float32) or 708 (float64) below the row's and column's
-    maxima, which can turn a finite result into -inf.
+    Each row of a and column of b is shifted by its maximum before
+    exponentiating, so the product needs no K^3 temporary. A sum still
+    underflows to zero when all its terms are more than about 87 (float32) or
+    708 (float64) below those maxima, which turns a finite result into -inf.
     """
     a_max = a.amax(-1, keepdim=True)
     b_max = b.amax(-2, keepdim=True)
@@ -51,9 +46,6 @@ def _rescaled_matmul(a: Tensor, b: Tensor) -> Tensor:
 def _max_matmul(a: Tensor, b: Tensor) -> Tensor:
     """(a ⊗ b)[i, k] = max_j a[i, j] + b[j, k]."""
     return (a.unsqueeze(-1) + b.unsqueeze(-3)).amax(dim=-2)
-
-
-_LOG_MATMULS = {"logsumexp": _logsumexp_matmul, "matmul": _rescaled_matmul}
 
 
 def _scan(combine_fn, x: Tensor, reverse: bool = False) -> Tensor:
@@ -105,7 +97,7 @@ def _fold_prior(M: Tensor, log_init: Tensor, reduce) -> Tensor:
 
 
 def _forward_messages(
-    log_emit: Tensor, log_trans: Tensor, log_init: Tensor, method: Method, log_matmul: LogMatmul
+    log_emit: Tensor, log_trans: Tensor, log_init: Tensor, method: Method
 ) -> Tensor:
     """alpha[n][j] = log p(y[0..n], z[n + 1] = j), of shape (B, N, K)."""
     if method == "sequential":
@@ -116,13 +108,11 @@ def _forward_messages(
             out.append(alpha)
         return torch.stack(out, dim=1)
     M = _step_matrices(log_emit, log_trans)
-    scanned = _scan(_LOG_MATMULS[log_matmul], _fold_prior(M, log_init, torch.logsumexp))
+    scanned = _scan(_log_matmul, _fold_prior(M, log_init, torch.logsumexp))
     return scanned[..., 0, :]
 
 
-def _backward_messages(
-    log_emit: Tensor, log_trans: Tensor, method: Method, log_matmul: LogMatmul
-) -> Tensor:
+def _backward_messages(log_emit: Tensor, log_trans: Tensor, method: Method) -> Tensor:
     """beta[n][i] = log p(y[n + 1..N - 1] | z[n + 1] = i), of shape (B, N, K)."""
     batch_size, N, K = log_emit.shape
     last = log_emit.new_zeros(batch_size, 1, K)
@@ -133,10 +123,9 @@ def _backward_messages(
             beta = torch.logsumexp(step + beta.unsqueeze(-2), dim=-1)
             out.append(beta)
         return torch.stack(out[::-1], dim=1)
-    log_mm = _LOG_MATMULS[log_matmul]
     M = _step_matrices(log_emit[:, 1:], log_trans[:, 1:])
     # suffix[n] = M[n + 1] ⊗ ... ⊗ M[N - 1]; its row sums are the messages.
-    suffix = _scan(lambda later, earlier: log_mm(earlier, later), M, reverse=True)
+    suffix = _scan(lambda later, earlier: _log_matmul(earlier, later), M, reverse=True)
     return torch.cat([torch.logsumexp(suffix, dim=-1), last], dim=1)
 
 
@@ -146,7 +135,6 @@ def hmm_forward(
     log_init: Tensor,
     *,
     method: Method = "parallel",
-    log_matmul: LogMatmul = "logsumexp",
 ) -> tuple[Tensor, Tensor]:
     """Filter a hidden Markov model: its log-likelihood and filtered state probabilities.
 
@@ -156,17 +144,17 @@ def hmm_forward(
             shape (K, K), (N, K, K) or (B, N, K, K).
         log_init (Tensor): log p(z[0] = k), of shape (K,) or (B, K).
         method (str): ``"parallel"`` for associative scans, ``"sequential"``
-            for the classical recursion.
-        log_matmul (str): the parallel scan's log-space matrix product:
-            ``"logsumexp"``, exact with a K^3 temporary per step, or
-            ``"matmul"``, a rescaled matrix multiply.
+            for the classical recursion. The parallel scans multiply the
+            per-step matrices in log space with rescaled matrix multiplies,
+            which underflow to -inf when every term of a sum is more than
+            about 87 (float32) below its row's and column's largest terms.
 
     Returns:
         tuple of Tensor: log p(y[0..N - 1]), of shape (B,), and the filtered
         log-probabilities log p(z[n + 1] | y[0..n]), of shape (B, N, K).
     """
     log_trans, log_init = _parse(log_emit, log_trans, log_init)
-    alpha = _forward_messages(log_emit, log_trans, log_init, method, log_matmul)
+    alpha = _forward_messages(log_emit, log_trans, log_init, method)
     norm = torch.logsumexp(alpha, dim=-1, keepdim=True)
     return norm[:, -1, 0], alpha - norm
 
@@ -177,7 +165,6 @@ def hmm_posteriors(
     log_init: Tensor,
     *,
     method: Method = "parallel",
-    log_matmul: LogMatmul = "logsumexp",
 ) -> tuple[Tensor, Tensor]:
     """Smooth a hidden Markov model: forward-backward state posteriors.
 
@@ -189,8 +176,8 @@ def hmm_posteriors(
         log-probabilities log p(z[n + 1] | y[0..N - 1]), of shape (B, N, K).
     """
     log_trans, log_init = _parse(log_emit, log_trans, log_init)
-    alpha = _forward_messages(log_emit, log_trans, log_init, method, log_matmul)
-    beta = _backward_messages(log_emit, log_trans, method, log_matmul)
+    alpha = _forward_messages(log_emit, log_trans, log_init, method)
+    beta = _backward_messages(log_emit, log_trans, method)
     log_likelihood = torch.logsumexp(alpha[:, -1], dim=-1)
     # Normalize each step by its own sum rather than by the likelihood: the
     # messages grow to thousands over long inputs, and most of their rounding
