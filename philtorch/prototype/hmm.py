@@ -19,40 +19,58 @@ from typing import Literal
 import torch
 from torch import Tensor
 
-try:
-    from torch._higher_order_ops.associative_scan import associative_scan
-except ImportError:  # pragma: no cover - PyTorch without associative_scan
-    associative_scan = None
+from ._semiring_helion import log_bmm, max_bmm
 
 Method = Literal["parallel", "sequential"]
 
 
-def _log_matmul(a: Tensor, b: Tensor) -> Tensor:
-    """(a ⊗ b)[i, k] = logsumexp_j a[i, j] + b[j, k], as a matrix multiply.
+def _batched(op):
+    """Apply a (P, K, K) x (P, K, K) product to (B, n, K, K) tensors."""
 
-    Each row of a and column of b is shifted by its maximum before
-    exponentiating, so the product needs no K^3 temporary. A sum still
-    underflows to zero when all its terms are more than about 87 (float32) or
-    708 (float64) below those maxima, which turns a finite result into -inf.
-    """
-    a_max = a.amax(-1, keepdim=True)
-    b_max = b.amax(-2, keepdim=True)
-    # A row or column of -inf would make the shift -inf and the result NaN.
-    a_max = torch.where(torch.isfinite(a_max), a_max, torch.zeros_like(a_max))
-    b_max = torch.where(torch.isfinite(b_max), b_max, torch.zeros_like(b_max))
-    return torch.log(torch.exp(a - a_max) @ torch.exp(b - b_max)) + a_max + b_max
+    def apply(a: Tensor, b: Tensor) -> Tensor:
+        lead = a.shape[:-2]
+        return op(a.reshape(-1, *a.shape[-2:]), b.reshape(-1, *b.shape[-2:])).reshape(
+            *lead, a.size(-2), b.size(-1)
+        )
+
+    return apply
 
 
-def _max_matmul(a: Tensor, b: Tensor) -> Tensor:
-    """(a ⊗ b)[i, k] = max_j a[i, j] + b[j, k]."""
-    return (a.unsqueeze(-1) + b.unsqueeze(-3)).amax(dim=-2)
+# Exact log-space and max-plus matrix products, as Helion kernels (CUDA only).
+_log_matmul = _batched(log_bmm)
+_max_matmul = _batched(max_bmm)
 
 
 def _scan(combine_fn, x: Tensor, reverse: bool = False) -> Tensor:
-    """Inclusive scan over dimension 1; in reverse, combine_fn gets (later, earlier)."""
-    if x.size(1) == 0:
+    """Inclusive scan of (B, N, K, K) matrices over dimension 1.
+
+    combine_fn(earlier, later) combines adjacent prefixes; in reverse it gets
+    (later, earlier) like torch's associative_scan. This is the same odd/even
+    recursion as torch's generic associative_scan, without its vmap, so the
+    products see whole batches: O(N) combines in O(log N) rounds.
+    """
+    if reverse:
+        # Scanning the flipped sequence hands combine_fn (later, earlier).
+        return _scan(combine_fn, x.flip(1)).flip(1)
+    N = x.size(1)
+    if N < 2:
         return x
-    return associative_scan(combine_fn, x, dim=1, reverse=reverse, combine_mode="generic")
+    # Combine adjacent pairs, scan the pairs, then fill in the even positions.
+    odd = _scan(combine_fn, combine_fn(x[:, 0:-1:2], x[:, 1::2]))
+    even = combine_fn(odd[:, : (N - 1) // 2], x[:, 2::2])
+    out = torch.empty_like(x)
+    out[:, 0] = x[:, 0]
+    out[:, 2::2] = even
+    out[:, 1::2] = odd
+    return out
+
+
+def _check_cuda(log_emit: Tensor) -> None:
+    if not log_emit.is_cuda:
+        raise ValueError(
+            "The parallel method runs Helion kernels, which need CUDA tensors; "
+            'use method="sequential" on other devices.'
+        )
 
 
 def _parse(log_emit: Tensor, log_trans: Tensor, log_init: Tensor) -> tuple[Tensor, Tensor]:
@@ -107,6 +125,7 @@ def _forward_messages(
             alpha = torch.logsumexp(alpha.unsqueeze(-1) + step, dim=-2)
             out.append(alpha)
         return torch.stack(out, dim=1)
+    _check_cuda(log_emit)
     M = _step_matrices(log_emit, log_trans)
     scanned = _scan(_log_matmul, _fold_prior(M, log_init, torch.logsumexp))
     return scanned[..., 0, :]
@@ -123,6 +142,7 @@ def _backward_messages(log_emit: Tensor, log_trans: Tensor, method: Method) -> T
             beta = torch.logsumexp(step + beta.unsqueeze(-2), dim=-1)
             out.append(beta)
         return torch.stack(out[::-1], dim=1)
+    _check_cuda(log_emit)
     M = _step_matrices(log_emit[:, 1:], log_trans[:, 1:])
     # suffix[n] = M[n + 1] ⊗ ... ⊗ M[N - 1]; its row sums are the messages.
     suffix = _scan(lambda later, earlier: _log_matmul(earlier, later), M, reverse=True)
@@ -145,9 +165,8 @@ def hmm_forward(
         log_init (Tensor): log p(z[0] = k), of shape (K,) or (B, K).
         method (str): ``"parallel"`` for associative scans, ``"sequential"``
             for the classical recursion. The parallel scans multiply the
-            per-step matrices in log space with rescaled matrix multiplies,
-            which underflow to -inf when every term of a sum is more than
-            about 87 (float32) below its row's and column's largest terms.
+            per-step matrices exactly in log space with Helion kernels, so
+            they need CUDA tensors.
 
     Returns:
         tuple of Tensor: log p(y[0..N - 1]), of shape (B,), and the filtered
@@ -222,6 +241,7 @@ def viterbi(
             path.append(state)
         return score, torch.stack(path[::-1], dim=1)
 
+    _check_cuda(log_emit)
     M = _step_matrices(log_emit, log_trans)
     delta = _scan(_max_matmul, _fold_prior(M, log_init, lambda t, dim: t.amax(dim=dim)))[..., 0, :]
     suffix = _scan(lambda later, earlier: _max_matmul(earlier, later), M[:, 1:], reverse=True)

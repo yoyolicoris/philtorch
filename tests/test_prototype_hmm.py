@@ -5,14 +5,13 @@ import torch
 
 from philtorch.prototype.hmm import hmm_forward, hmm_posteriors, viterbi
 
-DEVICES = [
-    "cpu",
-    pytest.param(
-        "cuda",
-        marks=pytest.mark.skipif(not torch.cuda.is_available(), reason="CUDA not available"),
-    ),
+requires_cuda = pytest.mark.skipif(not torch.cuda.is_available(), reason="CUDA not available")
+# The sequential recursions run anywhere; the parallel scans run Helion kernels on CUDA.
+METHOD_DEVICES = [
+    ("sequential", "cpu"),
+    pytest.param("sequential", "cuda", marks=requires_cuda),
+    pytest.param("parallel", "cuda", marks=requires_cuda),
 ]
-METHODS = ["sequential", "parallel"]
 
 
 def _model(batch_size, N, K, *, time_varying=True, seed=0, dtype=torch.float64):
@@ -42,11 +41,10 @@ def _brute_force(log_emit, log_trans, log_init):
     return log_likelihood, posteriors.log(), joint.amax(-1), paths[best, 1:]
 
 
-@pytest.mark.parametrize("device", DEVICES)
-@pytest.mark.parametrize("method", METHODS)
+@pytest.mark.parametrize("method, device", METHOD_DEVICES)
 @pytest.mark.parametrize("time_varying", [True, False])
 @pytest.mark.parametrize("N", [1, 2, 5])
-def test_hmm_matches_brute_force(device, method, time_varying, N):
+def test_hmm_matches_brute_force(method, device, time_varying, N):
     args = [t.to(device) for t in _model(2, N, 3, time_varying=time_varying)]
     log_likelihood, log_post, best_score, best_path = _brute_force(*args)
 
@@ -64,9 +62,9 @@ def test_hmm_matches_brute_force(device, method, time_varying, N):
     torch.testing.assert_close(path, best_path)
 
 
-@pytest.mark.parametrize("method", METHODS)
-def test_hmm_posteriors_are_the_gradient_of_the_log_likelihood(method):
-    log_emit, log_trans, log_init = _model(2, 7, 4)
+@pytest.mark.parametrize("method, device", METHOD_DEVICES)
+def test_hmm_posteriors_are_the_gradient_of_the_log_likelihood(method, device):
+    log_emit, log_trans, log_init = (t.to(device) for t in _model(2, 7, 4))
     log_emit.requires_grad_()
     ll, _ = hmm_forward(log_emit, log_trans, log_init, method=method)
     (grad,) = torch.autograd.grad(ll.sum(), log_emit)
@@ -74,9 +72,30 @@ def test_hmm_posteriors_are_the_gradient_of_the_log_likelihood(method):
     torch.testing.assert_close(grad, log_post.exp())
 
 
-@pytest.mark.parametrize("device", DEVICES)
-def test_hmm_parallel_matches_sequential_in_float32(device):
-    args = [t.to(device) for t in _model(3, 1000, 8, dtype=torch.float32)]
+@pytest.mark.parametrize("method, device", METHOD_DEVICES)
+def test_hmm_second_derivatives(method, device):
+    log_emit, log_trans, log_init = (t.to(device) for t in _model(2, 4, 3))
+
+    def log_likelihood(log_emit, log_trans):
+        return hmm_forward(log_emit, log_trans, log_init, method=method)[0]
+
+    def log_posteriors(log_emit, log_trans):
+        return hmm_posteriors(log_emit, log_trans, log_init, method=method)[1]
+
+    inputs = (log_emit.requires_grad_(), log_trans.requires_grad_())
+    for fn in (log_likelihood, log_posteriors):
+        assert torch.autograd.gradgradcheck(fn, inputs)
+
+
+@requires_cuda
+def test_hmm_parallel_needs_cuda():
+    with pytest.raises(ValueError, match="CUDA"):
+        hmm_forward(*_model(1, 3, 2), method="parallel")
+
+
+@requires_cuda
+def test_hmm_parallel_matches_sequential_in_float32():
+    args = [t.cuda() for t in _model(3, 1000, 8, dtype=torch.float32)]
     # Over 1000 steps the log-messages reach thousands, so compare the
     # log-likelihood relatively and the distributions as probabilities.
     for fn in (hmm_forward, hmm_posteriors):
