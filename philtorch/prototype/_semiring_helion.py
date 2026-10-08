@@ -5,6 +5,10 @@ For a of shape (P, I, J) and b of shape (P, J, K):
 * ``log_bmm``: c[p, i, k] = logsumexp_j a[p, i, j] + b[p, j, k]
 * ``max_bmm``: c[p, i, k] = max_j a[p, i, j] + b[p, j, k]
 
+Each op has a vmap rule that folds the vmapped dimension into P, so torch's
+generic associative_scan, which vmaps its combine function, still launches
+one kernel per combine.
+
 The forward kernels tile the output and loop over j in tiles, so they need no
 (P, I, J, K) temporary. The log product keeps, for every output entry, a
 running maximum over j and a sum rescaled by it, as attention kernels do for
@@ -227,6 +231,32 @@ def _contract_backward(ctx, grad):
 weighted_contract.register_autograd(_contract_backward, setup_context=_contract_setup)
 
 
+def _fold_vmap_dim(info, in_dims, tensors):
+    """Fold each tensor's vmapped dimension into its leading batch dimension P.
+
+    The ops are batched over P already, so a vmapped call is one call on a
+    larger batch. An input without a vmapped dimension is repeated. Returns
+    the folded tensors and P, which unfolding needs when the vmapped batch is
+    empty.
+    """
+    folded, n_p = [], None
+    for t, dim in zip(tensors, in_dims):
+        t = t.movedim(dim, 0) if dim is not None else t.expand(info.batch_size, *t.shape)
+        n_p = t.size(1)
+        folded.append(t.reshape(-1, *t.shape[2:]))
+    return folded, n_p
+
+
+def _unfold_vmap_dim(info, out, n_p):
+    return out.reshape(info.batch_size, n_p, *out.shape[1:]), 0
+
+
+@weighted_contract.register_vmap
+def _(info, in_dims, a, b, c, x, y, z, over, is_max):
+    folded, n_p = _fold_vmap_dim(info, in_dims[:6], (a, b, c, x, y, z))
+    return _unfold_vmap_dim(info, weighted_contract(*folded, over, is_max), n_p)
+
+
 def _register_product(name: str, kernel, is_max: bool):
     @torch.library.custom_op(f"philtorch_prototype::{name}", mutates_args=())
     def op(a: Tensor, b: Tensor) -> Tensor:
@@ -250,6 +280,12 @@ def _register_product(name: str, kernel, is_max: bool):
         return grad_a, grad_b
 
     op.register_autograd(backward, setup_context=setup_context)
+
+    @op.register_vmap
+    def _(info, in_dims, a, b):
+        folded, n_p = _fold_vmap_dim(info, in_dims, (a, b))
+        return _unfold_vmap_dim(info, op(*folded), n_p)
+
     return op
 
 
