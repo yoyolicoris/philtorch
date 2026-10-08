@@ -168,3 +168,23 @@ def test_semiring_products_under_vmap(product):
         b[:2, :2, :3, :3].clone().requires_grad_(),
     )
     assert torch.autograd.gradgradcheck(torch.vmap(op), inputs)
+
+
+def test_hmm_gradients_with_unreachable_states():
+    # A left-to-right model that starts in state 0 and stays or advances:
+    # most entries of the prior and the transitions are -inf.
+    B, N, K = 2, 5, 3
+    log_emit, _, _ = _model(B, N, K)
+    stay_or_advance = torch.eye(K, dtype=torch.bool) | torch.eye(K, dtype=torch.bool).roll(1, 1)
+    log_trans = torch.where(torch.triu(stay_or_advance), 0.0, float("-inf")).double().cuda()
+    log_trans = log_trans - log_trans.logsumexp(-1, keepdim=True)
+    log_init = torch.tensor([0.0, float("-inf"), float("-inf")], dtype=torch.float64).cuda()
+    log_emit.requires_grad_()
+    ll, _ = hmm_forward(log_emit, log_trans, log_init)
+    (grad,) = torch.autograd.grad(ll.sum(), log_emit)
+    expected_ll, log_post, _, _ = _brute_force(log_emit.detach(), log_trans, log_init.expand(B, K))
+    torch.testing.assert_close(ll, expected_ll)
+    torch.testing.assert_close(grad, log_post.exp())
+    _, posteriors = hmm_posteriors(log_emit, log_trans, log_init)
+    (grad_post,) = torch.autograd.grad(posteriors.exp().sum(), log_emit)
+    assert torch.isfinite(grad_post).all()

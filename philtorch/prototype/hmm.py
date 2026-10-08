@@ -40,6 +40,19 @@ _log_matmul = _batched(log_bmm)
 _max_matmul = _batched(max_bmm)
 
 
+def _logsumexp(x: Tensor, dim: int, keepdim: bool = False) -> Tensor:
+    """torch.logsumexp with a zero gradient, not NaN, where all inputs are -inf.
+
+    Unreachable states, such as those a left-to-right model starts outside,
+    make whole slices -inf. Those slices are reduced over zeros instead and
+    their result put back to -inf, so no NaN reaches the gradient.
+    """
+    empty = torch.isneginf(x).all(dim=dim, keepdim=True)
+    out = torch.logsumexp(torch.where(empty, torch.zeros_like(x), x), dim=dim, keepdim=True)
+    out = torch.where(empty, float("-inf"), out)
+    return out if keepdim else out.squeeze(dim)
+
+
 def _scan(combine_fn, x: Tensor, reverse: bool = False) -> Tensor:
     """Inclusive scan of (B, N, K, K) matrices over dimension 1.
 
@@ -107,7 +120,7 @@ def _fold_prior(M: Tensor, log_init: Tensor, reduce) -> Tensor:
 def _forward_messages(log_emit: Tensor, log_trans: Tensor, log_init: Tensor) -> Tensor:
     """alpha[n][j] = log p(y[0..n], z[n + 1] = j), of shape (B, N, K)."""
     M = _step_matrices(log_emit, log_trans)
-    scanned = _scan(_log_matmul, _fold_prior(M, log_init, torch.logsumexp))
+    scanned = _scan(_log_matmul, _fold_prior(M, log_init, _logsumexp))
     return scanned[..., 0, :]
 
 
@@ -117,7 +130,7 @@ def _backward_messages(log_emit: Tensor, log_trans: Tensor) -> Tensor:
     M = _step_matrices(log_emit[:, 1:], log_trans[:, 1:])
     # suffix[n] = M[n + 1] ⊗ ... ⊗ M[N - 1]; its row sums are the messages.
     suffix = _scan(lambda later, earlier: _log_matmul(earlier, later), M, reverse=True)
-    return torch.cat([torch.logsumexp(suffix, dim=-1), log_emit.new_zeros(batch_size, 1, K)], dim=1)
+    return torch.cat([_logsumexp(suffix, dim=-1), log_emit.new_zeros(batch_size, 1, K)], dim=1)
 
 
 def hmm_forward(log_emit: Tensor, log_trans: Tensor, log_init: Tensor) -> tuple[Tensor, Tensor]:
@@ -139,7 +152,7 @@ def hmm_forward(log_emit: Tensor, log_trans: Tensor, log_init: Tensor) -> tuple[
     """
     log_trans, log_init = _parse(log_emit, log_trans, log_init)
     alpha = _forward_messages(log_emit, log_trans, log_init)
-    norm = torch.logsumexp(alpha, dim=-1, keepdim=True)
+    norm = _logsumexp(alpha, dim=-1, keepdim=True)
     return norm[:, -1, 0], alpha - norm
 
 
@@ -156,12 +169,12 @@ def hmm_posteriors(log_emit: Tensor, log_trans: Tensor, log_init: Tensor) -> tup
     log_trans, log_init = _parse(log_emit, log_trans, log_init)
     alpha = _forward_messages(log_emit, log_trans, log_init)
     beta = _backward_messages(log_emit, log_trans)
-    log_likelihood = torch.logsumexp(alpha[:, -1], dim=-1)
+    log_likelihood = _logsumexp(alpha[:, -1], dim=-1)
     # Normalize each step by its own sum rather than by the likelihood: the
     # messages grow to thousands over long inputs, and most of their rounding
     # error is shared by all states at a step, so this cancels it.
     joint = alpha + beta
-    return log_likelihood, joint - torch.logsumexp(joint, dim=-1, keepdim=True)
+    return log_likelihood, joint - _logsumexp(joint, dim=-1, keepdim=True)
 
 
 def viterbi(log_emit: Tensor, log_trans: Tensor, log_init: Tensor) -> tuple[Tensor, Tensor]:
