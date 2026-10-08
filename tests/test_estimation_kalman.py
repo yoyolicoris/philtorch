@@ -1,8 +1,8 @@
 import pytest
 import torch
 
-import philtorch.lpv.kalman as kalman
-from philtorch.lpv import kalman_filter, kalman_smoother
+import philtorch.estimation.kalman as kalman
+from philtorch.estimation import kalman_filter, kalman_smoother
 from philtorch.lpv import state_space_recursion as lpv_state_space_recursion
 
 DEVICES = [

@@ -209,11 +209,11 @@ def kalman_filter(
     place of transposes.
 
     Note:
-        As in :func:`state_space_recursion`, the prior is the state before
-        the first step, and step :math:`n` returns :math:`\mathbf{x}[n + 1]`.
-        So :math:`\mathbf{y}[n]` measures the state after :math:`A[n]`,
-        unlike the output of :func:`state_space`, which reads
-        :math:`\mathbf{x}[n]`.
+        As in :func:`~philtorch.lpv.state_space_recursion`, the prior is the
+        state before the first step, and step :math:`n` returns
+        :math:`\mathbf{x}[n + 1]`. So :math:`\mathbf{y}[n]` measures the state
+        after :math:`A[n]`, unlike the output of
+        :func:`~philtorch.lpv.state_space`, which reads :math:`\mathbf{x}[n]`.
 
     Note:
         Known inputs need no extra arguments. For
@@ -221,11 +221,13 @@ def kalman_filter(
         \mathbf{w}[n]` and :math:`\mathbf{y}[n] = C[n] \mathbf{x}[n + 1] +
         \mathbf{d}[n] + \mathbf{v}[n]`, filter the part of the state that
         :math:`\mathbf{u}` doesn't drive, then add the part it does, which
-        :func:`state_space_recursion` computes from zero. With :attr:`u` of
-        shape :math:`(B, N, M)`, :attr:`d` of shape :math:`(B, N, P)`, and
-        :attr:`A` and :attr:`C` expanded to their full shapes
-        :math:`(B, N, M, M)` and :math:`(B, N, P, M)`, such as
+        :func:`~philtorch.lpv.state_space_recursion` computes from zero. With
+        :attr:`u` of shape :math:`(B, N, M)`, :attr:`d` of shape
+        :math:`(B, N, P)`, and :attr:`A` and :attr:`C` expanded to their full
+        shapes :math:`(B, N, M, M)` and :math:`(B, N, P, M)`, such as
         ``A.expand(B, N, M, M)`` for a constant :attr:`A`::
+
+            from philtorch.lpv import state_space_recursion
 
             x_u = state_space_recursion(A, y.new_zeros(B, M), u)
             y_s = y - d - (C @ x_u.unsqueeze(-1)).squeeze(-1)
@@ -261,7 +263,7 @@ def kalman_filter(
 
     Example::
 
-        >>> from philtorch.lpv import kalman_filter
+        >>> from philtorch.estimation import kalman_filter
         >>> # A random walk with unit steps, measured with noise variance 2.
         >>> # Its prior covariance is the steady state, so the gain stays 0.5.
         >>> y = torch.ones(1, 3, 1, dtype=torch.float64)
@@ -313,7 +315,7 @@ def kalman_smoother(
 
     Example::
 
-        >>> from philtorch.lpv import kalman_smoother
+        >>> from philtorch.estimation import kalman_smoother
         >>> # The random walk of :func:`kalman_filter`'s example.
         >>> y = torch.ones(1, 3, 1, dtype=torch.float64)
         >>> one = torch.ones(1, 1, dtype=torch.float64)

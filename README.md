@@ -147,8 +147,6 @@ y_zero_phase = filtfilt(b, a, x)
             - Parameter-varying version of `scipy.signal.lfilter`. It supports not only transposed direct form II but also transposed direct form I, direct form I, and direct form II structures.
         - `state_space`:
             - Parameter-varying state-space models.
-        - `kalman_filter`, `kalman_smoother`:
-            - Kalman filters and Rauch–Tung–Striebel smoothers for linear Gaussian state-space models, parallelized over time with associative scans.
         - `state_space_recursion`:
             - The core recursion function for state-space models.
         - `linear_recurrence`:
@@ -178,6 +176,9 @@ y_zero_phase = filtfilt(b, a, x)
             - Delayed all-pole comb filters.
         - `cubic_spline`:
             - Cubic-spline interpolation for integer upsampling.
+    - `estimation`: Functions under it estimate hidden states from noisy measurements.
+        - `kalman_filter`, `kalman_smoother`:
+            - Kalman filters and Rauch–Tung–Striebel smoothers for linear Gaussian state-space models, parallelized over time with associative scans.
     - `utils`: Utility functions.
     - `mat`: Matrix operations.
     - `poly`: Polynomial operations.
@@ -186,7 +187,7 @@ For detailed API reference, please refer to the docstring of each function.
 
 ## Choose the right API
 
-The supported high-level interfaces are exported from [`philtorch.lti`](philtorch/lti/__init__.py) for fixed coefficients and [`philtorch.lpv`](philtorch/lpv/__init__.py) for coefficients that vary over time.
+The supported high-level interfaces are exported from [`philtorch.lti`](philtorch/lti/__init__.py) for fixed coefficients, [`philtorch.lpv`](philtorch/lpv/__init__.py) for coefficients that vary over time, and [`philtorch.estimation`](philtorch/estimation/__init__.py) for state estimation.
 
 | Intent | API | Notes |
 | --- | --- | --- |
@@ -196,7 +197,7 @@ The supported high-level interfaces are exported from [`philtorch.lti`](philtorc
 | Apply a time-varying filter. | `philtorch.lpv.lfilter`, `philtorch.lpv.fir`, or `philtorch.lpv.allpole` | Coefficient tensors include a time dimension aligned with the input. `lpv.lfilter` defaults to `backend="ssm"`; `backend="torchlpc"` does not support `form="tdf2"`. |
 | Evaluate a scalar linear recurrence. | `philtorch.lti.linear_recurrence` or `philtorch.lpv.linear_recurrence` | Choose the namespace according to whether the recurrence coefficient is fixed or time-varying. |
 | Evaluate a state-space system. | `philtorch.lti.state_space` or `philtorch.lpv.state_space` | Use `state_space_recursion` directly when only the internal state sequence is needed. |
-| Estimate the states of a linear Gaussian state-space model from noisy measurements. | `philtorch.lpv.kalman_filter` or `philtorch.lpv.kalman_smoother` | Constant or time-varying `A`, `C`, `Q`, and `R`; uses PyTorch's `associative_scan` in generic mode, so it needs PyTorch 2.11 or later. |
+| Estimate the states of a linear Gaussian state-space model from noisy measurements. | `philtorch.estimation.kalman_filter` or `philtorch.estimation.kalman_smoother` | Constant or time-varying `A`, `C`, `Q`, and `R`; uses PyTorch's `associative_scan` in generic mode, so it needs PyTorch 2.11 or later. |
 | Evaluate an LTI state-space system through eigendecomposition. | `philtorch.lti.diag_state_space` | Requires a diagonalisable `A`, or explicitly supplied `L`, `V`, and/or `Vinv`; diagonalisation failures propagate. |
 | Evaluate an LTI system whose states are delay lines, such as a feedback delay network. | `philtorch.lti.delay_state_space` | `delays` are positive integers, one per line; `B`, `C`, `D`, and `out_idx` follow `state_space`. `zi` holds one initial queue per line, and `(y, zf)` is returned only when it is given. |
 | Apply an LTI comb filter or cubic-spline interpolation. | `philtorch.lti.comb_filter` or `philtorch.lti.cubic_spline` | These utilities are also part of the public LTI exports. |

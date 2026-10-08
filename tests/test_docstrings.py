@@ -3,8 +3,8 @@ import doctest
 import pytest
 import torch
 
+import philtorch.estimation.kalman
 import philtorch.lpv.filtering
-import philtorch.lpv.kalman
 import philtorch.lpv.recur
 import philtorch.lpv.ssm
 import philtorch.lti.delay
@@ -28,9 +28,9 @@ MODULES = [
     philtorch.lti.recur,
     philtorch.lti.ssm,
     philtorch.lpv.filtering,
-    philtorch.lpv.kalman,
     philtorch.lpv.recur,
     philtorch.lpv.ssm,
+    philtorch.estimation.kalman,
 ]
 
 
