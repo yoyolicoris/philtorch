@@ -1,7 +1,7 @@
 """One-kernel row-wise DTW and soft-DTW in Helion, differentiable to any order.
 
 The DTW grid is a DAG: cell (i, j) has predecessors (i - 1, j), (i, j - 1) and
-(i - 1, j - 1). Three custom ops, each a Helion kernel that holds a whole row
+(i - 1, j - 1). Two custom ops, each a Helion kernel that holds a whole row
 of one batch item in registers and loops over the rows:
 
 * ``dtw_dp(cost, soft)`` -> D: the DTW recursion D = cost + min (or, for
@@ -10,9 +10,12 @@ of one batch item in registers and loops over the rows:
   accumulation y(i, j) = x(i, j) + W_down(i, j) y(i - 1, j)
   + W_right(i, j) y(i, j - 1) + W_diag(i, j) y(i - 1, j - 1), with each edge's
   weight stored at its successor.
-* ``dag_reverse(W_down, W_right, W_diag, g)`` -> e: its transpose,
-  e(i, j) = g(i, j) + W_down(i + 1, j) e(i + 1, j) + W_right(i, j + 1) e(i, j + 1)
-  + W_diag(i + 1, j + 1) e(i + 1, j + 1).
+
+and ``dag_reverse(W_down, W_right, W_diag, g)`` -> e, its transpose,
+e(i, j) = g(i, j) + W_down(i + 1, j) e(i + 1, j) + W_right(i, j + 1) e(i, j + 1)
++ W_diag(i + 1, j + 1) e(i + 1, j + 1), which is dag_forward on the grid flipped
+in both directions: there each cell's successors are its predecessors, so
+each edge's weight just moves to its predecessor before the flip.
 
 Each row is one scan. The cross-row diagonal term would need a row shifted by
 one column; instead each scan element also carries G, the composition of its
@@ -23,15 +26,14 @@ column at every position. Within a row:
   a scan of maps x -> min(A, C + x), and m(j) = min(D_prev(j), s(j - 1)).
 * dag_forward: z(j) = W_right(j + 1) y(j) + W_diag(j + 1) y_prev(j) follows a
   scan of affine maps, and y(j) = base(j) + z(j - 1).
-* dag_reverse: K(k) = W_right(k) e(k) + W_diag_next(k) e_next(k) follows a
-  reverse scan of affine maps, and e(j) = K(j + 1) + (terms at j).
 
-Derivatives. dag_forward and dag_reverse are linear and transposes of each
-other: each one's derivative with respect to its input is the other, and with
-respect to an edge weight, the product of the two ends' values, which needs
-only shifts. dtw_dp's derivative is dag_reverse with the edge weights dD(succ)
-/ dD(pred): a softmax over a cell's negated predecessors for soft-DTW, and a
-one-hot of the best one for DTW, computed from the stored D with
+Derivatives. dag_forward is linear: its derivative with respect to its input
+is its transpose, dag_reverse, which is dag_forward again, and with respect to
+an edge weight, the product of the two ends' values, which needs only shifts.
+So dag_forward's backward calls dag_forward. dtw_dp's derivative is
+dag_reverse with the edge weights dD(succ) / dD(pred): a softmax over a cell's
+negated predecessors for soft-DTW, and a one-hot of the best one for DTW,
+computed from the stored D with
 differentiable PyTorch ops. Recomputing them from D, not from the scan's own
 minima, keeps them exact: the scan sums costs in a different order, so its
 minima can differ from the stored D in the last bit. So every backward is
@@ -139,30 +141,6 @@ def _dag_forward_kernel(
     return y
 
 
-@helion.kernel(**_SETTINGS, static_shapes=True)
-def _dag_reverse_kernel(
-    w_down_next: Tensor, w_right: Tensor, w_diag_next: Tensor, g: Tensor
-) -> Tensor:
-    """e of the reverse accumulation; the *_next weights are taken at row i + 1."""
-    B, R, L = g.shape
-    e = torch.empty_like(g)
-    for tile_b in hl.tile(B, block_size=1):
-        e_next = torch.zeros_like(g[tile_b, 0, :])
-        for k in hl.grid(R):
-            i = R - 1 - k
-            extra = g[tile_b, i, :] + w_down_next[tile_b, i, :] * e_next
-            a = w_right[tile_b, i, :]
-            b = a * extra + w_diag_next[tile_b, i, :] * e_next
-            identity_a = torch.ones_like(b)
-            identity_b = torch.zeros_like(b)
-            k_right = hl.associative_scan(
-                _compose_affine, (a, b, identity_a, identity_b), dim=1, reverse=True
-            )[3]
-            e_next = k_right + extra
-            e[tile_b, i, :] = e_next
-    return e
-
-
 def _shift(t: Tensor, rows: int, cols: int, fill: float = 0.0) -> Tensor:
     """t[..., i - rows, j - cols], filled where that is outside the grid."""
     R, L = t.shape[-2:]
@@ -194,27 +172,35 @@ def dag_forward(w_down: Tensor, w_right: Tensor, w_diag: Tensor, x: Tensor) -> T
     )
 
 
-@torch.library.custom_op("philtorch_prototype::dag_reverse", mutates_args=())
-def dag_reverse(w_down: Tensor, w_right: Tensor, w_diag: Tensor, g: Tensor) -> Tensor:
-    """The reverse accumulation over the DTW grid, dag_forward's transpose."""
-    if g.numel() == 0:
-        return torch.zeros_like(g)
-    # Weights at row i + 1, zero past the last row.
-    w_down_next = F.pad(w_down[:, 1:], (0, 0, 0, 1))
-    w_diag_next = F.pad(w_diag[:, 1:], (0, 0, 0, 1))
-    return _dag_reverse_kernel(
-        w_down_next.contiguous(), w_right.contiguous(), w_diag_next.contiguous(), g.contiguous()
-    )
-
-
 @dag_forward.register_fake
 def _(w_down, w_right, w_diag, x):
     return torch.empty_like(x)
 
 
-@dag_reverse.register_fake
-def _(w_down, w_right, w_diag, g):
-    return torch.empty_like(g)
+def _flip(t: Tensor) -> Tensor:
+    return t.flip(-2, -1)
+
+
+def dag_reverse(w_down: Tensor, w_right: Tensor, w_diag: Tensor, g: Tensor) -> Tensor:
+    """The reverse accumulation over the DTW grid, dag_forward's transpose.
+
+    It is dag_forward on the grid flipped in both directions, where each
+    cell's successors become its predecessors. Each edge's weight moves from
+    its successor to its predecessor before the flip, a shift by one cell.
+    Built from dag_forward and PyTorch ops, so autograd differentiates it.
+    """
+    R, L = g.shape[-2:]
+
+    def to_predecessor(w, rows, cols):
+        return _flip(F.pad(w, (0, cols, 0, rows))[..., rows : rows + R, cols : cols + L])
+
+    e = dag_forward(
+        to_predecessor(w_down, 1, 0),
+        to_predecessor(w_right, 0, 1),
+        to_predecessor(w_diag, 1, 1),
+        _flip(g),
+    )
+    return _flip(e)
 
 
 def _weight_grads(downstream: Tensor, upstream: Tensor) -> tuple[Tensor, Tensor, Tensor]:
@@ -234,16 +220,7 @@ def _dag_forward_backward(ctx, grad_y):
     return (*_weight_grads(grad_x, y), grad_x)
 
 
-def _dag_reverse_backward(ctx, grad_e):
-    w_down, w_right, w_diag, e = ctx.saved_tensors
-    # e = (I - W^T)^-1 g: g's gradient is the forward accumulation, and an
-    # edge's is e at its successor times that gradient at its predecessor.
-    grad_g = dag_forward(w_down, w_right, w_diag, grad_e)
-    return (*_weight_grads(e, grad_g), grad_g)
-
-
 dag_forward.register_autograd(_dag_forward_backward, setup_context=_setup)
-dag_reverse.register_autograd(_dag_reverse_backward, setup_context=_setup)
 
 
 @torch.library.custom_op("philtorch_prototype::dtw_dp", mutates_args=())
