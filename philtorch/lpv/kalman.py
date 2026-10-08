@@ -135,7 +135,8 @@ def _filtering_operator(
     eye = torch.eye(F_i.size(-1), dtype=F_i.dtype, device=F_i.device)
     # X = F_j (I + G_i J_j)^-1 and Y = F_i^T (I + J_j G_i)^-1. These use inv,
     # not solve: the generic scan also calls this on empty slices, which
-    # solve's vmap batching rule fails on.
+    # vmapped solve fails on before PyTorch 2.11. With G and J positive
+    # semi-definite, I + G J has eigenvalues of at least 1, so inv is safe.
     X = F_j @ torch.linalg.inv(eye + G_i @ J_j)
     Y = F_i.mT @ torch.linalg.inv(eye + J_j @ G_i)
     return (
@@ -203,6 +204,22 @@ def kalman_filter(
         So :math:`\mathbf{y}[n]` measures the state after :math:`A[n]`,
         unlike the output of :func:`state_space`, which reads
         :math:`\mathbf{x}[n]`.
+
+    Note:
+        Known inputs need no extra arguments. For
+        :math:`\mathbf{x}[n + 1] = A[n] \mathbf{x}[n] + \mathbf{u}[n] +
+        \mathbf{w}[n]` and :math:`\mathbf{y}[n] = C[n] \mathbf{x}[n + 1] +
+        \mathbf{d}[n] + \mathbf{v}[n]`, filter the part of the state that
+        :math:`\mathbf{u}` doesn't drive, then add the part it does, which
+        :func:`state_space_recursion` computes from zero::
+
+            x_u = state_space_recursion(A, torch.zeros_like(m0), u)
+            y_s = y - d - (C @ x_u.unsqueeze(-1)).squeeze(-1)
+            means, covs = kalman_filter(y_s, A, C, Q, R, m0, P0)
+            means = means + x_u
+
+        This is exact, as the model is linear, and the covariances need no
+        correction. The same works for :func:`kalman_smoother`.
 
     Args:
         y (Tensor): measurements :math:`\mathbf{y}[n]`, of shape
