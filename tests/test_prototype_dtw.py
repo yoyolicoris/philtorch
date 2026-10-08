@@ -1,7 +1,7 @@
 import pytest
 import torch
 
-from philtorch.prototype.dtw import dtw
+from philtorch.prototype.dtw import dtw, dtw_rowwise
 
 # dtw runs Helion kernels, so it needs CUDA.
 pytestmark = pytest.mark.skipif(not torch.cuda.is_available(), reason="CUDA not available")
@@ -73,3 +73,24 @@ def test_soft_dtw_second_derivatives(step_pattern):
 def test_dtw_needs_cuda():
     with pytest.raises(ValueError, match="CUDA"):
         dtw(_cost(1, 3, 3).cpu())
+
+
+@pytest.mark.parametrize("step_pattern", ["symmetric", "asymmetric"])
+@pytest.mark.parametrize("gamma", [0.0, 0.1, 1.0])
+@pytest.mark.parametrize("N, M", [(1, 1), (1, 4), (4, 1), (5, 5), (9, 6), (6, 9), (40, 3)])
+def test_dtw_rowwise_matches_sequential(step_pattern, gamma, N, M):
+    cost = _cost(3, N, M).requires_grad_()
+    expected = _sequential(cost, gamma, step_pattern)
+    actual = dtw_rowwise(cost, gamma, step_pattern)
+    finite = expected < 1e9
+    torch.testing.assert_close(actual[finite], expected[finite])
+    assert actual[~finite].isinf().all()
+    if finite.all():
+        (grad,) = torch.autograd.grad(actual.sum(), cost)
+        (expected_grad,) = torch.autograd.grad(expected.sum(), cost)
+        torch.testing.assert_close(grad, expected_grad)
+
+
+def test_soft_dtw_rowwise_second_derivatives():
+    cost = _cost(2, 4, 5).requires_grad_()
+    assert torch.autograd.gradgradcheck(lambda c: dtw_rowwise(c, 0.5), (cost,))

@@ -103,3 +103,54 @@ def dtw(cost: Tensor, gamma: float = 0.0, step_pattern: StepPattern = "symmetric
         T = torch.cat([head.unsqueeze(-2).expand_as(T[:, 0]).unsqueeze(1), T[:, 1:]], dim=1)
         score = _reduce(product, T)[:, 0, -1]
     return -score / scale
+
+
+def dtw_rowwise(
+    cost: Tensor, gamma: float = 0.0, step_pattern: StepPattern = "symmetric"
+) -> Tensor:
+    """The (soft-)DTW distance, one row at a time with prefix computations.
+
+    After Xiao et al., "Parallelizing Dynamic Time Warping Algorithm Using
+    Prefix Computations on GPU" (HPCC 2013), extended to soft-DTW. Within row
+    n, with t[m] = cost[n, m] + softmin(D[n - 1, m], D[n - 1, m - 1]) and the
+    row's prefix sums y[m] = cost[n, 0] + ... + cost[n, m], the symmetric
+    steps give
+
+        D[n, m] = y[m] + softmin over k <= m of (t[k] - y[k]),
+
+    a prefix minimum, or for soft-DTW a prefix logsumexp. So each row is a
+    few parallel operations over its cells, and only the rows run one after
+    another. The symmetric steps are the same with the sequences swapped, so
+    the loop runs over the shorter one: min(N, M) sequential steps, N * M work
+    in all, and no M^3 work or B * N * M^2 memory as in :func:`dtw`. The
+    asymmetric steps aren't symmetric, so they always loop over N. It runs on
+    any device. The arguments and result are those of :func:`dtw`.
+    """
+    assert cost.dim() == 3, f"cost must be (B, N, M), got {tuple(cost.shape)}"
+    if step_pattern == "symmetric" and cost.size(1) > cost.size(2):
+        cost = cost.mT
+    soft = gamma > 0
+
+    def softmin(a: Tensor, b: Tensor) -> Tensor:
+        if not soft:
+            return torch.minimum(a, b)
+        return -gamma * _logsumexp(torch.stack([-a / gamma, -b / gamma]), dim=0)
+
+    inf = torch.full_like(cost[:, 0, :1], float("inf"))
+    if step_pattern == "symmetric":
+        row = cost[:, 0].cumsum(-1)
+    else:
+        row = torch.cat([cost[:, 0, :1], inf.expand(-1, cost.size(-1) - 1)], dim=-1)
+    for n in range(1, cost.size(1)):
+        # From the previous row: straight down, or diagonally from m - 1.
+        t = cost[:, n] + softmin(row, torch.cat([inf, row[:, :-1]], dim=-1))
+        if step_pattern == "asymmetric":
+            row = t
+            continue
+        y = cost[:, n].cumsum(-1)
+        z = t - y
+        if soft:
+            row = y - gamma * torch.logcumsumexp(-z / gamma, dim=-1)
+        else:
+            row = y + z.cummin(-1).values
+    return row[:, -1]
