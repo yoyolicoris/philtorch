@@ -1,4 +1,4 @@
-"""A weighted contraction with exponential weights, in Triton, differentiable to any order.
+"""A weighted contraction with exponential weights, in Triton, differentiable in reverse mode.
 
 For a of shape (P, I, J), b of shape (P, J, K) and c of shape (P, I, K),
 :func:`weighted_contract` sums
@@ -7,7 +7,8 @@ For a of shape (P, I, J), b of shape (P, J, K) and c of shape (P, I, K),
 
 with W = exp(a[i, j] + b[j, k] - c[i, k]), computed on the fly so the
 (P, I, J, K) weights are never stored. Its derivatives are contractions of
-the same form, so its backward calls itself.
+the same form, so its backward calls itself, to any order; it has no
+forward-mode or vmap rules.
 
 The HMM chains use it for the gradient of shared transition matrices, where
 W is a step's weight and the sum runs over the batch and time.

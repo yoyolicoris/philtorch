@@ -180,7 +180,7 @@ y_zero_phase = filtfilt(b, a, x)
         - `kalman_filter`, `kalman_smoother`:
             - Kalman filters and Rauch–Tung–Striebel smoothers for linear Gaussian state-space models, parallelized over time with associative scans, with the log-likelihood and the smoother's lag-one cross-covariances for fitting by gradients or EM.
         - `hmm_filter`, `hmm_smoother`, `hmm_viterbi`:
-            - The forward algorithm, forward-backward smoothing and Viterbi decoding for hidden Markov models, parallelized over time and differentiable to any order. CUDA GPUs only, as Triton kernels.
+            - The forward algorithm, forward-backward smoothing and Viterbi decoding for hidden Markov models, parallelized over time and differentiable to any order in reverse mode. CUDA GPUs only, as Triton kernels.
     - `utils`: Utility functions.
     - `mat`: Matrix operations.
     - `poly`: Polynomial operations.
@@ -200,7 +200,7 @@ The supported high-level interfaces are exported from [`philtorch.lti`](philtorc
 | Evaluate a scalar linear recurrence. | `philtorch.lti.linear_recurrence` or `philtorch.lpv.linear_recurrence` | Choose the namespace according to whether the recurrence coefficient is fixed or time-varying. |
 | Evaluate a state-space system. | `philtorch.lti.state_space` or `philtorch.lpv.state_space` | Use `state_space_recursion` directly when only the internal state sequence is needed. |
 | Estimate the states of a linear Gaussian state-space model from noisy measurements. | `philtorch.estimation.kalman_filter` or `philtorch.estimation.kalman_smoother` | Constant or time-varying `A`, `C`, `Q`, and `R`; uses PyTorch's `associative_scan` in generic mode, so it needs PyTorch 2.11 or later. |
-| Infer or decode the states of a hidden Markov model. | `philtorch.estimation.hmm_filter`, `philtorch.estimation.hmm_smoother`, or `philtorch.estimation.hmm_viterbi` | **CUDA GPUs only, as Triton kernels.** Log-probabilities in; constant or time-varying transitions. Chunked parallel scans in Triton, differentiable to any order; the work grows as K³, so they suit small state spaces on long sequences. |
+| Infer or decode the states of a hidden Markov model. | `philtorch.estimation.hmm_filter`, `philtorch.estimation.hmm_smoother`, or `philtorch.estimation.hmm_viterbi` | **CUDA GPUs only, as Triton kernels.** Log-probabilities in; constant or time-varying transitions. Chunked parallel scans in Triton, differentiable to any order in reverse mode; the work grows as K³, so they suit small state spaces on long sequences. |
 | Evaluate an LTI state-space system through eigendecomposition. | `philtorch.lti.diag_state_space` | Requires a diagonalisable `A`, or explicitly supplied `L`, `V`, and/or `Vinv`; diagonalisation failures propagate. |
 | Evaluate an LTI system whose states are delay lines, such as a feedback delay network. | `philtorch.lti.delay_state_space` | `delays` are positive integers, one per line; `B`, `C`, `D`, and `out_idx` follow `state_space`. `zi` holds one initial queue per line, and `(y, zf)` is returned only when it is given. |
 | Apply an LTI comb filter or cubic-spline interpolation. | `philtorch.lti.comb_filter` or `philtorch.lti.cubic_spline` | These utilities are also part of the public LTI exports. |

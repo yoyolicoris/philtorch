@@ -17,7 +17,7 @@ is a linear chain backwards over the same steps, with weights
 W[r, c] = exp(y[t - 1][r] + M[t][r, c] - y[t][c]) in [0, 1] that the kernel
 builds on the fly, and a linear chain's derivative is again one, so
 :class:`_LogChain` and :class:`_LinearChain` are differentiable to any
-order. The gradients of shared transition matrices sum the weighted terms
+order in reverse mode; they have no forward-mode rules. The gradients of shared transition matrices sum the weighted terms
 over the batch and time with :func:`._contract.weighted_contract`.
 """
 
@@ -55,7 +55,7 @@ def _parse(
     assert log_init.shape in ((K,), (batch_size, K)), (
         f"log_init must be {(K,)} or {(batch_size, K)}, got {tuple(log_init.shape)}"
     )
-    check_cuda_triton(name, log_emit)
+    check_cuda_triton(name, log_emit, log_trans, log_init)
     # The kernels read each K x K matrix and each step's K emissions as
     # contiguous blocks; batch and time may broadcast.
     if log_trans.stride(-1) != 1 or log_trans.stride(-2) != K:
@@ -318,12 +318,13 @@ def hmm_filter(log_emit: Tensor, log_trans: Tensor, log_init: Tensor) -> tuple[T
     Parallelization of Inference in Hidden Markov Models`_ (Hassan, Särkkä
     and García-Fernández, 2021).
 
-    The results are differentiable to any order with respect to every input,
-    so the log-likelihood can train the model's probabilities, or a network
-    that predicts them; its gradient with respect to :attr:`log_emit` is the
-    posteriors of :func:`hmm_smoother`. The scan runs in chunks of steps, a
-    few Triton kernel launches whatever N is, with O(N K^3) work, and its
-    gradients are scans of the same kind.
+    The results are differentiable to any order in reverse mode, with
+    respect to every input, so the log-likelihood can train the model's
+    probabilities, or a network that predicts them; its gradient with respect
+    to :attr:`log_emit` is the posteriors of :func:`hmm_smoother`. Forward-mode
+    automatic differentiation is not supported. The scan runs in chunks of
+    steps, a few Triton kernel launches whatever N is, with O(N K^3) work,
+    and its gradients are scans of the same kind.
 
     Note:
         Runs only on CUDA GPUs, as Triton kernels: the inputs must be CUDA

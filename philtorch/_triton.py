@@ -13,21 +13,26 @@ docstrings say so in a note:
 from torch import Tensor
 
 
-def check_cuda_triton(name: str, tensor: Tensor) -> None:
-    """Raise unless ``tensor`` is on a CUDA device and Triton is installed.
+def check_cuda_triton(name: str, *tensors: Tensor) -> None:
+    """Raise unless the tensors are on one CUDA device and Triton is installed.
 
     Args:
         name (str): the calling function's name, for the error message.
-        tensor (Tensor): an input whose device decides where the call runs.
+        *tensors (Tensor): the inputs the kernels read.
 
     Raises:
-        ValueError: if the tensor is not on a CUDA device.
+        ValueError: if a tensor is not on a CUDA device, or they are on
+            different devices.
         RuntimeError: if Triton is not installed.
     """
-    if not tensor.is_cuda:
-        raise ValueError(
-            f"{name} runs Triton kernels on CUDA GPUs only; got a tensor on {tensor.device}."
-        )
+    devices = {t.device for t in tensors}
+    for device in devices:
+        if device.type != "cuda":
+            raise ValueError(
+                f"{name} runs Triton kernels on CUDA GPUs only; got a tensor on {device}."
+            )
+    if len(devices) > 1:
+        raise ValueError(f"{name} needs its inputs on one device; got {sorted(map(str, devices))}.")
     try:
         import triton  # noqa: F401
     except ImportError as error:

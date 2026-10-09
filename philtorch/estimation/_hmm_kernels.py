@@ -88,8 +88,8 @@ def _plus(a, b, SEMIRING: tl.constexpr):
 
 @triton.jit
 def _time(c, s, N, T: tl.constexpr, REVERSE: tl.constexpr):
-    """The time of step s of chunk c, in 64 bits."""
-    t = (c * T + s).to(tl.int64)
+    """The time of step s of chunk c, a 64-bit index."""
+    t = c * T + s
     return (N - 1 - t) if REVERSE else t
 
 
@@ -133,7 +133,7 @@ def _chunk_totals_kernel(
     offset, the chain through those steps of the injections alone."""
     pid = tl.program_id(0)
     b = (pid // C).to(tl.int64)
-    c = pid % C
+    c = (pid % C).to(tl.int64)
     steps = tl.minimum(T, N - c * T)
     trans, emit = trans_ptr + b * stride_tb, emit_ptr + b * stride_eb
     p, q, inj = p_ptr + b * stride_pb, q_ptr + b * stride_qb, inj_ptr + b * stride_jb
@@ -229,7 +229,7 @@ def _chunk_sweep_kernel(
     """
     pid = tl.program_id(0)
     b = (pid // C).to(tl.int64)
-    c = pid % C
+    c = (pid % C).to(tl.int64)
     steps = tl.minimum(T, N - c * T)
     trans, emit = trans_ptr + b * stride_tb, emit_ptr + b * stride_eb
     p, q, inj = p_ptr + b * stride_pb, q_ptr + b * stride_qb, inj_ptr + b * stride_jb
@@ -391,7 +391,7 @@ def _trace_totals_kernel(
     """Chunk c's composed map, total[k] = F[cT + T - 1](... F[cT](k)), in chain order."""
     pid = tl.program_id(0)
     b = (pid // C).to(tl.int64)
-    c = pid % C
+    c = (pid % C).to(tl.int64)
     steps = tl.minimum(T, L - c * T)
     maps = maps_ptr + b * L * K
     states = tl.arange(0, BK)
@@ -409,7 +409,7 @@ def _trace_sweep_kernel(
     """x[t] = F[t](x[t - 1]) through chunk c from its start, written at time n."""
     pid = tl.program_id(0)
     b = (pid // C).to(tl.int64)
-    c = pid % C
+    c = (pid % C).to(tl.int64)
     steps = tl.minimum(T, L - c * T)
     maps = maps_ptr + b * L * K
     current = tl.load(start_ptr + pid)
