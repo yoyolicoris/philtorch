@@ -15,6 +15,14 @@ Kalman filtering
    kalman_filter
    kalman_smoother
 
+.. autoclass:: KalmanFilterResult
+   :members: means, covs, log_likelihood
+   :no-inherited-members:
+
+.. autoclass:: KalmanSmootherResult
+   :members: means, covs, cross_covs, log_likelihood
+   :no-inherited-members:
+
 Hidden Markov models
 --------------------
 

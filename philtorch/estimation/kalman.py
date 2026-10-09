@@ -1,12 +1,12 @@
 """Kalman filters and smoothers parallelized over time with associative scans.
 
-These follow Särkkä and García-Fernández, "Temporal parallelization of
-Bayesian smoothers" (IEEE TAC, 2021), as evaluated on GPUs in Särkkä and
-García-Fernández, "On the performance of prefix-sum parallel Kalman filters
-and smoothers on GPUs" (arXiv:2511.10363).
+These follow Särkkä and García-Fernández, "On the performance of prefix-sum
+parallel Kalman filters and smoothers on GPUs" (arXiv:2511.10363).
 """
 
+import math
 import re
+from typing import NamedTuple
 
 import torch
 from torch import Tensor
@@ -66,14 +66,16 @@ def _coefficient(name: str, t: Tensor, base: tuple[int, ...], batch_size: int, N
 def _parse(
     y: Tensor, A: Tensor, C: Tensor, Q: Tensor, R: Tensor, m0: Tensor, P0: Tensor
 ) -> tuple[Tensor, ...]:
+    """Validate the model: A and Q of its N - 1 transitions, C and R of its N measurements."""
     assert y.dim() == 3, f"Measurements y must be 3D (batch, time, features), got {y.shape}"
     batch_size, N, P = y.shape
     assert A.dim() >= 2 and A.size(-1) == A.size(-2), f"A must be square, got {A.shape}"
     M = A.size(-1)
+    transitions = max(N - 1, 0)
 
-    A = _coefficient("A", A, (M, M), batch_size, N)
+    A = _coefficient("A", A, (M, M), batch_size, transitions)
     C = _coefficient("C", C, (P, M), batch_size, N)
-    Q = _coefficient("Q", Q, (M, M), batch_size, N)
+    Q = _coefficient("Q", Q, (M, M), batch_size, transitions)
     R = _coefficient("R", R, (P, P), batch_size, N)
     match tuple(m0.shape):
         case (m,) if m == M:
@@ -92,10 +94,11 @@ def _parse(
                 f"P0 must be of shape {(M, M)} or {(batch_size, M, M)}, got {P0.shape}"
             )
 
-    def full(t: Tensor, *base: int) -> Tensor:
-        return t.expand(batch_size, N, *base)
+    def full(t: Tensor, steps: int, *base: int) -> Tensor:
+        return t.expand(batch_size, steps, *base)
 
-    return full(A, M, M), full(C, P, M), full(Q, M, M), full(R, P, P), m0, P0
+    A, Q = full(A, transitions, M, M), full(Q, transitions, M, M)
+    return A, full(C, N, P, M), Q, full(R, N, P, P), m0, P0
 
 
 def _mv(A: Tensor, x: Tensor) -> Tensor:
@@ -110,12 +113,22 @@ def _filtering_elements(
     These are the paper's (A, b, C, eta, J), renamed so they don't clash with
     the model's A and C.
 
-    Element n + 1 describes step n (eqs. 42-45 of the GPU paper, with their
-    k = n + 1): x[n + 1] | x[n], y[n] ~ N(F x[n] + b, G), and the likelihood
-    of y[n] given x[n] in information form (eta, J). Element 0 is the prior,
+    Element n describes x[n] (eqs. 42-45 of the GPU paper, with their
+    k = n + 1): for n >= 1, x[n] | x[n - 1], y[n] ~ N(F x[n - 1] + b, G),
+    through A[n - 1] and Q[n - 1], and the likelihood of y[n] given x[n - 1]
+    in information form (eta, J). Element 0 is the prior updated with y[0],
     which doesn't depend on any earlier state, so its F, eta and J are zero.
     """
     batch_size, M = y.size(0), A.size(-1)
+    m0 = m0.expand(batch_size, 1, M)
+    P0 = P0.expand(batch_size, 1, M, M)
+    C0, R0, y0 = C[:, :1], R[:, :1], y[:, :1]
+    S0 = C0 @ P0 @ C0.mH + R0
+    K0 = torch.linalg.solve(S0, C0 @ P0).mH
+    b0 = m0 + _mv(K0, y0 - _mv(C0, m0))
+    G0 = P0 - K0 @ S0 @ K0.mH
+
+    C, R, y = C[:, 1:], R[:, 1:], y[:, 1:]
     CA = C @ A
     S = C @ Q @ C.mH + R
     K = torch.linalg.solve(S, C @ Q).mH
@@ -125,14 +138,12 @@ def _filtering_elements(
     eta = _mv(CA.mH, torch.linalg.solve(S, y))
     J = CA.mH @ torch.linalg.solve(S, CA)
 
-    m0 = m0.expand(batch_size, 1, M)
-    P0 = P0.expand(batch_size, 1, M, M)
-    zero = torch.zeros_like(P0)
+    zero = torch.zeros_like(G0)
     return (
         torch.cat([zero, F], dim=1),
-        torch.cat([m0, b], dim=1),
-        torch.cat([P0, G], dim=1),
-        torch.cat([torch.zeros_like(m0), eta], dim=1),
+        torch.cat([b0, b], dim=1),
+        torch.cat([G0, G], dim=1),
+        torch.cat([torch.zeros_like(b0), eta], dim=1),
         torch.cat([zero, J], dim=1),
     )
 
@@ -143,10 +154,15 @@ def _filtering_operator(
     """Combine two filtering elements (Lemma 3 of the GPU paper)."""
     F_i, b_i, G_i, eta_i, J_i = earlier
     F_j, b_j, G_j, eta_j, J_j = later
-    eye = torch.eye(F_i.size(-1), dtype=F_i.dtype, device=F_i.device)
-    # X = F_j (I + G_i J_j)^-1 and Y = F_i^H (I + J_j G_i)^-1, as left solves.
-    X = torch.linalg.solve((eye + G_i @ J_j).mH, F_j.mH).mH
-    Y = torch.linalg.solve((eye + J_j @ G_i).mH, F_i).mH
+    # I + G_i J_j, adding to the product's diagonal in place. As G and J are
+    # Hermitian, I + J_j G_i is its conjugate transpose, so one factorization
+    # serves X = F_j (I + G_i J_j)^-1, a right solve, and
+    # Y = F_i^H (I + J_j G_i)^-1 = ((I + G_i J_j)^-1 F_i)^H, a left one.
+    I_GJ = G_i @ J_j
+    I_GJ.diagonal(dim1=-2, dim2=-1).add_(1)
+    LU, pivots = torch.linalg.lu_factor(I_GJ)
+    X = torch.linalg.lu_solve(LU, pivots, F_j, left=False)
+    Y = torch.linalg.lu_solve(LU, pivots, F_i).mH
     return (
         X @ F_i,
         _mv(X, b_i + _mv(G_i, eta_j)) + b_j,
@@ -159,10 +175,46 @@ def _filtering_operator(
 def _filter(
     y: Tensor, A: Tensor, C: Tensor, Q: Tensor, R: Tensor, m0: Tensor, P0: Tensor
 ) -> tuple[Tensor, Tensor]:
+    """The filtered moments of x[0], ..., x[N - 1], each given y up to it."""
     elements = _filtering_elements(y, A, C, Q, R, m0, P0)
     _, means, covs, _, _ = _scan(_filtering_operator, elements)
-    # Drop the prior: the scan's first output is x[0] before any measurement.
-    return means[:, 1:], covs[:, 1:]
+    return means, covs
+
+
+def _predicted(
+    A: Tensor, Q: Tensor, m0: Tensor, P0: Tensor, means: Tensor, covs: Tensor
+) -> tuple[Tensor, Tensor]:
+    """The moments of each x[n] given y[0], ..., y[n - 1]: the prior, then predictions."""
+    batch_size, N, M = means.shape
+    predicted_means = torch.cat([m0.expand(batch_size, 1, M), _mv(A, means[:, :-1])], dim=1)
+    predicted_covs = A @ covs[:, :-1] @ A.mH + Q
+    predicted_covs = torch.cat([P0.expand(batch_size, 1, M, M), predicted_covs], dim=1)
+    # With no measurements, there is no x[0] to predict either.
+    return predicted_means[:, :N], predicted_covs[:, :N]
+
+
+def _log_likelihood(
+    y: Tensor, C: Tensor, R: Tensor, predicted_means: Tensor, predicted_covs: Tensor
+) -> Tensor:
+    """log p(y[0], ..., y[N - 1]) = sum over n of log p(y[n] | y[0], ..., y[n - 1]).
+
+    Each term is a Gaussian density of y[n], with the mean and covariance of
+    C[n] x[n] + v[n] given the earlier measurements, from the predicted
+    moments of x[n]: real, or circularly symmetric complex for complex
+    tensors.
+    """
+    residual = y - _mv(C, predicted_means)
+    S = C @ predicted_covs @ C.mH + R
+    factor = torch.linalg.cholesky(S)
+    whitened = torch.linalg.solve_triangular(factor, residual.unsqueeze(-1), upper=False)
+    quadratic = whitened.squeeze(-1).abs().square().sum(-1)
+    log_det = 2 * factor.diagonal(dim1=-2, dim2=-1).real.log().sum(-1)
+    P = y.size(-1)
+    if y.is_complex():
+        log_densities = -(P * math.log(math.pi) + log_det + quadratic)
+    else:
+        log_densities = -0.5 * (P * math.log(2 * math.pi) + log_det + quadratic)
+    return log_densities.sum(1)
 
 
 def _smoothing_operator(
@@ -177,9 +229,61 @@ def _smoothing_operator(
     return E_i @ E_j, _mv(E_i, g_j) + g_i, E_i @ L_j @ E_i.mH + L_i
 
 
+def _smooth(
+    A: Tensor, means: Tensor, covs: Tensor, m_pred: Tensor, P_pred: Tensor
+) -> tuple[Tensor, Tensor, Tensor]:
+    """Smooth the filtered moments of x[0], ..., x[N - 1].
+
+    A takes each state but the last to the next, and m_pred[n] and P_pred[n]
+    are the moments of x[n + 1] predicted from the filtered x[n]. Returns the
+    smoothed moments and the gains E[n] of the smoothing elements, which make
+    Cov(x[n], x[n + 1] | y) = E[n] Cov(x[n + 1] | y).
+    """
+    # Element n describes x[n] given x[n + 1] and y[0], ..., y[n] (eqs. 48-50
+    # of the GPU paper): x[n] | x[n + 1] ~ N(E x[n + 1] + g, L), through A[n]
+    # and the predicted moments. The last one is the filtering result itself.
+    m_n, P_n = means[:, :-1], covs[:, :-1]
+    E = torch.linalg.solve(P_pred, A @ P_n).mH
+    g = m_n - _mv(E, m_pred)
+    L = P_n - E @ P_pred @ E.mH
+    elements = (
+        torch.cat([E, torch.zeros_like(covs[:, -1:])], dim=1),
+        torch.cat([g, means[:, -1:]], dim=1),
+        torch.cat([L, covs[:, -1:]], dim=1),
+    )
+    _, means, covs = _scan(_smoothing_operator, elements, reverse=True)
+    return means, covs, E
+
+
+class KalmanFilterResult(NamedTuple):
+    """The result of :func:`kalman_filter`."""
+
+    #: Filtered means, of shape :math:`(B, N, M)`.
+    means: Tensor
+    #: Filtered covariances, of shape :math:`(B, N, M, M)`.
+    covs: Tensor
+    #: Each signal's log marginal likelihood :math:`\log p(\mathbf{y})`, of shape :math:`(B)`.
+    log_likelihood: Tensor
+
+
+class KalmanSmootherResult(NamedTuple):
+    """The result of :func:`kalman_smoother`."""
+
+    #: Smoothed means, of shape :math:`(B, N, M)`.
+    means: Tensor
+    #: Smoothed covariances, of shape :math:`(B, N, M, M)`.
+    covs: Tensor
+    #: Lag-one cross-covariances
+    #: :math:`\mathrm{Cov}(\mathbf{x}[n + 1], \mathbf{x}[n] \mid \mathbf{y})`, of shape
+    #: :math:`(B, N - 1, M, M)`.
+    cross_covs: Tensor
+    #: Each signal's log marginal likelihood :math:`\log p(\mathbf{y})`, of shape :math:`(B)`.
+    log_likelihood: Tensor
+
+
 def kalman_filter(
     y: Tensor, A: Tensor, C: Tensor, Q: Tensor, R: Tensor, m0: Tensor, P0: Tensor
-) -> tuple[Tensor, Tensor]:
+) -> KalmanFilterResult:
     r"""Filter a linear Gaussian state-space model in parallel over time.
 
     For the model
@@ -187,62 +291,83 @@ def kalman_filter(
     .. math::
         \mathbf{x}[n + 1] &= A[n] \mathbf{x}[n] + \mathbf{w}[n],
         & \mathbf{w}[n] &\sim \mathcal{N}(\mathbf{0}, Q[n]), \\
-        \mathbf{y}[n] &= C[n] \mathbf{x}[n + 1] + \mathbf{v}[n],
+        \mathbf{y}[n] &= C[n] \mathbf{x}[n] + \mathbf{v}[n],
         & \mathbf{v}[n] &\sim \mathcal{N}(\mathbf{0}, R[n]),
 
-    with prior :math:`\mathbf{x}[0] \sim \mathcal{N}(\mathbf{m}_0, P_0)`,
-    this returns the mean and covariance of each state given the measurements
-    up to it, :math:`p(\mathbf{x}[n + 1] \mid \mathbf{y}[0], \dots,
-    \mathbf{y}[n])`, for the states :math:`\mathbf{x}[1], \dots,
-    \mathbf{x}[N]`. These are the results of the sequential Kalman filter,
-    computed instead with an associative scan of depth :math:`O(\log N)`, as
-    in Särkkä and García-Fernández (2021). The scan is PyTorch's
-    ``associative_scan`` in its generic mode, which needs PyTorch 2.11 or later.
+    with prior :math:`\mathbf{x}[0] \sim \mathcal{N}(\mathbf{m}_0, P_0)` on
+    the first state, which :math:`\mathbf{y}[0]` measures, the states are
+    :math:`\mathbf{x}[0], \dots, \mathbf{x}[N - 1]`, and :attr:`A` and
+    :attr:`Q` have the :math:`N - 1` transitions between them.
+
+    This returns the mean and covariance of each state given the
+    measurements up to it, and the log marginal likelihood
+
+    .. math::
+        \log p(\mathbf{y}[0], \dots, \mathbf{y}[N - 1]) = \sum_n \log
+        \mathcal{N}\big(\mathbf{y}[n];\ C[n] \hat{\mathbf{x}}_n,\
+        C[n] \hat{P}_n C[n]^H + R[n]\big),
+
+    with :math:`\hat{\mathbf{x}}_n` and :math:`\hat{P}_n` the moments of
+    :math:`\mathbf{x}[n]` predicted from the earlier measurements. The
+    log-likelihood is differentiable, for fitting the model's matrices by
+    gradient ascent, including matrices predicted by a network. These are the
+    results of the sequential Kalman filter, computed instead with an
+    associative scan of depth :math:`O(\log N)`, as in `On The Performance of
+    Prefix-Sum Parallel Kalman Filters and Smoothers on GPUs`_ (Särkkä and
+    García-Fernández, 2025). The scan is PyTorch's
+    :func:`associative_scan <torch._higher_order_ops.associative_scan.associative_scan>`
+    in its generic mode, which needs PyTorch 2.11 or later.
 
     Each of :attr:`A`, :attr:`C`, :attr:`Q` and :attr:`R` may be constant or
     time-varying, and shared or one per signal: its base shape below can be
-    prefixed with :math:`N` for time-varying values, :math:`B` for one per
-    signal, or :math:`(B, N)` for both. When two readings fit, such as
-    :math:`N = B`, the time-varying one is taken. Even with constant
-    matrices, the Kalman gain varies over time. Complex tensors describe
-    circularly symmetric complex Gaussian noise, with conjugate transposes in
-    place of transposes.
-
-    Note:
-        As in :func:`~philtorch.lpv.state_space_recursion`, the prior is the
-        state before the first step, and step :math:`n` returns
-        :math:`\mathbf{x}[n + 1]`. So :math:`\mathbf{y}[n]` measures the state
-        after :math:`A[n]`, unlike the output of
-        :func:`~philtorch.lpv.state_space`, which reads :math:`\mathbf{x}[n]`.
+    prefixed with its number of steps :math:`T` (:math:`N` for :attr:`C` and
+    :attr:`R`, :math:`N - 1` for :attr:`A` and :attr:`Q`) for time-varying
+    values, :math:`B` for one per signal, or :math:`(B, T)` for both. When
+    two readings fit, such as :math:`T = B`, the time-varying one is taken.
+    Even with constant matrices, the Kalman gain varies over time. Complex
+    tensors describe circularly symmetric complex Gaussian noise, with
+    conjugate transposes in place of transposes.
 
     Note:
         Known inputs need no extra arguments. For
         :math:`\mathbf{x}[n + 1] = A[n] \mathbf{x}[n] + \mathbf{u}[n] +
-        \mathbf{w}[n]` and :math:`\mathbf{y}[n] = C[n] \mathbf{x}[n + 1] +
+        \mathbf{w}[n]` and :math:`\mathbf{y}[n] = C[n] \mathbf{x}[n] +
         \mathbf{d}[n] + \mathbf{v}[n]`, filter the part of the state that
         :math:`\mathbf{u}` doesn't drive, then add the part it does, which
         :func:`~philtorch.lpv.state_space_recursion` computes from zero. With
-        :attr:`u` of shape :math:`(B, N, M)`, :attr:`d` of shape
+        :attr:`u` of shape :math:`(B, N - 1, M)`, :attr:`d` of shape
         :math:`(B, N, P)`, and :attr:`A` and :attr:`C` expanded to their full
-        shapes :math:`(B, N, M, M)` and :math:`(B, N, P, M)`, such as
-        ``A.expand(B, N, M, M)`` for a constant :attr:`A`::
+        shapes :math:`(B, N - 1, M, M)` and :math:`(B, N, P, M)`, such as
+        ``A.expand(B, N - 1, M, M)`` for a constant :attr:`A`::
 
             from philtorch.lpv import state_space_recursion
 
             x_u = state_space_recursion(A, y.new_zeros(B, M), u)
+            x_u = torch.cat([y.new_zeros(B, 1, M), x_u], dim=1)  # x_u[0] = 0
             y_s = y - d - (C @ x_u.unsqueeze(-1)).squeeze(-1)
-            means, covs = kalman_filter(y_s, A, C, Q, R, m0, P0)
-            means = means + x_u
+            result = kalman_filter(y_s, A, C, Q, R, m0, P0)
+            means = result.means + x_u
 
         This is exact, as the model is linear, and the covariances need no
         correction. The same works for :func:`kalman_smoother`.
 
+    Note:
+        A prior on the state before the first measured one, as ``zi`` in
+        :func:`~philtorch.lpv.state_space_recursion`, with :math:`N`
+        transitions :attr:`A` and :attr:`Q` into the measured states,
+        expanded to :math:`(B, N, M, M)` such as ``A.expand(B, N, M, M)`` for
+        a constant :attr:`A`, is a prior on the first measured state after
+        one prediction step::
+
+            m0 = (A[:, 0] @ m0.unsqueeze(-1)).squeeze(-1)
+            P0 = A[:, 0] @ P0 @ A[:, 0].mH + Q[:, 0]
+            result = kalman_filter(y, A[:, 1:], C, Q[:, 1:], R, m0, P0)
+
     Args:
         y (Tensor): measurements :math:`\mathbf{y}[n]`, of shape
             :math:`(B, N, P)`.
-        A (Tensor): state transition matrices :math:`A[n]`, taking
-            :math:`\mathbf{x}[n]` to :math:`\mathbf{x}[n + 1]`, of base shape
-            :math:`(M, M)`.
+        A (Tensor): state transition matrices, each taking a state to the
+            next, of base shape :math:`(M, M)`.
         C (Tensor): measurement matrices, of base shape :math:`(P, M)`.
         Q (Tensor): process noise covariances, of base shape :math:`(M, M)`.
         R (Tensor): measurement noise covariances, of base shape
@@ -253,8 +378,9 @@ def kalman_filter(
             :math:`(M, M)` or :math:`(B, M, M)`.
 
     Returns:
-        tuple of Tensor: the filtered means, of shape :math:`(B, N, M)`, and
-        covariances, of shape :math:`(B, N, M, M)`.
+        KalmanFilterResult: the filtered means, of shape :math:`(B, N, M)`,
+        and covariances, of shape :math:`(B, N, M, M)`, and the
+        log-likelihood, of shape :math:`(B)`.
 
     Raises:
         ValueError: if a coefficient has an unsupported shape.
@@ -269,44 +395,83 @@ def kalman_filter(
         >>> y = torch.ones(1, 3, 1, dtype=torch.float64)
         >>> one = torch.ones(1, 1, dtype=torch.float64)
         >>> m0 = torch.zeros(1, dtype=torch.float64)
-        >>> means, covs = kalman_filter(y, one, one, one, 2 * one, m0, one)
-        >>> means.squeeze()
+        >>> result = kalman_filter(y, one, one, one, 2 * one, m0, 2 * one)
+        >>> result.means.squeeze()
         tensor([0.5000, 0.7500, 0.8750], dtype=torch.float64)
+
+    .. _On The Performance of Prefix-Sum Parallel Kalman Filters and Smoothers on GPUs:
+        https://arxiv.org/abs/2511.10363
     """
-    return _filter(y, *_parse(y, A, C, Q, R, m0, P0))
+    A, C, Q, R, m0, P0 = _parse(y, A, C, Q, R, m0, P0)
+    means, covs = _filter(y, A, C, Q, R, m0, P0)
+    log_likelihood = _log_likelihood(y, C, R, *_predicted(A, Q, m0, P0, means, covs))
+    return KalmanFilterResult(means, covs, log_likelihood)
 
 
 def kalman_smoother(
     y: Tensor, A: Tensor, C: Tensor, Q: Tensor, R: Tensor, m0: Tensor, P0: Tensor
-) -> tuple[Tensor, Tensor]:
+) -> KalmanSmootherResult:
     r"""Smooth a linear Gaussian state-space model in parallel over time.
 
     For the model of :func:`kalman_filter`, this returns the mean and
-    covariance of each state given all the measurements,
-    :math:`p(\mathbf{x}[n + 1] \mid \mathbf{y}[0], \dots,
-    \mathbf{y}[N - 1])`, for the states :math:`\mathbf{x}[1], \dots,
-    \mathbf{x}[N]`.
-    These are the results of the Rauch--Tung--Striebel smoother, computed
-    with a reverse associative scan after :func:`kalman_filter`, as in
-    Särkkä and García-Fernández (2021). The arguments are those of
-    :func:`kalman_filter`, and the same PyTorch 2.11 requirement applies.
+    covariance of each state given all the measurements, the lag-one
+    cross-covariances :math:`\mathrm{Cov}(\mathbf{x}[n + 1], \mathbf{x}[n]
+    \mid \mathbf{y})`, and :func:`kalman_filter`'s log-likelihood: the
+    results of the Rauch--Tung--Striebel smoother, computed with a reverse
+    associative scan after the filter's, as in `On The Performance of
+    Prefix-Sum Parallel Kalman Filters and Smoothers on GPUs`_ (Särkkä and
+    García-Fernández, 2025). The cross-covariances come from the smoother's
+    gains, :math:`\mathrm{Cov}(\mathbf{x}[n], \mathbf{x}[n + 1] \mid
+    \mathbf{y}) = E[n] \, \mathrm{Cov}(\mathbf{x}[n + 1] \mid \mathbf{y})`.
+    The arguments are those of :func:`kalman_filter`, and the same PyTorch
+    2.11 requirement applies.
+
+    These are the expectations of the E-step of expectation-maximization.
+    With constant matrices and :math:`N \ge 2`, the M-step has a closed form,
+    from `An Approach to Time Series Smoothing and Forecasting Using the EM
+    Algorithm`_ (Shumway and Stoffer, 1982), here fitting one model to all
+    the signals::
+
+        from philtorch.estimation import kalman_smoother
+
+        m, V, V10, _ = kalman_smoother(y, A, C, Q, R, m0, P0)
+        outer = V + m.unsqueeze(-1) @ m.unsqueeze(-2).conj()  # E[x[n] x[n]^H]
+        cross = V10 + m[:, 1:].unsqueeze(-1) @ m[:, :-1].unsqueeze(-2).conj()
+        S00 = outer[:, :-1].sum((0, 1))  # sums of E[x[n] x[n]^H], n < N - 1
+        S11 = outer[:, 1:].sum((0, 1))  # sums of E[x[n + 1] x[n + 1]^H]
+        S10 = cross.sum((0, 1))  # sums of E[x[n + 1] x[n]^H]
+        A = torch.linalg.solve(S00, S10.mH).mH  # S10 S00^-1
+        Q = (S11 - A @ S10.mH) / (y.size(0) * (y.size(1) - 1))
+        Syx = (y.unsqueeze(-1) @ m.unsqueeze(-2).conj()).sum((0, 1))
+        C = torch.linalg.solve(outer.sum((0, 1)), Syx.mH).mH
+        yy = (y.unsqueeze(-1) @ y.unsqueeze(-2).conj()).sum((0, 1))
+        R = (yy - C @ Syx.mH) / (y.size(0) * y.size(1))
+        m0 = m[:, 0].mean(0)
+        P0 = outer[:, 0].mean(0) - m0.outer(m0.conj())
+        # Exactly Hermitian, despite rounding, for the next step's factorizations.
+        Q, R, P0 = (Q + Q.mH) / 2, (R + R.mH) / 2, (P0 + P0.mH) / 2
+
+    Each such step increases the log-likelihood until it converges.
 
     Args:
-        y (Tensor): measurements, of shape :math:`(B, N, P)`.
-        A (Tensor): state transition matrices :math:`A[n]`, taking
-            :math:`\mathbf{x}[n]` to :math:`\mathbf{x}[n + 1]`, of base shape
-            :math:`(M, M)`.
+        y (Tensor): measurements :math:`\mathbf{y}[n]`, of shape
+            :math:`(B, N, P)`.
+        A (Tensor): state transition matrices, each taking a state to the
+            next, of base shape :math:`(M, M)`.
         C (Tensor): measurement matrices, of base shape :math:`(P, M)`.
         Q (Tensor): process noise covariances, of base shape :math:`(M, M)`.
         R (Tensor): measurement noise covariances, of base shape
             :math:`(P, P)`.
-        m0 (Tensor): the prior mean, of shape :math:`(M)` or :math:`(B, M)`.
-        P0 (Tensor): the prior covariance, of shape :math:`(M, M)` or
-            :math:`(B, M, M)`.
+        m0 (Tensor): the prior mean of :math:`\mathbf{x}[0]`, of shape
+            :math:`(M)` or :math:`(B, M)`.
+        P0 (Tensor): the prior covariance of :math:`\mathbf{x}[0]`, of shape
+            :math:`(M, M)` or :math:`(B, M, M)`.
 
     Returns:
-        tuple of Tensor: the smoothed means, of shape :math:`(B, N, M)`, and
-        covariances, of shape :math:`(B, N, M, M)`.
+        KalmanSmootherResult: the smoothed means and covariances, of shapes
+        :math:`(B, N, M)` and :math:`(B, N, M, M)`, the cross-covariances, of
+        shape :math:`(B, N - 1, M, M)`, and the log-likelihood, of shape
+        :math:`(B)`.
 
     Raises:
         ValueError: if a coefficient has an unsupported shape.
@@ -320,26 +485,23 @@ def kalman_smoother(
         >>> y = torch.ones(1, 3, 1, dtype=torch.float64)
         >>> one = torch.ones(1, 1, dtype=torch.float64)
         >>> m0 = torch.zeros(1, dtype=torch.float64)
-        >>> means, covs = kalman_smoother(y, one, one, one, 2 * one, m0, one)
-        >>> means.squeeze()  # the last state has no later measurements
+        >>> result = kalman_smoother(y, one, one, one, 2 * one, m0, 2 * one)
+        >>> result.means.squeeze()  # the last state has no later measurements
         tensor([0.6562, 0.8125, 0.8750], dtype=torch.float64)
+
+    .. _On The Performance of Prefix-Sum Parallel Kalman Filters and Smoothers on GPUs:
+        https://arxiv.org/abs/2511.10363
+    .. _An Approach to Time Series Smoothing and Forecasting Using the EM Algorithm:
+        https://doi.org/10.1111/j.1467-9892.1982.tb00349.x
     """
     A, C, Q, R, m0, P0 = _parse(y, A, C, Q, R, m0, P0)
-    means, covs = _filter(y, A, C, Q, R, m0, P0)
-
-    # Element n describes x[n + 1] given x[n + 2] and y[0], ..., y[n]
-    # (eqs. 48-50): x[n + 1] | x[n + 2] ~ N(E x[n + 2] + g, L), through
-    # A[n + 1] and Q[n + 1]. The last one is the filtering result itself.
-    A_next, Q_next = A[:, 1:], Q[:, 1:]
-    m_n, P_n = means[:, :-1], covs[:, :-1]
-    P_pred = A_next @ P_n @ A_next.mH + Q_next
-    E = torch.linalg.solve(P_pred, A_next @ P_n).mH
-    g = m_n - _mv(E @ A_next, m_n)
-    L = P_n - E @ P_pred @ E.mH
-    elements = (
-        torch.cat([E, torch.zeros_like(covs[:, -1:])], dim=1),
-        torch.cat([g, means[:, -1:]], dim=1),
-        torch.cat([L, covs[:, -1:]], dim=1),
+    filtered_means, filtered_covs = _filter(y, A, C, Q, R, m0, P0)
+    predicted_means, predicted_covs = _predicted(A, Q, m0, P0, filtered_means, filtered_covs)
+    log_likelihood = _log_likelihood(y, C, R, predicted_means, predicted_covs)
+    # The predictions of x[1], ..., x[N - 1] serve the smoother too.
+    means, covs, E = _smooth(
+        A, filtered_means, filtered_covs, predicted_means[:, 1:], predicted_covs[:, 1:]
     )
-    _, means, covs = _scan(_smoothing_operator, elements, reverse=True)
-    return means, covs
+    # Cov(x[n + 1], x[n] | y) = Cov(x[n], x[n + 1] | y)^H = Cov(x[n + 1] | y) E[n]^H.
+    cross_covs = covs[:, 1:] @ E.mH
+    return KalmanSmootherResult(means, covs, cross_covs, log_likelihood)

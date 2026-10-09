@@ -6,9 +6,11 @@ time with associative scans.
 """
 
 from .hmm import hmm_filter, hmm_smoother, hmm_viterbi
-from .kalman import kalman_filter, kalman_smoother
+from .kalman import KalmanFilterResult, KalmanSmootherResult, kalman_filter, kalman_smoother
 
 __all__ = [
+    "KalmanFilterResult",
+    "KalmanSmootherResult",
     "hmm_filter",
     "hmm_smoother",
     "hmm_viterbi",

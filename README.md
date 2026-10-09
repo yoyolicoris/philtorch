@@ -178,7 +178,7 @@ y_zero_phase = filtfilt(b, a, x)
             - Cubic-spline interpolation for integer upsampling.
     - `estimation`: Functions under it estimate hidden states from noisy measurements.
         - `kalman_filter`, `kalman_smoother`:
-            - Kalman filters and Rauch–Tung–Striebel smoothers for linear Gaussian state-space models, parallelized over time with associative scans.
+            - Kalman filters and Rauch–Tung–Striebel smoothers for linear Gaussian state-space models, parallelized over time with associative scans, with the log-likelihood and the smoother's lag-one cross-covariances for fitting by gradients or EM.
     - `utils`: Utility functions.
     - `mat`: Matrix operations.
     - `poly`: Polynomial operations.
