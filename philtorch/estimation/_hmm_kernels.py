@@ -52,6 +52,7 @@ def _step_matrix(
 ):  # fmt: skip
     """M[n] of batch b as a (BK, BK) tile, or its transpose; -inf outside K x K."""
     mask = (rows < K) & (cols < K) & valid
+    n = n.to(tl.int64)
     # (i, j) of the stored matrix for tile entry (rows, cols).
     i, j = (cols, rows) if TRANSPOSE else (rows, cols)
     m = tl.load(

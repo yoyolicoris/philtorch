@@ -219,3 +219,15 @@ def test_hmm_empty_sequence():
     assert filtered.shape == (2, 0, 3) and ll.eq(0).all()
     score, path = hmm_viterbi(log_emit, log_trans[0, 0], log_init)
     assert path.shape == (2, 0)
+
+
+def test_hmm_viterbi_gradient_splits_ties():
+    # With uniform probabilities every path ties: the score's gradient is
+    # split among them, so each step's sums to 1, as torch.amax's would.
+    B, N, K = 1, 3, 2
+    log_emit = torch.zeros(B, N, K, dtype=torch.float64, device="cuda", requires_grad=True)
+    log_trans = torch.full((K, K), 0.5, dtype=torch.float64, device="cuda").log()
+    log_init = torch.full((K,), 0.5, dtype=torch.float64, device="cuda").log()
+    score, _ = hmm_viterbi(log_emit, log_trans, log_init)
+    (grad,) = torch.autograd.grad(score.sum(), log_emit)
+    torch.testing.assert_close(grad.sum(-1), torch.ones(B, N, dtype=torch.float64, device="cuda"))

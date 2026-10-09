@@ -21,7 +21,8 @@ weighted contractions
     R = sum over one of i, j, k of W[i, j, k] x[i, j] y[i, k] z[j, k],
 
 with W = exp(a[i, j] + b[j, k] - c[i, k]) for the log product, which lies in
-[0, 1], or W = [a[i, j] + b[j, k] = c[i, k]] for the max product.
+[0, 1], or W = [a[i, j] + b[j, k] = c[i, k]] for the max product, whose
+gradient splits each output's among its tied terms.
 :func:`weighted_contract` computes one, and its own derivatives are
 contractions of the same form, so its backward calls itself. For the max
 product, W is piecewise constant, so derivatives through it vanish.
@@ -49,7 +50,7 @@ def _semiring_bmm_kernel(
     """out[p, i, k] = max or logsumexp over j of a[p, i, j] + b[p, j, k]; contiguous."""
     pid = tl.program_id(0)
     t_i, t_k = tl.cdiv(n_i, BI), tl.cdiv(n_k, BK)
-    p = (pid // (t_k * t_i)) * BP + tl.arange(0, BP)[:, None, None]
+    p = (pid // (t_k * t_i)).to(tl.int64) * BP + tl.arange(0, BP)[:, None, None]
     i = (pid // t_k % t_i) * BI + tl.arange(0, BI)[None, :, None]
     k = (pid % t_k) * BK + tl.arange(0, BK)[None, None, :]
     dtype = a_ptr.dtype.element_ty
@@ -97,7 +98,7 @@ def _contract_over_k_kernel(
     """out[p, i, j] = x[p, i, j] sum_k W y[p, i, k] z[p, j, k]."""
     pid = tl.program_id(0)
     t_i, t_j = tl.cdiv(n_i, BI), tl.cdiv(n_j, BJ)
-    p = (pid // (t_j * t_i)) * BP + tl.arange(0, BP)[:, None, None]
+    p = (pid // (t_j * t_i)).to(tl.int64) * BP + tl.arange(0, BP)[:, None, None]
     i = (pid // t_j % t_i) * BI + tl.arange(0, BI)[None, :, None]
     j_col = (pid % t_j) * BJ + tl.arange(0, BJ)[None, None, :]
     j_row = (pid % t_j) * BJ + tl.arange(0, BJ)[None, :, None]
@@ -127,7 +128,7 @@ def _contract_over_i_kernel(
     """out[p, j, k] = z[p, j, k] sum_i W x[p, i, j] y[p, i, k]."""
     pid = tl.program_id(0)
     t_j, t_k = tl.cdiv(n_j, BJ), tl.cdiv(n_k, BK)
-    p = (pid // (t_k * t_j)) * BP + tl.arange(0, BP)[:, None, None]
+    p = (pid // (t_k * t_j)).to(tl.int64) * BP + tl.arange(0, BP)[:, None, None]
     j_row = (pid // t_k % t_j) * BJ + tl.arange(0, BJ)[None, :, None]
     j_col = (pid // t_k % t_j) * BJ + tl.arange(0, BJ)[None, None, :]
     k = (pid % t_k) * BK + tl.arange(0, BK)[None, None, :]
@@ -157,7 +158,7 @@ def _contract_over_j_kernel(
     """out[p, i, k] = y[p, i, k] sum_j W x[p, i, j] z[p, j, k]."""
     pid = tl.program_id(0)
     t_i, t_k = tl.cdiv(n_i, BI), tl.cdiv(n_k, BK)
-    p = (pid // (t_k * t_i)) * BP + tl.arange(0, BP)[:, None, None]
+    p = (pid // (t_k * t_i)).to(tl.int64) * BP + tl.arange(0, BP)[:, None, None]
     i = (pid // t_k % t_i) * BI + tl.arange(0, BI)[None, :, None]
     k = (pid % t_k) * BK + tl.arange(0, BK)[None, None, :]
     ik = (p * n_i + i) * n_k + k
@@ -367,6 +368,11 @@ def _register_product(name: str, kernel, is_max: bool):
     def backward(ctx, grad):
         a, b, c = ctx.saved_tensors
         ones_a, ones_b = torch.ones_like(a), torch.ones_like(b)
+        if is_max:
+            # Split each output's gradient evenly among the terms that tie for
+            # its maximum, as torch.amax does, rather than giving each all of it.
+            ties = weighted_contract(a, b, c, ones_a, torch.ones_like(c), ones_b, "j", True)
+            grad = torch.where(ties > 0, grad / ties.clamp(min=1), 0.0)
         grad_a = weighted_contract(a, b, c, ones_a, grad, ones_b, "k", is_max)
         grad_b = weighted_contract(a, b, c, ones_a, grad, ones_b, "i", is_max)
         return grad_a, grad_b

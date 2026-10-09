@@ -113,10 +113,13 @@ def _matmul(is_max: bool):
 
 
 def _use_chunked(K: int, *tensors: Tensor) -> bool:
+    """Whether the chunked kernels, which have no autograd, can serve the call."""
     from ._hmm_kernels import MAX_STATES
 
     needs_grad = torch.is_grad_enabled() and any(t.requires_grad for t in tensors)
-    return K <= MAX_STATES and not needs_grad
+    # Forward-mode dual tensors don't set requires_grad.
+    dual = any(torch.autograd.forward_ad.unpack_dual(t).tangent is not None for t in tensors)
+    return K <= MAX_STATES and not needs_grad and not dual
 
 
 def _forward_messages(
@@ -271,11 +274,17 @@ def hmm_viterbi(log_emit: Tensor, log_trans: Tensor, log_init: Tensor) -> tuple[
         log_init (Tensor): :math:`\log p(z[0] = k)`, of shape :math:`(K)` or
             :math:`(B, K)`.
 
+    The path maximizes over every state, the prior state :math:`z[0]`
+    included. For a classical HMM written with ``log_trans[0][i, :]`` set to
+    its initial distribution, give :math:`z[0]` a point mass, such as
+    ``log_init = [0, -inf, ..., -inf]`` with only ``log_trans[0][0, :]``
+    set, so that the score is that of the classical Viterbi path.
+
     Returns:
         tuple of Tensor: the best joint log-probability
-        :math:`\max \log p(z[1], \dots, z[N], y[0], \dots, y[N - 1])`, of shape
-        :math:`(B)`, and the states :math:`z[1], \dots, z[N]` of that path, of
-        shape :math:`(B, N)`.
+        :math:`\max \log p(z[0], \dots, z[N], y[0], \dots, y[N - 1])`, of
+        shape :math:`(B)`, and the states :math:`z[1], \dots, z[N]` of that
+        path, of shape :math:`(B, N)`.
 
     Raises:
         ValueError: if the inputs are not CUDA tensors or :attr:`log_trans`
