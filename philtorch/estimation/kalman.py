@@ -229,7 +229,7 @@ def _smoothing_operator(
 
 
 def _smooth(A: Tensor, Q: Tensor, means: Tensor, covs: Tensor) -> tuple[Tensor, Tensor, Tensor]:
-    """Smooth filtered moments: those of the states, A and Q of the steps out of each.
+    """Smooth the filtered moments of states; A and Q take each but the last to the next.
 
     Returns the smoothed moments and the gains E[n] of the smoothing
     elements, which make Cov(x[n], x[n + 1] | y) = E[n] Cov(x[n + 1] | y).
@@ -322,11 +322,11 @@ def kalman_filter(
     time-varying, and shared or one per signal: its base shape below can be
     prefixed with its number of steps :math:`T` (:math:`N` for :attr:`C` and
     :attr:`R`, :math:`N - 1` for :attr:`A` and :attr:`Q`) for time-varying
-    values, :math:`B` for one per signal, or
-    :math:`(B, T)` for both. When two readings fit, such as :math:`T = B`, the
-    time-varying one is taken. Even with constant matrices, the Kalman gain
-    varies over time. Complex tensors describe circularly symmetric complex
-    Gaussian noise, with conjugate transposes in place of transposes.
+    values, :math:`B` for one per signal, or :math:`(B, T)` for both. When
+    two readings fit, such as :math:`T = B`, the time-varying one is taken.
+    Even with constant matrices, the Kalman gain varies over time. Complex
+    tensors describe circularly symmetric complex Gaussian noise, with
+    conjugate transposes in place of transposes.
 
     Note:
         Known inputs need no extra arguments. For
@@ -403,7 +403,7 @@ def kalman_filter(
     A, C, Q, R, m0, P0 = _parse(y, A, C, Q, R, m0, P0)
     means, covs = _filter(y, A, C, Q, R, m0, P0)
     log_likelihood = _log_likelihood(y, C, R, *_predict(A, Q, means[:, :-1], covs[:, :-1]))
-    # The scan's first output is the identity step's input, x[0] again.
+    # Drop the scan's first output, the prior: x[0] before y[0].
     return KalmanFilterResult(means[:, 1:], covs[:, 1:], log_likelihood)
 
 
@@ -446,11 +446,11 @@ def kalman_smoother(
     time-varying, and shared or one per signal: its base shape below can be
     prefixed with its number of steps :math:`T` (:math:`N` for :attr:`C` and
     :attr:`R`, :math:`N - 1` for :attr:`A` and :attr:`Q`) for time-varying
-    values, :math:`B` for one per signal, or
-    :math:`(B, T)` for both. When two readings fit, such as :math:`T = B`, the
-    time-varying one is taken. Even with constant matrices, the Kalman gain
-    varies over time. Complex tensors describe circularly symmetric complex
-    Gaussian noise, with conjugate transposes in place of transposes.
+    values, :math:`B` for one per signal, or :math:`(B, T)` for both. When
+    two readings fit, such as :math:`T = B`, the time-varying one is taken.
+    Even with constant matrices, the Kalman gain varies over time. Complex
+    tensors describe circularly symmetric complex Gaussian noise, with
+    conjugate transposes in place of transposes.
 
     These are the expectations of the E-step of expectation-maximization.
     With constant matrices, the M-step has a closed form (Shumway and
@@ -518,8 +518,8 @@ def kalman_smoother(
     log_likelihood = _log_likelihood(
         y, C, R, *_predict(A, Q, filtered_means[:, :-1], filtered_covs[:, :-1])
     )
-    # Drop the identity step's input, x[0] again, and smooth through the
-    # model's own transitions.
+    # Drop the prior, x[0] before y[0], and smooth through the model's own
+    # transitions.
     means, covs, E = _smooth(A[:, 1:], Q[:, 1:], filtered_means[:, 1:], filtered_covs[:, 1:])
     # Cov(x[n + 1], x[n] | y) = Cov(x[n], x[n + 1] | y)^H = Cov(x[n + 1] | y) E[n]^H.
     cross_covs = covs[:, 1:] @ E.mH

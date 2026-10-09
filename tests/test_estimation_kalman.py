@@ -19,9 +19,9 @@ DEVICES = [
 def _transitions(N, prior):
     """How many steps A and Q have.
 
-    The references also take the model with its prior one step before the
-    first measured state ("before_first_step"), to check the docstring's
-    conversion; the functions take the default "first_state".
+    "first_state" is the functions' model, with the prior on the first
+    measured state. The references also take "before_first_step", a prior
+    one step before it, to check the docstring's conversion.
     """
     return N if prior == "before_first_step" else max(N - 1, 0)
 
