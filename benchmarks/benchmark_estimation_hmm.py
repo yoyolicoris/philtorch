@@ -4,10 +4,9 @@ Run from the repository root on a CUDA machine:
 
     pixi run python benchmarks/benchmark_estimation_hmm.py
 
-Each function runs twice: without gradients, which takes the chunked Triton
-kernels, and with gradients, which takes the scan of differentiable matrix
-products (the time includes the backward pass). Times exclude a warm-up call,
-which compiles the kernels.
+Each function runs without gradients, and the filter also with the gradient
+of its log-likelihood, whose time includes the backward pass. Times exclude a
+warm-up call, which compiles the kernels.
 
 To compare Viterbi decoding with torbi (https://github.com/maxrmorrison/torbi),
 build it against the environment's PyTorch, as its wheels pin older versions:

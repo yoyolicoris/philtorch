@@ -85,14 +85,10 @@ def test_sequential_reference_matches_brute_force(time_varying, N):
     torch.testing.assert_close(path, best_path)
 
 
-@pytest.mark.parametrize("implementation", ["chunked", "differentiable"])
 @pytest.mark.parametrize("time_varying", [True, False])
 @pytest.mark.parametrize("N", [1, 2, 5])
-def test_hmm_matches_brute_force(implementation, time_varying, N):
+def test_hmm_matches_brute_force(time_varying, N):
     args = _model(2, N, 3, time_varying=time_varying)
-    if implementation == "differentiable":
-        # Inputs that need gradients take the scan of differentiable products.
-        args = tuple(t.clone().requires_grad_() for t in args)
     log_likelihood, log_post, best_score, best_path = _brute_force(*args)
 
     ll, log_filtered = hmm_filter(*args)
@@ -118,18 +114,56 @@ def test_hmm_posteriors_are_the_gradient_of_the_log_likelihood():
     torch.testing.assert_close(grad, log_post.exp())
 
 
-def test_hmm_second_derivatives():
-    log_emit, log_trans, log_init = _model(2, 4, 3)
+def _transitions(log_trans, kind):
+    """The model's transitions shared as (K, K), per time step as (N - 1, K, K), or per signal."""
+    if kind == "shared":
+        return _model(1, 2, log_trans.size(-1), time_varying=False, seed=1)[1]
+    return log_trans[0] if kind == "time" else log_trans
 
-    def log_likelihood(log_emit, log_trans):
-        return hmm_filter(log_emit, log_trans, log_init)[0]
 
-    def log_posteriors(log_emit, log_trans):
-        return hmm_smoother(log_emit, log_trans, log_init)[1]
+@pytest.mark.parametrize("trans", ["shared", "time", "signal"])
+@pytest.mark.parametrize("K", [3, 17])
+def test_hmm_derivatives_to_second_order(trans, K):
+    """gradcheck and gradgradcheck, with K = 17 in the kernels' blocked path."""
+    log_emit, log_trans, log_init = _model(2, 4 if K < 10 else 3, K)
+    inputs = (log_emit, _transitions(log_trans, trans), log_init)
+    inputs = tuple(t.requires_grad_() for t in inputs)
 
-    inputs = (log_emit.requires_grad_(), log_trans.requires_grad_())
-    for fn in (log_likelihood, log_posteriors):
-        assert torch.autograd.gradgradcheck(fn, inputs)
+    def outputs(log_emit, log_trans, log_init):
+        ll, filtered = hmm_filter(log_emit, log_trans, log_init)
+        _, posteriors = hmm_smoother(log_emit, log_trans, log_init)
+        score, _ = hmm_viterbi(log_emit, log_trans, log_init)
+        return ll, filtered, posteriors, score
+
+    assert torch.autograd.gradcheck(outputs, inputs)
+    assert torch.autograd.gradgradcheck(outputs, inputs)
+
+
+@pytest.mark.parametrize("trans", ["shared", "time", "signal"])
+@pytest.mark.parametrize(("N", "K"), [(1, 3), (66, 5), (300, 17), (1000, 2)])
+def test_hmm_gradients_match_sequential(trans, N, K):
+    """Gradients against autograd through the sequential recursions.
+
+    300 and 1000 steps make the shared transitions' gradient sum over blocks.
+    """
+    log_emit, log_trans, log_init = _model(2, N, K)
+    inputs = tuple(t.requires_grad_() for t in (log_emit, _transitions(log_trans, trans), log_init))
+    weights = [torch.randn_like(t) for t in (log_emit, log_emit)]
+
+    def loss(ll, filtered, posteriors, score):
+        terms = (filtered.exp() * weights[0]).sum() + (posteriors.exp() * weights[1]).sum()
+        return terms + ll.sum() + score.sum()
+
+    ll, filtered = hmm_filter(*inputs)
+    _, posteriors = hmm_smoother(*inputs)
+    score, _ = hmm_viterbi(*inputs)
+    actual = torch.autograd.grad(loss(ll, filtered, posteriors, score), inputs)
+    expected_ll, filtered, posteriors, score, _ = _sequential(*inputs)
+    expected = torch.autograd.grad(
+        loss(expected_ll, filtered, posteriors, score), inputs, materialize_grads=True
+    )
+    for a, e in zip(actual, expected):
+        torch.testing.assert_close(a, e)
 
 
 def test_hmm_rejects_a_transition_per_state():
@@ -160,30 +194,6 @@ def test_hmm_matches_sequential_in_float32():
     assert (actual_path == path).float().mean() > 0.999
 
 
-@pytest.mark.parametrize("product", ["log", "max"])
-def test_semiring_products_under_vmap(product):
-    from philtorch.estimation._semiring import log_bmm, max_bmm
-
-    op = log_bmm if product == "log" else max_bmm
-
-    def reference(a, b):
-        terms = a.unsqueeze(-1) + b.unsqueeze(-3)
-        return terms.logsumexp(-2) if product == "log" else terms.amax(-2)
-
-    gen = torch.Generator().manual_seed(0)
-    a = torch.randn(4, 3, 5, 5, dtype=torch.float64, generator=gen).cuda()
-    b = torch.randn(4, 3, 5, 5, dtype=torch.float64, generator=gen).cuda()
-    torch.testing.assert_close(torch.vmap(op)(a, b), reference(a, b))
-    # An unbatched input is shared by every vmapped call.
-    torch.testing.assert_close(torch.vmap(op, in_dims=(0, None))(a, b[0]), reference(a, b[0]))
-    # First and second derivatives through vmap.
-    inputs = (
-        a[:2, :2, :3, :3].clone().requires_grad_(),
-        b[:2, :2, :3, :3].clone().requires_grad_(),
-    )
-    assert torch.autograd.gradgradcheck(torch.vmap(op), inputs)
-
-
 def test_hmm_gradients_with_unreachable_states():
     # A left-to-right model that starts in state 0 and stays or advances:
     # most entries of the prior and the transitions are -inf.
@@ -204,26 +214,38 @@ def test_hmm_gradients_with_unreachable_states():
     assert torch.isfinite(grad_post).all()
 
 
-@pytest.mark.parametrize("K", [1, 2, 5, 16, 32, 40])
-@pytest.mark.parametrize("N", [1, 64, 65, 66, 300, 5000])
-@pytest.mark.parametrize("time_varying", [True, False])
-def test_hmm_chunked_matches_differentiable(K, N, time_varying):
-    """The chunked kernels, past one and two levels of chunks, against the matrix scan.
+@pytest.mark.parametrize("K", [1, 2, 5, 16, 17, 32, 40, 64])
+@pytest.mark.parametrize(
+    ("N", "time_varying"), [(1, True), (64, True), (65, False), (66, True), (300, False)]
+)
+def test_hmm_matches_sequential(K, N, time_varying):
+    """The kernels around one chunk and past it, in registers (K <= 16) and in blocks.
 
     The chains run over the N - 1 transitions, so N = 64, 65 and 66 put 63,
     64 and 65 steps around the chunk size.
     """
     args = _model(2, N, K, time_varying=time_varying)
-    grad_args = tuple(t.clone().requires_grad_() for t in args)
-    for fn in (hmm_filter, hmm_smoother):
-        ll, probs = fn(*args)
-        expected_ll, expected = fn(*grad_args)
-        torch.testing.assert_close(ll, expected_ll.detach(), rtol=1e-9, atol=1e-9)
-        torch.testing.assert_close(probs, expected.detach(), rtol=1e-8, atol=1e-8)
-    score, path = hmm_viterbi(*args)
-    expected_score, expected_path = hmm_viterbi(*grad_args)
-    torch.testing.assert_close(score, expected_score.detach(), rtol=1e-9, atol=1e-9)
-    assert (path == expected_path).float().mean() > 0.999
+    ll, filtered, posteriors, score, path = _sequential(*args)
+    for fn, expected in ((hmm_filter, filtered), (hmm_smoother, posteriors)):
+        actual_ll, actual = fn(*args)
+        torch.testing.assert_close(actual_ll, ll)
+        torch.testing.assert_close(actual, expected)
+    actual_score, actual_path = hmm_viterbi(*args)
+    torch.testing.assert_close(actual_score, score)
+    torch.testing.assert_close(actual_path, path)
+
+
+def test_hmm_two_levels_of_chunks():
+    # 5000 steps are 79 chunks of 64, whose own chain takes a second level.
+    args = _model(2, 5000, 5, time_varying=False)
+    ll, filtered, posteriors, score, path = _sequential(*args)
+    actual_ll, actual = hmm_smoother(*args)
+    torch.testing.assert_close(actual_ll, ll)
+    torch.testing.assert_close(actual, posteriors)
+    torch.testing.assert_close(hmm_filter(*args)[1], filtered)
+    actual_score, actual_path = hmm_viterbi(*args)
+    torch.testing.assert_close(actual_score, score)
+    assert (actual_path == path).float().mean() > 0.999
 
 
 def test_hmm_empty_sequence():
@@ -235,9 +257,9 @@ def test_hmm_empty_sequence():
     assert path.shape == (2, 0) and score.eq(0).all()
 
 
-def test_hmm_viterbi_gradient_splits_ties():
+def test_hmm_viterbi_gradient_under_ties():
     # With uniform probabilities every path ties: the score's gradient is
-    # split among them, so each step's sums to 1, as torch.amax's would.
+    # that of the decoded one, so each step's sums to 1.
     B, N, K = 1, 3, 2
     log_emit = torch.zeros(B, N, K, dtype=torch.float64, device="cuda", requires_grad=True)
     log_trans = torch.full((K, K), 0.5, dtype=torch.float64, device="cuda").log()
