@@ -224,17 +224,20 @@ def _smoothing_operator(
     return E_i @ E_j, _mv(E_i, g_j) + g_i, E_i @ L_j @ E_i.mH + L_i
 
 
-def _smooth(A: Tensor, Q: Tensor, means: Tensor, covs: Tensor) -> tuple[Tensor, Tensor, Tensor]:
-    """Smooth the filtered moments of states; A and Q take each but the last to the next.
+def _smooth(
+    A: Tensor, means: Tensor, covs: Tensor, P_pred: Tensor
+) -> tuple[Tensor, Tensor, Tensor]:
+    """Smooth the filtered moments of x[0], ..., x[N - 1].
 
-    Returns the smoothed moments and the gains E[n] of the smoothing
-    elements, which make Cov(x[n], x[n + 1] | y) = E[n] Cov(x[n + 1] | y).
+    A takes each state but the last to the next, and P_pred[n] is the
+    covariance of x[n + 1] predicted from the filtered x[n]. Returns the
+    smoothed moments and the gains E[n] of the smoothing elements, which make
+    Cov(x[n], x[n + 1] | y) = E[n] Cov(x[n + 1] | y).
     """
     # Element n describes x[n] given x[n + 1] and y[0], ..., y[n] (eqs. 48-50
     # of the GPU paper): x[n] | x[n + 1] ~ N(E x[n + 1] + g, L), through A[n]
     # and Q[n]. The last one is the filtering result itself.
     m_n, P_n = means[:, :-1], covs[:, :-1]
-    P_pred = A @ P_n @ A.mH + Q
     E = torch.linalg.solve(P_pred, A @ P_n).mH
     g = m_n - _mv(E @ A, m_n)
     L = P_n - E @ P_pred @ E.mH
@@ -346,9 +349,10 @@ def kalman_filter(
     Note:
         A prior on the state before the first measured one, as ``zi`` in
         :func:`~philtorch.lpv.state_space_recursion`, with :math:`N`
-        transitions :attr:`A` and :attr:`Q` of shape :math:`(B, N, M, M)`
-        into the measured states, is a prior on the first measured state
-        after one prediction step::
+        transitions :attr:`A` and :attr:`Q` into the measured states,
+        expanded to :math:`(B, N, M, M)` such as ``A.expand(B, N, M, M)`` for
+        a constant :attr:`A`, is a prior on the first measured state after
+        one prediction step::
 
             m0 = (A[:, 0] @ m0.unsqueeze(-1)).squeeze(-1)
             P0 = A[:, 0] @ P0 @ A[:, 0].mH + Q[:, 0]
@@ -418,9 +422,10 @@ def kalman_smoother(
     2.11 requirement applies.
 
     These are the expectations of the E-step of expectation-maximization.
-    With constant matrices, the M-step has a closed form, from `An Approach
-    to Time Series Smoothing and Forecasting Using the EM Algorithm`_
-    (Shumway and Stoffer, 1982), here fitting one model to all the signals::
+    With constant matrices and :math:`N \ge 2`, the M-step has a closed form,
+    from `An Approach to Time Series Smoothing and Forecasting Using the EM
+    Algorithm`_ (Shumway and Stoffer, 1982), here fitting one model to all
+    the signals::
 
         from philtorch.estimation import kalman_smoother
 
@@ -438,10 +443,10 @@ def kalman_smoother(
         R = (yy - C @ Syx.mH) / (y.size(0) * y.size(1))
         m0 = m[:, 0].mean(0)
         P0 = outer[:, 0].mean(0) - m0.outer(m0.conj())
+        # Exactly Hermitian, despite rounding, for the next step's factorizations.
+        Q, R, P0 = (Q + Q.mH) / 2, (R + R.mH) / 2, (P0 + P0.mH) / 2
 
-    Each such step increases the log-likelihood until it converges. Average
-    ``Q`` and ``R`` with their conjugate transposes to keep them exactly
-    Hermitian.
+    Each such step increases the log-likelihood until it converges.
 
     Args:
         y (Tensor): measurements :math:`\mathbf{y}[n]`, of shape
@@ -486,10 +491,10 @@ def kalman_smoother(
     """
     A, C, Q, R, m0, P0 = _parse(y, A, C, Q, R, m0, P0)
     filtered_means, filtered_covs = _filter(y, A, C, Q, R, m0, P0)
-    log_likelihood = _log_likelihood(
-        y, C, R, *_predicted(A, Q, m0, P0, filtered_means, filtered_covs)
-    )
-    means, covs, E = _smooth(A, Q, filtered_means, filtered_covs)
+    predicted_means, predicted_covs = _predicted(A, Q, m0, P0, filtered_means, filtered_covs)
+    log_likelihood = _log_likelihood(y, C, R, predicted_means, predicted_covs)
+    # The predictions of x[1], ..., x[N - 1] serve the smoother too.
+    means, covs, E = _smooth(A, filtered_means, filtered_covs, predicted_covs[:, 1:])
     # Cov(x[n + 1], x[n] | y) = Cov(x[n], x[n + 1] | y)^H = Cov(x[n + 1] | y) E[n]^H.
     cross_covs = covs[:, 1:] @ E.mH
     return KalmanSmootherResult(means, covs, cross_covs, log_likelihood)

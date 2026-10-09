@@ -223,12 +223,14 @@ def test_kalman_rejects_unsupported_shapes(name, shape):
 @pytest.mark.parametrize("fn", [kalman_filter, kalman_smoother])
 def test_kalman_gradcheck(fn):
     y, A, C, Q, R, m0, P0 = _model(2, 5, 2, 1)
-    Q_factor = torch.linalg.cholesky(Q)
+    # Covariances as factors, so that gradcheck's perturbations keep them valid.
+    factors = [torch.linalg.cholesky(t) for t in (Q, R, P0)]
 
-    def run(y, A, C, Q_factor, m0):
-        return tuple(fn(y, A, C, Q_factor @ Q_factor.mT, R, m0, P0))
+    def run(y, A, C, Q_factor, R_factor, m0, P0_factor):
+        Q, R, P0 = (L @ L.mT for L in (Q_factor, R_factor, P0_factor))
+        return tuple(fn(y, A, C, Q, R, m0, P0))
 
-    inputs = [t.clone().requires_grad_() for t in (y, A, C, Q_factor, m0)]
+    inputs = [t.clone().requires_grad_() for t in (y, A, C, factors[0], factors[1], m0, factors[2])]
     assert torch.autograd.gradcheck(run, inputs)
 
 
@@ -373,7 +375,9 @@ def _em_step(y, result):
     R = (yy - C @ Syx.mH) / (y.size(0) * y.size(1))
     m0 = m[:, 0].mean(0)
     P0 = outer[:, 0].mean(0) - m0.outer(m0.conj())
-    return A, C, (Q + Q.mH) / 2, (R + R.mH) / 2, m0, (P0 + P0.mH) / 2
+    # Exactly Hermitian, despite rounding, for the next step's factorizations.
+    Q, R, P0 = (Q + Q.mH) / 2, (R + R.mH) / 2, (P0 + P0.mH) / 2
+    return A, C, Q, R, m0, P0
 
 
 @pytest.mark.parametrize("dtype", [torch.float64, torch.complex128])
