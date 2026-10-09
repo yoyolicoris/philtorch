@@ -241,7 +241,6 @@ def test_hmm_needs_cuda():
 
 
 @requires_cuda
-@requires_cuda
 def test_hmm_needs_its_inputs_on_one_device():
     log_emit, log_trans, log_init = _model(1, 3, 2)
     with pytest.raises(ValueError, match="on CUDA GPUs only; got a tensor on cpu"):
