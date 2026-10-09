@@ -24,11 +24,23 @@ def _shear(cost: Tensor, width: int) -> Tensor:
 
 
 def _band_mask(N: int, M: int, n_len: Tensor, m_len: Tensor, band: float) -> Tensor:
-    """Cells within ``band`` columns of the straight line between each item's corners."""
+    """Cells within ``band`` cells of the straight line between each pair's corners.
+
+    The distance is measured along the longer side, and the band is widened
+    where needed for consecutive rows (or columns) of it to overlap, so that
+    it always holds a path.
+    """
     i = torch.arange(N, device=n_len.device, dtype=torch.float64)[:, None]
     j = torch.arange(M, device=n_len.device, dtype=torch.float64)
-    slope = (m_len - 1).double() / (n_len - 1).clamp(min=1).double()
-    return (j - i * slope[:, None, None]).abs() <= band
+    n = (n_len - 1).double()[:, None, None]
+    m = (m_len - 1).double()[:, None, None]
+    rows_longer = n > m
+    # Along the longer side, the line advances `slope` cells per cell of the other.
+    slope = torch.where(rows_longer, n, m) / torch.where(rows_longer, m, n).clamp(min=1)
+    offset = torch.where(rows_longer, i - j * slope, j - i * slope).abs()
+    width = slope / 2  # the least that leaves a step between consecutive rows
+    one_line = torch.minimum(n, m) == 0  # a single row or column: no band to keep
+    return (offset <= torch.maximum(width, torch.full_like(width, band))) | one_line
 
 
 def dtw(
@@ -60,15 +72,17 @@ def dtw(
     The gradient of the distance with respect to :attr:`cost` is the
     alignment: the 0/1 indicator of the optimal path for DTW, and for
     soft-DTW the expected alignment, each cell's probability of being on a
-    path under the Gibbs distribution. Both come from autograd, with no
-    backtracking, and the gradient is itself differentiable, to any order.
+    path under the Gibbs distribution; with a diagonal weight :math:`w`, a
+    cell entered diagonally counts :math:`w` times. Both come from autograd,
+    with no backtracking, and the gradient is itself differentiable, to any
+    order. Costs may be ``inf`` to forbid cells.
 
     Rows of the accumulated costs are computed one after another, each with
     a parallel scan over its cells (after Xiao et al., "Parallelizing Dynamic
     Time Warping Algorithm Using Prefix Computations on GPU", HPCC 2013), in
     one Triton kernel per batch: :math:`\min(N, M)` sequential steps for the
-    symmetric and orthogonal steps, :math:`M` for the asymmetric steps, and
-    :math:`O(NM)` work and memory. The cost can be any tensor, from any
+    symmetric and orthogonal steps, at most :math:`M` for the asymmetric
+    steps, and :math:`O(NM)` work and memory. The cost can be any tensor, from any
     differentiable function of the sequences, such as the squared Euclidean
     distances between their frames.
 
@@ -94,17 +108,20 @@ def dtw(
             distance is then :math:`D[N_b - 1, M_b - 1]`. Padding costs don't
             affect it. Default: the full lengths.
         band (float, optional): a Sakoe-Chiba band: only cells within this
-            many columns of the straight line from :math:`(0, 0)` to
-            :math:`(N_b - 1, M_b - 1)` may be on a path. Default: no band.
+            many cells of the straight line from :math:`(0, 0)` to
+            :math:`(N_b - 1, M_b - 1)`, measured along the longer sequence,
+            may be on a path. Where the line is steeper than the band allows
+            a step to follow, the band widens to keep a path. Default: no band.
 
     Returns:
         Tensor: the distances, of shape :math:`(B)`; ``inf`` for a pair with
         no path, such as the asymmetric steps with :math:`N_b < M_b`.
 
     Raises:
-        ValueError: if :attr:`cost` is not on a CUDA device, or
-            :attr:`diagonal_weight` is not 1 with steps that have no weighted
-            diagonal.
+        ValueError: if :attr:`cost` is not on a CUDA device, is empty or has
+            more than :math:`2^{31} - 1` cells per pair, if
+            :attr:`step_pattern` is unknown, or if :attr:`diagonal_weight` is
+            not 1 with steps that have no weighted diagonal.
 
     Example::
 
@@ -120,6 +137,10 @@ def dtw(
     assert cost.dim() == 3, f"cost must be (B, N, M), got {tuple(cost.shape)}"
     if not cost.is_cuda:
         raise ValueError("dtw runs Triton kernels, which need a CUDA tensor.")
+    if step_pattern not in ("symmetric", "asymmetric", "orthogonal"):
+        raise ValueError(f"unknown step_pattern {step_pattern!r}")
+    if cost.size(1) == 0 or cost.size(2) == 0:
+        raise ValueError(f"cost has an empty sequence: shape {tuple(cost.shape)}")
     if diagonal_weight != 1.0 and step_pattern != "symmetric":
         raise ValueError(f"diagonal_weight needs the symmetric steps, not {step_pattern!r}.")
     from ._dtw_kernels import dtw_dp
@@ -143,7 +164,8 @@ def dtw(
         no_path = n_len < m_len
         width = int((n_len - m_len).max()) + 1 if B else 1
         if width <= 0:
-            return torch.full((B,), float("inf"), dtype=cost.dtype, device=cost.device)
+            # No pair has a path; stay in the graph, with zero gradients.
+            return torch.where(no_path, float("inf"), cost[:, 0, 0])
         cost = _shear(cost, width)
         n_len, m_len = m_len, (n_len - m_len + 1).clamp(min=1)
     if cost.size(1) > cost.size(2):

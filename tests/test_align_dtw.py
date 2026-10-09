@@ -130,31 +130,83 @@ def test_dtw_lengths(step_pattern, gamma):
     torch.testing.assert_close(grad, expected_grad)
 
 
+def _band(N, M, band):
+    """The band of dtw's docstring, by its definition, for one (N, M) pair."""
+    i = torch.arange(N, dtype=torch.float64)[:, None]
+    j = torch.arange(M, dtype=torch.float64)
+    if min(N, M) == 1:
+        return torch.ones(N, M, dtype=torch.bool)
+    if N > M:
+        slope, offset = (N - 1) / (M - 1), (i - j * (N - 1) / (M - 1)).abs()
+    else:
+        slope, offset = (M - 1) / (N - 1), (j - i * (M - 1) / (N - 1)).abs()
+    return offset <= max(band, slope / 2)
+
+
 @pytest.mark.parametrize("gamma", [0.0, 0.5])
-def test_dtw_band(gamma):
-    cost = _cost(2, 12, 9).requires_grad_()
-    band = 2.0
-    i = torch.arange(12, dtype=torch.float64)[:, None]
-    j = torch.arange(9, dtype=torch.float64)
-    allowed = ((j - i * 8 / 11).abs() <= band).expand(2, -1, -1).cuda()
+@pytest.mark.parametrize("N, M, band", [(12, 9, 2.0), (9, 12, 2.0), (10, 40, 1.0), (1, 5, 1.0)])
+def test_dtw_band(gamma, N, M, band):
+    cost = _cost(2, N, M).requires_grad_()
+    allowed = _band(N, M, band).expand(2, -1, -1).cuda()
     D = _sequential(cost, gamma, allowed=allowed)[:, -1, -1]
     actual = dtw(cost, gamma, band=band)
+    assert actual.isfinite().all()
     torch.testing.assert_close(actual, D)
     (grad,) = torch.autograd.grad(actual.sum(), cost)
     (expected_grad,) = torch.autograd.grad(D.sum(), cost)
     torch.testing.assert_close(grad, expected_grad)
-    assert grad[~allowed].abs().max() == 0
-    # On a square grid, a zero band leaves the diagonal alone.
+    assert (grad * ~allowed).abs().max() == 0
+
+
+def test_dtw_zero_band_on_a_square_grid_is_the_diagonal():
     square = _cost(2, 6, 6)
     diagonal = square.diagonal(dim1=1, dim2=2).sum(-1)
     torch.testing.assert_close(dtw(square, band=0.0), diagonal)
-    # Too narrow a band for the grid leaves no path.
-    assert dtw(cost, gamma, band=0.0).isinf().all()
+
+
+@pytest.mark.parametrize("gamma", [0.0, 0.5])
+@pytest.mark.parametrize("step_pattern", STEP_PATTERNS)
+def test_dtw_inf_costs_forbid_cells(gamma, step_pattern):
+    cost = _cost(2, 6, 5)
+    blocked = torch.zeros_like(cost, dtype=torch.bool)
+    blocked[:, 2, 1] = blocked[:, 3, 3] = True
+    expected = _sequential(cost, gamma, step_pattern, allowed=~blocked)[:, -1, -1]
+    cost = cost.masked_fill(blocked, float("inf")).requires_grad_()
+    actual = dtw(cost, gamma, step_pattern=step_pattern)
+    torch.testing.assert_close(actual, expected)
+    for create_graph in (False, True):
+        (grad,) = torch.autograd.grad(
+            actual.sum(), cost, retain_graph=True, create_graph=create_graph
+        )
+        assert grad.isfinite().all() and grad[blocked].abs().max() == 0
+
+
+@pytest.mark.parametrize("gamma", [0.0, 0.5])
+def test_dtw_inf_padding_with_lengths(gamma):
+    cost = _cost(2, 4, 4)
+    padded = cost.clone()
+    padded[:, 2:] = padded[:, :, 2:] = float("inf")
+    padded.requires_grad_()
+    lengths = (torch.tensor([2, 2]), torch.tensor([2, 2]))
+    actual = dtw(padded, gamma, lengths=lengths)
+    torch.testing.assert_close(actual, dtw(cost[:, :2, :2], gamma))
+    (grad,) = torch.autograd.grad(actual.sum(), padded, create_graph=True)
+    assert grad.isfinite().all()
 
 
 def test_dtw_asymmetric_without_a_path():
-    cost = _cost(2, 3, 5)
-    assert dtw(cost, step_pattern="asymmetric").isinf().all()
+    cost = _cost(2, 3, 5).requires_grad_()
+    distance = dtw(cost, step_pattern="asymmetric")
+    assert distance.isinf().all()
+    (grad,) = torch.autograd.grad(distance.sum(), cost)
+    assert grad.eq(0).all()
+
+
+def test_dtw_rejects_bad_arguments():
+    with pytest.raises(ValueError, match="step_pattern"):
+        dtw(_cost(1, 3, 3), step_pattern="symmetric2")
+    with pytest.raises(ValueError, match="empty"):
+        dtw(_cost(1, 0, 3))
 
 
 def test_soft_dtw_divergence():

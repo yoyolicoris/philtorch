@@ -52,8 +52,9 @@ _KERNEL_INF = tl.constexpr(_INF)
 
 @triton.jit
 def _softmin(x, y):
-    """-log(e^-x + e^-y) as min(x, y) - log(1 + e^-|x - y|); wrong if both are inf."""
-    return tl.minimum(x, y) - tl.log(1 + tl.exp(-tl.abs(x - y)))
+    """-log(e^-x + e^-y) as min(x, y) - log(1 + e^-|x - y|), and inf if both are."""
+    smaller = tl.minimum(x, y)
+    return tl.where(smaller == _KERNEL_INF, smaller, smaller - tl.log(1 + tl.exp(-tl.abs(x - y))))
 
 
 @triton.jit
@@ -64,7 +65,7 @@ def _compose_min_plus(a_l, c_l, a_r, c_r):
 
 @triton.jit
 def _compose_softmin_plus(a_l, c_l, a_r, c_r):
-    """As :func:`_compose_min_plus` with soft-min; A is never inf here."""
+    """As :func:`_compose_min_plus` with soft-min."""
     return _softmin(a_r, c_r + a_l), c_r + c_l
 
 
@@ -302,7 +303,9 @@ def _num_warps(L: int, backward: bool = False, diag: bool = False) -> int:
 
 
 # Outputs are allocated contiguous: torch.empty_like keeps a permuted input's
-# strides, and the kernels write rows contiguously.
+# strides, and the kernels write rows contiguously. Offsets within a pair are
+# 32-bit, which keeps long rows fast; the batch offset is 64-bit.
+_MAX_CELLS = 2**31 - 1
 
 
 def _launch(kernel, B: int, L: int, *args, num_warps: int | None = None):
@@ -467,6 +470,8 @@ def dtw_dp(cost: Tensor, soft: bool, diag: bool, diag_weight: float) -> Tensor:
     if ``diag``, up-left weighted by ``diag_weight``; see the module docstring."""
     if cost.numel() == 0:
         return torch.empty_like(cost, memory_format=torch.contiguous_format)
+    if cost.size(1) * cost.size(2) > _MAX_CELLS:
+        raise ValueError(f"dtw handles at most 2^31 - 1 cells per pair, got {tuple(cost.shape)}")
     return _dtw_dp(cost.contiguous(), soft, diag, diag_weight)
 
 
