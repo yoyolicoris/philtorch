@@ -17,8 +17,9 @@ is a linear chain backwards over the same steps, with weights
 W[r, c] = exp(y[t - 1][r] + M[t][r, c] - y[t][c]) in [0, 1] that the kernel
 builds on the fly, and a linear chain's derivative is again one, so
 :class:`_LogChain` and :class:`_LinearChain` are differentiable to any
-order in reverse mode; they have no forward-mode rules. The gradients of shared transition matrices sum the weighted terms
-over the batch and time with :func:`._contract.weighted_contract`.
+order in reverse mode; they have no forward-mode rules. The gradients of
+shared transition matrices sum the weighted terms over the batch and time
+with :func:`._contract.weighted_contract`.
 """
 
 import torch
