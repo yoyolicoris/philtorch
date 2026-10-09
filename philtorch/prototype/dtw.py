@@ -20,7 +20,7 @@ from torch import Tensor
 
 from .hmm import _log_matmul, _logsumexp, _max_matmul
 
-StepPattern = Literal["symmetric", "asymmetric"]
+StepPattern = Literal["symmetric", "asymmetric", "orthogonal"]
 
 
 def _reduce(combine_fn, x: Tensor) -> Tensor:
@@ -37,7 +37,8 @@ def _row_matrices(cost: Tensor, step_pattern: StepPattern, combine) -> Tensor:
 
     Scores are negated costs. With the symmetric steps a path enters row n at
     column k from above, or at k + 1 diagonally, then moves right to m; with
-    the asymmetric steps it enters at m from above or diagonally and stops.
+    the orthogonal steps only from above; with the asymmetric steps it enters
+    at m from above or diagonally and stops.
     ``combine`` merges the two ways in: max, or logaddexp for soft-DTW.
     """
     rows = cost[:, 1:]
@@ -52,6 +53,8 @@ def _row_matrices(cost: Tensor, step_pattern: StepPattern, combine) -> Tensor:
     prefix = torch.nn.functional.pad(rows.cumsum(-1), (1, 0))
     end = prefix[..., None, 1:]
     down = -(end - prefix[..., :-1, None])
+    if step_pattern == "orthogonal":
+        return torch.where(row <= col, down, float("-inf"))
     diagonal = -(end - prefix[..., 1:, None])
     # Above the diagonal both ways in are possible; on it, only from above.
     # Merging only where both exist keeps -inf out of logaddexp's gradient.
@@ -70,7 +73,8 @@ def dtw(cost: Tensor, gamma: float = 0.0, step_pattern: StepPattern = "symmetric
             -gamma log sum over paths of exp(-cost / gamma).
         step_pattern (str): ``"symmetric"`` for steps (1, 0), (0, 1) and
             (1, 1); ``"asymmetric"`` for (1, 0) and (1, 1) only, so every
-            frame of the first sequence matches one frame of the second.
+            frame of the first sequence matches one frame of the second;
+            ``"orthogonal"`` for (1, 0) and (0, 1) only.
 
     Returns:
         Tensor: the distances, of shape (B,). Their gradient with respect to
@@ -89,10 +93,11 @@ def dtw(cost: Tensor, gamma: float = 0.0, step_pattern: StepPattern = "symmetric
             return t.amax(dim=dim)
 
     # The first row's scores: from (0, 0), only rightward moves, or none.
-    first = -cost[:, 0].cumsum(-1) if step_pattern == "symmetric" else None
     if step_pattern == "asymmetric":
         first = torch.full_like(cost[:, 0], float("-inf"))
         first[:, 0] = -cost[:, 0, 0]
+    else:
+        first = -cost[:, 0].cumsum(-1)
     first = first * scale
     if cost.size(1) == 1:
         score = first[:, -1]
@@ -103,6 +108,25 @@ def dtw(cost: Tensor, gamma: float = 0.0, step_pattern: StepPattern = "symmetric
         T = torch.cat([head.unsqueeze(-2).expand_as(T[:, 0]).unsqueeze(1), T[:, 1:]], dim=1)
         score = _reduce(product, T)[:, 0, -1]
     return -score / scale
+
+
+def _shear(cost: Tensor) -> Tensor:
+    """The asymmetric steps' grid as the orthogonal steps' one.
+
+    With k = n - m, the asymmetric steps (1, 0) and (1, 1) are (0, 1) and
+    (1, 0) in (m, k), and every path from (0, 0) to (N - 1, M - 1) is one
+    from (0, 0) to (M - 1, N - M) over the same cells: sheared[b, m, k] =
+    cost[b, m + k, m], of shape (B, M, N - M + 1). Needs N >= M.
+    """
+    N, M = cost.shape[-2:]
+    m = torch.arange(M, device=cost.device)[:, None]
+    k = torch.arange(N - M + 1, device=cost.device)
+    return cost[:, m + k, m]
+
+
+def _no_path(cost: Tensor) -> Tensor:
+    """inf for every batch item: the asymmetric steps need N >= M."""
+    return torch.full_like(cost[:, 0, 0], float("inf"))
 
 
 def dtw_rowwise(
@@ -120,14 +144,20 @@ def dtw_rowwise(
 
     a prefix minimum, or for soft-DTW a prefix logsumexp. So each row is a
     few parallel operations over its cells, and only the rows run one after
-    another. The symmetric steps are the same with the sequences swapped, so
-    the loop runs over the shorter one: min(N, M) sequential steps, N * M work
-    in all, and no M^3 work or B * N * M^2 memory as in :func:`dtw`. The
-    asymmetric steps aren't symmetric, so they always loop over N. It runs on
-    any device. The arguments and result are those of :func:`dtw`.
+    another. The orthogonal steps drop the diagonal term from t, and the
+    asymmetric steps are the orthogonal ones on a sheared grid of
+    M x (N - M + 1) cells. Both remaining step sets are the same with the
+    sequences swapped, so the loop runs over the shorter side: at most
+    min(N, M) sequential steps, N * M work in all, and no M^3 work or
+    B * N * M^2 memory as in :func:`dtw`. It runs on any device. The
+    arguments and result are those of :func:`dtw`.
     """
     assert cost.dim() == 3, f"cost must be (B, N, M), got {tuple(cost.shape)}"
-    if step_pattern == "symmetric" and cost.size(1) > cost.size(2):
+    if step_pattern == "asymmetric":
+        if cost.size(1) < cost.size(2):
+            return _no_path(cost)
+        cost, step_pattern = _shear(cost), "orthogonal"
+    if cost.size(1) > cost.size(2):
         cost = cost.mT
     soft = gamma > 0
 
@@ -141,16 +171,13 @@ def dtw_rowwise(
     # row's backward write a gradient the size of the whole cost matrix.
     costs = cost.unbind(1)
     prefixes = cost.cumsum(-1).unbind(1)  # every row's prefix sums at once
-    if step_pattern == "symmetric":
-        row = prefixes[0]
-    else:
-        row = torch.cat([costs[0][:, :1], inf.expand(-1, cost.size(-1) - 1)], dim=-1)
+    row = prefixes[0]
     for n in range(1, cost.size(1)):
         # From the previous row: straight down, or diagonally from m - 1.
-        t = costs[n] + softmin(row, torch.cat([inf, row[:, :-1]], dim=-1))
-        if step_pattern == "asymmetric":
-            row = t
-            continue
+        if step_pattern == "orthogonal":
+            t = costs[n] + row
+        else:
+            t = costs[n] + softmin(row, torch.cat([inf, row[:, :-1]], dim=-1))
         y = prefixes[n]
         z = t - y
         if soft:
@@ -160,22 +187,28 @@ def dtw_rowwise(
     return row[:, -1]
 
 
-def dtw_fused(cost: Tensor, gamma: float = 0.0) -> Tensor:
-    """The (soft-)DTW distance with symmetric steps, in single Helion kernels.
+def dtw_fused(cost: Tensor, gamma: float = 0.0, step_pattern: StepPattern = "symmetric") -> Tensor:
+    """The (soft-)DTW distance in single Helion kernels.
 
-    The row-wise prefix method of :func:`dtw_rowwise`, with the loop over the
-    shorter sequence inside one kernel. The gradient, the alignment, is the
-    reverse accumulation over the grid with each step's weight, another
-    one-kernel op, and every backward differentiates again. Inputs must be
-    CUDA tensors.
+    The row-wise prefix method of :func:`dtw_rowwise` with the loop inside
+    one kernel, as a scan along each row, over the shorter side; the
+    asymmetric steps are the orthogonal ones on the sheared grid, as there.
+    The gradient, the alignment, is the reverse
+    accumulation over the grid with each step's weight, another one-kernel
+    op, and every backward differentiates again. The arguments and result are
+    those of :func:`dtw`; inputs must be CUDA tensors.
     """
     from ._dtw_helion import dtw_dp
 
     assert cost.dim() == 3, f"cost must be (B, N, M), got {tuple(cost.shape)}"
     if not cost.is_cuda:
         raise ValueError("dtw_fused runs Helion kernels, which need CUDA tensors.")
+    if step_pattern == "asymmetric":
+        if cost.size(1) < cost.size(2):
+            return _no_path(cost)
+        cost, step_pattern = _shear(cost), "orthogonal"
     if cost.size(1) > cost.size(2):
         cost = cost.mT
     scale = 1.0 / gamma if gamma > 0 else 1.0
-    D = dtw_dp(cost * scale, gamma > 0)
+    D = dtw_dp(cost * scale, gamma > 0, step_pattern == "symmetric")
     return D[:, -1, -1] / scale

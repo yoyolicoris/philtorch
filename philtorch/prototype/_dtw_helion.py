@@ -4,8 +4,9 @@ The DTW grid is a DAG: cell (i, j) has predecessors (i - 1, j), (i, j - 1) and
 (i - 1, j - 1). Two custom ops, each a Helion kernel that holds a whole row
 of one batch item in registers and loops over the rows:
 
-* ``dtw_dp(cost, soft)`` -> D: the DTW recursion D = cost + min (or, for
-  soft-DTW, softmin) over a cell's predecessors.
+* ``dtw_dp(cost, soft, diag)`` -> D: the DTW recursion D = cost + min (or,
+  for soft-DTW, softmin) over a cell's predecessors, without the diagonal
+  step unless ``diag``.
 * ``dag_forward(W_down, W_right, W_diag, x)`` -> y: the linear forward
   accumulation y(i, j) = x(i, j) + W_down(i, j) y(i - 1, j)
   + W_right(i, j) y(i, j - 1) + W_diag(i, j) y(i - 1, j - 1), with each edge's
@@ -24,6 +25,7 @@ column at every position. Within a row:
 
 * dtw_dp: s(j) = min(D_prev(j), D(j)) follows s(j) = min(alpha(j), c(j) + s(j - 1)),
   a scan of maps x -> min(A, C + x), and m(j) = min(D_prev(j), s(j - 1)).
+  Without the diagonal step, D itself follows such maps, with no G.
 * dag_forward: z(j) = W_right(j + 1) y(j) + W_diag(j + 1) y_prev(j) follows a
   scan of affine maps, and y(j) = base(j) + z(j - 1).
 
@@ -46,14 +48,33 @@ import helion
 import helion.language as hl
 import torch
 import torch.nn.functional as F
+from helion.experimental import aot_kernel
 from torch import Tensor
 
-# Forked precompile processes can hang or fail in a multithreaded parent, which
-# shows up as NoConfigFound once several kernels have been tuned; spawn them.
-_SETTINGS = {"autotune_precompile": "spawn"} | (
-    {} if os.environ.get("HELION_AUTOTUNE_EFFORT") else {"autotune_effort": "quick"}
-)
+from ._aot import Dispatch
+
+# The kernels are tuned ahead of time by scripts/helion_aot.py, and pick their
+# configuration from the _helion_aot_* files next to this one; without a file
+# for the GPU they use Helion's default configuration and never autotune. These
+# settings apply to the tuning. Forked precompile processes can fail in a
+# multithreaded parent, so spawn them. The adaptive compile timeout carries
+# over from one shape's tuning to the next, so after a small shape every
+# configuration of a long one times out: fix the timeout instead.
+_SETTINGS = {
+    "autotune_precompile": "spawn",
+    "autotune_adaptive_timeout": False,
+    "autotune_compile_timeout": 120,
+} | ({} if os.environ.get("HELION_AUTOTUNE_EFFORT") else {"autotune_effort": "quick"})
+# Host code only. Inside a kernel a module constant becomes an attribute of
+# this module, which standalone files can't import: spell it out there.
 _INF = float("inf")
+# Only the row length chooses the configuration: the batch and the number of
+# rows, a loop inside each program, are marked as batched dimensions.
+_BATCHED = [0, 1, None]
+# Configurations without tuning for the GPU, and seeds for the tuning: many
+# warps for long rows.
+_DTW_DP_FALLBACK = helion.Config(num_warps=16)
+_DAG_FORWARD_FALLBACK = helion.Config(num_warps=8)
 
 
 def _compose_min_plus(a_l, c_l, ga_l, gc_l, a_r, c_r, ga_r, gc_r):
@@ -70,17 +91,28 @@ def _compose_min_plus(a_l, c_l, ga_l, gc_l, a_r, c_r, ga_r, gc_r):
     )
 
 
-def _compose_softmin_plus(a_l, c_l, ga_l, gc_l, a_r, c_r, ga_r, gc_r):
-    """As :func:`_compose_min_plus` with softmin(x, y) = -log(e^-x + e^-y).
+def _softmin(x, y):
+    """-log(e^-x + e^-y) as min(x, y) - log(1 + e^-|x - y|); wrong if both are inf."""
+    return torch.minimum(x, y) - torch.log(1 + torch.exp(-torch.abs(x - y)))
 
-    Written as min(x, y) - log(1 + e^-|x - y|): inside these scans at most one
-    of x and y is inf (only G starts at the identity, and A is finite).
+
+def _compose_softmin_plus(a_l, c_l, ga_l, gc_l, a_r, c_r, ga_r, gc_r):
+    """As :func:`_compose_min_plus` with min replaced by softmin.
+
+    Unguarded: inside these scans at most one of the two terms is inf (only G
+    starts at the identity, and A is finite).
     """
-    x, y = a_r, c_r + a_l
-    a = torch.minimum(x, y) - torch.log(1 + torch.exp(-torch.abs(x - y)))
-    gx, gy = ga_r, gc_r + a_l
-    ga = torch.minimum(gx, gy) - torch.log(1 + torch.exp(-torch.abs(gx - gy)))
-    return a, c_r + c_l, ga, gc_r + c_l
+    return _softmin(a_r, c_r + a_l), c_r + c_l, _softmin(ga_r, gc_r + a_l), gc_r + c_l
+
+
+def _compose_min_plus_whole(a_l, c_l, a_r, c_r):
+    """:func:`_compose_min_plus` without G."""
+    return torch.minimum(a_r, c_r + a_l), c_r + c_l
+
+
+def _compose_softmin_plus_whole(a_l, c_l, a_r, c_r):
+    """:func:`_compose_softmin_plus` without G."""
+    return _softmin(a_r, c_r + a_l), c_r + c_l
 
 
 def _compose_affine(a_l, b_l, ga_l, gb_l, a_r, b_r, ga_r, gb_r):
@@ -88,43 +120,46 @@ def _compose_affine(a_l, b_l, ga_l, gb_l, a_r, b_r, ga_r, gb_r):
     return a_r * a_l, a_r * b_l + b_r, ga_r * a_l, ga_r * b_l + gb_r
 
 
-# static_shapes: the best configuration depends strongly on the row length.
-@helion.kernel(**_SETTINGS, static_shapes=True)
-def _dtw_dp_kernel(cost: Tensor, soft: hl.constexpr) -> tuple[Tensor, Tensor]:
-    """D of cost (B, R, L), and the min-terms of rows 1, ...; row 0's are unset."""
+# Dynamic shapes, so one compiled kernel serves every length, and standalone
+# files work for any shape; the configuration still depends on the row length.
+@aot_kernel(batched=[_BATCHED, None, None], autotune_seed_configs=_DTW_DP_FALLBACK, **_SETTINGS)
+def _dtw_dp_kernel(cost: Tensor, soft: hl.constexpr, diag: hl.constexpr) -> Tensor:
+    """D of cost (B, R, L), with steps up, left and, if ``diag``, up-left."""
     B, R, L = cost.shape
     D = torch.empty_like(cost)
-    m_all = torch.empty_like(cost)
     for tile_b in hl.tile(B, block_size=1):
         prev = hl.cumsum(cost[tile_b, 0, :], dim=1)
         D[tile_b, 0, :] = prev
         for n in hl.grid(1, R):
             c = cost[tile_b, n, :]
-            identity_a = torch.full_like(c, _INF)
+            identity_a = torch.full_like(c, float("inf"))
             identity_c = torch.zeros_like(c)
-            if soft:
+            if not diag:
+                # D(j) = min(c(j) + prev(j), c(j) + D(j - 1)): a scan of the
+                # maps x -> min(A, C + x), whose whole value is D itself.
+                if soft:
+                    prev = hl.associative_scan(_compose_softmin_plus_whole, (c + prev, c), dim=1)[0]
+                else:
+                    prev = hl.associative_scan(_compose_min_plus_whole, (c + prev, c), dim=1)[0]
+            elif soft:
                 # c + prev and prev are finite, so the plain form is safe.
-                alpha = torch.minimum(prev, c + prev) - torch.log(1 + torch.exp(-torch.abs(c)))
+                alpha = _softmin(prev, c + prev)
                 s_left = hl.associative_scan(
                     _compose_softmin_plus, (alpha, c, identity_a, identity_c), dim=1
                 )[2]
                 # s_left is inf only in column 0, where prev is finite.
-                m = torch.minimum(prev, s_left) - torch.log(
-                    1 + torch.exp(-torch.abs(prev - s_left))
-                )
+                prev = c + _softmin(prev, s_left)
             else:
                 alpha = torch.minimum(prev, c + prev)
                 s_left = hl.associative_scan(
                     _compose_min_plus, (alpha, c, identity_a, identity_c), dim=1
                 )[2]
-                m = torch.minimum(prev, s_left)
-            prev = c + m
+                prev = c + torch.minimum(prev, s_left)
             D[tile_b, n, :] = prev
-            m_all[tile_b, n, :] = m
-    return D, m_all
+    return D
 
 
-@helion.kernel(**_SETTINGS, static_shapes=True)
+@aot_kernel(batched=[_BATCHED] * 4, autotune_seed_configs=_DAG_FORWARD_FALLBACK, **_SETTINGS)
 def _dag_forward_kernel(
     w_down: Tensor, w_right_next: Tensor, w_diag_next: Tensor, x: Tensor
 ) -> Tensor:
@@ -143,6 +178,10 @@ def _dag_forward_kernel(
             y_prev = base + z_left
             y[tile_b, i, :] = y_prev
     return y
+
+
+_dtw_dp = Dispatch(_dtw_dp_kernel, _DTW_DP_FALLBACK)
+_dag_forward = Dispatch(_dag_forward_kernel, _DAG_FORWARD_FALLBACK)
 
 
 def _shift(t: Tensor, rows: int, cols: int, fill: float = 0.0) -> Tensor:
@@ -171,7 +210,7 @@ def dag_forward(w_down: Tensor, w_right: Tensor, w_diag: Tensor, x: Tensor) -> T
     # Weights at column j + 1, zero past the last column.
     w_right_next = F.pad(w_right[..., 1:], (0, 1))
     w_diag_next = F.pad(w_diag[..., 1:], (0, 1))
-    return _dag_forward_kernel(
+    return _dag_forward(
         w_down.contiguous(), w_right_next.contiguous(), w_diag_next.contiguous(), x.contiguous()
     )
 
@@ -228,25 +267,29 @@ dag_forward.register_autograd(_dag_forward_backward, setup_context=_setup)
 
 
 @torch.library.custom_op("philtorch_prototype::dtw_dp", mutates_args=())
-def dtw_dp(cost: Tensor, soft: bool) -> Tensor:
-    """The accumulated costs D of the DTW recursion over cost (B, R, L)."""
-    return _dtw_dp_kernel(cost.contiguous(), soft)[0]
+def dtw_dp(cost: Tensor, soft: bool, diag: bool) -> Tensor:
+    """The accumulated costs D over cost (B, R, L), with steps up, left and,
+    if ``diag``, up-left."""
+    if cost.numel() == 0:
+        return torch.empty_like(cost)
+    return _dtw_dp(cost.contiguous(), soft, diag)
 
 
 @dtw_dp.register_fake
-def _(cost, soft):
+def _(cost, soft, diag):
     return torch.empty_like(cost)
 
 
-def edge_weights(D: Tensor, soft: bool) -> tuple[Tensor, Tensor, Tensor]:
+def edge_weights(D: Tensor, soft: bool, diag: bool = True) -> tuple[Tensor, Tensor, Tensor]:
     """How much each cell's D took from each predecessor, stored at the cell.
 
     From the stored D alone, so the weights are exact for DTW, a one-hot of
     the best predecessor, and sum to 1 for soft-DTW, a softmax over the
-    negated predecessors; predecessors outside the grid get 0.
-    Differentiable in D for soft-DTW; constant for DTW.
+    negated predecessors; predecessors outside the grid or along a step not
+    taken get 0. Differentiable in D for soft-DTW; constant for DTW.
     """
-    preds = torch.stack([_up(D, _INF), _left(D, _INF), _up_left(D, _INF)])
+    up_left = _up_left(D, _INF) if diag else torch.full_like(D, _INF)
+    preds = torch.stack([_up(D, _INF), _left(D, _INF), up_left])
     outside = torch.isinf(preds)
     if soft:
         # Cell (0, 0) has no predecessor: give its softmax finite inputs.
@@ -258,7 +301,7 @@ def edge_weights(D: Tensor, soft: bool) -> tuple[Tensor, Tensor, Tensor]:
 
 
 def _dtw_dp_setup(ctx, inputs, output):
-    ctx.soft = inputs[1]
+    ctx.steps = inputs[1:]
     ctx.save_for_backward(output)
 
 
@@ -266,7 +309,7 @@ def _dtw_dp_backward(ctx, grad_D):
     (D,) = ctx.saved_tensors
     # D(succ) = cost(succ) + softmin over predecessors, and the weights are
     # dD(succ) / dD(pred), so the cost's gradient is the reverse accumulation.
-    return dag_reverse(*edge_weights(D, ctx.soft), grad_D), None
+    return dag_reverse(*edge_weights(D, *ctx.steps), grad_D), None, None
 
 
 dtw_dp.register_autograd(_dtw_dp_backward, setup_context=_dtw_dp_setup)

@@ -32,23 +32,43 @@ import os
 import helion
 import helion.language as hl
 import torch
+from helion.experimental import aot_kernel
 from torch import Tensor
 
-# Forked precompile processes can hang or fail in a multithreaded parent, which
-# shows up as NoConfigFound once several kernels have been tuned; spawn them.
-_SETTINGS = {"autotune_precompile": "spawn"} | (
-    {} if os.environ.get("HELION_AUTOTUNE_EFFORT") else {"autotune_effort": "quick"}
-)
+from ._aot import Dispatch
+
+# The kernels are tuned ahead of time by scripts/helion_aot.py, and pick their
+# configuration from the _helion_aot_* files next to this one; without a file
+# for the GPU they use Helion's default configuration and never autotune. These
+# settings apply to the tuning. Forked precompile processes can fail in a
+# multithreaded parent, so spawn them. The adaptive compile timeout carries
+# over from one shape's tuning to the next, so after a small shape every
+# configuration of a long one times out: fix the timeout instead.
+_SETTINGS = {
+    "autotune_precompile": "spawn",
+    "autotune_adaptive_timeout": False,
+    "autotune_compile_timeout": 120,
+} | ({} if os.environ.get("HELION_AUTOTUNE_EFFORT") else {"autotune_effort": "quick"})
+# Host code only: kernels spell it out, as a module constant there would
+# become an attribute of this module, which standalone files cannot import.
 _NEG_INF = float("-inf")
+# The leading dimension P is a batch: it doesn't choose the configuration.
+_PRODUCT_BATCHED = [[0, None, None]] * 2
+_CONTRACT_BATCHED = [[0, None, None]] * 6 + [None]
+# Configurations without tuning for the GPU, and seeds for the tuning: Helion's
+# default tiles P by 16 too, and its 16^4-element temporaries can take minutes
+# to compile, so a search that starts from it alone can find nothing.
+_PRODUCT_FALLBACK = helion.Config(block_sizes=[1, 8, 8, 8], num_warps=4)
+_CONTRACT_FALLBACK = helion.Config(block_sizes=[1, 16, 16, 16], num_warps=4)
 
 
-@helion.kernel(**_SETTINGS, static_shapes=False)
+@aot_kernel(batched=_PRODUCT_BATCHED, autotune_seed_configs=_PRODUCT_FALLBACK, **_SETTINGS)
 def _log_bmm_kernel(a: Tensor, b: Tensor) -> Tensor:
     n_p, n_i, n_j = a.shape
     n_k = b.size(-1)
     out = torch.empty([n_p, n_i, n_k], dtype=a.dtype, device=a.device)
     for tile_p, tile_i, tile_k in hl.tile([n_p, n_i, n_k]):
-        running_max = hl.full([tile_p, tile_i, tile_k], _NEG_INF, dtype=a.dtype)
+        running_max = hl.full([tile_p, tile_i, tile_k], float("-inf"), dtype=a.dtype)
         running_sum = hl.zeros([tile_p, tile_i, tile_k], dtype=a.dtype)
         for tile_j in hl.tile(n_j):
             terms = (
@@ -56,7 +76,7 @@ def _log_bmm_kernel(a: Tensor, b: Tensor) -> Tensor:
             )
             new_max = torch.maximum(running_max, torch.amax(terms, dim=2))
             # Shift by 0 while everything so far is -inf, to avoid -inf - -inf.
-            shift = torch.where(new_max == _NEG_INF, torch.zeros_like(new_max), new_max)
+            shift = torch.where(new_max == float("-inf"), torch.zeros_like(new_max), new_max)
             running_sum = running_sum * torch.exp(running_max - shift) + torch.sum(
                 torch.exp(terms - shift[:, :, None, :]), dim=2
             )
@@ -65,13 +85,13 @@ def _log_bmm_kernel(a: Tensor, b: Tensor) -> Tensor:
     return out
 
 
-@helion.kernel(**_SETTINGS, static_shapes=False)
+@aot_kernel(batched=_PRODUCT_BATCHED, autotune_seed_configs=_PRODUCT_FALLBACK, **_SETTINGS)
 def _max_bmm_kernel(a: Tensor, b: Tensor) -> Tensor:
     n_p, n_i, n_j = a.shape
     n_k = b.size(-1)
     out = torch.empty([n_p, n_i, n_k], dtype=a.dtype, device=a.device)
     for tile_p, tile_i, tile_k in hl.tile([n_p, n_i, n_k]):
-        running_max = hl.full([tile_p, tile_i, tile_k], _NEG_INF, dtype=a.dtype)
+        running_max = hl.full([tile_p, tile_i, tile_k], float("-inf"), dtype=a.dtype)
         for tile_j in hl.tile(n_j):
             terms = (
                 a[tile_p, tile_i, tile_j][:, :, :, None] + b[tile_p, tile_j, tile_k][:, None, :, :]
@@ -85,7 +105,7 @@ def _max_bmm_kernel(a: Tensor, b: Tensor) -> Tensor:
 # term is -inf too and contributes nothing.
 
 
-@helion.kernel(**_SETTINGS, static_shapes=False)
+@aot_kernel(batched=_CONTRACT_BATCHED, autotune_seed_configs=_CONTRACT_FALLBACK, **_SETTINGS)
 def _contract_over_k(
     a: Tensor, b: Tensor, c: Tensor, x: Tensor, y: Tensor, z: Tensor, is_max: hl.constexpr
 ) -> Tensor:
@@ -101,9 +121,9 @@ def _contract_over_k(
                 a[tile_p, tile_i, tile_j][:, :, :, None] + b[tile_p, tile_j, tile_k][:, None, :, :]
             )
             if is_max:
-                w = torch.where((terms == cc) & (cc != _NEG_INF), 1.0, 0.0)
+                w = torch.where((terms == cc) & (cc != float("-inf")), 1.0, 0.0)
             else:
-                w = torch.where(cc == _NEG_INF, 0.0, torch.exp(terms - cc))
+                w = torch.where(cc == float("-inf"), 0.0, torch.exp(terms - cc))
             acc = acc + torch.sum(
                 w
                 * y[tile_p, tile_i, tile_k][:, :, None, :]
@@ -114,7 +134,7 @@ def _contract_over_k(
     return out
 
 
-@helion.kernel(**_SETTINGS, static_shapes=False)
+@aot_kernel(batched=_CONTRACT_BATCHED, autotune_seed_configs=_CONTRACT_FALLBACK, **_SETTINGS)
 def _contract_over_i(
     a: Tensor, b: Tensor, c: Tensor, x: Tensor, y: Tensor, z: Tensor, is_max: hl.constexpr
 ) -> Tensor:
@@ -130,9 +150,9 @@ def _contract_over_i(
                 a[tile_p, tile_i, tile_j][:, :, :, None] + b[tile_p, tile_j, tile_k][:, None, :, :]
             )
             if is_max:
-                w = torch.where((terms == cc) & (cc != _NEG_INF), 1.0, 0.0)
+                w = torch.where((terms == cc) & (cc != float("-inf")), 1.0, 0.0)
             else:
-                w = torch.where(cc == _NEG_INF, 0.0, torch.exp(terms - cc))
+                w = torch.where(cc == float("-inf"), 0.0, torch.exp(terms - cc))
             acc = acc + torch.sum(
                 w
                 * x[tile_p, tile_i, tile_j][:, :, :, None]
@@ -143,7 +163,7 @@ def _contract_over_i(
     return out
 
 
-@helion.kernel(**_SETTINGS, static_shapes=False)
+@aot_kernel(batched=_CONTRACT_BATCHED, autotune_seed_configs=_CONTRACT_FALLBACK, **_SETTINGS)
 def _contract_over_j(
     a: Tensor, b: Tensor, c: Tensor, x: Tensor, y: Tensor, z: Tensor, is_max: hl.constexpr
 ) -> Tensor:
@@ -159,9 +179,9 @@ def _contract_over_j(
                 a[tile_p, tile_i, tile_j][:, :, :, None] + b[tile_p, tile_j, tile_k][:, None, :, :]
             )
             if is_max:
-                w = torch.where((terms == cc) & (cc != _NEG_INF), 1.0, 0.0)
+                w = torch.where((terms == cc) & (cc != float("-inf")), 1.0, 0.0)
             else:
-                w = torch.where(cc == _NEG_INF, 0.0, torch.exp(terms - cc))
+                w = torch.where(cc == float("-inf"), 0.0, torch.exp(terms - cc))
             acc = acc + torch.sum(
                 w
                 * x[tile_p, tile_i, tile_j][:, :, :, None]
@@ -172,7 +192,11 @@ def _contract_over_j(
     return out
 
 
-_CONTRACT_KERNELS = {"i": _contract_over_i, "j": _contract_over_j, "k": _contract_over_k}
+_CONTRACT_KERNELS = {
+    "i": Dispatch(_contract_over_i, _CONTRACT_FALLBACK),
+    "j": Dispatch(_contract_over_j, _CONTRACT_FALLBACK),
+    "k": Dispatch(_contract_over_k, _CONTRACT_FALLBACK),
+}
 # Each factor and its index pair; a contraction's output is the pair without
 # the summed index.
 _PAIRS = {"x": "ij", "y": "ik", "z": "jk"}
@@ -191,7 +215,9 @@ def weighted_contract(
     if out_like.numel() == 0 or a.size(-1) == 0:
         return torch.zeros_like(out_like)
     args = [t.contiguous() for t in (a, b, c, x, y, z)]
-    return _CONTRACT_KERNELS[over](*args, hl.constexpr(is_max))
+    # A plain bool: the annotation makes it constexpr, and the AOT decision
+    # trees read it as a feature only as a number.
+    return _CONTRACT_KERNELS[over](*args, is_max)
 
 
 @weighted_contract.register_fake
@@ -293,5 +319,5 @@ def _register_product(name: str, kernel, is_max: bool):
     return op
 
 
-log_bmm = _register_product("log_bmm", _log_bmm_kernel, is_max=False)
-max_bmm = _register_product("max_bmm", _max_bmm_kernel, is_max=True)
+log_bmm = _register_product("log_bmm", Dispatch(_log_bmm_kernel, _PRODUCT_FALLBACK), is_max=False)
+max_bmm = _register_product("max_bmm", Dispatch(_max_bmm_kernel, _PRODUCT_FALLBACK), is_max=True)
