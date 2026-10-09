@@ -4,7 +4,7 @@ The accumulated cost of a row of the DTW matrix is a min-plus matrix product
 of the previous row, so the distance is a product of per-row matrices, which
 a tree reduction computes in O(log N) rounds of batched matrix products. With
 ``gamma > 0`` the products are in the log semiring, giving soft-DTW (Cuturi
-and Blondel, 2017). The products are the Helion kernels of the HMM prototype,
+and Blondel, 2017). The products are the Triton kernels of the HMM prototype,
 so the inputs must be CUDA tensors.
 
 The gradient of the distance with respect to the cost matrix is the
@@ -82,7 +82,7 @@ def dtw(cost: Tensor, gamma: float = 0.0, step_pattern: StepPattern = "symmetric
     """
     assert cost.dim() == 3, f"cost must be (B, N, M), got {tuple(cost.shape)}"
     if not cost.is_cuda:
-        raise ValueError("dtw runs Helion kernels, which need CUDA tensors.")
+        raise ValueError("dtw runs Triton kernels, which need CUDA tensors.")
     scale = 1.0 / gamma if gamma > 0 else 1.0
     if gamma > 0:
         product, combine, reduce = _log_matmul, torch.logaddexp, _logsumexp
@@ -188,7 +188,7 @@ def dtw_rowwise(
 
 
 def dtw_fused(cost: Tensor, gamma: float = 0.0, step_pattern: StepPattern = "symmetric") -> Tensor:
-    """The (soft-)DTW distance in single Helion kernels.
+    """The (soft-)DTW distance in single Triton kernels.
 
     The row-wise prefix method of :func:`dtw_rowwise` with the loop inside
     one kernel, as a scan along each row, over the shorter side; the
@@ -198,11 +198,11 @@ def dtw_fused(cost: Tensor, gamma: float = 0.0, step_pattern: StepPattern = "sym
     op, and every backward differentiates again. The arguments and result are
     those of :func:`dtw`; inputs must be CUDA tensors.
     """
-    from ._dtw_helion import dtw_dp
+    from ._dtw_triton import dtw_dp
 
     assert cost.dim() == 3, f"cost must be (B, N, M), got {tuple(cost.shape)}"
     if not cost.is_cuda:
-        raise ValueError("dtw_fused runs Helion kernels, which need CUDA tensors.")
+        raise ValueError("dtw_fused runs Triton kernels, which need CUDA tensors.")
     if step_pattern == "asymmetric":
         if cost.size(1) < cost.size(2):
             return _no_path(cost)

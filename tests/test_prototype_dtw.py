@@ -3,7 +3,7 @@ import torch
 
 from philtorch.prototype.dtw import dtw, dtw_fused, dtw_rowwise
 
-# dtw runs Helion kernels, so it needs CUDA.
+# dtw runs Triton kernels, so it needs CUDA.
 pytestmark = pytest.mark.skipif(not torch.cuda.is_available(), reason="CUDA not available")
 
 STEP_PATTERNS = ["symmetric", "asymmetric", "orthogonal"]

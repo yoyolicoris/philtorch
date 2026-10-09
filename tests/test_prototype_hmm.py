@@ -5,7 +5,7 @@ import torch
 
 from philtorch.prototype.hmm import hmm_forward, hmm_posteriors, viterbi
 
-# The HMM scans run Helion kernels, so they need CUDA.
+# The HMM scans run Triton kernels, so they need CUDA.
 pytestmark = pytest.mark.skipif(not torch.cuda.is_available(), reason="CUDA not available")
 
 
@@ -148,7 +148,7 @@ def test_hmm_matches_sequential_in_float32():
 
 @pytest.mark.parametrize("product", ["log", "max"])
 def test_semiring_products_under_vmap(product):
-    from philtorch.prototype._semiring_helion import log_bmm, max_bmm
+    from philtorch.prototype._semiring_triton import log_bmm, max_bmm
 
     op = log_bmm if product == "log" else max_bmm
 

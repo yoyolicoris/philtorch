@@ -4,7 +4,7 @@ The forward algorithm, forward-backward smoothing and Viterbi decoding as
 associative scans of per-step K x K matrices in log space, following Hassan,
 Särkkä and García-Fernández, "Temporal parallelization of inference in hidden
 Markov models" (IEEE TSP, 2021). The log-space and max-plus matrix products
-are Helion kernels, so these need CUDA tensors.
+are Triton kernels, so these need CUDA tensors.
 
 The model follows :mod:`philtorch.estimation`'s Kalman filter: the prior
 describes z[0], the state before the first step, step n moves to z[n + 1]
@@ -19,7 +19,7 @@ import math
 import torch
 from torch import Tensor
 
-from ._semiring_helion import log_bmm, max_bmm
+from ._semiring_triton import log_bmm, max_bmm
 
 
 def _batched(op):
@@ -35,7 +35,7 @@ def _batched(op):
     return apply
 
 
-# Exact log-space and max-plus matrix products, as Helion kernels (CUDA only).
+# Exact log-space and max-plus matrix products, as Triton kernels (CUDA only).
 _log_matmul = _batched(log_bmm)
 _max_matmul = _batched(max_bmm)
 
@@ -98,7 +98,7 @@ def _parse(log_emit: Tensor, log_trans: Tensor, log_init: Tensor) -> tuple[Tenso
         f"log_init must be {(K,)} or {(batch_size, K)}, got {tuple(log_init.shape)}"
     )
     if not log_emit.is_cuda:
-        raise ValueError("The HMM scans run Helion kernels, which need CUDA tensors.")
+        raise ValueError("The HMM scans run Triton kernels, which need CUDA tensors.")
     return log_trans.expand(batch_size, N, K, K), log_init.expand(batch_size, K)
 
 
@@ -137,7 +137,7 @@ def hmm_forward(log_emit: Tensor, log_trans: Tensor, log_init: Tensor) -> tuple[
     """Filter a hidden Markov model: its log-likelihood and filtered state probabilities.
 
     The forward messages are a scan of the per-step matrices, multiplied
-    exactly in log space with Helion kernels, so the inputs must be CUDA
+    exactly in log space with Triton kernels, so the inputs must be CUDA
     tensors.
 
     Args:

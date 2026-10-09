@@ -20,11 +20,11 @@ since their wheels pin older versions:
 * dDTW (https://github.com/groupmm/dDTW), DTW and soft-DTW: clone it and set
   DDTW_SRC to the clone. Its CUDA extension compiles on first use.
 
-Times include a warm-up call, so Helion's autotuning, which caches its
-results, is excluded. Results on an RTX 5060 Ti (2026-10-08): torbi and
-dDTW win 10-100x from 32 states or template frames up; the scans win only
-with few states and long sequences, e.g. Viterbi with K <= 16 on one
-100,000-step sequence, 3.5-5x faster than torbi.
+Times exclude a warm-up call, which compiles the Triton kernels. Results on
+an RTX 5060 Ti (2026-10-08): torbi and dDTW win 10-100x from 32 states or
+template frames up; the scans win only with few states and long sequences,
+e.g. Viterbi with K <= 16 on one 100,000-step sequence, 3.5-5x faster than
+torbi.
 """
 
 import os
@@ -133,6 +133,5 @@ def bench_dtw():
 
 
 if __name__ == "__main__":
-    # The guard matters: Helion's autotuner spawns subprocesses.
     print(torch.cuda.get_device_name(), flush=True)
     {"viterbi": bench_viterbi, "convcode": bench_convcode, "dtw": bench_dtw}[sys.argv[1]]()
