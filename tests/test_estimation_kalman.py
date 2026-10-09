@@ -118,9 +118,9 @@ def test_kalman_complex_matches_sequential(device, M, P):
 
 def _from_before_first_step(y, A, C, Q, R, m0, P0):
     """The docstring's conversion of a prior one step before the first measured state."""
-    m0 = (A[..., 0, :, :] @ m0.unsqueeze(-1)).squeeze(-1)
-    P0 = A[..., 0, :, :] @ P0 @ A[..., 0, :, :].mH + Q[..., 0, :, :]
-    return y, A[..., 1:, :, :], C, Q[..., 1:, :, :], R, m0, P0
+    m0 = (A[:, 0] @ m0.unsqueeze(-1)).squeeze(-1)
+    P0 = A[:, 0] @ P0 @ A[:, 0].mH + Q[:, 0]
+    return y, A[:, 1:], C, Q[:, 1:], R, m0, P0
 
 
 @pytest.mark.parametrize("dtype", [torch.float64, torch.complex128])
@@ -159,13 +159,12 @@ def test_kalman_coefficient_shapes(fn):
     batch_size, N, M, P = 2, 5, 3, 2
     T = N - 1
     y, A, C, Q, R, m0, P0 = _model(batch_size, N, M, P)
-    run = fn
 
-    expected = run(y, A, C, Q, R, m0, P0)
+    expected = fn(y, A, C, Q, R, m0, P0)
 
     # Time-varying shared coefficients, and a shared prior.
-    shared = run(y[:1].expand(batch_size, -1, -1), A[0], C[0], Q[0], R[0], m0[0], P0[0])
-    full = run(
+    shared = fn(y[:1].expand(batch_size, -1, -1), A[0], C[0], Q[0], R[0], m0[0], P0[0])
+    full = fn(
         y[:1].expand(batch_size, -1, -1),
         *(t[:1].expand(batch_size, *t.shape[1:]) for t in (A, C, Q, R, m0, P0)),
     )
@@ -177,16 +176,16 @@ def test_kalman_coefficient_shapes(fn):
         return t.unsqueeze(-3).expand(*t.shape[:-2], steps, -1, -1)
 
     steps = (T, N, T, N)
-    per_signal = run(y, A[:, 0], C[:, 0], Q[:, 0], R[:, 0], m0, P0)
-    expanded = run(y, *(over_time(t[:, 0], k) for t, k in zip((A, C, Q, R), steps)), m0, P0)
+    per_signal = fn(y, A[:, 0], C[:, 0], Q[:, 0], R[:, 0], m0, P0)
+    expanded = fn(y, *(over_time(t[:, 0], k) for t, k in zip((A, C, Q, R), steps)), m0, P0)
     for a, e in zip(per_signal, expanded):
         torch.testing.assert_close(a, e)
-    constant = run(y, A[0, 0], C[0, 0], Q[0, 0], R[0, 0], m0, P0)
-    expanded = run(y, *(over_time(t[0, 0], k) for t, k in zip((A, C, Q, R), steps)), m0, P0)
+    constant = fn(y, A[0, 0], C[0, 0], Q[0, 0], R[0, 0], m0, P0)
+    expanded = fn(y, *(over_time(t[0, 0], k) for t, k in zip((A, C, Q, R), steps)), m0, P0)
     for a, e in zip(constant, expanded):
         torch.testing.assert_close(a, e)
 
-    for a, e in zip(run(y, A, C, Q, R, m0, P0), expected):
+    for a, e in zip(fn(y, A, C, Q, R, m0, P0), expected):
         torch.testing.assert_close(a, e)
 
 
@@ -338,7 +337,12 @@ def _dense_posterior(y, A, C, Q, R, m0, P0, prior):
     return torch.stack(means), torch.stack(covs), torch.stack(log_ps)
 
 
-def _check_against_dense(args):
+@pytest.mark.parametrize("device", DEVICES)
+@pytest.mark.parametrize("dtype", [torch.float64, torch.complex128])
+@pytest.mark.parametrize("N", [1, 2, 6])
+@pytest.mark.parametrize("M, P", [(1, 1), (3, 2), (2, 3)])
+def test_kalman_smoother_matches_dense_posterior(device, dtype, N, M, P):
+    args = [t.to(device) for t in _model(2, N, M, P, dtype=dtype)]
     means, covs, log_p = _dense_posterior(*[t.cpu() for t in args], "first_state")
     result = kalman_smoother(*args)
     steps = torch.arange(means.size(1))
@@ -351,15 +355,6 @@ def _check_against_dense(args):
     torch.testing.assert_close(result.log_likelihood.cpu(), log_p, rtol=1e-9, atol=1e-9)
     filtered = kalman_filter(*args)
     torch.testing.assert_close(filtered.log_likelihood, result.log_likelihood)
-
-
-@pytest.mark.parametrize("device", DEVICES)
-@pytest.mark.parametrize("dtype", [torch.float64, torch.complex128])
-@pytest.mark.parametrize("N", [1, 2, 6])
-@pytest.mark.parametrize("M, P", [(1, 1), (3, 2), (2, 3)])
-def test_kalman_smoother_matches_dense_posterior(device, dtype, N, M, P):
-    args = [t.to(device) for t in _model(2, N, M, P, dtype=dtype)]
-    _check_against_dense(args)
 
 
 def _em_step(y, result):
