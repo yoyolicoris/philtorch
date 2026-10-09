@@ -305,11 +305,11 @@ def kalman_filter(
     :math:`\mathbf{x}[n]` predicted from the earlier measurements. The
     log-likelihood is differentiable, for fitting the model's matrices by
     gradient ascent, including matrices predicted by a network. These are the
-    results of the
-    sequential Kalman filter, computed instead with an associative scan of
-    depth :math:`O(\log N)`, as in Särkkä and García-Fernández (2021). The
-    scan is PyTorch's ``associative_scan`` in its generic mode, which needs
-    PyTorch 2.11 or later.
+    results of the sequential Kalman filter, computed instead with an
+    associative scan of depth :math:`O(\log N)`, as in `Temporal
+    Parallelization of Bayesian Smoothers`_ (Särkkä and García-Fernández,
+    2021). The scan is PyTorch's ``associative_scan`` in its generic mode,
+    which needs PyTorch 2.11 or later.
 
     Each of :attr:`A`, :attr:`C`, :attr:`Q` and :attr:`R` may be constant or
     time-varying, and shared or one per signal: its base shape below can be
@@ -390,6 +390,9 @@ def kalman_filter(
         >>> result = kalman_filter(y, one, one, one, 2 * one, m0, 2 * one)
         >>> result.means.squeeze()
         tensor([0.5000, 0.7500, 0.8750], dtype=torch.float64)
+
+    .. _Temporal Parallelization of Bayesian Smoothers:
+        https://doi.org/10.1109/TAC.2020.2976316
     """
     A, C, Q, R, m0, P0 = _parse(y, A, C, Q, R, m0, P0)
     means, covs = _filter(y, A, C, Q, R, m0, P0)
@@ -407,16 +410,18 @@ def kalman_smoother(
     cross-covariances :math:`\mathrm{Cov}(\mathbf{x}[n + 1], \mathbf{x}[n]
     \mid \mathbf{y})`, and :func:`kalman_filter`'s log-likelihood: the
     results of the Rauch--Tung--Striebel smoother, computed with a reverse
-    associative scan after the filter's, as in Särkkä and García-Fernández
-    (2021). The cross-covariances come from the smoother's gains,
+    associative scan after the filter's, as in `Temporal Parallelization of
+    Bayesian Smoothers`_ (Särkkä and García-Fernández, 2021). The
+    cross-covariances come from the smoother's gains,
     :math:`\mathrm{Cov}(\mathbf{x}[n], \mathbf{x}[n + 1] \mid \mathbf{y}) =
     E[n] \, \mathrm{Cov}(\mathbf{x}[n + 1] \mid \mathbf{y})`. The arguments
     are those of :func:`kalman_filter`, and the same PyTorch 2.11 requirement
     applies.
 
     These are the expectations of the E-step of expectation-maximization.
-    With constant matrices, the M-step has a closed form (Shumway and
-    Stoffer, 1982), here fitting one model to all the signals::
+    With constant matrices, the M-step has a closed form, from `An Approach
+    to Time Series Smoothing and Forecasting Using the EM Algorithm`_
+    (Shumway and Stoffer, 1982), here fitting one model to all the signals::
 
         from philtorch.estimation import kalman_smoother
 
@@ -474,6 +479,11 @@ def kalman_smoother(
         >>> result = kalman_smoother(y, one, one, one, 2 * one, m0, 2 * one)
         >>> result.means.squeeze()  # the last state has no later measurements
         tensor([0.6562, 0.8125, 0.8750], dtype=torch.float64)
+
+    .. _Temporal Parallelization of Bayesian Smoothers:
+        https://doi.org/10.1109/TAC.2020.2976316
+    .. _An Approach to Time Series Smoothing and Forecasting Using the EM Algorithm:
+        https://doi.org/10.1111/j.1467-9892.1982.tb00349.x
     """
     A, C, Q, R, m0, P0 = _parse(y, A, C, Q, R, m0, P0)
     filtered_means, filtered_covs = _filter(y, A, C, Q, R, m0, P0)
