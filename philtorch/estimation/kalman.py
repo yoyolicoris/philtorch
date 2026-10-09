@@ -68,14 +68,7 @@ def _coefficient(name: str, t: Tensor, base: tuple[int, ...], batch_size: int, N
 def _parse(
     y: Tensor, A: Tensor, C: Tensor, Q: Tensor, R: Tensor, m0: Tensor, P0: Tensor
 ) -> tuple[Tensor, ...]:
-    """Validate the model, and return it as the scan's N steps.
-
-    Each scan step is a transition, then a measurement of the state it
-    reaches. The model's first state, which the prior describes, is measured
-    before any transition, so the first step is the identity without noise,
-    followed by the model's N - 1 transitions. So the scan's states are
-    s[0], the prior, and s[n + 1] = x[n], which y[n] measures.
-    """
+    """Validate the model: A and Q of its N - 1 transitions, C and R of its N measurements."""
     assert y.dim() == 3, f"Measurements y must be 3D (batch, time, features), got {y.shape}"
     batch_size, N, P = y.shape
     assert A.dim() >= 2 and A.size(-1) == A.size(-2), f"A must be square, got {A.shape}"
@@ -107,9 +100,6 @@ def _parse(
         return t.expand(batch_size, steps, *base)
 
     A, Q = full(A, transitions, M, M), full(Q, transitions, M, M)
-    eye = torch.eye(M, dtype=A.dtype, device=A.device).expand(batch_size, 1, M, M)
-    A = torch.cat([eye, A], dim=1)[:, :N]
-    Q = torch.cat([torch.zeros_like(eye), Q], dim=1)[:, :N]
     return A, full(C, N, P, M), Q, full(R, N, P, P), m0, P0
 
 
@@ -125,14 +115,22 @@ def _filtering_elements(
     These are the paper's (A, b, C, eta, J), renamed so they don't clash with
     the model's A and C.
 
-    Element n + 1 describes scan step n, from the scan's state s[n] to
-    s[n + 1], which y[n] measures (eqs. 42-45 of the GPU paper, with their
-    k = n + 1; see :func:`_parse` for s): s[n + 1] | s[n], y[n] ~
-    N(F s[n] + b, G), and the likelihood of y[n] given s[n] in information
-    form (eta, J). Element 0 is the prior, which doesn't depend on any
-    earlier state, so its F, eta and J are zero.
+    Element n describes x[n] (eqs. 42-45 of the GPU paper, with their
+    k = n + 1): for n >= 1, x[n] | x[n - 1], y[n] ~ N(F x[n - 1] + b, G),
+    through A[n - 1] and Q[n - 1], and the likelihood of y[n] given x[n - 1]
+    in information form (eta, J). Element 0 is the prior updated with y[0],
+    which doesn't depend on any earlier state, so its F, eta and J are zero.
     """
     batch_size, M = y.size(0), A.size(-1)
+    m0 = m0.expand(batch_size, 1, M)
+    P0 = P0.expand(batch_size, 1, M, M)
+    C0, R0, y0 = C[:, :1], R[:, :1], y[:, :1]
+    S0 = C0 @ P0 @ C0.mH + R0
+    K0 = torch.linalg.solve(S0, C0 @ P0).mH
+    b0 = m0 + _mv(K0, y0 - _mv(C0, m0))
+    G0 = P0 - K0 @ S0 @ K0.mH
+
+    C, R, y = C[:, 1:], R[:, 1:], y[:, 1:]
     CA = C @ A
     S = C @ Q @ C.mH + R
     K = torch.linalg.solve(S, C @ Q).mH
@@ -142,14 +140,12 @@ def _filtering_elements(
     eta = _mv(CA.mH, torch.linalg.solve(S, y))
     J = CA.mH @ torch.linalg.solve(S, CA)
 
-    m0 = m0.expand(batch_size, 1, M)
-    P0 = P0.expand(batch_size, 1, M, M)
-    zero = torch.zeros_like(P0)
+    zero = torch.zeros_like(G0)
     return (
         torch.cat([zero, F], dim=1),
-        torch.cat([m0, b], dim=1),
-        torch.cat([P0, G], dim=1),
-        torch.cat([torch.zeros_like(m0), eta], dim=1),
+        torch.cat([b0, b], dim=1),
+        torch.cat([G0, G], dim=1),
+        torch.cat([torch.zeros_like(b0), eta], dim=1),
         torch.cat([zero, J], dim=1),
     )
 
@@ -176,12 +172,7 @@ def _filtering_operator(
 def _filter(
     y: Tensor, A: Tensor, C: Tensor, Q: Tensor, R: Tensor, m0: Tensor, P0: Tensor
 ) -> tuple[Tensor, Tensor]:
-    """The filtered moments of the scan's states s[0], ..., s[N].
-
-    That is the prior, then s[n + 1] = x[n] given y[0], ..., y[n]. The first
-    step is the identity, so s[0] and s[1] are both x[0], before and after
-    y[0].
-    """
+    """The filtered moments of x[0], ..., x[N - 1], each given y up to it."""
     elements = _filtering_elements(y, A, C, Q, R, m0, P0)
     _, means, covs, _, _ = _scan(_filtering_operator, elements)
     return means, covs
@@ -192,6 +183,17 @@ def _predict(A: Tensor, Q: Tensor, means: Tensor, covs: Tensor) -> tuple[Tensor,
     return _mv(A, means), A @ covs @ A.mH + Q
 
 
+def _predicted(
+    A: Tensor, Q: Tensor, m0: Tensor, P0: Tensor, means: Tensor, covs: Tensor
+) -> tuple[Tensor, Tensor]:
+    """The moments of each x[n] given y[0], ..., y[n - 1]: the prior, then predictions."""
+    batch_size, N, M = means.shape
+    predicted_means, predicted_covs = _predict(A, Q, means[:, :-1], covs[:, :-1])
+    predicted_means = torch.cat([m0.expand(batch_size, 1, M), predicted_means], dim=1)
+    predicted_covs = torch.cat([P0.expand(batch_size, 1, M, M), predicted_covs], dim=1)
+    return predicted_means[:, :N], predicted_covs[:, :N]
+
+
 def _log_likelihood(
     y: Tensor, C: Tensor, R: Tensor, predicted_means: Tensor, predicted_covs: Tensor
 ) -> Tensor:
@@ -199,8 +201,8 @@ def _log_likelihood(
 
     Each term is a Gaussian density of y[n], with the mean and covariance of
     C[n] x[n] + v[n] given the earlier measurements, from the predicted
-    moments of x[n] = s[n + 1]: real, or circularly symmetric complex for
-    complex tensors.
+    moments of x[n]: real, or circularly symmetric complex for complex
+    tensors.
     """
     residual = y - _mv(C, predicted_means)
     S = C @ predicted_covs @ C.mH + R
@@ -402,9 +404,8 @@ def kalman_filter(
     """
     A, C, Q, R, m0, P0 = _parse(y, A, C, Q, R, m0, P0)
     means, covs = _filter(y, A, C, Q, R, m0, P0)
-    log_likelihood = _log_likelihood(y, C, R, *_predict(A, Q, means[:, :-1], covs[:, :-1]))
-    # Drop the scan's first output, the prior: x[0] before y[0].
-    return KalmanFilterResult(means[:, 1:], covs[:, 1:], log_likelihood)
+    log_likelihood = _log_likelihood(y, C, R, *_predicted(A, Q, m0, P0, means, covs))
+    return KalmanFilterResult(means, covs, log_likelihood)
 
 
 def kalman_smoother(
@@ -516,11 +517,9 @@ def kalman_smoother(
     A, C, Q, R, m0, P0 = _parse(y, A, C, Q, R, m0, P0)
     filtered_means, filtered_covs = _filter(y, A, C, Q, R, m0, P0)
     log_likelihood = _log_likelihood(
-        y, C, R, *_predict(A, Q, filtered_means[:, :-1], filtered_covs[:, :-1])
+        y, C, R, *_predicted(A, Q, m0, P0, filtered_means, filtered_covs)
     )
-    # Drop the prior, x[0] before y[0], and smooth through the model's own
-    # transitions.
-    means, covs, E = _smooth(A[:, 1:], Q[:, 1:], filtered_means[:, 1:], filtered_covs[:, 1:])
+    means, covs, E = _smooth(A, Q, filtered_means, filtered_covs)
     # Cov(x[n + 1], x[n] | y) = Cov(x[n], x[n + 1] | y)^H = Cov(x[n + 1] | y) E[n]^H.
     cross_covs = covs[:, 1:] @ E.mH
     return KalmanSmootherResult(means, covs, cross_covs, log_likelihood)
