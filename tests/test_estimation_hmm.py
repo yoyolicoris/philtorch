@@ -1,4 +1,6 @@
 import itertools
+import subprocess
+import sys
 
 import pytest
 import torch
@@ -115,16 +117,25 @@ def test_hmm_posteriors_are_the_gradient_of_the_log_likelihood():
 
 
 def _transitions(log_trans, kind):
-    """The model's transitions shared as (K, K), per time step as (N - 1, K, K), or per signal."""
+    """The model's transitions, (B, N - 1, K, K), shared as (K, K), per step as
+    (N - 1, K, K), or per signal as they are."""
     if kind == "shared":
-        return _model(1, 2, log_trans.size(-1), time_varying=False, seed=1)[1]
+        # Drawn anew rather than taken from log_trans, which has no steps when N = 1.
+        gen = torch.Generator().manual_seed(1)
+        K = log_trans.size(-1)
+        shared = torch.randn(K, K, dtype=log_trans.dtype, generator=gen).log_softmax(-1)
+        return shared.to(log_trans.device)
     return log_trans[0] if kind == "time" else log_trans
 
 
 @pytest.mark.parametrize("trans", ["shared", "time", "signal"])
 @pytest.mark.parametrize("K", [3, 17])
 def test_hmm_derivatives_to_second_order(trans, K):
-    """gradcheck and gradgradcheck, with K = 17 in the kernels' blocked path."""
+    """gradcheck and gradgradcheck, with K = 17 in the kernels' blocked path.
+
+    The numerical derivatives perturb every input entry, so K = 17 takes
+    one step fewer.
+    """
     log_emit, log_trans, log_init = _model(2, 4 if K < 10 else 3, K)
     inputs = (log_emit, _transitions(log_trans, trans), log_init)
     inputs = tuple(t.requires_grad_() for t in inputs)
@@ -148,11 +159,12 @@ def test_hmm_gradients_match_sequential(trans, N, K):
     """
     log_emit, log_trans, log_init = _model(2, N, K)
     inputs = tuple(t.requires_grad_() for t in (log_emit, _transitions(log_trans, trans), log_init))
-    weights = [torch.randn_like(t) for t in (log_emit, log_emit)]
+    # A loss on every output, with random weights on the probabilities.
+    w_filtered, w_posteriors = torch.randn_like(log_emit), torch.randn_like(log_emit)
 
     def loss(ll, filtered, posteriors, score):
-        terms = (filtered.exp() * weights[0]).sum() + (posteriors.exp() * weights[1]).sum()
-        return terms + ll.sum() + score.sum()
+        weighted = (filtered.exp() * w_filtered).sum() + (posteriors.exp() * w_posteriors).sum()
+        return weighted + ll.sum() + score.sum()
 
     ll, filtered = hmm_filter(*inputs)
     _, posteriors = hmm_smoother(*inputs)
@@ -173,6 +185,26 @@ def test_hmm_rejects_a_transition_per_state():
         hmm_filter(log_emit, torch.cat([log_trans, log_trans[:, :1]], dim=1), log_init)
     with pytest.raises(ValueError, match="log_trans"):
         hmm_filter(log_emit, log_trans[0, 0].expand(4, 3, 3), log_init)
+
+
+def test_estimation_imports_without_triton():
+    # The kernels are imported on first use, so the Kalman functions, and
+    # the package, still import where Triton is missing.
+    code = "import sys; sys.modules['triton'] = None; import philtorch.estimation"
+    subprocess.run([sys.executable, "-c", code], check=True, capture_output=True)
+
+
+def test_hmm_chain_takes_an_expanded_gradient():
+    # The gradient of a sum reaches the chain with every stride 0; the
+    # kernels need each step's K entries contiguous.
+    from philtorch.estimation.hmm import _LogChain
+
+    log_emit, log_trans, log_init = _model(2, 70, 3, time_varying=False)
+    first = (log_init + log_emit[:, 0]).requires_grad_()
+    alpha = _LogChain.apply(first, log_trans[None, None], log_emit[:, 1:], None, False, False)
+    (grad,) = torch.autograd.grad(alpha.sum(), first, retain_graph=True)
+    (expected,) = torch.autograd.grad(alpha, first, torch.ones_like(alpha))
+    torch.testing.assert_close(grad, expected)
 
 
 def test_hmm_needs_cuda():

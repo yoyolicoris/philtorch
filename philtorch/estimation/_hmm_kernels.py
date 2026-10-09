@@ -17,10 +17,10 @@ computed as a parallel scan in two levels instead of N sequential steps:
 So a chain costs about N K^3 work for the totals and N K^2 for the sweep, a
 few launches, and a sequential depth of a few T. The semiring is one of
 
-* ``LOG``: (x) is the vector-matrix product with logsumexp in place of sums,
-  (+) is logsumexp, and A[t] = M[t], log-probabilities;
-* ``MAX``: the same with max in place of logsumexp;
-* ``LINEAR``: the ordinary product and sum, with A[t] = exp(M[t][r, c] +
+* ``"log"``: (x) is the vector-matrix product with logsumexp in place of
+  sums, (+) is logsumexp, and A[t] = M[t], log-probabilities;
+* ``"max"``: the same with max in place of logsumexp;
+* ``"linear"``: the ordinary product and sum, with A[t] = exp(M[t][r, c] +
   p[t][r] + q[t][c]) for log weights p and q, or explicit matrices.
 
 M[t] at time n is log_trans[n][i, j] + log_emit[n][j], built in the kernels
@@ -31,9 +31,9 @@ it uses the transpose, whose emissions are then on the summed index: so a
 chain's derivative, a linear chain backwards, runs here too.
 
 Up to ``_REGISTER_STATES`` states, a program holds the K x K x K terms of a
-product in registers. Above, it computes them a block of columns at a time
-and passes the running product between steps through a scratch buffer, so
-any K fits.
+product in registers. Above, it computes them in tiles of rows and columns,
+and the totals' running product alternates between two K x K scratch
+buffers, so registers and shared memory stay bounded for any K.
 """
 
 import torch
@@ -41,9 +41,10 @@ import triton
 import triton.language as tl
 from torch import Tensor
 
-LOG, MAX, LINEAR = 0, 1, 2
-_NEG_INF = float("-inf")
+_SEMIRINGS = {"log": 0, "max": 1, "linear": 2}
 # Triton kernels can only read module constants made with tl.constexpr.
+_MAX, _LINEAR = (tl.constexpr(_SEMIRINGS[name]) for name in ("max", "linear"))
+_NEG_INF = float("-inf")
 _KERNEL_NEG_INF = tl.constexpr(_NEG_INF)
 # The chunk length: each kernel program takes T sequential steps.
 _CHUNK = 64
@@ -54,10 +55,10 @@ _REGISTER_STATES = 16
 @triton.jit
 def _reduce(x, axis: tl.constexpr, SEMIRING: tl.constexpr):
     """The semiring's sum along ``axis``; logsumexp is -inf where every term is."""
-    if SEMIRING == 2:
+    if SEMIRING == _LINEAR:
         return tl.sum(x, axis)
     top = tl.max(x, axis)
-    if SEMIRING == 1:
+    if SEMIRING == _MAX:
         return top
     shift = tl.where(top == _KERNEL_NEG_INF, 0.0, top)
     return shift + tl.log(tl.sum(tl.exp(x - tl.expand_dims(shift, axis)), axis))
@@ -65,17 +66,17 @@ def _reduce(x, axis: tl.constexpr, SEMIRING: tl.constexpr):
 
 @triton.jit
 def _times(a, b, SEMIRING: tl.constexpr):
-    if SEMIRING == 2:
+    if SEMIRING == _LINEAR:
         return a * b
     return a + b
 
 
 @triton.jit
 def _plus(a, b, SEMIRING: tl.constexpr):
-    if SEMIRING == 2:
+    if SEMIRING == _LINEAR:
         return a + b
     top = tl.maximum(a, b)
-    if SEMIRING == 1:
+    if SEMIRING == _MAX:
         return top
     shift = tl.where(top == _KERNEL_NEG_INF, 0.0, top)
     return shift + tl.log(tl.exp(a - shift) + tl.exp(b - shift))
@@ -103,7 +104,7 @@ def _step_matrix(
     # on the stored column, which the transpose makes the summed index.
     i, j = (cols, rows) if TRANSPOSE else (rows, cols)
     offsets = trans + n * stride_tn + i * K + j
-    if SEMIRING == 2 and not WEIGHTED:
+    if SEMIRING == _LINEAR and not WEIGHTED:
         return tl.load(offsets, mask=mask, other=0.0)
     m = tl.load(offsets, mask=mask, other=_KERNEL_NEG_INF)
     if HAS_EMIT:
@@ -244,10 +245,10 @@ def _chunk_sweep_kernel(
             tl.store(out + n * K + states, y_next, mask=(states < K) & valid)
             y = tl.where(valid, y_next, y)
     else:
+        # A block of BC states at a time, through the output itself.
+        block = tl.arange(0, BC)
         for s in range(0, steps):
             n = _time(c, s, N, T, REVERSE)
-            # A block of BC states at a time, through the output itself.
-            block = tl.arange(0, BC)
             for k0 in range(0, BK, BC):
                 columns = k0 + block
                 m = _step_matrix(
@@ -263,14 +264,18 @@ def _chunk_sweep_kernel(
             y = tl.load(out + n * K + states, mask=states < K, other=ZERO)
 
 
-def _config(K: int) -> dict:
-    """Blocks and warps by K (measured on an RTX 5060 Ti)."""
+def _config(K: int) -> tuple[int, int, int, int]:
+    """The padded K, the column and row tile sizes, and the warps.
+
+    The warps for the register path were measured on an RTX 5060 Ti; the
+    tiles of the blocked path hold about 4096 terms, BR rows by BK summed by
+    BC columns, a size chosen to fit, not tuned.
+    """
     BK = max(triton.next_power_of_2(K), 2)
     if BK <= _REGISTER_STATES:
-        return dict(BK=BK, BC=BK, BR=BK, num_warps=1 if BK <= 4 else 2)
-    # Tiles of about 4096 terms: BR rows by BK summed by BC columns.
+        return BK, BK, BK, 1 if BK <= 4 else 2
     BC = max(1024 // BK, 1)
-    return dict(BK=BK, BC=BC, BR=max(4096 // (BK * BC), 1), num_warps=4 if BK <= 32 else 8)
+    return BK, BC, max(4096 // (BK * BC), 1), 4 if BK <= 32 else 8
 
 
 def _strides(t: Tensor | None) -> tuple[int, int]:
@@ -278,12 +283,17 @@ def _strides(t: Tensor | None) -> tuple[int, int]:
     return (t.stride(0), t.stride(1)) if t is not None else (0, 0)
 
 
+def _unit_stride(t: Tensor | None) -> Tensor | None:
+    """t with a contiguous last dimension, which the kernels index directly."""
+    return t if t is None or t.stride(-1) == 1 else t.contiguous()
+
+
 def chain(
     y0: Tensor,
     trans: Tensor,
     log_emit: Tensor | None,
     inj: Tensor | None,
-    semiring: int,
+    semiring: str,
     reverse: bool = False,
     transpose: bool = False,
     out: Tensor | None = None,
@@ -295,20 +305,18 @@ def chain(
         y0: the starting vectors, (B, K).
         trans: (B, N, K, K), possibly with zero batch or time strides, and
             contiguous K x K matrices: log_trans, or explicit matrices for
-            an unweighted ``LINEAR`` chain.
-        log_emit: (B, N, K) with a contiguous last dimension, added to each
-            matrix's stored columns, or None.
-        inj: the injections j, (B, N, K) with a contiguous last dimension,
-            or None.
-        semiring: ``LOG``, ``MAX`` or ``LINEAR``.
+            an unweighted linear chain.
+        log_emit: (B, N, K), added to each matrix's stored columns, or None.
+        inj: the injections j, (B, N, K), or None.
+        semiring: "log", "max" or "linear".
         reverse: run the chain from time N - 1 down to 0; the message after
             the step at time n is still written at n.
         transpose: multiply by each matrix's transpose.
         out: where to write the messages, a (B, N, K) view whose steps are
             contiguous, such as a slice in time of a larger output, or None.
-        weights: for ``LINEAR``, the log weights (p, q), each (B, N, K) with
-            a contiguous last dimension, of A[t][r, c] = exp(M[t][r, c] +
-            p[t][r] + q[t][c]) with r summed; None for explicit matrices.
+        weights: for a linear chain, the log weights (p, q), each (B, N, K),
+            of A[t][r, c] = exp(M[t][r, c] + p[t][r] + q[t][c]) with r
+            summed; None for explicit matrices.
 
     Returns:
         The messages, (B, N, K), each written at its step's time.
@@ -318,36 +326,37 @@ def chain(
         out = y0.new_empty(B, N, K)
     if B == 0 or N == 0 or K == 0:
         return out
+    linear = semiring == "linear"
     weighted = weights is not None
-    assert semiring == LINEAR or not weighted, "weights are for LINEAR chains"
-    assert weighted or semiring != LINEAR or log_emit is None, "explicit matrices take no emissions"
+    assert linear or not weighted, "weights are for linear chains"
+    assert weighted or not linear or log_emit is None, "explicit matrices take no emissions"
     T = _CHUNK
     C = triton.cdiv(N, T)
     p, q = weights if weighted else (None, None)
+    log_emit, p, q, inj = (_unit_stride(t) for t in (log_emit, p, q, inj))
     pointers = [t if t is not None else y0 for t in (log_emit, p, q, inj)]
     strides = [s for t in (trans, log_emit, p, q, inj) for s in _strides(t)]
-    config = _config(K)
-    flags = dict(ZERO=0.0 if semiring == LINEAR else _NEG_INF, T=T)
-    flags |= dict(HAS_EMIT=log_emit is not None, HAS_INJ=inj is not None, WEIGHTED=weighted)
-    flags |= dict(REVERSE=reverse, TRANSPOSE=transpose, SEMIRING=semiring, **config)
+    BK, BC, BR, num_warps = _config(K)
+    flags = dict(ZERO=0.0 if linear else _NEG_INF, T=T, HAS_EMIT=log_emit is not None)
+    flags |= dict(HAS_INJ=inj is not None, WEIGHTED=weighted, REVERSE=reverse)
+    flags |= dict(TRANSPOSE=transpose, SEMIRING=_SEMIRINGS[semiring], BK=BK, BC=BC)
     if C == 1:
         starts = y0.contiguous()
     else:
         totals = y0.new_empty(B, C, K, K)
         offsets = y0.new_empty(B, C, K) if inj is not None else None
-        BK = config["BK"]
-        scratch = y0.new_empty(B * C, 2 * BK * BK + BK) if config["BC"] < BK else y0
+        scratch = y0.new_empty(B * C, 2 * BK * BK + BK) if BC < BK else y0
         _chunk_totals_kernel[(B * C,)](
             trans, *pointers, totals, offsets if offsets is not None else y0, scratch, N, K, C,
-            *strides, **flags,
+            *strides, **flags, BR=BR, num_warps=num_warps,
         )  # fmt: skip
         # The totals are in chain order and already transposed and weighted:
         # their own chain runs forward on them as explicit matrices, with the
         # offsets as injections.
         ends = chain(y0, totals, None, offsets, semiring)
         starts = torch.cat([y0.unsqueeze(1), ends[:, :-1]], dim=1).contiguous()
-    del flags["BR"]  # the sweep takes no row tiles
     _chunk_sweep_kernel[(B * C,)](
         starts, trans, *pointers, out, N, K, C, *strides, out.stride(0), **flags,
+        num_warps=num_warps,
     )  # fmt: skip
     return out

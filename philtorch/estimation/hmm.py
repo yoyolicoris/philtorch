@@ -24,11 +24,10 @@ over the batch and time with :func:`._contract.weighted_contract`.
 import torch
 from torch import Tensor
 
-from ._hmm_kernels import LINEAR, LOG, MAX, chain
 
-
-def _parse(log_emit: Tensor, log_trans: Tensor, log_init: Tensor) -> tuple[Tensor, Tensor]:
-    """Validate the model; log_trans as (1 or B, 1 or N - 1, K, K), log_init as (B, K)."""
+def _parse(log_emit: Tensor, log_trans: Tensor, log_init: Tensor) -> tuple[Tensor, Tensor, Tensor]:
+    """Validate the model; return log_emit, log_trans as (1 or B, 1 or N - 1, K, K), and
+    log_init as (B, K)."""
     assert log_emit.dim() == 3, f"log_emit must be (B, N, K), got {tuple(log_emit.shape)}"
     batch_size, N, K = log_emit.shape
     transitions = max(N - 1, 0)
@@ -105,10 +104,13 @@ def _trans_grad(
     elif groups[0] != B:
         terms = tuple(t.reshape(1, B * T, K) for t in terms)
     P, M = terms[0].shape[:2]
-    pad = -M % _REDUCE_BLOCK if M > _REDUCE_BLOCK else 0
-    blocks = (M + pad) // min(M, _REDUCE_BLOCK)
+    size = min(M, _REDUCE_BLOCK)
+    blocks = -(-M // size)
+    # Pad the terms to whole blocks with zero weights: -inf exponents, zero factors.
     alpha, beta, fi, fj = (
-        torch.nn.functional.pad(t, (0, 0, 0, pad), value=value).reshape(P * blocks, -1, K)
+        torch.nn.functional.pad(t, (0, 0, 0, blocks * size - M), value=value).reshape(
+            P * blocks, size, K
+        )
         for t, value in zip(terms, (float("-inf"), float("-inf"), 0.0, 0.0))
     )
     # W[i, m, j] = exp(alpha[m, i] + beta[m, j] - c[i, j]), c = -log_trans.
@@ -127,7 +129,13 @@ def _positions(reverse: bool) -> tuple[int, int, slice, slice]:
 
 
 def _run_chain(semiring, y0, log_trans, log_emit, inj, reverse, transpose, weights=None):
-    """The chain's messages with y0 included: (B, T + 1, K), y0 first, or last in reverse."""
+    """The chain's messages with y0 included: (B, T + 1, K), y0 first, or last in reverse.
+
+    The semiring is "log", "max" or "linear"; see :func:`._hmm_kernels.chain`.
+    """
+    # Imported here so that philtorch.estimation imports without Triton.
+    from ._hmm_kernels import chain
+
     B, T, K = log_emit.shape
     out = y0.new_empty(B, T + 1, K)
     start, _, _, steps = _positions(reverse)
@@ -146,11 +154,14 @@ class _LogChain(torch.autograd.Function):
     """
 
     @staticmethod
-    def forward(ctx, y0, log_trans, log_emit, log_inj, reverse, transpose):
-        y = _run_chain(LOG, y0, log_trans, log_emit, log_inj, reverse, transpose)
+    def forward(y0, log_trans, log_emit, log_inj, reverse, transpose):
+        return _run_chain("log", y0, log_trans, log_emit, log_inj, reverse, transpose)
+
+    @staticmethod
+    def setup_context(ctx, inputs, output):
+        _, log_trans, log_emit, log_inj, reverse, transpose = inputs
         ctx.reverse, ctx.transpose = reverse, transpose
-        ctx.save_for_backward(log_trans, log_emit, log_inj, y)
-        return y
+        ctx.save_for_backward(log_trans, log_emit, log_inj, output)
 
     @staticmethod
     def backward(ctx, grad):
@@ -168,7 +179,9 @@ class _LogChain(torch.autograd.Function):
             not reverse, not transpose,
         )  # fmt: skip
         a_out = a[:, steps]
-        grad_inj = None if log_inj is None else torch.exp(log_inj + neg_out) * a_out
+        grad_inj = None
+        if log_inj is not None:
+            grad_inj = torch.exp(log_inj + neg_out) * a_out
         if transpose:
             # Emissions on each step's input, as W's rows: the input's
             # adjoint less its own gradient.
@@ -188,15 +201,21 @@ class _LogChain(torch.autograd.Function):
 
 
 class _LinearChain(torch.autograd.Function):
-    """The linear chain x[t] = x[t - 1] A[t] + j[t], A[t][r, c] = exp(M[t][r, c] + p[t][r] +
-    q[t][c]), with x[-1] = x0 included as in :func:`_run_chain`; differentiable."""
+    """The linear chain x[t] = x[t - 1] A[t] + j[t] of :func:`_run_chain`, differentiable.
+
+    A[t][r, c] = exp(M[t][r, c] + p[t][r] + q[t][c]), with M[t] as in
+    :class:`_LogChain` and log weights p and q of shape (B, T, K).
+    """
 
     @staticmethod
-    def forward(ctx, x0, log_trans, log_emit, inj, p, q, reverse, transpose):
-        x = _run_chain(LINEAR, x0, log_trans, log_emit, inj, reverse, transpose, (p, q))
+    def forward(x0, log_trans, log_emit, inj, p, q, reverse, transpose):
+        return _run_chain("linear", x0, log_trans, log_emit, inj, reverse, transpose, (p, q))
+
+    @staticmethod
+    def setup_context(ctx, inputs, output):
+        _, log_trans, log_emit, inj, p, q, reverse, transpose = inputs
         ctx.reverse, ctx.transpose = reverse, transpose
-        ctx.save_for_backward(log_trans, log_emit, inj, p, q, x)
-        return x
+        ctx.save_for_backward(log_trans, log_emit, inj, p, q, output)
 
     @staticmethod
     def backward(ctx, grad):
@@ -220,38 +239,40 @@ class _LinearChain(torch.autograd.Function):
             else:
                 grad_trans = _trans_grad(log_trans, p, log_emit + q, x_in, h_out)
         grad_emit = grad_p if transpose else grad_q
-        return h[:, start], grad_trans, grad_emit, h_out, grad_p, grad_q, None, None
+        grad_inj = h_out if ctx.needs_input_grad[3] else None
+        return h[:, start], grad_trans, grad_emit, grad_inj, grad_p, grad_q, None, None
 
 
 class _Viterbi(torch.autograd.Function):
     """The Viterbi score and path; the score's gradient is the path's indicator."""
 
     @staticmethod
-    def forward(ctx, log_emit, log_trans, log_init):
+    def forward(log_emit, log_trans, log_init):
         first = log_init + log_emit[:, 0]
-        delta = _run_chain(MAX, first, log_trans, log_emit[:, 1:], None, False, False)
+        delta = _run_chain("max", first, log_trans, log_emit[:, 1:], None, False, False)
         last = torch.zeros_like(first)
-        future = _run_chain(MAX, last, log_trans, log_emit[:, 1:], None, True, True)
-        path = (delta + future).argmax(dim=-1)
-        ctx.trans_shape = log_trans.shape
-        ctx.save_for_backward(path)
+        future = _run_chain("max", last, log_trans, log_emit[:, 1:], None, True, True)
+        return delta[:, -1].amax(dim=-1), (delta + future).argmax(dim=-1)
+
+    @staticmethod
+    def setup_context(ctx, inputs, output):
+        _, path = output
+        ctx.trans_shape = inputs[1].shape
         ctx.mark_non_differentiable(path)
-        return delta[:, -1].amax(dim=-1), path
+        ctx.save_for_backward(path)
 
     @staticmethod
     def backward(ctx, grad, _):
         (path,) = ctx.saved_tensors
         B, N = path.shape
-        K = ctx.trans_shape[-1]
-        one_hot = torch.nn.functional.one_hot(path, K).to(grad.dtype)
-        grad_emit = grad[:, None, None] * one_hot
-        # Count each transition of the path, summed where log_trans is shared.
-        groups = ctx.trans_shape[:2]
-        b = torch.arange(B, device=path.device)[:, None].expand(B, N - 1)
-        t = torch.arange(N - 1, device=path.device)[None, :].expand(B, N - 1)
-        index = (b if groups[0] == B else 0 * b, t if groups[1] == N - 1 else 0 * t)
+        groups, K = ctx.trans_shape[:2], ctx.trans_shape[-1]
+        grad_emit = grad[:, None, None] * torch.nn.functional.one_hot(path, K).to(grad.dtype)
+        # Count each transition of the path; the modulo maps a shared batch
+        # or time dimension to its single index.
+        b = torch.arange(B, device=path.device)[:, None] % groups[0]
+        t = torch.arange(N - 1, device=path.device)[None, :] % max(groups[1], 1)
         grad_trans = grad.new_zeros(ctx.trans_shape).index_put(
-            (*index, path[:, :-1], path[:, 1:]), grad[:, None].expand(B, N - 1), accumulate=True
+            (b, t, path[:, :-1], path[:, 1:]), grad[:, None].expand(B, N - 1), accumulate=True
         )
         return grad_emit, grad_trans, grad_emit[:, 0]
 
@@ -309,7 +330,7 @@ def hmm_filter(log_emit: Tensor, log_trans: Tensor, log_init: Tensor) -> tuple[T
     """
     log_emit, log_trans, log_init = _parse(log_emit, log_trans, log_init)
     if log_emit.size(1) == 0:
-        return log_emit.new_zeros(log_emit.size(0)), log_emit
+        return log_emit.new_zeros(log_emit.size(0)), torch.empty_like(log_emit)
     alpha = _forward(log_emit, log_trans, log_init)
     norm = _logsumexp(alpha, dim=-1, keepdim=True)
     return norm[:, -1, 0], alpha - norm
@@ -322,7 +343,7 @@ def hmm_smoother(log_emit: Tensor, log_trans: Tensor, log_init: Tensor) -> tuple
     :math:`\log p(z[n] \mid y[0], \dots, y[N - 1])`, from a forward and an
     independent backward scan, as in `Temporal Parallelization of Inference
     in Hidden Markov Models`_ (Hassan et al., 2021). The arguments,
-    implementations and differentiability are those of :func:`hmm_filter`.
+    implementation and differentiability are those of :func:`hmm_filter`.
 
     Args:
         log_emit (Tensor): :math:`\log p(y[n] \mid z[n] = k)`, of shape
@@ -346,7 +367,7 @@ def hmm_smoother(log_emit: Tensor, log_trans: Tensor, log_init: Tensor) -> tuple
     """
     log_emit, log_trans, log_init = _parse(log_emit, log_trans, log_init)
     if log_emit.size(1) == 0:
-        return log_emit.new_zeros(log_emit.size(0)), log_emit
+        return log_emit.new_zeros(log_emit.size(0)), torch.empty_like(log_emit)
     alpha = _forward(log_emit, log_trans, log_init)
     beta = _backward(log_emit, log_trans)
     log_likelihood = _logsumexp(alpha[:, -1], dim=-1)
@@ -367,8 +388,8 @@ def hmm_viterbi(log_emit: Tensor, log_trans: Tensor, log_init: Tensor) -> tuple[
     of any continuation, and each step takes the state whose sum is largest.
     That is the exact Viterbi path when it is unique; with ties, the steps
     can pick states from different optimal paths. The score's gradient is
-    that of the decoded path: one for each of its states' emissions and each
-    of its transitions; its higher derivatives are zero.
+    that of the decoded path: one for its first state's prior and for each
+    of its emissions and transitions; its higher derivatives are zero.
 
     Args:
         log_emit (Tensor): :math:`\log p(y[n] \mid z[n] = k)`, of shape
