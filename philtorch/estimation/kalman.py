@@ -308,8 +308,10 @@ def kalman_filter(
     results of the sequential Kalman filter, computed instead with an
     associative scan of depth :math:`O(\log N)`, as in `Temporal
     Parallelization of Bayesian Smoothers`_ (Särkkä and García-Fernández,
-    2021). The scan is PyTorch's ``associative_scan`` in its generic mode,
-    which needs PyTorch 2.11 or later.
+    2021), in the form of `On The Performance of Prefix-Sum Parallel Kalman
+    Filters and Smoothers on GPUs`_ (Särkkä and García-Fernández, 2025). The
+    scan is PyTorch's ``associative_scan`` in its generic mode, which needs
+    PyTorch 2.11 or later.
 
     Each of :attr:`A`, :attr:`C`, :attr:`Q` and :attr:`R` may be constant or
     time-varying, and shared or one per signal: its base shape below can be
@@ -393,6 +395,8 @@ def kalman_filter(
 
     .. _Temporal Parallelization of Bayesian Smoothers:
         https://doi.org/10.1109/TAC.2020.2976316
+    .. _On The Performance of Prefix-Sum Parallel Kalman Filters and Smoothers on GPUs:
+        https://arxiv.org/abs/2511.10363
     """
     A, C, Q, R, m0, P0 = _parse(y, A, C, Q, R, m0, P0)
     means, covs = _filter(y, A, C, Q, R, m0, P0)
@@ -411,8 +415,10 @@ def kalman_smoother(
     \mid \mathbf{y})`, and :func:`kalman_filter`'s log-likelihood: the
     results of the Rauch--Tung--Striebel smoother, computed with a reverse
     associative scan after the filter's, as in `Temporal Parallelization of
-    Bayesian Smoothers`_ (Särkkä and García-Fernández, 2021). The
-    cross-covariances come from the smoother's gains,
+    Bayesian Smoothers`_ (Särkkä and García-Fernández, 2021), in the form of
+    `On The Performance of Prefix-Sum Parallel Kalman Filters and Smoothers
+    on GPUs`_ (Särkkä and García-Fernández, 2025). The cross-covariances
+    come from the smoother's gains,
     :math:`\mathrm{Cov}(\mathbf{x}[n], \mathbf{x}[n + 1] \mid \mathbf{y}) =
     E[n] \, \mathrm{Cov}(\mathbf{x}[n + 1] \mid \mathbf{y})`. The arguments
     are those of :func:`kalman_filter`, and the same PyTorch 2.11 requirement
@@ -482,6 +488,8 @@ def kalman_smoother(
 
     .. _Temporal Parallelization of Bayesian Smoothers:
         https://doi.org/10.1109/TAC.2020.2976316
+    .. _On The Performance of Prefix-Sum Parallel Kalman Filters and Smoothers on GPUs:
+        https://arxiv.org/abs/2511.10363
     .. _An Approach to Time Series Smoothing and Forecasting Using the EM Algorithm:
         https://doi.org/10.1111/j.1467-9892.1982.tb00349.x
     """
