@@ -14,11 +14,15 @@ DEVICES = [
         marks=pytest.mark.skipif(not torch.cuda.is_available(), reason="CUDA not available"),
     ),
 ]
-PRIORS = ["first_state", "before_first_step"]
 
 
 def _transitions(N, prior):
-    """How many steps A and Q have."""
+    """How many steps A and Q have.
+
+    The references also take the model with its prior one step before the
+    first measured state ("before_first_step"), to check the docstring's
+    conversion; the functions take the default "first_state".
+    """
     return N if prior == "before_first_step" else max(N - 1, 0)
 
 
@@ -87,76 +91,75 @@ def _reference(y, A, C, Q, R, m0, P0, prior, u=None, d=None):
     )
 
 
-def _check_against_reference(args, prior, rtol=1e-9, atol=1e-9):
-    expected = _reference(*args, prior)
-    filtered = kalman_filter(*args, prior=prior)
-    smoothed = kalman_smoother(*args, prior=prior)
-    N = args[0].size(1)
-    # The smoother covers every state; the measured ones are its last N.
-    actual = (filtered.means, filtered.covs, smoothed.means[:, -N:], smoothed.covs[:, -N:])
+def _check_against_reference(args, rtol=1e-9, atol=1e-9):
+    expected = _reference(*args, "first_state")
+    filtered = kalman_filter(*args)
+    smoothed = kalman_smoother(*args)
+    actual = (filtered.means, filtered.covs, smoothed.means, smoothed.covs)
     names = ["filter mean", "filter cov", "smoother mean", "smoother cov"]
     for name, a, e in zip(names, actual, expected):
         torch.testing.assert_close(a, e, rtol=rtol, atol=atol, msg=name)
 
 
 @pytest.mark.parametrize("device", DEVICES)
-@pytest.mark.parametrize("prior", PRIORS)
 @pytest.mark.parametrize("N", [1, 2, 7, 64])
 @pytest.mark.parametrize("M, P", [(1, 1), (4, 2), (2, 3)])
-def test_kalman_matches_sequential(device, prior, N, M, P):
-    args = [t.to(device) for t in _model(3, N, M, P, prior=prior)]
-    _check_against_reference(args, prior)
+def test_kalman_matches_sequential(device, N, M, P):
+    args = [t.to(device) for t in _model(3, N, M, P)]
+    _check_against_reference(args)
 
 
 @pytest.mark.parametrize("device", DEVICES)
-@pytest.mark.parametrize("prior", PRIORS)
 @pytest.mark.parametrize("M, P", [(1, 1), (4, 2), (2, 3)])
-def test_kalman_complex_matches_sequential(device, prior, M, P):
-    args = [t.to(device) for t in _model(3, 7, M, P, prior=prior, dtype=torch.complex128)]
-    _check_against_reference(args, prior)
+def test_kalman_complex_matches_sequential(device, M, P):
+    args = [t.to(device) for t in _model(3, 7, M, P, dtype=torch.complex128)]
+    _check_against_reference(args)
 
 
-def test_kalman_first_state_is_an_identity_step_before_first_step():
-    # A prior on the first measured state is a prior one identity step,
-    # without noise, before it.
-    y, A, C, Q, R, m0, P0 = _model(2, 6, 3, 2)
-    eye = torch.eye(3, dtype=A.dtype).expand(2, 1, 3, 3)
-    A_before = torch.cat([eye, A], 1)
-    Q_before = torch.cat([torch.zeros_like(eye), Q], 1)
-    first = kalman_smoother(y, A, C, Q, R, m0, P0)
-    before = kalman_smoother(y, A_before, C, Q_before, R, m0, P0, prior="before_first_step")
-    torch.testing.assert_close(first.means, before.means[:, 1:])
-    torch.testing.assert_close(first.cross_covs, before.cross_covs[:, 1:])
-    torch.testing.assert_close(first.log_likelihood, before.log_likelihood)
+def _from_before_first_step(y, A, C, Q, R, m0, P0):
+    """The docstring's conversion of a prior one step before the first measured state."""
+    m0 = (A[..., 0, :, :] @ m0.unsqueeze(-1)).squeeze(-1)
+    P0 = A[..., 0, :, :] @ P0 @ A[..., 0, :, :].mH + Q[..., 0, :, :]
+    return y, A[..., 1:, :, :], C, Q[..., 1:, :, :], R, m0, P0
+
+
+@pytest.mark.parametrize("dtype", [torch.float64, torch.complex128])
+def test_kalman_prior_before_the_first_step(dtype):
+    args = _model(3, 6, 3, 2, prior="before_first_step", dtype=dtype)
+    expected = _reference(*args, "before_first_step")
+    converted = _from_before_first_step(*args)
+    filtered, smoothed = kalman_filter(*converted), kalman_smoother(*converted)
+    actual = (filtered.means, filtered.covs, smoothed.means, smoothed.covs)
+    for a, e in zip(actual, expected):
+        torch.testing.assert_close(a, e, rtol=1e-9, atol=1e-9)
+    # The dense posterior of the model with the extra state, x[0] before y[0].
+    means, covs, log_p = _dense_posterior(*args, "before_first_step")
+    torch.testing.assert_close(smoothed.means, means[:, 1:], rtol=1e-8, atol=1e-8)
+    torch.testing.assert_close(smoothed.log_likelihood, log_p, rtol=1e-9, atol=1e-9)
 
 
 @pytest.mark.parametrize("fn", [kalman_filter, kalman_smoother])
-@pytest.mark.parametrize("prior", PRIORS)
 @pytest.mark.parametrize("batch_size, N", [(0, 5), (2, 0), (2, 1)])
-def test_kalman_empty_inputs(fn, prior, batch_size, N):
+def test_kalman_empty_inputs(fn, batch_size, N):
     y, A, C, Q, R, m0, P0 = _model(2, 5, 3, 2)
     y = y.new_zeros(batch_size, N, 2)
-    result = fn(y, A[0, 0], C[0, 0], Q[0, 0], R[0, 0], m0[0], P0[0], prior=prior)
-    states = N + 1 if fn is kalman_smoother and prior == "before_first_step" else N
-    assert result.means.shape == (batch_size, states, 3)
-    assert result.covs.shape == (batch_size, states, 3, 3)
+    result = fn(y, A[0, 0], C[0, 0], Q[0, 0], R[0, 0], m0[0], P0[0])
+    assert result.means.shape == (batch_size, N, 3)
+    assert result.covs.shape == (batch_size, N, 3, 3)
     assert result.log_likelihood.shape == (batch_size,)
     if fn is kalman_smoother:
-        assert result.cross_covs.shape == (batch_size, max(states - 1, 0), 3, 3)
+        assert result.cross_covs.shape == (batch_size, max(N - 1, 0), 3, 3)
     if N == 0 and batch_size:
         # With no measurements, log p(y) = 0.
         torch.testing.assert_close(result.log_likelihood, y.new_zeros(batch_size))
 
 
 @pytest.mark.parametrize("fn", [kalman_filter, kalman_smoother])
-@pytest.mark.parametrize("prior", PRIORS)
-def test_kalman_coefficient_shapes(fn, prior):
+def test_kalman_coefficient_shapes(fn):
     batch_size, N, M, P = 2, 5, 3, 2
-    T = _transitions(N, prior)
-    y, A, C, Q, R, m0, P0 = _model(batch_size, N, M, P, prior=prior)
-
-    def run(*args):
-        return fn(*args, prior=prior)
+    T = N - 1
+    y, A, C, Q, R, m0, P0 = _model(batch_size, N, M, P)
+    run = fn
 
     expected = run(y, A, C, Q, R, m0, P0)
 
@@ -188,61 +191,54 @@ def test_kalman_coefficient_shapes(fn, prior):
 
 
 def test_kalman_reads_n_equal_b_as_time_varying():
-    y, A, C, Q, R, m0, P0 = _model(4, 4, 2, 1, prior="before_first_step")
-    means = kalman_filter(y, A[0], C, Q, R, m0, P0, prior="before_first_step").means
-    A_full = A[:1].expand(4, -1, -1, -1)
-    expected = kalman_filter(y, A_full, C, Q, R, m0, P0, prior="before_first_step").means
+    # B = 4 signals of N = 5 measurements, so A has 4 transitions.
+    y, A, C, Q, R, m0, P0 = _model(4, 5, 2, 1)
+    means = kalman_filter(y, A[0], C, Q, R, m0, P0).means
+    expected = kalman_filter(y, A[:1].expand(4, -1, -1, -1), C, Q, R, m0, P0).means
     torch.testing.assert_close(means, expected)
 
 
 @pytest.mark.parametrize(
-    "name, shape, prior",
+    "name, shape",
     [
-        ("A", (3, 2, 2), "before_first_step"),
-        ("A", (4, 2, 2), "before_first_step"),
-        ("A", (5, 2, 2), "first_state"),
-        ("Q", (2, 4, 2, 2), "before_first_step"),
-        ("Q", (2, 5, 2, 2), "first_state"),
-        ("C", (2, 2), "first_state"),
-        ("Q", (3, 5, 2, 2), "before_first_step"),
-        ("R", (1, 2), "first_state"),
-        ("m0", (3,), "first_state"),
-        ("P0", (3, 2, 2), "first_state"),
+        ("A", (3, 2, 2)),
+        ("A", (5, 2, 2)),
+        ("Q", (2, 5, 2, 2)),
+        ("C", (2, 2)),
+        ("C", (4, 1, 2)),
+        ("Q", (3, 4, 2, 2)),
+        ("R", (1, 2)),
+        ("m0", (3,)),
+        ("P0", (3, 2, 2)),
     ],
 )
-def test_kalman_rejects_unsupported_shapes(name, shape, prior):
-    y, A, C, Q, R, m0, P0 = _model(2, 5, 2, 1, prior=prior)
+def test_kalman_rejects_unsupported_shapes(name, shape):
+    # N = 5 measurements, 4 transitions, 2 signals.
+    y, A, C, Q, R, m0, P0 = _model(2, 5, 2, 1)
     args = dict(y=y, A=A, C=C, Q=Q, R=R, m0=m0, P0=P0)
     args[name] = torch.ones(shape, dtype=torch.float64)
     with pytest.raises(ValueError, match=name):
-        kalman_filter(**args, prior=prior)
-
-
-def test_kalman_rejects_unknown_prior():
-    with pytest.raises(ValueError, match="prior"):
-        kalman_filter(*_model(1, 3, 1, 1), prior="last_state")
+        kalman_filter(**args)
 
 
 @pytest.mark.parametrize("fn", [kalman_filter, kalman_smoother])
-@pytest.mark.parametrize("prior", PRIORS)
-def test_kalman_gradcheck(fn, prior):
-    y, A, C, Q, R, m0, P0 = _model(2, 5, 2, 1, prior=prior)
+def test_kalman_gradcheck(fn):
+    y, A, C, Q, R, m0, P0 = _model(2, 5, 2, 1)
     Q_factor = torch.linalg.cholesky(Q)
 
     def run(y, A, C, Q_factor, m0):
-        return tuple(fn(y, A, C, Q_factor @ Q_factor.mT, R, m0, P0, prior=prior))
+        return tuple(fn(y, A, C, Q_factor @ Q_factor.mT, R, m0, P0))
 
     inputs = [t.clone().requires_grad_() for t in (y, A, C, Q_factor, m0)]
     assert torch.autograd.gradcheck(run, inputs)
 
 
 @pytest.mark.parametrize("fn", [kalman_filter, kalman_smoother])
-@pytest.mark.parametrize("prior", PRIORS)
-def test_kalman_known_inputs_recipe(fn, prior):
+def test_kalman_known_inputs_recipe(fn):
     """The recipe in kalman_filter's docstring, from shapes it says to expand."""
     B, N, M, P = 3, 9, 3, 2
-    T = _transitions(N, prior)
-    y, A, C, Q, R, m0, P0 = _model(B, N, M, P, prior=prior)
+    T = N - 1
+    y, A, C, Q, R, m0, P0 = _model(B, N, M, P)
     gen = torch.Generator().manual_seed(1)
     u = torch.randn(B, T, M, dtype=torch.float64, generator=gen)
     d = torch.randn(B, N, P, dtype=torch.float64, generator=gen)
@@ -251,16 +247,15 @@ def test_kalman_known_inputs_recipe(fn, prior):
     A_full, C_full = A.expand(B, T, M, M), C[:, None].expand(B, N, P, M)
 
     x_u = lpv_state_space_recursion(A_full, y.new_zeros(B, M), u)
-    if prior == "first_state":
-        x_u = torch.cat([y.new_zeros(B, 1, M), x_u], dim=1)  # x_u[0] = 0
+    x_u = torch.cat([y.new_zeros(B, 1, M), x_u], dim=1)  # x_u[0] = 0
     y_s = y - d - (C_full @ x_u.unsqueeze(-1)).squeeze(-1)
-    result = fn(y_s, A_full, C_full, Q, R, m0, P0, prior=prior)
-    means = result.means[:, -N:] + x_u
+    result = fn(y_s, A_full, C_full, Q, R, m0, P0)
+    means = result.means + x_u
 
-    expected = _reference(y, A_full, C_full, Q, R, m0.expand(B, M), P0, prior, u, d)
+    expected = _reference(y, A_full, C_full, Q, R, m0.expand(B, M), P0, "first_state", u, d)
     expected = expected[:2] if fn is kalman_filter else expected[2:]
     torch.testing.assert_close(means, expected[0], rtol=1e-9, atol=1e-9)
-    torch.testing.assert_close(result.covs[:, -N:], expected[1], rtol=1e-9, atol=1e-9)
+    torch.testing.assert_close(result.covs, expected[1], rtol=1e-9, atol=1e-9)
 
 
 @pytest.mark.skipif(not torch.cuda.is_available(), reason="CUDA not available")
@@ -343,9 +338,9 @@ def _dense_posterior(y, A, C, Q, R, m0, P0, prior):
     return torch.stack(means), torch.stack(covs), torch.stack(log_ps)
 
 
-def _check_against_dense(args, prior):
-    means, covs, log_p = _dense_posterior(*[t.cpu() for t in args], prior)
-    result = kalman_smoother(*args, prior=prior)
+def _check_against_dense(args):
+    means, covs, log_p = _dense_posterior(*[t.cpu() for t in args], "first_state")
+    result = kalman_smoother(*args)
     steps = torch.arange(means.size(1))
     torch.testing.assert_close(result.means.cpu(), means, rtol=1e-8, atol=1e-8)
     expected_covs = covs[:, steps, :, steps].transpose(0, 1)
@@ -354,33 +349,31 @@ def _check_against_dense(args, prior):
     cross = covs[:, steps[1:], :, steps[:-1]].transpose(0, 1)
     torch.testing.assert_close(result.cross_covs.cpu(), cross, rtol=1e-8, atol=1e-8)
     torch.testing.assert_close(result.log_likelihood.cpu(), log_p, rtol=1e-9, atol=1e-9)
-    filtered = kalman_filter(*args, prior=prior)
+    filtered = kalman_filter(*args)
     torch.testing.assert_close(filtered.log_likelihood, result.log_likelihood)
 
 
 @pytest.mark.parametrize("device", DEVICES)
-@pytest.mark.parametrize("prior", PRIORS)
 @pytest.mark.parametrize("dtype", [torch.float64, torch.complex128])
 @pytest.mark.parametrize("N", [1, 2, 6])
 @pytest.mark.parametrize("M, P", [(1, 1), (3, 2), (2, 3)])
-def test_kalman_smoother_matches_dense_posterior(device, prior, dtype, N, M, P):
-    args = [t.to(device) for t in _model(2, N, M, P, prior=prior, dtype=dtype)]
-    _check_against_dense(args, prior)
+def test_kalman_smoother_matches_dense_posterior(device, dtype, N, M, P):
+    args = [t.to(device) for t in _model(2, N, M, P, dtype=dtype)]
+    _check_against_dense(args)
 
 
 def _em_step(y, result):
     """The M-step of kalman_smoother's docstring, as written there."""
     m, V, V10, _ = result
-    outer = V + m.unsqueeze(-1) @ m.unsqueeze(-2).conj()  # E[x[s] x[s]^H]
+    outer = V + m.unsqueeze(-1) @ m.unsqueeze(-2).conj()  # E[x[n] x[n]^H]
     cross = V10 + m[:, 1:].unsqueeze(-1) @ m[:, :-1].unsqueeze(-2).conj()
-    S00 = outer[:, :-1].sum((0, 1))  # sums of E[x[s] x[s]^H] before each step
-    S11 = outer[:, 1:].sum((0, 1))  # sums of E[x[s + 1] x[s + 1]^H]
-    S10 = cross.sum((0, 1))  # sums of E[x[s + 1] x[s]^H]
+    S00 = outer[:, :-1].sum((0, 1))  # sums of E[x[n] x[n]^H], n < N - 1
+    S11 = outer[:, 1:].sum((0, 1))  # sums of E[x[n + 1] x[n + 1]^H]
+    S10 = cross.sum((0, 1))  # sums of E[x[n + 1] x[n]^H]
     A = torch.linalg.solve(S00, S10.mH).mH  # S10 S00^-1
-    Q = (S11 - A @ S10.mH) / (y.size(0) * cross.size(1))
-    measured_m, measured_outer = m[:, -y.size(1) :], outer[:, -y.size(1) :]
-    Syx = (y.unsqueeze(-1) @ measured_m.unsqueeze(-2).conj()).sum((0, 1))
-    C = torch.linalg.solve(measured_outer.sum((0, 1)), Syx.mH).mH
+    Q = (S11 - A @ S10.mH) / (y.size(0) * (y.size(1) - 1))
+    Syx = (y.unsqueeze(-1) @ m.unsqueeze(-2).conj()).sum((0, 1))
+    C = torch.linalg.solve(outer.sum((0, 1)), Syx.mH).mH
     yy = (y.unsqueeze(-1) @ y.unsqueeze(-2).conj()).sum((0, 1))
     R = (yy - C @ Syx.mH) / (y.size(0) * y.size(1))
     m0 = m[:, 0].mean(0)
@@ -388,9 +381,8 @@ def _em_step(y, result):
     return A, C, (Q + Q.mH) / 2, (R + R.mH) / 2, m0, (P0 + P0.mH) / 2
 
 
-@pytest.mark.parametrize("prior", PRIORS)
 @pytest.mark.parametrize("dtype", [torch.float64, torch.complex128])
-def test_kalman_em_increases_likelihood(prior, dtype):
+def test_kalman_em_increases_likelihood(dtype):
     # Data from a known model, fitted from a poor initial guess.
     B, N, M, P = 4, 50, 2, 2
     gen = torch.Generator().manual_seed(3)
@@ -405,7 +397,7 @@ def test_kalman_em_increases_likelihood(prior, dtype):
     params = (0.5 * eye, eye.clone(), eye.clone(), eye.clone(), torch.zeros(M, dtype=dtype), eye)
     log_ps = []
     for _ in range(20):
-        result = kalman_smoother(y, *params, prior=prior)
+        result = kalman_smoother(y, *params)
         log_ps.append(result.log_likelihood.sum().item())
         params = _em_step(y, result)
     assert all(b >= a - 1e-8 for a, b in zip(log_ps, log_ps[1:]))
@@ -413,18 +405,23 @@ def test_kalman_em_increases_likelihood(prior, dtype):
 
 
 def test_kalman_known_initial_state_with_singular_noise():
-    """An AR(2) model from a known zero state, with its prior before the first step.
+    """An AR(2) model from a known zero state, one step before its first measurement.
 
-    Then A[0] P0 A[0]^H + Q[0] = Q is singular, which the smoothing element
-    of the prior state must handle.
+    Converted as in the docstring, its prior on the first measured state has
+    the singular covariance Q.
     """
     dtype = torch.float64
     A = torch.tensor([[1.2, -0.5], [1.0, 0.0]], dtype=dtype)
     C = torch.tensor([[1.0, 0.0]], dtype=dtype)
     Q = torch.diag(torch.tensor([1.0, 0.0], dtype=dtype))
     R = torch.tensor([[0.1]], dtype=dtype)
-    m0, P0 = torch.zeros(2, dtype=dtype), torch.zeros(2, 2, dtype=dtype)
     y = torch.randn(2, 6, 1, dtype=dtype, generator=torch.Generator().manual_seed(0))
-    full = [y, *(t.expand(2, 6, *t.shape) for t in (A, C, Q, R)), m0.expand(2, 2)]
-    args = (*full, P0.expand(2, 2, 2))
-    _check_against_dense(args, "before_first_step")
+    m0, P0 = torch.zeros(2, 2, dtype=dtype), torch.zeros(2, 2, 2, dtype=dtype)
+    args = (y, *(t.expand(2, 6, *t.shape) for t in (A, C, Q, R)), m0, P0)
+    means, covs, log_p = _dense_posterior(*args, "before_first_step")
+    result = kalman_smoother(*_from_before_first_step(*args))
+    torch.testing.assert_close(result.means, means[:, 1:], rtol=1e-8, atol=1e-8)
+    steps = torch.arange(1, 7)
+    expected_covs = covs[:, steps, :, steps].transpose(0, 1)
+    torch.testing.assert_close(result.covs, expected_covs, rtol=1e-8, atol=1e-8)
+    torch.testing.assert_close(result.log_likelihood, log_p, rtol=1e-9, atol=1e-9)
