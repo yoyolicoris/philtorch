@@ -154,10 +154,13 @@ def _filtering_operator(
     """Combine two filtering elements (Lemma 3 of the GPU paper)."""
     F_i, b_i, G_i, eta_i, J_i = earlier
     F_j, b_j, G_j, eta_j, J_j = later
-    eye = torch.eye(F_i.size(-1), dtype=F_i.dtype, device=F_i.device)
+    # I + G_i J_j and I + J_j G_i, adding to the products' diagonals in place.
+    I_GJ, I_JG = G_i @ J_j, J_j @ G_i
+    I_GJ.diagonal(dim1=-2, dim2=-1).add_(1)
+    I_JG.diagonal(dim1=-2, dim2=-1).add_(1)
     # X = F_j (I + G_i J_j)^-1 and Y = F_i^H (I + J_j G_i)^-1, as left solves.
-    X = torch.linalg.solve((eye + G_i @ J_j).mH, F_j.mH).mH
-    Y = torch.linalg.solve((eye + J_j @ G_i).mH, F_i).mH
+    X = torch.linalg.solve(I_GJ.mH, F_j.mH).mH
+    Y = torch.linalg.solve(I_JG.mH, F_i).mH
     return (
         X @ F_i,
         _mv(X, b_i + _mv(G_i, eta_j)) + b_j,
