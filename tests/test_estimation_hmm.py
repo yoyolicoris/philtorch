@@ -118,25 +118,31 @@ def test_hmm_posteriors_are_the_gradient_of_the_log_likelihood():
 
 def _transitions(log_trans, kind):
     """The model's transitions, (B, N - 1, K, K), shared as (K, K), per step as
-    (N - 1, K, K), or per signal as they are."""
+    (N - 1, K, K), constant per signal as (B, K, K), or as they are."""
     if kind == "shared":
         # Drawn anew rather than taken from log_trans, which has no steps when N = 1.
         gen = torch.Generator().manual_seed(1)
         K = log_trans.size(-1)
         shared = torch.randn(K, K, dtype=log_trans.dtype, generator=gen).log_softmax(-1)
         return shared.to(log_trans.device)
+    if kind == "signal_constant":
+        gen = torch.Generator().manual_seed(1)
+        B, K = log_trans.size(0), log_trans.size(-1)
+        constant = torch.randn(B, K, K, dtype=log_trans.dtype, generator=gen).log_softmax(-1)
+        return constant.to(log_trans.device)
     return log_trans[0] if kind == "time" else log_trans
 
 
-@pytest.mark.parametrize("trans", ["shared", "time", "signal"])
+@pytest.mark.parametrize("trans", ["shared", "time", "signal_constant", "signal"])
 @pytest.mark.parametrize("K", [3, 17])
 def test_hmm_derivatives_to_second_order(trans, K):
     """gradcheck and gradgradcheck, with K = 17 in the kernels' blocked path.
 
-    The numerical derivatives perturb every input entry, so K = 17 takes
-    one step fewer.
+    The numerical derivatives perturb every input entry, so K = 17 takes one
+    sequence and one step fewer; B differs from N - 1 throughout, so a
+    constant per signal is not read per step.
     """
-    log_emit, log_trans, log_init = _model(2, 4 if K < 10 else 3, K)
+    log_emit, log_trans, log_init = _model(2 if K < 10 else 1, 4 if K < 10 else 3, K)
     inputs = (log_emit, _transitions(log_trans, trans), log_init)
     inputs = tuple(t.requires_grad_() for t in inputs)
 
@@ -150,7 +156,7 @@ def test_hmm_derivatives_to_second_order(trans, K):
     assert torch.autograd.gradgradcheck(outputs, inputs)
 
 
-@pytest.mark.parametrize("trans", ["shared", "time", "signal"])
+@pytest.mark.parametrize("trans", ["shared", "time", "signal_constant", "signal"])
 @pytest.mark.parametrize(("N", "K"), [(1, 3), (66, 5), (300, 17), (1000, 2)])
 def test_hmm_gradients_match_sequential(trans, N, K):
     """Gradients against autograd through the sequential recursions.
@@ -170,7 +176,11 @@ def test_hmm_gradients_match_sequential(trans, N, K):
     _, posteriors = hmm_smoother(*inputs)
     score, _ = hmm_viterbi(*inputs)
     actual = torch.autograd.grad(loss(ll, filtered, posteriors, score), inputs)
-    expected_ll, filtered, posteriors, score, _ = _sequential(*inputs)
+    # The reference expands transitions to (B, N - 1, K, K), from (B, 1, K, K) per signal.
+    reference = list(inputs)
+    if trans == "signal_constant":
+        reference[1] = reference[1][:, None]
+    expected_ll, filtered, posteriors, score, _ = _sequential(*reference)
     expected = torch.autograd.grad(
         loss(expected_ll, filtered, posteriors, score), inputs, materialize_grads=True
     )
@@ -205,6 +215,17 @@ def test_hmm_chain_takes_an_expanded_gradient():
     (grad,) = torch.autograd.grad(alpha.sum(), first, retain_graph=True)
     (expected,) = torch.autograd.grad(alpha, first, torch.ones_like(alpha))
     torch.testing.assert_close(grad, expected)
+
+
+def test_hmm_reads_an_ambiguous_3d_log_trans_per_step():
+    # With B = N - 1, a (B, K, K) tensor is also (N - 1, K, K); like
+    # kalman_filter, the HMM functions take it per step.
+    log_emit, log_trans, log_init = _model(3, 4, 2)
+    per_step = log_trans[0]
+    torch.testing.assert_close(
+        hmm_filter(log_emit, per_step, log_init),
+        hmm_filter(log_emit, per_step.expand(3, 3, 2, 2), log_init),
+    )
 
 
 def test_hmm_needs_cuda():
@@ -288,7 +309,7 @@ def test_hmm_two_levels_of_chunks():
     torch.testing.assert_close(hmm_filter(*args)[1], filtered)
     actual_score, actual_path = hmm_viterbi(*args)
     torch.testing.assert_close(actual_score, score)
-    assert (actual_path == path).float().mean() > 0.999
+    torch.testing.assert_close(actual_path, path)
 
 
 def test_hmm_empty_sequence():
@@ -298,6 +319,21 @@ def test_hmm_empty_sequence():
     assert filtered.shape == (2, 0, 3) and ll.eq(0).all()
     score, path = hmm_viterbi(log_emit, log_trans, log_init)
     assert path.shape == (2, 0) and score.eq(0).all()
+
+
+@pytest.mark.parametrize("N", [2, 7, 200])
+def test_hmm_viterbi_path_is_optimal_under_ties(N):
+    # Two states that must alternate, with nothing to tell them apart: the
+    # two alternating paths tie. Picking each step's best state on its own
+    # would stay in state 0, a path the model forbids; the traceback returns
+    # one of the two, scoring the best score.
+    log_emit = torch.zeros(1, N, 2, dtype=torch.float64, device="cuda")
+    log_trans = torch.tensor([[float("-inf"), 0.0], [0.0, float("-inf")]], device="cuda")
+    log_init = torch.full((2,), 0.5, dtype=torch.float64, device="cuda").log()
+    score, path = hmm_viterbi(log_emit, log_trans.double(), log_init)
+    steps = path[0, 1:] != path[0, :-1]
+    assert steps.all(), "the path takes a forbidden transition"
+    torch.testing.assert_close(score, log_init[path[:, 0]])
 
 
 def test_hmm_viterbi_gradient_under_ties():

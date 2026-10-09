@@ -39,14 +39,18 @@ def _parse(
     match log_trans.dim():
         case 2:
             log_trans = log_trans[None, None]
+        # Per step before per signal when both fit, as in kalman_filter.
         case 3 if log_trans.size(0) == transitions:
             log_trans = log_trans[None]
+        case 3 if log_trans.size(0) == batch_size:
+            log_trans = log_trans[:, None]
         case 4 if log_trans.shape[:2] == (batch_size, transitions):
             pass
         case _:
             raise ValueError(
-                f"log_trans must be of shape {(K, K)}, {(transitions, K, K)} or "
-                f"{(batch_size, transitions, K, K)}, got {tuple(log_trans.shape)}"
+                f"log_trans must be of shape {(K, K)}, {(transitions, K, K)}, "
+                f"{(batch_size, K, K)} or {(batch_size, transitions, K, K)}, "
+                f"got {tuple(log_trans.shape)}"
             )
     assert log_init.shape in ((K,), (batch_size, K)), (
         f"log_init must be {(K,)} or {(batch_size, K)}, got {tuple(log_init.shape)}"
@@ -131,7 +135,9 @@ def _positions(reverse: bool) -> tuple[int, int, slice, slice]:
     return 0, -1, slice(0, -1), slice(1, None)
 
 
-def _run_chain(semiring, y0, log_trans, log_emit, inj, reverse, transpose, weights=None):
+def _run_chain(
+    semiring, y0, log_trans, log_emit, inj, reverse, transpose, weights=None, argmax=None
+):
     """The chain's messages with y0 included: (B, T + 1, K), y0 first, or last in reverse.
 
     The semiring is "log", "max" or "linear"; see :func:`._hmm_kernels.chain`.
@@ -144,7 +150,7 @@ def _run_chain(semiring, y0, log_trans, log_emit, inj, reverse, transpose, weigh
     start, _, _, steps = _positions(reverse)
     out[:, start] = y0
     trans = log_trans.expand(B, T, K, K)
-    chain(y0, trans, log_emit, inj, semiring, reverse, transpose, out[:, steps], weights)
+    chain(y0, trans, log_emit, inj, semiring, reverse, transpose, out[:, steps], weights, argmax)
     return out
 
 
@@ -251,11 +257,19 @@ class _Viterbi(torch.autograd.Function):
 
     @staticmethod
     def forward(log_emit, log_trans, log_init):
+        from ._hmm_kernels import trace
+
+        B, N, K = log_emit.shape
         first = log_init + log_emit[:, 0]
-        delta = _run_chain("max", first, log_trans, log_emit[:, 1:], None, False, False)
-        last = torch.zeros_like(first)
-        future = _run_chain("max", last, log_trans, log_emit[:, 1:], None, True, True)
-        return delta[:, -1].amax(dim=-1), (delta + future).argmax(dim=-1)
+        # Each message's best previous state, for the transition into each time.
+        pointers = torch.empty(B, N - 1, K, dtype=torch.int32, device=log_emit.device)
+        delta = _run_chain(
+            "max", first, log_trans, log_emit[:, 1:], None, False, False, argmax=pointers
+        )
+        score, last = delta[:, -1].max(dim=-1)
+        # Follow the pointers back from the best last state.
+        path = trace(last.int(), pointers, reverse=True)
+        return score, torch.cat([path, last.int().unsqueeze(1)], dim=1).long()
 
     @staticmethod
     def setup_context(ctx, inputs, output):
@@ -320,8 +334,10 @@ def hmm_filter(log_emit: Tensor, log_trans: Tensor, log_init: Tensor) -> tuple[T
         log_emit (Tensor): :math:`\log p(y[n] \mid z[n] = k)`, of shape
             :math:`(B, N, K)`.
         log_trans (Tensor): :math:`\log p(z[n + 1] = j \mid z[n] = i)` at
-            index :math:`[i, j]`, of shape :math:`(K, K)`,
-            :math:`(N - 1, K, K)` or :math:`(B, N - 1, K, K)`.
+            index :math:`[i, j]`: shared, of shape :math:`(K, K)`; per step,
+            :math:`(N - 1, K, K)`; per signal, :math:`(B, K, K)`; or both,
+            :math:`(B, N - 1, K, K)`. When :math:`B = N - 1`, a 3-D tensor is
+            taken per step.
         log_init (Tensor): :math:`\log p(z[0] = k)`, of shape :math:`(K)` or
             :math:`(B, K)`.
 
@@ -363,8 +379,10 @@ def hmm_smoother(log_emit: Tensor, log_trans: Tensor, log_init: Tensor) -> tuple
         log_emit (Tensor): :math:`\log p(y[n] \mid z[n] = k)`, of shape
             :math:`(B, N, K)`.
         log_trans (Tensor): :math:`\log p(z[n + 1] = j \mid z[n] = i)` at
-            index :math:`[i, j]`, of shape :math:`(K, K)`,
-            :math:`(N - 1, K, K)` or :math:`(B, N - 1, K, K)`.
+            index :math:`[i, j]`: shared, of shape :math:`(K, K)`; per step,
+            :math:`(N - 1, K, K)`; per signal, :math:`(B, K, K)`; or both,
+            :math:`(B, N - 1, K, K)`. When :math:`B = N - 1`, a 3-D tensor is
+            taken per step.
         log_init (Tensor): :math:`\log p(z[0] = k)`, of shape :math:`(K)` or
             :math:`(B, K)`.
 
@@ -396,15 +414,17 @@ def hmm_smoother(log_emit: Tensor, log_trans: Tensor, log_init: Tensor) -> tuple
 def hmm_viterbi(log_emit: Tensor, log_trans: Tensor, log_init: Tensor) -> tuple[Tensor, Tensor]:
     r"""Decode a hidden Markov model: its most probable state sequence.
 
-    For the model of :func:`hmm_filter`, this is the max-product form of the
-    Viterbi algorithm from `Temporal Parallelization of Inference in Hidden
-    Markov Models`_ (Hassan et al., 2021): a forward scan gives the best
-    score of any path ending in each state, a backward scan the best score
-    of any continuation, and each step takes the state whose sum is largest.
-    That is the exact Viterbi path when it is unique; with ties, the steps
-    can pick states from different optimal paths. The score's gradient is
-    that of the decoded path: one for its first state's prior and for each
-    of its emissions and transitions; its higher derivatives are zero.
+    For the model of :func:`hmm_filter`, this is the Viterbi algorithm with
+    both of its passes parallelized over time: a max-plus scan, as in
+    `Temporal Parallelization of Inference in Hidden Markov Models`_ (Hassan
+    et al., 2021), gives the best score of any path ending in each state and
+    records each state's best predecessor, and a traceback follows those
+    backpointers from the best last state, in chunks of steps. So the path is
+    always one of the optimal paths: under ties, the one that prefers lower
+    state indices, as the sequential algorithm's backpointers do. The score's
+    gradient is that of the decoded path: one for its first state's prior
+    and for each of its emissions and transitions; its higher derivatives are
+    zero.
 
     Note:
         Runs only on CUDA GPUs, as Triton kernels: the inputs must be CUDA
@@ -415,8 +435,10 @@ def hmm_viterbi(log_emit: Tensor, log_trans: Tensor, log_init: Tensor) -> tuple[
         log_emit (Tensor): :math:`\log p(y[n] \mid z[n] = k)`, of shape
             :math:`(B, N, K)`.
         log_trans (Tensor): :math:`\log p(z[n + 1] = j \mid z[n] = i)` at
-            index :math:`[i, j]`, of shape :math:`(K, K)`,
-            :math:`(N - 1, K, K)` or :math:`(B, N - 1, K, K)`.
+            index :math:`[i, j]`: shared, of shape :math:`(K, K)`; per step,
+            :math:`(N - 1, K, K)`; per signal, :math:`(B, K, K)`; or both,
+            :math:`(B, N - 1, K, K)`. When :math:`B = N - 1`, a 3-D tensor is
+            taken per step.
         log_init (Tensor): :math:`\log p(z[0] = k)`, of shape :math:`(K)` or
             :math:`(B, K)`.
 

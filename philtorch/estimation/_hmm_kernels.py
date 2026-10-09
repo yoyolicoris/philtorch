@@ -30,6 +30,10 @@ strides, so the B x N x K x K step matrices are never stored. With
 it uses the transpose, whose emissions are then on the summed index: so a
 chain's derivative, a linear chain backwards, runs here too.
 
+A max-plus chain can also record each message's maximizing previous state,
+and :func:`trace` follows such backpointers in the same two levels: Viterbi
+decoding's traceback, in parallel.
+
 Up to ``_REGISTER_STATES`` states, a program holds the K x K x K terms of a
 product in registers. Above, it computes them in tiles of rows and columns,
 and the totals' running product alternates between two K x K scratch
@@ -211,14 +215,18 @@ def _chunk_totals_kernel(
 
 @triton.jit
 def _chunk_sweep_kernel(
-    start_ptr, trans_ptr, emit_ptr, p_ptr, q_ptr, inj_ptr, out_ptr, N, K, C,
+    start_ptr, trans_ptr, emit_ptr, p_ptr, q_ptr, inj_ptr, out_ptr, argmax_ptr, N, K, C,
     stride_tb, stride_tn, stride_eb, stride_en, stride_pb, stride_pn, stride_qb, stride_qn,
     stride_jb, stride_jn, stride_ob, ZERO: tl.constexpr, T: tl.constexpr,
     HAS_EMIT: tl.constexpr, HAS_INJ: tl.constexpr, WEIGHTED: tl.constexpr,
     REVERSE: tl.constexpr, TRANSPOSE: tl.constexpr, SEMIRING: tl.constexpr,
-    BK: tl.constexpr, BC: tl.constexpr,
+    ARGMAX: tl.constexpr, BK: tl.constexpr, BC: tl.constexpr,
 ):  # fmt: skip
-    """y[t] = (y[t - 1] (x) A[t]) (+) j[t] through chunk c from its start, written at time n."""
+    """y[t] = (y[t - 1] (x) A[t]) (+) j[t] through chunk c from its start, written at time n.
+
+    With ARGMAX, a max-plus chain also writes, for each state k, the
+    lowest-index state i attaining y[t][k] = y[t - 1][i] + A[t][i, k].
+    """
     pid = tl.program_id(0)
     b = (pid // C).to(tl.int64)
     c = pid % C
@@ -226,6 +234,7 @@ def _chunk_sweep_kernel(
     trans, emit = trans_ptr + b * stride_tb, emit_ptr + b * stride_eb
     p, q, inj = p_ptr + b * stride_pb, q_ptr + b * stride_qb, inj_ptr + b * stride_jb
     out = out_ptr + b * stride_ob
+    argmax = argmax_ptr + b * N * K
     states = tl.arange(0, BK)
     rows = states[:, None]
     y = tl.load(start_ptr + pid.to(tl.int64) * K + states, mask=states < K, other=ZERO)
@@ -238,7 +247,11 @@ def _chunk_sweep_kernel(
                 rows, states[None, :], HAS_EMIT, TRANSPOSE, WEIGHTED, SEMIRING,
             )  # fmt: skip
             # (y (x) m)[k] = sum over i of y[i] (x) m[i, k].
-            y_next = _reduce(_times(y[:, None], m, SEMIRING), 0, SEMIRING)
+            terms = _times(y[:, None], m, SEMIRING)
+            y_next = _reduce(terms, 0, SEMIRING)
+            if ARGMAX:
+                best = tl.argmax(terms, 0, tie_break_left=True)
+                tl.store(argmax + n * K + states, best, mask=(states < K) & valid)
             if HAS_INJ:
                 j = tl.load(inj + n * stride_jn + states, mask=states < K, other=ZERO)
                 y_next = _plus(y_next, j, SEMIRING)
@@ -255,7 +268,11 @@ def _chunk_sweep_kernel(
                     trans, emit, p, q, n, K, stride_tn, stride_en, stride_pn, stride_qn,
                     rows, columns[None, :], HAS_EMIT, TRANSPOSE, WEIGHTED, SEMIRING,
                 )  # fmt: skip
-                y_block = _reduce(_times(y[:, None], m, SEMIRING), 0, SEMIRING)
+                terms = _times(y[:, None], m, SEMIRING)
+                y_block = _reduce(terms, 0, SEMIRING)
+                if ARGMAX:
+                    best = tl.argmax(terms, 0, tie_break_left=True)
+                    tl.store(argmax + n * K + columns, best, mask=columns < K)
                 if HAS_INJ:
                     j = tl.load(inj + n * stride_jn + columns, mask=columns < K, other=ZERO)
                     y_block = _plus(y_block, j, SEMIRING)
@@ -298,6 +315,7 @@ def chain(
     transpose: bool = False,
     out: Tensor | None = None,
     weights: tuple[Tensor, Tensor] | None = None,
+    argmax: Tensor | None = None,
 ) -> Tensor:
     """The messages y[t] = (y[t - 1] (x) A[t]) (+) j[t], t = 0, ..., N - 1, from y[-1] = y0.
 
@@ -317,6 +335,9 @@ def chain(
         weights: for a linear chain, the log weights (p, q), each (B, N, K),
             of A[t][r, c] = exp(M[t][r, c] + p[t][r] + q[t][c]) with r
             summed; None for explicit matrices.
+        argmax: for a max-plus chain, a contiguous (B, N, K) int32 tensor
+            that receives each message's maximizing previous state, the
+            lowest-index one under ties; or None.
 
     Returns:
         The messages, (B, N, K), each written at its step's time.
@@ -330,6 +351,7 @@ def chain(
     weighted = weights is not None
     assert linear or not weighted, "weights are for linear chains"
     assert weighted or not linear or log_emit is None, "explicit matrices take no emissions"
+    assert argmax is None or semiring == "max", "argmax is for max-plus chains"
     T = _CHUNK
     C = triton.cdiv(N, T)
     p, q = weights if weighted else (None, None)
@@ -356,7 +378,79 @@ def chain(
         ends = chain(y0, totals, None, offsets, semiring)
         starts = torch.cat([y0.unsqueeze(1), ends[:, :-1]], dim=1).contiguous()
     _chunk_sweep_kernel[(B * C,)](
-        starts, trans, *pointers, out, N, K, C, *strides, out.stride(0), **flags,
-        num_warps=num_warps,
+        starts, trans, *pointers, out, argmax if argmax is not None else starts, N, K, C,
+        *strides, out.stride(0), **flags, ARGMAX=argmax is not None, num_warps=num_warps,
     )  # fmt: skip
+    return out
+
+
+@triton.jit
+def _trace_totals_kernel(
+    maps_ptr, total_ptr, L, K, C, T: tl.constexpr, REVERSE: tl.constexpr, BK: tl.constexpr
+):
+    """Chunk c's composed map, total[k] = F[cT + T - 1](... F[cT](k)), in chain order."""
+    pid = tl.program_id(0)
+    b = (pid // C).to(tl.int64)
+    c = pid % C
+    steps = tl.minimum(T, L - c * T)
+    maps = maps_ptr + b * L * K
+    states = tl.arange(0, BK)
+    current = states
+    for s in range(0, steps):
+        n = _time(c, s, L, T, REVERSE)
+        current = tl.load(maps + n * K + current, mask=states < K, other=0)
+    tl.store(total_ptr + pid.to(tl.int64) * K + states, current, mask=states < K)
+
+
+@triton.jit
+def _trace_sweep_kernel(
+    start_ptr, maps_ptr, out_ptr, L, K, C, T: tl.constexpr, REVERSE: tl.constexpr
+):
+    """x[t] = F[t](x[t - 1]) through chunk c from its start, written at time n."""
+    pid = tl.program_id(0)
+    b = (pid // C).to(tl.int64)
+    c = pid % C
+    steps = tl.minimum(T, L - c * T)
+    maps = maps_ptr + b * L * K
+    current = tl.load(start_ptr + pid)
+    for s in range(0, steps):
+        n = _time(c, s, L, T, REVERSE)
+        current = tl.load(maps + n * K + current)
+        tl.store(out_ptr + b * L + n, current)
+
+
+def trace(x0: Tensor, maps: Tensor, reverse: bool = False) -> Tensor:
+    """The states x[t] = maps[t][x[t - 1]], t = 0, ..., L - 1, from x[-1] = x0.
+
+    Following backpointers is a chain of maps of K states, so it runs as the
+    message chains do: each chunk's maps composed, the chain of the
+    compositions one level up, then each chunk from its start.
+
+    Args:
+        x0: the starting states, (B,) int32.
+        maps: (B, L, K) int32, contiguous; maps[b, t, k] is the state that
+            state k leads to at step t.
+        reverse: run from time L - 1 down to 0; the state after the step at
+            time n is still written at n.
+
+    Returns:
+        The states, (B, L) int32, each written at its step's time.
+    """
+    B, L, K = maps.shape
+    out = maps.new_empty(B, L)
+    if B == 0 or L == 0:
+        return out
+    T = _CHUNK
+    C = triton.cdiv(L, T)
+    if C == 1:
+        starts = x0.contiguous()
+    else:
+        totals = maps.new_empty(B, C, K)
+        BK = max(triton.next_power_of_2(K), 2)
+        _trace_totals_kernel[(B * C,)](
+            maps, totals, L, K, C, T=T, REVERSE=reverse, BK=BK, num_warps=1
+        )
+        ends = trace(x0, totals)
+        starts = torch.cat([x0.unsqueeze(1), ends[:, :-1]], dim=1).contiguous()
+    _trace_sweep_kernel[(B * C,)](starts, maps, out, L, K, C, T=T, REVERSE=reverse, num_warps=1)
     return out
