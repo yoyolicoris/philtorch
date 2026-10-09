@@ -33,3 +33,15 @@ Hidden Markov models
    hmm_filter
    hmm_smoother
    hmm_viterbi
+
+.. autoclass:: HMMFilterResult
+   :members: log_probs, log_likelihood
+   :no-inherited-members:
+
+.. autoclass:: HMMSmootherResult
+   :members: log_probs, log_likelihood
+   :no-inherited-members:
+
+.. autoclass:: HMMViterbiResult
+   :members: path, score
+   :no-inherited-members:

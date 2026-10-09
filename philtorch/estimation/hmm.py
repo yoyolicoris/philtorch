@@ -21,6 +21,7 @@ Two implementations, chosen per call:
 """
 
 import math
+from typing import NamedTuple
 
 import torch
 from torch import Tensor
@@ -175,7 +176,36 @@ def _backward_messages(log_emit: Tensor, log_trans: Tensor, is_max: bool) -> Ten
     return torch.cat([reduce(suffix, dim=-1), last], dim=1)
 
 
-def hmm_filter(log_emit: Tensor, log_trans: Tensor, log_init: Tensor) -> tuple[Tensor, Tensor]:
+class HMMFilterResult(NamedTuple):
+    """The result of :func:`hmm_filter`."""
+
+    #: Filtered log-probabilities :math:`\log p(z[n] = k \mid y[0], \dots, y[n])`, of shape
+    #: :math:`(B, N, K)`.
+    log_probs: Tensor
+    #: Each sequence's log marginal likelihood :math:`\log p(y)`, of shape :math:`(B)`.
+    log_likelihood: Tensor
+
+
+class HMMSmootherResult(NamedTuple):
+    """The result of :func:`hmm_smoother`."""
+
+    #: Posterior log-probabilities :math:`\log p(z[n] = k \mid y[0], \dots, y[N - 1])`, of
+    #: shape :math:`(B, N, K)`.
+    log_probs: Tensor
+    #: Each sequence's log marginal likelihood :math:`\log p(y)`, of shape :math:`(B)`.
+    log_likelihood: Tensor
+
+
+class HMMViterbiResult(NamedTuple):
+    """The result of :func:`hmm_viterbi`."""
+
+    #: The most probable states :math:`z[0], \dots, z[N - 1]`, of shape :math:`(B, N)`.
+    path: Tensor
+    #: That path's joint log-probability :math:`\max_z \log p(z, y)`, of shape :math:`(B)`.
+    score: Tensor
+
+
+def hmm_filter(log_emit: Tensor, log_trans: Tensor, log_init: Tensor) -> HMMFilterResult:
     r"""Filter a hidden Markov model: its log-likelihood and filtered state probabilities.
 
     For a hidden Markov model with states :math:`z[0], \dots, z[N - 1]` and
@@ -205,8 +235,8 @@ def hmm_filter(log_emit: Tensor, log_trans: Tensor, log_init: Tensor) -> tuple[T
             :math:`(B, K)`.
 
     Returns:
-        tuple of Tensor: the log-likelihood, of shape :math:`(B)`, and the
-        filtered log-probabilities, of shape :math:`(B, N, K)`.
+        HMMFilterResult: the filtered log-probabilities, of shape
+        :math:`(B, N, K)`, and the log-likelihood, of shape :math:`(B)`.
 
     Raises:
         ValueError: if the inputs are not CUDA tensors or :attr:`log_trans`
@@ -217,19 +247,20 @@ def hmm_filter(log_emit: Tensor, log_trans: Tensor, log_init: Tensor) -> tuple[T
     """
     log_trans, log_init = _parse(log_emit, log_trans, log_init)
     if log_emit.size(1) == 0:
-        return log_emit.new_zeros(log_emit.size(0)), log_emit
+        return HMMFilterResult(log_emit, log_emit.new_zeros(log_emit.size(0)))
     alpha = _forward_messages(log_emit, log_trans, log_init, is_max=False)
     norm = _logsumexp(alpha, dim=-1, keepdim=True)
-    return norm[:, -1, 0], alpha - norm
+    return HMMFilterResult(alpha - norm, norm[:, -1, 0])
 
 
-def hmm_smoother(log_emit: Tensor, log_trans: Tensor, log_init: Tensor) -> tuple[Tensor, Tensor]:
+def hmm_smoother(log_emit: Tensor, log_trans: Tensor, log_init: Tensor) -> HMMSmootherResult:
     r"""Smooth a hidden Markov model: forward-backward state posteriors.
 
     For the model of :func:`hmm_filter`, this returns the log-likelihood and
     :math:`\log p(z[n] \mid y[0], \dots, y[N - 1])`, from a forward and an
-    independent backward scan. The arguments, implementations and
-    differentiability are those of :func:`hmm_filter`.
+    independent backward scan, as in `Temporal Parallelization of Inference
+    in Hidden Markov Models`_ (Hassan et al., 2021). The arguments,
+    implementations and differentiability are those of :func:`hmm_filter`.
 
     Args:
         log_emit (Tensor): :math:`\log p(y[n] \mid z[n] = k)`, of shape
@@ -241,16 +272,19 @@ def hmm_smoother(log_emit: Tensor, log_trans: Tensor, log_init: Tensor) -> tuple
             :math:`(B, K)`.
 
     Returns:
-        tuple of Tensor: the log-likelihood, of shape :math:`(B)`, and the
-        posterior log-probabilities, of shape :math:`(B, N, K)`.
+        HMMSmootherResult: the posterior log-probabilities, of shape
+        :math:`(B, N, K)`, and the log-likelihood, of shape :math:`(B)`.
 
     Raises:
         ValueError: if the inputs are not CUDA tensors or :attr:`log_trans`
             has an unsupported shape.
+
+    .. _Temporal Parallelization of Inference in Hidden Markov Models:
+        https://doi.org/10.1109/TSP.2021.3103338
     """
     log_trans, log_init = _parse(log_emit, log_trans, log_init)
     if log_emit.size(1) == 0:
-        return log_emit.new_zeros(log_emit.size(0)), log_emit
+        return HMMSmootherResult(log_emit, log_emit.new_zeros(log_emit.size(0)))
     alpha = _forward_messages(log_emit, log_trans, log_init, is_max=False)
     beta = _backward_messages(log_emit, log_trans, is_max=False)
     log_likelihood = _logsumexp(alpha[:, -1], dim=-1)
@@ -258,10 +292,10 @@ def hmm_smoother(log_emit: Tensor, log_trans: Tensor, log_init: Tensor) -> tuple
     # messages grow to thousands over long inputs, and most of their rounding
     # error is shared by all states at a step, so this cancels it.
     joint = alpha + beta
-    return log_likelihood, joint - _logsumexp(joint, dim=-1, keepdim=True)
+    return HMMSmootherResult(joint - _logsumexp(joint, dim=-1, keepdim=True), log_likelihood)
 
 
-def hmm_viterbi(log_emit: Tensor, log_trans: Tensor, log_init: Tensor) -> tuple[Tensor, Tensor]:
+def hmm_viterbi(log_emit: Tensor, log_trans: Tensor, log_init: Tensor) -> HMMViterbiResult:
     r"""Decode a hidden Markov model: its most probable state sequence.
 
     For the model of :func:`hmm_filter`, this is the max-product form of the
@@ -284,10 +318,11 @@ def hmm_viterbi(log_emit: Tensor, log_trans: Tensor, log_init: Tensor) -> tuple[
             :math:`(B, K)`.
 
     Returns:
-        tuple of Tensor: the best joint log-probability
+        HMMViterbiResult: the states :math:`z[0], \dots, z[N - 1]` of the
+        most probable path, of shape :math:`(B, N)`, and its joint
+        log-probability
         :math:`\max \log p(z[0], \dots, z[N - 1], y[0], \dots, y[N - 1])`,
-        of shape :math:`(B)`, and the states :math:`z[0], \dots, z[N - 1]`
-        of that path, of shape :math:`(B, N)`.
+        of shape :math:`(B)`.
 
     Raises:
         ValueError: if the inputs are not CUDA tensors or :attr:`log_trans`
@@ -299,7 +334,8 @@ def hmm_viterbi(log_emit: Tensor, log_trans: Tensor, log_init: Tensor) -> tuple[
     log_trans, log_init = _parse(log_emit, log_trans, log_init)
     batch_size, N, _ = log_emit.shape
     if N == 0:
-        return log_emit.new_zeros(batch_size), log_emit.new_zeros(batch_size, 0, dtype=torch.long)
+        path = log_emit.new_zeros(batch_size, 0, dtype=torch.long)
+        return HMMViterbiResult(path, log_emit.new_zeros(batch_size))
     delta = _forward_messages(log_emit, log_trans, log_init, is_max=True)
     future = _backward_messages(log_emit, log_trans, is_max=True)
-    return delta[:, -1].amax(dim=-1), (delta + future).argmax(dim=-1)
+    return HMMViterbiResult((delta + future).argmax(dim=-1), delta[:, -1].amax(dim=-1))
