@@ -73,7 +73,8 @@ def _parse(
     Each scan step is a transition, then a measurement of the state it
     reaches. The model's first state, which the prior describes, is measured
     before any transition, so the first step is the identity without noise,
-    followed by the model's N - 1 transitions: step n ends at x[n].
+    followed by the model's N - 1 transitions. So the scan's states are
+    s[0], the prior, and s[n + 1] = x[n], which y[n] measures.
     """
     assert y.dim() == 3, f"Measurements y must be 3D (batch, time, features), got {y.shape}"
     batch_size, N, P = y.shape
@@ -124,10 +125,12 @@ def _filtering_elements(
     These are the paper's (A, b, C, eta, J), renamed so they don't clash with
     the model's A and C.
 
-    Element n + 1 describes step n (eqs. 42-45 of the GPU paper, with their
-    k = n + 1): x[n + 1] | x[n], y[n] ~ N(F x[n] + b, G), and the likelihood
-    of y[n] given x[n] in information form (eta, J). Element 0 is the prior,
-    which doesn't depend on any earlier state, so its F, eta and J are zero.
+    Element n + 1 describes scan step n, from the scan's state s[n] to
+    s[n + 1], which y[n] measures (eqs. 42-45 of the GPU paper, with their
+    k = n + 1; see :func:`_parse` for s): s[n + 1] | s[n], y[n] ~
+    N(F s[n] + b, G), and the likelihood of y[n] given s[n] in information
+    form (eta, J). Element 0 is the prior, which doesn't depend on any
+    earlier state, so its F, eta and J are zero.
     """
     batch_size, M = y.size(0), A.size(-1)
     CA = C @ A
@@ -173,14 +176,19 @@ def _filtering_operator(
 def _filter(
     y: Tensor, A: Tensor, C: Tensor, Q: Tensor, R: Tensor, m0: Tensor, P0: Tensor
 ) -> tuple[Tensor, Tensor]:
-    """The filtered moments of x[0], ..., x[N]: the prior, then each step's result."""
+    """The filtered moments of the scan's states s[0], ..., s[N].
+
+    That is the prior, then s[n + 1] = x[n] given y[0], ..., y[n]. The first
+    step is the identity, so s[0] and s[1] are both x[0], before and after
+    y[0].
+    """
     elements = _filtering_elements(y, A, C, Q, R, m0, P0)
     _, means, covs, _, _ = _scan(_filtering_operator, elements)
     return means, covs
 
 
 def _predict(A: Tensor, Q: Tensor, means: Tensor, covs: Tensor) -> tuple[Tensor, Tensor]:
-    """The moments of x[n + 1] given y[0], ..., y[n - 1], from those of x[n] given them."""
+    """One prediction step: the moments A m and A P A^H + Q of each next state."""
     return _mv(A, means), A @ covs @ A.mH + Q
 
 
@@ -190,8 +198,9 @@ def _log_likelihood(
     """log p(y[0], ..., y[N - 1]) = sum over n of log p(y[n] | y[0], ..., y[n - 1]).
 
     Each term is a Gaussian density of y[n], with the mean and covariance of
-    C[n] x[n + 1] + v[n] given the earlier measurements: real, or circularly
-    symmetric complex for complex tensors.
+    C[n] x[n] + v[n] given the earlier measurements, from the predicted
+    moments of x[n] = s[n + 1]: real, or circularly symmetric complex for
+    complex tensors.
     """
     residual = y - _mv(C, predicted_means)
     S = C @ predicted_covs @ C.mH + R
