@@ -100,8 +100,8 @@ def _chunk_totals_kernel(
 @triton.jit
 def _chunk_sweep_kernel(
     start_ptr, trans_ptr, emit_ptr, out_ptr, N, K, C, stride_tb, stride_tn, stride_eb, stride_en,
-    T: tl.constexpr, HAS_EMIT: tl.constexpr, REVERSE: tl.constexpr, TRANSPOSE: tl.constexpr,
-    IS_MAX: tl.constexpr, BK: tl.constexpr,
+    stride_ob, T: tl.constexpr, HAS_EMIT: tl.constexpr, REVERSE: tl.constexpr,
+    TRANSPOSE: tl.constexpr, IS_MAX: tl.constexpr, BK: tl.constexpr,
 ):  # fmt: skip
     """x[t] = x[t - 1] (x) M[t] through chunk c from its start; out at time n of each step."""
     pid = tl.program_id(0)
@@ -121,7 +121,9 @@ def _chunk_sweep_kernel(
         )  # fmt: skip
         # (x (x) m)[k] = reduce over i of x[i] + m[i, k].
         x_next = _reduce(x[:, None] + m, 0, IS_MAX)
-        tl.store(out_ptr + (b * N + n) * K + states, x_next, mask=(states < K) & valid)
+        tl.store(
+            out_ptr + b * stride_ob + n.to(tl.int64) * K + states, x_next, mask=(states < K) & valid
+        )
         x = tl.where(valid, x_next, x)
 
 
@@ -142,6 +144,7 @@ def chain(
     is_max: bool,
     reverse: bool = False,
     transpose: bool = False,
+    out: Tensor | None = None,
 ) -> Tensor:
     """The messages x[t] = x[t - 1] (x) M[t], t = 0, ..., N - 1, from x[-1] = x0.
 
@@ -155,12 +158,15 @@ def chain(
         reverse: run the chain from time N - 1 down to 0; the message after
             the step at time n is still written at n.
         transpose: multiply by each matrix's transpose.
+        out: where to write the messages, a (B, N, K) view whose steps are
+            contiguous, such as a slice in time of a larger output, or None.
 
     Returns:
         The messages, (B, N, K), each written at its step's time.
     """
     B, N, K = log_trans.shape[0], log_trans.shape[1], log_trans.shape[-1]
-    out = x0.new_empty(B, N, K)
+    if out is None:
+        out = x0.new_empty(B, N, K)
     if B == 0 or N == 0 or K == 0:
         return out
     T = _CHUNK
@@ -182,6 +188,7 @@ def chain(
         ends = chain(x0, totals, None, is_max)
         starts = torch.cat([x0.unsqueeze(1), ends[:, :-1]], dim=1).contiguous()
     _chunk_sweep_kernel[(B * C,)](
-        starts, log_trans, emit, out, N, K, C, *_strides(log_trans), *emit_strides, **flags
-    )
+        starts, log_trans, emit, out, N, K, C, *_strides(log_trans), *emit_strides,
+        out.stride(0), **flags,
+    )  # fmt: skip
     return out

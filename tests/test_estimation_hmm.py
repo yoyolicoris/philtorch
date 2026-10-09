@@ -11,7 +11,7 @@ pytestmark = pytest.mark.skipif(not torch.cuda.is_available(), reason="CUDA not 
 
 def _model(batch_size, N, K, *, time_varying=True, seed=0, dtype=torch.float64, device="cuda"):
     gen = torch.Generator().manual_seed(seed)
-    shape = (batch_size, N, K, K) if time_varying else (K, K)
+    shape = (batch_size, max(N - 1, 0), K, K) if time_varying else (K, K)
     log_trans = torch.randn(*shape, dtype=dtype, generator=gen).log_softmax(-1)
     log_emit = torch.randn(batch_size, N, K, dtype=dtype, generator=gen) * 2
     log_init = torch.randn(batch_size, K, dtype=dtype, generator=gen).log_softmax(-1)
@@ -19,38 +19,39 @@ def _model(batch_size, N, K, *, time_varying=True, seed=0, dtype=torch.float64, 
 
 
 def _brute_force(log_emit, log_trans, log_init):
-    """Enumerate every state sequence z[0], ..., z[N]."""
+    """Enumerate every state sequence z[0], ..., z[N - 1]."""
     batch_size, N, K = log_emit.shape
-    log_trans = log_trans.expand(batch_size, N, K, K)
-    paths = torch.tensor(list(itertools.product(range(K), repeat=N + 1)), device=log_emit.device)
-    n = torch.arange(N)
+    log_trans = log_trans.expand(batch_size, N - 1, K, K)
+    paths = torch.tensor(list(itertools.product(range(K), repeat=N)), device=log_emit.device)
     joint = (
         log_init[:, paths[:, 0]]
-        + log_trans[:, n, paths[:, :-1], paths[:, 1:]].sum(-1)
-        + log_emit[:, n, paths[:, 1:]].sum(-1)
-    )  # (B, K^(N+1))
+        + log_trans[:, torch.arange(N - 1), paths[:, :-1], paths[:, 1:]].sum(-1)
+        + log_emit[:, torch.arange(N), paths].sum(-1)
+    )  # (B, K^N)
     log_likelihood = joint.logsumexp(-1)
-    one_hot = torch.nn.functional.one_hot(paths[:, 1:], K).to(joint.dtype)  # (P, N, K)
+    one_hot = torch.nn.functional.one_hot(paths, K).to(joint.dtype)  # (P, N, K)
     posteriors = torch.einsum("bp,pnk->bnk", (joint - log_likelihood[:, None]).exp(), one_hot)
     best = joint.argmax(-1)
-    return log_likelihood, posteriors.log(), joint.amax(-1), paths[best, 1:]
+    return log_likelihood, posteriors.log(), joint.amax(-1), paths[best]
 
 
 def _sequential(log_emit, log_trans, log_init):
     """The classical forward, forward-backward and Viterbi recursions."""
     batch_size, N, K = log_emit.shape
-    log_trans = log_trans.expand(batch_size, N, K, K)
+    log_trans = log_trans.expand(batch_size, N - 1, K, K)
 
     def step(n):
-        return log_trans[:, n] + log_emit[:, n].unsqueeze(-2)
+        """log p(z[n + 1] = j, y[n + 1] | z[n] = i) at [i, j]."""
+        return log_trans[:, n] + log_emit[:, n + 1].unsqueeze(-2)
 
-    alpha, alphas = log_init, []
-    for n in range(N):
+    alpha = log_init + log_emit[:, 0]
+    alphas = [alpha]
+    for n in range(N - 1):
         alpha = torch.logsumexp(alpha.unsqueeze(-1) + step(n), dim=-2)
         alphas.append(alpha)
     alpha = torch.stack(alphas, dim=1)
     beta, betas = log_emit.new_zeros(batch_size, K), [log_emit.new_zeros(batch_size, K)]
-    for n in range(N - 1, 0, -1):
+    for n in range(N - 2, -1, -1):
         beta = torch.logsumexp(step(n) + beta.unsqueeze(-2), dim=-1)
         betas.append(beta)
     beta = torch.stack(betas[::-1], dim=1)
@@ -59,13 +60,13 @@ def _sequential(log_emit, log_trans, log_init):
     joint = alpha + beta
     posteriors = joint - joint.logsumexp(-1, keepdim=True)
 
-    delta, pointers = log_init, []
-    for n in range(N):
+    delta, pointers = log_init + log_emit[:, 0], []
+    for n in range(N - 1):
         delta, best = (delta.unsqueeze(-1) + step(n)).max(dim=-2)
         pointers.append(best)
     score, state = delta.max(dim=-1)
     path = [state]
-    for n in range(N - 1, 0, -1):
+    for n in range(N - 2, -1, -1):
         state = pointers[n].gather(-1, state.unsqueeze(-1)).squeeze(-1)
         path.append(state)
     return log_likelihood, filtered, posteriors, score, torch.stack(path[::-1], dim=1)
@@ -129,6 +130,15 @@ def test_hmm_second_derivatives():
     inputs = (log_emit.requires_grad_(), log_trans.requires_grad_())
     for fn in (log_likelihood, log_posteriors):
         assert torch.autograd.gradgradcheck(fn, inputs)
+
+
+def test_hmm_rejects_a_transition_per_state():
+    # log_trans has the N - 1 transitions between the N states, not N.
+    log_emit, log_trans, log_init = _model(2, 4, 3)
+    with pytest.raises(ValueError, match="log_trans"):
+        hmm_filter(log_emit, torch.cat([log_trans, log_trans[:, :1]], dim=1), log_init)
+    with pytest.raises(ValueError, match="log_trans"):
+        hmm_filter(log_emit, log_trans[0, 0].expand(4, 3, 3), log_init)
 
 
 def test_hmm_needs_cuda():
@@ -195,10 +205,14 @@ def test_hmm_gradients_with_unreachable_states():
 
 
 @pytest.mark.parametrize("K", [1, 2, 5, 16, 32, 40])
-@pytest.mark.parametrize("N", [1, 63, 64, 65, 300, 5000])
+@pytest.mark.parametrize("N", [1, 64, 65, 66, 300, 5000])
 @pytest.mark.parametrize("time_varying", [True, False])
 def test_hmm_chunked_matches_differentiable(K, N, time_varying):
-    """The chunked kernels, past one and two levels of chunks, against the matrix scan."""
+    """The chunked kernels, past one and two levels of chunks, against the matrix scan.
+
+    The chains run over the N - 1 transitions, so N = 64, 65 and 66 put 63,
+    64 and 65 steps around the chunk size.
+    """
     args = _model(2, N, K, time_varying=time_varying)
     grad_args = tuple(t.clone().requires_grad_() for t in args)
     for fn in (hmm_filter, hmm_smoother):
@@ -213,12 +227,12 @@ def test_hmm_chunked_matches_differentiable(K, N, time_varying):
 
 
 def test_hmm_empty_sequence():
-    log_emit, log_trans, log_init = _model(2, 1, 3)
+    log_emit, log_trans, log_init = _model(2, 1, 3, time_varying=False)
     log_emit = log_emit[:, :0]
-    ll, filtered = hmm_filter(log_emit, log_trans[0, 0], log_init)
+    ll, filtered = hmm_filter(log_emit, log_trans, log_init)
     assert filtered.shape == (2, 0, 3) and ll.eq(0).all()
-    score, path = hmm_viterbi(log_emit, log_trans[0, 0], log_init)
-    assert path.shape == (2, 0)
+    score, path = hmm_viterbi(log_emit, log_trans, log_init)
+    assert path.shape == (2, 0) and score.eq(0).all()
 
 
 def test_hmm_viterbi_gradient_splits_ties():

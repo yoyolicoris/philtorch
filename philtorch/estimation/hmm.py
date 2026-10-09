@@ -5,12 +5,11 @@ scans over time of per-step K x K matrices in the log or max-plus semiring,
 following Hassan, Särkkä and García-Fernández, "Temporal parallelization of
 inference in hidden Markov models" (IEEE TSP, 2021).
 
-The model follows :func:`~philtorch.estimation.kalman_filter`'s convention:
-the prior describes z[0], the state before the first step; step n moves to
-z[n + 1] through ``log_trans[n]``, and ``log_emit[:, n]`` scores y[n] against
-z[n + 1]. So all inputs have N steps, and the outputs describe z[1], ...,
-z[N]. A classical HMM, whose initial distribution is that of the first state
-that emits, is the case ``log_trans[0][i, :] = log_init`` for every i.
+The model is the classical one, as in
+:func:`~philtorch.estimation.kalman_filter`: the prior describes the first
+state z[0], ``log_emit[:, n]`` scores y[n] against z[n], and ``log_trans[n]``
+moves z[n] to z[n + 1]. So there are N states and N - 1 transitions, and the
+outputs describe z[0], ..., z[N - 1].
 
 Two implementations, chosen per call:
 
@@ -28,20 +27,22 @@ from torch import Tensor
 
 
 def _parse(log_emit: Tensor, log_trans: Tensor, log_init: Tensor) -> tuple[Tensor, Tensor]:
+    """Validate the model: log_trans of its N - 1 transitions, log_emit of its N states."""
     assert log_emit.dim() == 3, f"log_emit must be (B, N, K), got {tuple(log_emit.shape)}"
     batch_size, N, K = log_emit.shape
+    transitions = max(N - 1, 0)
     assert log_trans.shape[-2:] == (K, K), f"log_trans must end in {(K, K)}"
     match log_trans.dim():
         case 2:
             pass
-        case 3 if log_trans.size(0) == N:
+        case 3 if log_trans.size(0) == transitions:
             pass
-        case 4 if log_trans.shape[:2] == (batch_size, N):
+        case 4 if log_trans.shape[:2] == (batch_size, transitions):
             pass
         case _:
             raise ValueError(
-                f"log_trans must be of shape {(K, K)}, {(N, K, K)} or {(batch_size, N, K, K)}, "
-                f"got {tuple(log_trans.shape)}"
+                f"log_trans must be of shape {(K, K)}, {(transitions, K, K)} or "
+                f"{(batch_size, transitions, K, K)}, got {tuple(log_trans.shape)}"
             )
     assert log_init.shape in ((K,), (batch_size, K)), (
         f"log_init must be {(K,)} or {(batch_size, K)}, got {tuple(log_init.shape)}"
@@ -52,7 +53,7 @@ def _parse(log_emit: Tensor, log_trans: Tensor, log_init: Tensor) -> tuple[Tenso
     # contiguous blocks; batch and time may broadcast.
     if log_trans.stride(-1) != 1 or log_trans.stride(-2) != K:
         log_trans = log_trans.contiguous()
-    return log_trans.expand(batch_size, N, K, K), log_init.expand(batch_size, K)
+    return log_trans.expand(batch_size, transitions, K, K), log_init.expand(batch_size, K)
 
 
 def _logsumexp(x: Tensor, dim: int, keepdim: bool = False) -> Tensor:
@@ -125,22 +126,26 @@ def _use_chunked(K: int, *tensors: Tensor) -> bool:
 def _forward_messages(
     log_emit: Tensor, log_trans: Tensor, log_init: Tensor, is_max: bool
 ) -> Tensor:
-    """alpha[n][j] = log p(y[0..n], z[n + 1] = j), or its max over paths, (B, N, K)."""
+    """alpha[n][j] = log p(y[0..n], z[n] = j), or its max over paths, (B, N, K)."""
+    first = log_init + log_emit[:, 0]
     if _use_chunked(log_emit.size(-1), log_emit, log_trans, log_init):
         from ._hmm_kernels import chain
 
-        return chain(log_init.contiguous(), log_trans, log_emit.contiguous(), is_max)
-    reduce = _amax if is_max else _logsumexp
-    M = log_trans + log_emit.unsqueeze(-2)  # M[n][i, j] = log p(z[n + 1] = j, y[n] | z[n] = i)
-    # Fold the prior into the first step: its rows all become that step's
-    # message, so every prefix product has equal rows, the forward messages.
-    first = reduce(log_init.unsqueeze(-1) + M[:, 0], dim=-2)
-    M = torch.cat([first.unsqueeze(-2).expand_as(M[:, 0]).unsqueeze(1), M[:, 1:]], dim=1)
+        alpha = log_emit.new_empty(log_emit.shape)
+        alpha[:, 0] = first
+        chain(first, log_trans, log_emit[:, 1:].contiguous(), is_max, out=alpha[:, 1:])
+        return alpha
+    # M[n][i, j] = log p(z[n + 1] = j, y[n + 1] | z[n] = i). A first element
+    # whose rows all equal the first message makes every prefix product's
+    # rows equal too: the forward messages.
+    M = log_trans + log_emit[:, 1:].unsqueeze(-2)
+    K = first.size(-1)
+    M = torch.cat([first[:, None, None].expand(-1, 1, K, K), M], dim=1)
     return _scan(_matmul(is_max), M)[..., 0, :]
 
 
 def _backward_messages(log_emit: Tensor, log_trans: Tensor, is_max: bool) -> Tensor:
-    """beta[n][i] = log p(y[n + 1..N - 1] | z[n + 1] = i), or its max, (B, N, K)."""
+    """beta[n][i] = log p(y[n + 1..N - 1] | z[n] = i), or its max, (B, N, K)."""
     batch_size, N, K = log_emit.shape
     last = log_emit.new_zeros(batch_size, 1, K)
     if N < 2:
@@ -148,20 +153,23 @@ def _backward_messages(log_emit: Tensor, log_trans: Tensor, is_max: bool) -> Ten
     if _use_chunked(K, log_emit, log_trans):
         from ._hmm_kernels import chain
 
-        # beta[n - 1] = M[n] (x) beta[n]: a chain from the last step back,
+        # beta[n] = M[n] (x) beta[n + 1]: a chain from the last step back,
         # through each matrix's transpose.
-        beta = chain(
+        beta = log_emit.new_empty(batch_size, N, K)
+        beta[:, -1] = 0
+        chain(
             last[:, 0],
-            log_trans[:, 1:],
+            log_trans,
             log_emit[:, 1:].contiguous(),
             is_max,
             reverse=True,
             transpose=True,
+            out=beta[:, :-1],
         )
-        return torch.cat([beta, last], dim=1)
-    M = log_trans[:, 1:] + log_emit[:, 1:].unsqueeze(-2)
+        return beta
+    M = log_trans + log_emit[:, 1:].unsqueeze(-2)
     product = _matmul(is_max)
-    # suffix[n] = M[n + 1] (x) ... (x) M[N - 1]; its row reductions are the messages.
+    # suffix[n] = M[n] (x) ... (x) M[N - 2]; its row reductions are the messages.
     suffix = _scan(lambda later, earlier: product(earlier, later), M, reverse=True)
     reduce = _amax if is_max else _logsumexp
     return torch.cat([reduce(suffix, dim=-1), last], dim=1)
@@ -170,11 +178,11 @@ def _backward_messages(log_emit: Tensor, log_trans: Tensor, is_max: bool) -> Ten
 def hmm_filter(log_emit: Tensor, log_trans: Tensor, log_init: Tensor) -> tuple[Tensor, Tensor]:
     r"""Filter a hidden Markov model: its log-likelihood and filtered state probabilities.
 
-    For a hidden Markov model with states :math:`z[0], \dots, z[N]` and
-    measurements :math:`y[0], \dots, y[N - 1]`, where step :math:`n` moves
-    :math:`z[n]` to :math:`z[n + 1]` and :math:`y[n]` is emitted from
+    For a hidden Markov model with states :math:`z[0], \dots, z[N - 1]` and
+    measurements :math:`y[0], \dots, y[N - 1]`, where :math:`y[n]` is emitted
+    from :math:`z[n]` and :math:`N - 1` transitions move :math:`z[n]` to
     :math:`z[n + 1]`, this returns :math:`\log p(y[0], \dots, y[N - 1])` and
-    :math:`\log p(z[n + 1] \mid y[0], \dots, y[n])`: the forward algorithm,
+    :math:`\log p(z[n] \mid y[0], \dots, y[n])`: the forward algorithm,
     computed as a scan over time instead of step by step, as in `Temporal
     Parallelization of Inference in Hidden Markov Models`_ (Hassan, Särkkä
     and García-Fernández, 2021).
@@ -187,18 +195,12 @@ def hmm_filter(log_emit: Tensor, log_trans: Tensor, log_init: Tensor) -> tuple[T
     more states, a scan of whole matrices runs O(log N) rounds of
     differentiable log-space matrix products, with O(N K^3) work.
 
-    Note:
-        As in :func:`kalman_filter`, the prior is the state before the first
-        step. A classical HMM, whose initial distribution is that of the
-        first state that emits, is the case ``log_trans[0][i, :] = log_init``
-        for every :math:`i`.
-
     Args:
-        log_emit (Tensor): :math:`\log p(y[n] \mid z[n + 1] = k)`, of shape
+        log_emit (Tensor): :math:`\log p(y[n] \mid z[n] = k)`, of shape
             :math:`(B, N, K)`, on a CUDA device.
         log_trans (Tensor): :math:`\log p(z[n + 1] = j \mid z[n] = i)` at
-            index :math:`[i, j]`, of shape :math:`(K, K)`, :math:`(N, K, K)`
-            or :math:`(B, N, K, K)`.
+            index :math:`[i, j]`, of shape :math:`(K, K)`,
+            :math:`(N - 1, K, K)` or :math:`(B, N - 1, K, K)`.
         log_init (Tensor): :math:`\log p(z[0] = k)`, of shape :math:`(K)` or
             :math:`(B, K)`.
 
@@ -225,16 +227,16 @@ def hmm_smoother(log_emit: Tensor, log_trans: Tensor, log_init: Tensor) -> tuple
     r"""Smooth a hidden Markov model: forward-backward state posteriors.
 
     For the model of :func:`hmm_filter`, this returns the log-likelihood and
-    :math:`\log p(z[n + 1] \mid y[0], \dots, y[N - 1])`, from a forward and an
+    :math:`\log p(z[n] \mid y[0], \dots, y[N - 1])`, from a forward and an
     independent backward scan. The arguments, implementations and
     differentiability are those of :func:`hmm_filter`.
 
     Args:
-        log_emit (Tensor): :math:`\log p(y[n] \mid z[n + 1] = k)`, of shape
+        log_emit (Tensor): :math:`\log p(y[n] \mid z[n] = k)`, of shape
             :math:`(B, N, K)`, on a CUDA device.
         log_trans (Tensor): :math:`\log p(z[n + 1] = j \mid z[n] = i)` at
-            index :math:`[i, j]`, of shape :math:`(K, K)`, :math:`(N, K, K)`
-            or :math:`(B, N, K, K)`.
+            index :math:`[i, j]`, of shape :math:`(K, K)`,
+            :math:`(N - 1, K, K)` or :math:`(B, N - 1, K, K)`.
         log_init (Tensor): :math:`\log p(z[0] = k)`, of shape :math:`(K)` or
             :math:`(B, K)`.
 
@@ -273,25 +275,19 @@ def hmm_viterbi(log_emit: Tensor, log_trans: Tensor, log_init: Tensor) -> tuple[
     :func:`hmm_filter`.
 
     Args:
-        log_emit (Tensor): :math:`\log p(y[n] \mid z[n + 1] = k)`, of shape
+        log_emit (Tensor): :math:`\log p(y[n] \mid z[n] = k)`, of shape
             :math:`(B, N, K)`, on a CUDA device.
         log_trans (Tensor): :math:`\log p(z[n + 1] = j \mid z[n] = i)` at
-            index :math:`[i, j]`, of shape :math:`(K, K)`, :math:`(N, K, K)`
-            or :math:`(B, N, K, K)`.
+            index :math:`[i, j]`, of shape :math:`(K, K)`,
+            :math:`(N - 1, K, K)` or :math:`(B, N - 1, K, K)`.
         log_init (Tensor): :math:`\log p(z[0] = k)`, of shape :math:`(K)` or
             :math:`(B, K)`.
 
-    The path maximizes over every state, the prior state :math:`z[0]`
-    included. For a classical HMM written with ``log_trans[0][i, :]`` set to
-    its initial distribution, give :math:`z[0]` a point mass, such as
-    ``log_init = [0, -inf, ..., -inf]`` with only ``log_trans[0][0, :]``
-    set, so that the score is that of the classical Viterbi path.
-
     Returns:
         tuple of Tensor: the best joint log-probability
-        :math:`\max \log p(z[0], \dots, z[N], y[0], \dots, y[N - 1])`, of
-        shape :math:`(B)`, and the states :math:`z[1], \dots, z[N]` of that
-        path, of shape :math:`(B, N)`.
+        :math:`\max \log p(z[0], \dots, z[N - 1], y[0], \dots, y[N - 1])`,
+        of shape :math:`(B)`, and the states :math:`z[0], \dots, z[N - 1]`
+        of that path, of shape :math:`(B, N)`.
 
     Raises:
         ValueError: if the inputs are not CUDA tensors or :attr:`log_trans`
@@ -303,7 +299,7 @@ def hmm_viterbi(log_emit: Tensor, log_trans: Tensor, log_init: Tensor) -> tuple[
     log_trans, log_init = _parse(log_emit, log_trans, log_init)
     batch_size, N, _ = log_emit.shape
     if N == 0:
-        return log_init.amax(-1), log_emit.new_zeros(batch_size, 0, dtype=torch.long)
+        return log_emit.new_zeros(batch_size), log_emit.new_zeros(batch_size, 0, dtype=torch.long)
     delta = _forward_messages(log_emit, log_trans, log_init, is_max=True)
     future = _backward_messages(log_emit, log_trans, is_max=True)
     return delta[:, -1].amax(dim=-1), (delta + future).argmax(dim=-1)
