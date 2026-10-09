@@ -187,7 +187,10 @@ def _dtw_dp_warps(L: int, soft: bool, diag: bool) -> int:
 
 
 def _dag_forward_warps(L: int) -> int:
-    return 1 if L <= 512 else 16 if L <= 2048 else 32
+    warps = 1 if L <= 512 else 16 if L <= 2048 else 32
+    # A program has at most 1024 threads, and AMD's datacenter GPUs have
+    # 64-thread warps.
+    return min(warps, 16) if torch.version.hip else warps
 
 
 def _dtw_dp(cost: Tensor, soft: bool, diag: bool) -> Tensor:
