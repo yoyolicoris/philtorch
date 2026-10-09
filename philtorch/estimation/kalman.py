@@ -1,9 +1,7 @@
 """Kalman filters and smoothers parallelized over time with associative scans.
 
-These follow Särkkä and García-Fernández, "Temporal parallelization of
-Bayesian smoothers" (IEEE TAC, 2021), as evaluated on GPUs in Särkkä and
-García-Fernández, "On the performance of prefix-sum parallel Kalman filters
-and smoothers on GPUs" (arXiv:2511.10363).
+These follow Särkkä and García-Fernández, "On the performance of prefix-sum
+parallel Kalman filters and smoothers on GPUs" (arXiv:2511.10363).
 """
 
 import math
@@ -306,12 +304,11 @@ def kalman_filter(
     log-likelihood is differentiable, for fitting the model's matrices by
     gradient ascent, including matrices predicted by a network. These are the
     results of the sequential Kalman filter, computed instead with an
-    associative scan of depth :math:`O(\log N)`, as in `Temporal
-    Parallelization of Bayesian Smoothers`_ (Särkkä and García-Fernández,
-    2021), in the form of `On The Performance of Prefix-Sum Parallel Kalman
-    Filters and Smoothers on GPUs`_ (Särkkä and García-Fernández, 2025). The
-    scan is PyTorch's ``associative_scan`` in its generic mode, which needs
-    PyTorch 2.11 or later.
+    associative scan of depth :math:`O(\log N)`, as in `On The Performance of
+    Prefix-Sum Parallel Kalman Filters and Smoothers on GPUs`_ (Särkkä and
+    García-Fernández, 2025). The scan is PyTorch's
+    :func:`associative_scan <torch._higher_order_ops.associative_scan.associative_scan>`
+    in its generic mode, which needs PyTorch 2.11 or later.
 
     Each of :attr:`A`, :attr:`C`, :attr:`Q` and :attr:`R` may be constant or
     time-varying, and shared or one per signal: its base shape below can be
@@ -393,8 +390,6 @@ def kalman_filter(
         >>> result.means.squeeze()
         tensor([0.5000, 0.7500, 0.8750], dtype=torch.float64)
 
-    .. _Temporal Parallelization of Bayesian Smoothers:
-        https://doi.org/10.1109/TAC.2020.2976316
     .. _On The Performance of Prefix-Sum Parallel Kalman Filters and Smoothers on GPUs:
         https://arxiv.org/abs/2511.10363
     """
@@ -414,15 +409,13 @@ def kalman_smoother(
     cross-covariances :math:`\mathrm{Cov}(\mathbf{x}[n + 1], \mathbf{x}[n]
     \mid \mathbf{y})`, and :func:`kalman_filter`'s log-likelihood: the
     results of the Rauch--Tung--Striebel smoother, computed with a reverse
-    associative scan after the filter's, as in `Temporal Parallelization of
-    Bayesian Smoothers`_ (Särkkä and García-Fernández, 2021), in the form of
-    `On The Performance of Prefix-Sum Parallel Kalman Filters and Smoothers
-    on GPUs`_ (Särkkä and García-Fernández, 2025). The cross-covariances
-    come from the smoother's gains,
-    :math:`\mathrm{Cov}(\mathbf{x}[n], \mathbf{x}[n + 1] \mid \mathbf{y}) =
-    E[n] \, \mathrm{Cov}(\mathbf{x}[n + 1] \mid \mathbf{y})`. The arguments
-    are those of :func:`kalman_filter`, and the same PyTorch 2.11 requirement
-    applies.
+    associative scan after the filter's, as in `On The Performance of
+    Prefix-Sum Parallel Kalman Filters and Smoothers on GPUs`_ (Särkkä and
+    García-Fernández, 2025). The cross-covariances come from the smoother's
+    gains, :math:`\mathrm{Cov}(\mathbf{x}[n], \mathbf{x}[n + 1] \mid
+    \mathbf{y}) = E[n] \, \mathrm{Cov}(\mathbf{x}[n + 1] \mid \mathbf{y})`.
+    The arguments are those of :func:`kalman_filter`, and the same PyTorch
+    2.11 requirement applies.
 
     These are the expectations of the E-step of expectation-maximization.
     With constant matrices, the M-step has a closed form, from `An Approach
@@ -486,8 +479,6 @@ def kalman_smoother(
         >>> result.means.squeeze()  # the last state has no later measurements
         tensor([0.6562, 0.8125, 0.8750], dtype=torch.float64)
 
-    .. _Temporal Parallelization of Bayesian Smoothers:
-        https://doi.org/10.1109/TAC.2020.2976316
     .. _On The Performance of Prefix-Sum Parallel Kalman Filters and Smoothers on GPUs:
         https://arxiv.org/abs/2511.10363
     .. _An Approach to Time Series Smoothing and Forecasting Using the EM Algorithm:
