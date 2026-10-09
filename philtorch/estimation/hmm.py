@@ -21,7 +21,6 @@ Two implementations, chosen per call:
 """
 
 import math
-from typing import NamedTuple
 
 import torch
 from torch import Tensor
@@ -176,36 +175,7 @@ def _backward_messages(log_emit: Tensor, log_trans: Tensor, is_max: bool) -> Ten
     return torch.cat([reduce(suffix, dim=-1), last], dim=1)
 
 
-class HMMFilterResult(NamedTuple):
-    """The result of :func:`hmm_filter`."""
-
-    #: Filtered log-probabilities :math:`\log p(z[n] = k \mid y[0], \dots, y[n])`, of shape
-    #: :math:`(B, N, K)`.
-    log_probs: Tensor
-    #: Each sequence's log marginal likelihood :math:`\log p(y)`, of shape :math:`(B)`.
-    log_likelihood: Tensor
-
-
-class HMMSmootherResult(NamedTuple):
-    """The result of :func:`hmm_smoother`."""
-
-    #: Posterior log-probabilities :math:`\log p(z[n] = k \mid y[0], \dots, y[N - 1])`, of
-    #: shape :math:`(B, N, K)`.
-    log_probs: Tensor
-    #: Each sequence's log marginal likelihood :math:`\log p(y)`, of shape :math:`(B)`.
-    log_likelihood: Tensor
-
-
-class HMMViterbiResult(NamedTuple):
-    """The result of :func:`hmm_viterbi`."""
-
-    #: The most probable states :math:`z[0], \dots, z[N - 1]`, of shape :math:`(B, N)`.
-    path: Tensor
-    #: That path's joint log-probability :math:`\max_z \log p(z, y)`, of shape :math:`(B)`.
-    score: Tensor
-
-
-def hmm_filter(log_emit: Tensor, log_trans: Tensor, log_init: Tensor) -> HMMFilterResult:
+def hmm_filter(log_emit: Tensor, log_trans: Tensor, log_init: Tensor) -> tuple[Tensor, Tensor]:
     r"""Filter a hidden Markov model: its log-likelihood and filtered state probabilities.
 
     For a hidden Markov model with states :math:`z[0], \dots, z[N - 1]` and
@@ -235,8 +205,8 @@ def hmm_filter(log_emit: Tensor, log_trans: Tensor, log_init: Tensor) -> HMMFilt
             :math:`(B, K)`.
 
     Returns:
-        HMMFilterResult: the filtered log-probabilities, of shape
-        :math:`(B, N, K)`, and the log-likelihood, of shape :math:`(B)`.
+        tuple of Tensor: the log-likelihood, of shape :math:`(B)`, and the
+        filtered log-probabilities, of shape :math:`(B, N, K)`.
 
     Raises:
         ValueError: if the inputs are not CUDA tensors or :attr:`log_trans`
@@ -247,13 +217,13 @@ def hmm_filter(log_emit: Tensor, log_trans: Tensor, log_init: Tensor) -> HMMFilt
     """
     log_trans, log_init = _parse(log_emit, log_trans, log_init)
     if log_emit.size(1) == 0:
-        return HMMFilterResult(log_emit, log_emit.new_zeros(log_emit.size(0)))
+        return log_emit.new_zeros(log_emit.size(0)), log_emit
     alpha = _forward_messages(log_emit, log_trans, log_init, is_max=False)
     norm = _logsumexp(alpha, dim=-1, keepdim=True)
-    return HMMFilterResult(alpha - norm, norm[:, -1, 0])
+    return norm[:, -1, 0], alpha - norm
 
 
-def hmm_smoother(log_emit: Tensor, log_trans: Tensor, log_init: Tensor) -> HMMSmootherResult:
+def hmm_smoother(log_emit: Tensor, log_trans: Tensor, log_init: Tensor) -> tuple[Tensor, Tensor]:
     r"""Smooth a hidden Markov model: forward-backward state posteriors.
 
     For the model of :func:`hmm_filter`, this returns the log-likelihood and
@@ -272,8 +242,8 @@ def hmm_smoother(log_emit: Tensor, log_trans: Tensor, log_init: Tensor) -> HMMSm
             :math:`(B, K)`.
 
     Returns:
-        HMMSmootherResult: the posterior log-probabilities, of shape
-        :math:`(B, N, K)`, and the log-likelihood, of shape :math:`(B)`.
+        tuple of Tensor: the log-likelihood, of shape :math:`(B)`, and the
+        posterior log-probabilities, of shape :math:`(B, N, K)`.
 
     Raises:
         ValueError: if the inputs are not CUDA tensors or :attr:`log_trans`
@@ -284,7 +254,7 @@ def hmm_smoother(log_emit: Tensor, log_trans: Tensor, log_init: Tensor) -> HMMSm
     """
     log_trans, log_init = _parse(log_emit, log_trans, log_init)
     if log_emit.size(1) == 0:
-        return HMMSmootherResult(log_emit, log_emit.new_zeros(log_emit.size(0)))
+        return log_emit.new_zeros(log_emit.size(0)), log_emit
     alpha = _forward_messages(log_emit, log_trans, log_init, is_max=False)
     beta = _backward_messages(log_emit, log_trans, is_max=False)
     log_likelihood = _logsumexp(alpha[:, -1], dim=-1)
@@ -292,10 +262,10 @@ def hmm_smoother(log_emit: Tensor, log_trans: Tensor, log_init: Tensor) -> HMMSm
     # messages grow to thousands over long inputs, and most of their rounding
     # error is shared by all states at a step, so this cancels it.
     joint = alpha + beta
-    return HMMSmootherResult(joint - _logsumexp(joint, dim=-1, keepdim=True), log_likelihood)
+    return log_likelihood, joint - _logsumexp(joint, dim=-1, keepdim=True)
 
 
-def hmm_viterbi(log_emit: Tensor, log_trans: Tensor, log_init: Tensor) -> HMMViterbiResult:
+def hmm_viterbi(log_emit: Tensor, log_trans: Tensor, log_init: Tensor) -> tuple[Tensor, Tensor]:
     r"""Decode a hidden Markov model: its most probable state sequence.
 
     For the model of :func:`hmm_filter`, this is the max-product form of the
@@ -318,11 +288,10 @@ def hmm_viterbi(log_emit: Tensor, log_trans: Tensor, log_init: Tensor) -> HMMVit
             :math:`(B, K)`.
 
     Returns:
-        HMMViterbiResult: the states :math:`z[0], \dots, z[N - 1]` of the
-        most probable path, of shape :math:`(B, N)`, and its joint
-        log-probability
+        tuple of Tensor: the best joint log-probability
         :math:`\max \log p(z[0], \dots, z[N - 1], y[0], \dots, y[N - 1])`,
-        of shape :math:`(B)`.
+        of shape :math:`(B)`, and the states :math:`z[0], \dots, z[N - 1]`
+        of that path, of shape :math:`(B, N)`.
 
     Raises:
         ValueError: if the inputs are not CUDA tensors or :attr:`log_trans`
@@ -334,8 +303,7 @@ def hmm_viterbi(log_emit: Tensor, log_trans: Tensor, log_init: Tensor) -> HMMVit
     log_trans, log_init = _parse(log_emit, log_trans, log_init)
     batch_size, N, _ = log_emit.shape
     if N == 0:
-        path = log_emit.new_zeros(batch_size, 0, dtype=torch.long)
-        return HMMViterbiResult(path, log_emit.new_zeros(batch_size))
+        return log_emit.new_zeros(batch_size), log_emit.new_zeros(batch_size, 0, dtype=torch.long)
     delta = _forward_messages(log_emit, log_trans, log_init, is_max=True)
     future = _backward_messages(log_emit, log_trans, is_max=True)
-    return HMMViterbiResult((delta + future).argmax(dim=-1), delta[:, -1].amax(dim=-1))
+    return delta[:, -1].amax(dim=-1), (delta + future).argmax(dim=-1)

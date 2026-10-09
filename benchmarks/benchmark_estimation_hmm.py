@@ -67,8 +67,8 @@ def load_torbi():
 def with_grad(fn, log_emit, log_trans, log_init):
     def run():
         emit = log_emit.detach().requires_grad_()
-        log_likelihood = fn(emit, log_trans, log_init).log_likelihood
-        torch.autograd.grad(log_likelihood.sum(), emit)
+        score = fn(emit, log_trans, log_init)[0]
+        torch.autograd.grad(score.sum(), emit)
 
     return run
 
