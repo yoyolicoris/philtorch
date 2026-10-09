@@ -6,7 +6,9 @@ García-Fernández, "On the performance of prefix-sum parallel Kalman filters
 and smoothers on GPUs" (arXiv:2511.10363).
 """
 
+import math
 import re
+from typing import NamedTuple
 
 import torch
 from torch import Tensor
@@ -159,10 +161,38 @@ def _filtering_operator(
 def _filter(
     y: Tensor, A: Tensor, C: Tensor, Q: Tensor, R: Tensor, m0: Tensor, P0: Tensor
 ) -> tuple[Tensor, Tensor]:
+    """The filtered moments of x[0], ..., x[N]: the prior, then each step's result."""
     elements = _filtering_elements(y, A, C, Q, R, m0, P0)
     _, means, covs, _, _ = _scan(_filtering_operator, elements)
-    # Drop the prior: the scan's first output is x[0] before any measurement.
-    return means[:, 1:], covs[:, 1:]
+    return means, covs
+
+
+def _predict(A: Tensor, Q: Tensor, means: Tensor, covs: Tensor) -> tuple[Tensor, Tensor]:
+    """The moments of x[n + 1] given y[0], ..., y[n - 1], from those of x[n] given them."""
+    return _mv(A, means), A @ covs @ A.mH + Q
+
+
+def _log_likelihood(
+    y: Tensor, C: Tensor, R: Tensor, predicted_means: Tensor, predicted_covs: Tensor
+) -> Tensor:
+    """log p(y[0], ..., y[N - 1]) = sum over n of log p(y[n] | y[0], ..., y[n - 1]).
+
+    Each term is a Gaussian density of y[n], with the mean and covariance of
+    C[n] x[n + 1] + v[n] given the earlier measurements: real, or circularly
+    symmetric complex for complex tensors.
+    """
+    residual = y - _mv(C, predicted_means)
+    S = C @ predicted_covs @ C.mH + R
+    factor = torch.linalg.cholesky(S)
+    whitened = torch.linalg.solve_triangular(factor, residual.unsqueeze(-1), upper=False)
+    quadratic = whitened.squeeze(-1).abs().square().sum(-1)
+    log_det = 2 * factor.diagonal(dim1=-2, dim2=-1).real.log().sum(-1)
+    P = y.size(-1)
+    if y.is_complex():
+        log_densities = -(P * math.log(math.pi) + log_det + quadratic)
+    else:
+        log_densities = -0.5 * (P * math.log(2 * math.pi) + log_det + quadratic)
+    return log_densities.sum(1)
 
 
 def _smoothing_operator(
@@ -175,6 +205,50 @@ def _smoothing_operator(
     E_j, g_j, L_j = later
     E_i, g_i, L_i = earlier
     return E_i @ E_j, _mv(E_i, g_j) + g_i, E_i @ L_j @ E_i.mH + L_i
+
+
+def _smooth(A: Tensor, Q: Tensor, means: Tensor, covs: Tensor) -> tuple[Tensor, Tensor, Tensor]:
+    """Smooth the filtered moments of x[0], ..., x[N] from :func:`_filter`.
+
+    Returns the smoothed moments of x[0], ..., x[N] and the gains E[n] of
+    the smoothing elements, which make Cov(x[n], x[n + 1] | y) =
+    E[n] Cov(x[n + 1] | y).
+    """
+    # Element n describes x[n] given x[n + 1] and y[0], ..., y[n - 1]
+    # (eqs. 48-50 of the GPU paper): x[n] | x[n + 1] ~ N(E x[n + 1] + g, L),
+    # through A[n] and Q[n]. The last one is the filtering result itself.
+    m_n, P_n = means[:, :-1], covs[:, :-1]
+    _, P_pred = _predict(A, Q, m_n, P_n)
+    E = torch.linalg.solve(P_pred, A @ P_n).mH
+    g = m_n - _mv(E @ A, m_n)
+    L = P_n - E @ P_pred @ E.mH
+    elements = (
+        torch.cat([E, torch.zeros_like(covs[:, -1:])], dim=1),
+        torch.cat([g, means[:, -1:]], dim=1),
+        torch.cat([L, covs[:, -1:]], dim=1),
+    )
+    _, means, covs = _scan(_smoothing_operator, elements, reverse=True)
+    return means, covs, E
+
+
+class KalmanStatistics(NamedTuple):
+    r"""The expectations of the E-step of expectation-maximization (EM).
+
+    Returned by :func:`kalman_em_statistics`, for the states
+    :math:`\mathbf{x}[0], \dots, \mathbf{x}[N]`, prior state included.
+    """
+
+    #: Smoothed means :math:`E[\mathbf{x}[n] \mid \mathbf{y}]`, of shape :math:`(B, N + 1, M)`.
+    means: Tensor
+    #: Smoothed covariances :math:`\mathrm{Cov}(\mathbf{x}[n] \mid \mathbf{y})`, of shape
+    #: :math:`(B, N + 1, M, M)`.
+    covs: Tensor
+    #: Lag-one cross-covariances
+    #: :math:`\mathrm{Cov}(\mathbf{x}[n + 1], \mathbf{x}[n] \mid \mathbf{y})`, for
+    #: :math:`n = 0, \dots, N - 1`, of shape :math:`(B, N, M, M)`.
+    cross_covs: Tensor
+    #: Each signal's log marginal likelihood :math:`\log p(\mathbf{y})`, of shape :math:`(B)`.
+    log_likelihood: Tensor
 
 
 def kalman_filter(
@@ -273,7 +347,9 @@ def kalman_filter(
         >>> means.squeeze()
         tensor([0.5000, 0.7500, 0.8750], dtype=torch.float64)
     """
-    return _filter(y, *_parse(y, A, C, Q, R, m0, P0))
+    means, covs = _filter(y, *_parse(y, A, C, Q, R, m0, P0))
+    # Drop the prior: the scan's first output is x[0] before any measurement.
+    return means[:, 1:], covs[:, 1:]
 
 
 def kalman_smoother(
@@ -325,21 +401,146 @@ def kalman_smoother(
         tensor([0.6562, 0.8125, 0.8750], dtype=torch.float64)
     """
     A, C, Q, R, m0, P0 = _parse(y, A, C, Q, R, m0, P0)
-    means, covs = _filter(y, A, C, Q, R, m0, P0)
+    means, covs, _ = _smooth(A, Q, *_filter(y, A, C, Q, R, m0, P0))
+    # Drop the prior, x[0] given all the measurements.
+    return means[:, 1:], covs[:, 1:]
 
-    # Element n describes x[n + 1] given x[n + 2] and y[0], ..., y[n]
-    # (eqs. 48-50): x[n + 1] | x[n + 2] ~ N(E x[n + 2] + g, L), through
-    # A[n + 1] and Q[n + 1]. The last one is the filtering result itself.
-    A_next, Q_next = A[:, 1:], Q[:, 1:]
-    m_n, P_n = means[:, :-1], covs[:, :-1]
-    P_pred = A_next @ P_n @ A_next.mH + Q_next
-    E = torch.linalg.solve(P_pred, A_next @ P_n).mH
-    g = m_n - _mv(E @ A_next, m_n)
-    L = P_n - E @ P_pred @ E.mH
-    elements = (
-        torch.cat([E, torch.zeros_like(covs[:, -1:])], dim=1),
-        torch.cat([g, means[:, -1:]], dim=1),
-        torch.cat([L, covs[:, -1:]], dim=1),
+
+def kalman_log_likelihood(
+    y: Tensor, A: Tensor, C: Tensor, Q: Tensor, R: Tensor, m0: Tensor, P0: Tensor
+) -> Tensor:
+    r"""The log marginal likelihood of a linear Gaussian state-space model.
+
+    For the model of :func:`kalman_filter`, this returns
+
+    .. math::
+        \log p(\mathbf{y}[0], \dots, \mathbf{y}[N - 1])
+        = \sum_{n=0}^{N-1} \log \mathcal{N}\big(\mathbf{y}[n];
+        C[n] \hat{\mathbf{x}}[n + 1], S[n]\big),
+
+    where :math:`\hat{\mathbf{x}}[n + 1]` is the mean of
+    :math:`\mathbf{x}[n + 1]` given :math:`\mathbf{y}[0], \dots,
+    \mathbf{y}[n - 1]` and :math:`S[n] = C[n] \hat{P}[n + 1] C[n]^H + R[n]`
+    the covariance of the innovation, both one prediction step from the
+    output of :func:`kalman_filter`, so it costs one filter. It is
+    differentiable, for fitting the model's matrices by gradient ascent,
+    including matrices predicted by a network. Complex tensors use the
+    circularly symmetric complex Gaussian density. The arguments are those
+    of :func:`kalman_filter`, and the same PyTorch 2.11 requirement applies.
+
+    Args:
+        y (Tensor): measurements, of shape :math:`(B, N, P)`.
+        A (Tensor): state transition matrices :math:`A[n]`, taking
+            :math:`\mathbf{x}[n]` to :math:`\mathbf{x}[n + 1]`, of base shape
+            :math:`(M, M)`.
+        C (Tensor): measurement matrices, of base shape :math:`(P, M)`.
+        Q (Tensor): process noise covariances, of base shape :math:`(M, M)`.
+        R (Tensor): measurement noise covariances, of base shape
+            :math:`(P, P)`.
+        m0 (Tensor): the prior mean, of shape :math:`(M)` or :math:`(B, M)`.
+        P0 (Tensor): the prior covariance, of shape :math:`(M, M)` or
+            :math:`(B, M, M)`.
+
+    Returns:
+        Tensor: the log-likelihood of each signal, of shape :math:`(B)`.
+
+    Raises:
+        ValueError: if a coefficient has an unsupported shape.
+        AssertionError: if :attr:`y` is not 3-D or :attr:`A` is not square.
+        RuntimeError: on PyTorch older than 2.11.
+
+    Example::
+
+        >>> from philtorch.estimation import kalman_log_likelihood
+        >>> # One step of the random walk of :func:`kalman_filter`'s example:
+        >>> # y[0] ~ N(0, P0 + Q + R) = N(0, 4).
+        >>> y = torch.zeros(1, 1, 1, dtype=torch.float64)
+        >>> one = torch.ones(1, 1, dtype=torch.float64)
+        >>> m0 = torch.zeros(1, dtype=torch.float64)
+        >>> log_p = kalman_log_likelihood(y, one, one, one, 2 * one, m0, one)
+        >>> torch.allclose(log_p, -0.5 * torch.log(2 * torch.pi * torch.tensor(4.0)).double())
+        True
+    """
+    A, C, Q, R, m0, P0 = _parse(y, A, C, Q, R, m0, P0)
+    means, covs = _filter(y, A, C, Q, R, m0, P0)
+    return _log_likelihood(y, C, R, *_predict(A, Q, means[:, :-1], covs[:, :-1]))
+
+
+def kalman_em_statistics(
+    y: Tensor, A: Tensor, C: Tensor, Q: Tensor, R: Tensor, m0: Tensor, P0: Tensor
+) -> KalmanStatistics:
+    r"""The expectations for fitting a linear Gaussian state-space model by EM.
+
+    For the model of :func:`kalman_filter`, the E-step of
+    expectation-maximization needs the smoothed moments of every state,
+    including the prior state :math:`\mathbf{x}[0]`, and the lag-one
+    cross-covariances :math:`\mathrm{Cov}(\mathbf{x}[n + 1], \mathbf{x}[n]
+    \mid \mathbf{y})`. This returns those and the log-likelihood of
+    :func:`kalman_log_likelihood` from one filter and one smoother scan. The
+    cross-covariances come from the smoother's gains: :math:`\mathrm{Cov}(
+    \mathbf{x}[n], \mathbf{x}[n + 1] \mid \mathbf{y}) = E[n] \,
+    \mathrm{Cov}(\mathbf{x}[n + 1] \mid \mathbf{y})`, where :math:`E[n] =
+    P[n] A[n]^H (A[n] P[n] A[n]^H + Q[n])^{-1}` with :math:`P[n]` the
+    filtered covariance of :math:`\mathbf{x}[n]`. The arguments are those of
+    :func:`kalman_filter`, and the same PyTorch 2.11 requirement applies.
+
+    With constant matrices, the M-step has a closed form (Shumway and
+    Stoffer, 1982), here for the measurements ``y`` of shape
+    :math:`(B, N, P)`, fitting one model to all the signals::
+
+        from philtorch.estimation import kalman_em_statistics
+
+        stats = kalman_em_statistics(y, A, C, Q, R, m0, P0)
+        m, V, V10 = stats.means, stats.covs, stats.cross_covs
+        outer = V + m.unsqueeze(-1) @ m.unsqueeze(-2).conj()  # E[x[n] x[n]^H]
+        cross = V10 + m[:, 1:].unsqueeze(-1) @ m[:, :-1].unsqueeze(-2).conj()
+        S00 = outer[:, :-1].sum((0, 1))  # sums of E[x[n] x[n]^H], n < N
+        S11 = outer[:, 1:].sum((0, 1))  # sums of E[x[n + 1] x[n + 1]^H]
+        S10 = cross.sum((0, 1))  # sums of E[x[n + 1] x[n]^H]
+        count = y.size(0) * y.size(1)
+        A = torch.linalg.solve(S00, S10.mH).mH  # S10 S00^-1
+        Q = (S11 - A @ S10.mH) / count
+        Syx = (y.unsqueeze(-1) @ m[:, 1:].unsqueeze(-2).conj()).sum((0, 1))
+        C = torch.linalg.solve(S11, Syx.mH).mH  # Syx S11^-1
+        R = ((y.unsqueeze(-1) @ y.unsqueeze(-2).conj()).sum((0, 1)) - C @ Syx.mH) / count
+        m0 = m[:, 0].mean(0)
+        P0 = outer[:, 0].mean(0) - m0.outer(m0.conj())
+
+    Each such step increases the log-likelihood until it converges. Average
+    ``Q`` and ``R`` with their conjugate transposes to keep them exactly
+    Hermitian.
+
+    Args:
+        y (Tensor): measurements, of shape :math:`(B, N, P)`.
+        A (Tensor): state transition matrices :math:`A[n]`, taking
+            :math:`\mathbf{x}[n]` to :math:`\mathbf{x}[n + 1]`, of base shape
+            :math:`(M, M)`.
+        C (Tensor): measurement matrices, of base shape :math:`(P, M)`.
+        Q (Tensor): process noise covariances, of base shape :math:`(M, M)`.
+        R (Tensor): measurement noise covariances, of base shape
+            :math:`(P, P)`.
+        m0 (Tensor): the prior mean, of shape :math:`(M)` or :math:`(B, M)`.
+        P0 (Tensor): the prior covariance, of shape :math:`(M, M)` or
+            :math:`(B, M, M)`.
+
+    Returns:
+        KalmanStatistics: the smoothed means and covariances of
+        :math:`\mathbf{x}[0], \dots, \mathbf{x}[N]`, of shapes
+        :math:`(B, N + 1, M)` and :math:`(B, N + 1, M, M)`, the lag-one
+        cross-covariances, of shape :math:`(B, N, M, M)`, and the
+        log-likelihood, of shape :math:`(B)`.
+
+    Raises:
+        ValueError: if a coefficient has an unsupported shape.
+        AssertionError: if :attr:`y` is not 3-D or :attr:`A` is not square.
+        RuntimeError: on PyTorch older than 2.11.
+    """
+    A, C, Q, R, m0, P0 = _parse(y, A, C, Q, R, m0, P0)
+    filtered_means, filtered_covs = _filter(y, A, C, Q, R, m0, P0)
+    log_likelihood = _log_likelihood(
+        y, C, R, *_predict(A, Q, filtered_means[:, :-1], filtered_covs[:, :-1])
     )
-    _, means, covs = _scan(_smoothing_operator, elements, reverse=True)
-    return means, covs
+    means, covs, E = _smooth(A, Q, filtered_means, filtered_covs)
+    # Cov(x[n + 1], x[n] | y) = Cov(x[n], x[n + 1] | y)^H = Cov(x[n + 1] | y) E[n]^H.
+    cross_covs = covs[:, 1:] @ E.mH
+    return KalmanStatistics(means, covs, cross_covs, log_likelihood)

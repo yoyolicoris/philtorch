@@ -1,8 +1,15 @@
+import math
+
 import pytest
 import torch
 
 import philtorch.estimation.kalman as kalman
-from philtorch.estimation import kalman_filter, kalman_smoother
+from philtorch.estimation import (
+    kalman_em_statistics,
+    kalman_filter,
+    kalman_log_likelihood,
+    kalman_smoother,
+)
 from philtorch.lpv import state_space_recursion as lpv_state_space_recursion
 
 DEVICES = [
@@ -237,3 +244,135 @@ def test_kalman_rejects_pytorch_before_2_11(monkeypatch):
     monkeypatch.setattr(torch, "__version__", "2.10.0")
     with pytest.raises(RuntimeError, match="PyTorch 2.11"):
         kalman_filter(*_model(1, 3, 1, 1))
+
+
+def _dense_posterior(y, A, C, Q, R, m0, P0):
+    """Condition the joint Gaussian of x[0], ..., x[N] and y directly.
+
+    Returns the posterior mean (B, N + 1, M) and covariance
+    (B, N + 1, M, N + 1, M) of all the states, and log p(y), (B,): a reference
+    that shares nothing with the Kalman recursions.
+    """
+    B, N, P = y.shape
+    M = A.size(-1)
+    D = M * (N + 1)
+    means, log_ps, covs = [], [], []
+    for b in range(B):
+        # x = T z with z = (x[0], w[0], ..., w[N - 1]); x[n + 1] = A[n] x[n] + w[n].
+        T = y.new_zeros(D, D)
+        T[:M, :M] = torch.eye(M, dtype=y.dtype)
+        for n in range(N):
+            rows, prev = slice(M * (n + 1), M * (n + 2)), slice(M * n, M * (n + 1))
+            T[rows] = A[b, n] @ T[prev]
+            T[rows, M * (n + 1) : M * (n + 2)] += torch.eye(M, dtype=y.dtype)
+        cov_z = torch.block_diag(P0[b], *Q[b])
+        mean_x = T[:, :M] @ m0[b]
+        cov_x = T @ cov_z @ T.mH
+        # y[n] = C[n] x[n + 1] + v[n].
+        H = y.new_zeros(N * P, D)
+        for n in range(N):
+            H[P * n : P * (n + 1), M * (n + 1) : M * (n + 2)] = C[b, n]
+        mean_y = H @ mean_x
+        cov_y = H @ cov_x @ H.mH + torch.block_diag(*R[b])
+        cov_xy = cov_x @ H.mH
+        residual = y[b].reshape(-1) - mean_y
+        gain = torch.linalg.solve(cov_y, cov_xy.mH).mH
+        means.append((mean_x + gain @ residual).reshape(N + 1, M))
+        covs.append((cov_x - gain @ cov_xy.mH).reshape(N + 1, M, N + 1, M))
+        quadratic = (residual.conj() @ torch.linalg.solve(cov_y, residual)).real
+        log_det = torch.linalg.slogdet(cov_y)[1]
+        if y.is_complex():
+            log_ps.append(-(N * P * math.log(math.pi) + log_det + quadratic))
+        else:
+            log_ps.append(-0.5 * (N * P * math.log(2 * math.pi) + log_det + quadratic))
+    return torch.stack(means), torch.stack(covs), torch.stack(log_ps)
+
+
+@pytest.mark.parametrize("device", DEVICES)
+@pytest.mark.parametrize("dtype", [torch.float64, torch.complex128])
+@pytest.mark.parametrize("N", [1, 2, 6])
+@pytest.mark.parametrize("M, P", [(1, 1), (3, 2), (2, 3)])
+def test_kalman_em_statistics_match_dense_posterior(device, dtype, N, M, P):
+    args = [t.to(device) for t in _model(2, N, M, P, dtype=dtype)]
+    means, covs, log_p = _dense_posterior(*[t.cpu() for t in args])
+    stats = kalman_em_statistics(*args)
+    steps = torch.arange(N + 1)
+    torch.testing.assert_close(stats.means.cpu(), means, rtol=1e-8, atol=1e-8)
+    torch.testing.assert_close(stats.covs.cpu(), covs[:, steps, :, steps].transpose(0, 1))
+    # covs[:, n + 1, :, n] is Cov(x[n + 1], x[n] | y).
+    cross = covs[:, steps[1:], :, steps[:-1]].transpose(0, 1)
+    torch.testing.assert_close(stats.cross_covs.cpu(), cross, rtol=1e-8, atol=1e-8)
+    torch.testing.assert_close(stats.log_likelihood.cpu(), log_p, rtol=1e-9, atol=1e-9)
+    torch.testing.assert_close(kalman_log_likelihood(*args), stats.log_likelihood)
+    # The smoother's states are x[1], ..., x[N] of the same posterior.
+    smoothed_means, smoothed_covs = kalman_smoother(*args)
+    torch.testing.assert_close(smoothed_means, stats.means[:, 1:])
+    torch.testing.assert_close(smoothed_covs, stats.covs[:, 1:])
+
+
+def _em_step(y, stats):
+    """The M-step of kalman_em_statistics' docstring, as written there."""
+    m, V, V10 = stats.means, stats.covs, stats.cross_covs
+    outer = V + m.unsqueeze(-1) @ m.unsqueeze(-2).conj()  # E[x[n] x[n]^H]
+    cross = V10 + m[:, 1:].unsqueeze(-1) @ m[:, :-1].unsqueeze(-2).conj()
+    S00 = outer[:, :-1].sum((0, 1))  # sums of E[x[n] x[n]^H], n < N
+    S11 = outer[:, 1:].sum((0, 1))  # sums of E[x[n + 1] x[n + 1]^H]
+    S10 = cross.sum((0, 1))  # sums of E[x[n + 1] x[n]^H]
+    count = y.size(0) * y.size(1)
+    A = torch.linalg.solve(S00, S10.mH).mH  # S10 S00^-1
+    Q = (S11 - A @ S10.mH) / count
+    Syx = (y.unsqueeze(-1) @ m[:, 1:].unsqueeze(-2).conj()).sum((0, 1))
+    C = torch.linalg.solve(S11, Syx.mH).mH  # Syx S11^-1
+    R = ((y.unsqueeze(-1) @ y.unsqueeze(-2).conj()).sum((0, 1)) - C @ Syx.mH) / count
+    m0 = m[:, 0].mean(0)
+    P0 = outer[:, 0].mean(0) - m0.outer(m0.conj())
+    return A, C, (Q + Q.mH) / 2, (R + R.mH) / 2, m0, (P0 + P0.mH) / 2
+
+
+@pytest.mark.parametrize("dtype", [torch.float64, torch.complex128])
+def test_kalman_em_increases_likelihood(dtype):
+    # Data from a known model, fitted from a poor initial guess.
+    B, N, M, P = 4, 50, 2, 2
+    gen = torch.Generator().manual_seed(3)
+    true_A = torch.tensor([[0.9, 0.2], [-0.2, 0.9]], dtype=dtype)
+    x = torch.zeros(B, M, dtype=dtype)
+    ys = []
+    for _ in range(N):
+        x = x @ true_A.mT + 0.3 * torch.randn(B, M, generator=gen, dtype=dtype)
+        ys.append(x + 0.5 * torch.randn(B, P, generator=gen, dtype=dtype))
+    y = torch.stack(ys, 1)
+    eye = torch.eye(M, dtype=dtype)
+    params = (0.5 * eye, eye.clone(), eye.clone(), eye.clone(), torch.zeros(M, dtype=dtype), eye)
+    log_ps = []
+    for _ in range(20):
+        stats = kalman_em_statistics(y, *params)
+        log_ps.append(stats.log_likelihood.sum().item())
+        params = _em_step(y, stats)
+    assert all(b >= a - 1e-8 for a, b in zip(log_ps, log_ps[1:]))
+    assert log_ps[-1] > log_ps[0] + 10
+
+
+def test_kalman_log_likelihood_gradcheck():
+    y, A, C, Q, R, m0, P0 = _model(2, 5, 2, 1)
+    Q_factor = torch.linalg.cholesky(Q)
+
+    def run(y, A, C, Q_factor, m0):
+        return kalman_log_likelihood(y, A, C, Q_factor @ Q_factor.mT, R, m0, P0)
+
+    inputs = [t.clone().requires_grad_() for t in (y, A, C, Q_factor, m0)]
+    assert torch.autograd.gradcheck(run, inputs)
+
+
+@pytest.mark.parametrize("batch_size, N", [(0, 5), (2, 0)])
+def test_kalman_em_statistics_empty_inputs(batch_size, N):
+    y, A, C, Q, R, m0, P0 = _model(2, 5, 3, 2)
+    y = y.new_zeros(batch_size, N, 2)
+    stats = kalman_em_statistics(y, A[0, 0], C[0, 0], Q[0, 0], R[0, 0], m0[0], P0[0])
+    assert stats.means.shape == (batch_size, N + 1, 3)
+    assert stats.covs.shape == (batch_size, N + 1, 3, 3)
+    assert stats.cross_covs.shape == (batch_size, N, 3, 3)
+    assert stats.log_likelihood.shape == (batch_size,)
+    if batch_size:
+        # With no measurements, x[0] keeps its prior and log p(y) = 0.
+        torch.testing.assert_close(stats.means[:, 0], m0[0].expand(batch_size, 3))
+        torch.testing.assert_close(stats.log_likelihood, y.new_zeros(batch_size))
