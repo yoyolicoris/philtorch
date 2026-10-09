@@ -230,12 +230,12 @@ def _smoothing_operator(
 
 
 def _smooth(
-    A: Tensor, means: Tensor, covs: Tensor, P_pred: Tensor
+    A: Tensor, means: Tensor, covs: Tensor, m_pred: Tensor, P_pred: Tensor
 ) -> tuple[Tensor, Tensor, Tensor]:
     """Smooth the filtered moments of x[0], ..., x[N - 1].
 
-    A takes each state but the last to the next, and P_pred[n] is the
-    covariance of x[n + 1] predicted from the filtered x[n]. Returns the
+    A takes each state but the last to the next, and m_pred[n] and P_pred[n]
+    are the moments of x[n + 1] predicted from the filtered x[n]. Returns the
     smoothed moments and the gains E[n] of the smoothing elements, which make
     Cov(x[n], x[n + 1] | y) = E[n] Cov(x[n + 1] | y).
     """
@@ -244,7 +244,7 @@ def _smooth(
     # and Q[n]. The last one is the filtering result itself.
     m_n, P_n = means[:, :-1], covs[:, :-1]
     E = torch.linalg.solve(P_pred, A @ P_n).mH
-    g = m_n - _mv(E @ A, m_n)
+    g = m_n - _mv(E, m_pred)
     L = P_n - E @ P_pred @ E.mH
     elements = (
         torch.cat([E, torch.zeros_like(covs[:, -1:])], dim=1),
@@ -499,7 +499,9 @@ def kalman_smoother(
     predicted_means, predicted_covs = _predicted(A, Q, m0, P0, filtered_means, filtered_covs)
     log_likelihood = _log_likelihood(y, C, R, predicted_means, predicted_covs)
     # The predictions of x[1], ..., x[N - 1] serve the smoother too.
-    means, covs, E = _smooth(A, filtered_means, filtered_covs, predicted_covs[:, 1:])
+    means, covs, E = _smooth(
+        A, filtered_means, filtered_covs, predicted_means[:, 1:], predicted_covs[:, 1:]
+    )
     # Cov(x[n + 1], x[n] | y) = Cov(x[n], x[n + 1] | y)^H = Cov(x[n + 1] | y) E[n]^H.
     cross_covs = covs[:, 1:] @ E.mH
     return KalmanSmootherResult(means, covs, cross_covs, log_likelihood)
