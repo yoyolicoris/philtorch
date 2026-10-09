@@ -14,3 +14,14 @@ Kalman filtering
 
    kalman_filter
    kalman_smoother
+
+Hidden Markov models
+--------------------
+
+.. autosummary::
+   :toctree: generated
+   :nosignatures:
+
+   hmm_filter
+   hmm_smoother
+   hmm_viterbi
