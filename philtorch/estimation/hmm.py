@@ -175,7 +175,9 @@ def hmm_filter(log_emit: Tensor, log_trans: Tensor, log_init: Tensor) -> tuple[T
     :math:`z[n]` to :math:`z[n + 1]` and :math:`y[n]` is emitted from
     :math:`z[n + 1]`, this returns :math:`\log p(y[0], \dots, y[N - 1])` and
     :math:`\log p(z[n + 1] \mid y[0], \dots, y[n])`: the forward algorithm,
-    computed as a scan over time instead of step by step.
+    computed as a scan over time instead of step by step, as in `Temporal
+    Parallelization of Inference in Hidden Markov Models`_ (Hassan, Särkkä
+    and García-Fernández, 2021).
 
     The results are differentiable to any order with respect to every input,
     so the log-likelihood can train the model's probabilities, or a network
@@ -207,6 +209,9 @@ def hmm_filter(log_emit: Tensor, log_trans: Tensor, log_init: Tensor) -> tuple[T
     Raises:
         ValueError: if the inputs are not CUDA tensors or :attr:`log_trans`
             has an unsupported shape.
+
+    .. _Temporal Parallelization of Inference in Hidden Markov Models:
+        https://doi.org/10.1109/TSP.2021.3103338
     """
     log_trans, log_init = _parse(log_emit, log_trans, log_init)
     if log_emit.size(1) == 0:
@@ -257,13 +262,15 @@ def hmm_smoother(log_emit: Tensor, log_trans: Tensor, log_init: Tensor) -> tuple
 def hmm_viterbi(log_emit: Tensor, log_trans: Tensor, log_init: Tensor) -> tuple[Tensor, Tensor]:
     r"""Decode a hidden Markov model: its most probable state sequence.
 
-    For the model of :func:`hmm_filter`, this is Hassan et al.'s max-product
-    form of the Viterbi algorithm: a forward scan gives the best score of
-    any path ending in each state, a backward scan the best score of any
-    continuation, and each step takes the state whose sum is largest. That
-    is the exact Viterbi path when it is unique; with ties, the steps can
-    pick states from different optimal paths. The score is differentiable to
-    any order; the implementations are those of :func:`hmm_filter`.
+    For the model of :func:`hmm_filter`, this is the max-product form of the
+    Viterbi algorithm from `Temporal Parallelization of Inference in Hidden
+    Markov Models`_ (Hassan et al., 2021): a forward scan gives the best
+    score of any path ending in each state, a backward scan the best score
+    of any continuation, and each step takes the state whose sum is largest.
+    That is the exact Viterbi path when it is unique; with ties, the steps
+    can pick states from different optimal paths. The score is
+    differentiable to any order; the implementations are those of
+    :func:`hmm_filter`.
 
     Args:
         log_emit (Tensor): :math:`\log p(y[n] \mid z[n + 1] = k)`, of shape
@@ -289,6 +296,9 @@ def hmm_viterbi(log_emit: Tensor, log_trans: Tensor, log_init: Tensor) -> tuple[
     Raises:
         ValueError: if the inputs are not CUDA tensors or :attr:`log_trans`
             has an unsupported shape.
+
+    .. _Temporal Parallelization of Inference in Hidden Markov Models:
+        https://doi.org/10.1109/TSP.2021.3103338
     """
     log_trans, log_init = _parse(log_emit, log_trans, log_init)
     batch_size, N, _ = log_emit.shape
