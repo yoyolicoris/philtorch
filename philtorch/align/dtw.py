@@ -65,9 +65,10 @@ def dtw(
     the cost of the cheapest monotonic path from the first pair of frames to
     the last. With :math:`\gamma = 0`, :math:`\min_\gamma` is the minimum (DTW);
     with :math:`\gamma > 0` it is the soft minimum
-    :math:`-\gamma \log \sum_i e^{-x_i / \gamma}` (soft-DTW, Cuturi and Blondel,
-    2017), and the distance is :math:`-\gamma \log` of the sum of
-    :math:`e^{-\text{cost} / \gamma}` over all paths.
+    :math:`-\gamma \log \sum_i e^{-x_i / \gamma}`, and the distance is
+    :math:`-\gamma \log` of the sum of :math:`e^{-\text{cost} / \gamma}` over
+    all paths: soft-DTW, from `Soft-DTW: a Differentiable Loss Function for
+    Time-Series`_ (Cuturi and Blondel, 2017).
 
     The gradient of the distance with respect to :attr:`cost` is the
     alignment: the 0/1 indicator of the optimal path for DTW, and for
@@ -78,13 +79,13 @@ def dtw(
     order. Costs may be ``inf`` to forbid cells.
 
     Rows of the accumulated costs are computed one after another, each with
-    a parallel scan over its cells (after Xiao et al., "Parallelizing Dynamic
-    Time Warping Algorithm Using Prefix Computations on GPU", HPCC 2013), in
-    one Triton kernel per batch: :math:`\min(N, M)` sequential steps for the
-    symmetric and orthogonal steps, at most :math:`M` for the asymmetric
-    steps, and :math:`O(NM)` work and memory. The cost can be any tensor, from any
-    differentiable function of the sequences, such as the squared Euclidean
-    distances between their frames.
+    a parallel scan over its cells, after `Parallelizing Dynamic Time
+    Warping Algorithm Using Prefix Computations on GPU`_ (Xiao et al.,
+    2013), in one Triton kernel per batch: :math:`\min(N, M)` sequential
+    steps for the symmetric and orthogonal steps, at most :math:`M` for the
+    asymmetric steps, and :math:`O(NM)` work and memory. The cost can be any
+    tensor, from any differentiable function of the sequences, such as the
+    squared Euclidean distances between their frames.
 
     Args:
         cost (Tensor): the costs :math:`c[n, m]`, of shape :math:`(B, N, M)`,
@@ -133,6 +134,11 @@ def dtw(
         >>> distance = dtw(cost, gamma=0.1)
         >>> alignment, = torch.autograd.grad(distance.sum(), cost, retain_graph=True)
         >>> distance.sum().backward()  # gradients with respect to y
+
+    .. _Soft-DTW\: a Differentiable Loss Function for Time-Series:
+        https://proceedings.mlr.press/v70/cuturi17a.html
+    .. _Parallelizing Dynamic Time Warping Algorithm Using Prefix Computations on GPU:
+        https://doi.org/10.1109/HPCC.and.EUC.2013.50
     """
     assert cost.dim() == 3, f"cost must be (B, N, M), got {tuple(cost.shape)}"
     if not cost.is_cuda:
@@ -193,8 +199,8 @@ def soft_dtw_divergence(
         \mathrm{SDTW}_\gamma(x, y) - \tfrac{1}{2}\big(\mathrm{SDTW}_\gamma(x, x)
         + \mathrm{SDTW}_\gamma(y, y)\big),
 
-    from Blondel, Mensch and Vert, "Differentiable Divergences Between Time
-    Series" (AISTATS 2021). Unlike soft-DTW itself, it is zero for identical
+    from `Differentiable Divergences Between Time Series`_ (Blondel, Mensch
+    and Vert, 2021). Unlike soft-DTW itself, it is zero for identical
     sequences, and with the squared Euclidean cost it is non-negative.
 
     Args:
@@ -211,6 +217,9 @@ def soft_dtw_divergence(
 
     Returns:
         Tensor: the divergences, of shape :math:`(B)`.
+
+    .. _Differentiable Divergences Between Time Series:
+        https://proceedings.mlr.press/v130/blondel21a.html
     """
     assert gamma > 0, "the soft-DTW divergence needs gamma > 0"
     n_len, m_len = (None, None) if lengths is None else lengths
