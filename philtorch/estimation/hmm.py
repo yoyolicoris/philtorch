@@ -24,8 +24,12 @@ over the batch and time with :func:`._contract.weighted_contract`.
 import torch
 from torch import Tensor
 
+from .._triton import check_cuda_triton
 
-def _parse(log_emit: Tensor, log_trans: Tensor, log_init: Tensor) -> tuple[Tensor, Tensor, Tensor]:
+
+def _parse(
+    name: str, log_emit: Tensor, log_trans: Tensor, log_init: Tensor
+) -> tuple[Tensor, Tensor, Tensor]:
     """Validate the model; return log_emit, log_trans as (1 or B, 1 or N - 1, K, K), and
     log_init as (B, K)."""
     assert log_emit.dim() == 3, f"log_emit must be (B, N, K), got {tuple(log_emit.shape)}"
@@ -47,8 +51,7 @@ def _parse(log_emit: Tensor, log_trans: Tensor, log_init: Tensor) -> tuple[Tenso
     assert log_init.shape in ((K,), (batch_size, K)), (
         f"log_init must be {(K,)} or {(batch_size, K)}, got {tuple(log_init.shape)}"
     )
-    if not log_emit.is_cuda:
-        raise ValueError("The HMM scans run Triton kernels, which need CUDA tensors.")
+    check_cuda_triton(name, log_emit)
     # The kernels read each K x K matrix and each step's K emissions as
     # contiguous blocks; batch and time may broadcast.
     if log_trans.stride(-1) != 1 or log_trans.stride(-2) != K:
@@ -308,9 +311,14 @@ def hmm_filter(log_emit: Tensor, log_trans: Tensor, log_init: Tensor) -> tuple[T
     few Triton kernel launches whatever N is, with O(N K^3) work, and its
     gradients are scans of the same kind.
 
+    Note:
+        Runs only on CUDA GPUs, as Triton kernels: the inputs must be CUDA
+        tensors, and Triton must be installed, as it is with PyTorch's CUDA
+        builds for Linux.
+
     Args:
         log_emit (Tensor): :math:`\log p(y[n] \mid z[n] = k)`, of shape
-            :math:`(B, N, K)`, on a CUDA device.
+            :math:`(B, N, K)`.
         log_trans (Tensor): :math:`\log p(z[n + 1] = j \mid z[n] = i)` at
             index :math:`[i, j]`, of shape :math:`(K, K)`,
             :math:`(N - 1, K, K)` or :math:`(B, N - 1, K, K)`.
@@ -324,11 +332,12 @@ def hmm_filter(log_emit: Tensor, log_trans: Tensor, log_init: Tensor) -> tuple[T
     Raises:
         ValueError: if the inputs are not CUDA tensors or :attr:`log_trans`
             has an unsupported shape.
+        RuntimeError: if Triton is not installed.
 
     .. _Temporal Parallelization of Inference in Hidden Markov Models:
         https://doi.org/10.1109/TSP.2021.3103338
     """
-    log_emit, log_trans, log_init = _parse(log_emit, log_trans, log_init)
+    log_emit, log_trans, log_init = _parse("hmm_filter", log_emit, log_trans, log_init)
     if log_emit.size(1) == 0:
         return log_emit.new_zeros(log_emit.size(0)), torch.empty_like(log_emit)
     alpha = _forward(log_emit, log_trans, log_init)
@@ -345,9 +354,14 @@ def hmm_smoother(log_emit: Tensor, log_trans: Tensor, log_init: Tensor) -> tuple
     in Hidden Markov Models`_ (Hassan et al., 2021). The arguments,
     implementation and differentiability are those of :func:`hmm_filter`.
 
+    Note:
+        Runs only on CUDA GPUs, as Triton kernels: the inputs must be CUDA
+        tensors, and Triton must be installed, as it is with PyTorch's CUDA
+        builds for Linux.
+
     Args:
         log_emit (Tensor): :math:`\log p(y[n] \mid z[n] = k)`, of shape
-            :math:`(B, N, K)`, on a CUDA device.
+            :math:`(B, N, K)`.
         log_trans (Tensor): :math:`\log p(z[n + 1] = j \mid z[n] = i)` at
             index :math:`[i, j]`, of shape :math:`(K, K)`,
             :math:`(N - 1, K, K)` or :math:`(B, N - 1, K, K)`.
@@ -361,11 +375,12 @@ def hmm_smoother(log_emit: Tensor, log_trans: Tensor, log_init: Tensor) -> tuple
     Raises:
         ValueError: if the inputs are not CUDA tensors or :attr:`log_trans`
             has an unsupported shape.
+        RuntimeError: if Triton is not installed.
 
     .. _Temporal Parallelization of Inference in Hidden Markov Models:
         https://doi.org/10.1109/TSP.2021.3103338
     """
-    log_emit, log_trans, log_init = _parse(log_emit, log_trans, log_init)
+    log_emit, log_trans, log_init = _parse("hmm_smoother", log_emit, log_trans, log_init)
     if log_emit.size(1) == 0:
         return log_emit.new_zeros(log_emit.size(0)), torch.empty_like(log_emit)
     alpha = _forward(log_emit, log_trans, log_init)
@@ -391,9 +406,14 @@ def hmm_viterbi(log_emit: Tensor, log_trans: Tensor, log_init: Tensor) -> tuple[
     that of the decoded path: one for its first state's prior and for each
     of its emissions and transitions; its higher derivatives are zero.
 
+    Note:
+        Runs only on CUDA GPUs, as Triton kernels: the inputs must be CUDA
+        tensors, and Triton must be installed, as it is with PyTorch's CUDA
+        builds for Linux.
+
     Args:
         log_emit (Tensor): :math:`\log p(y[n] \mid z[n] = k)`, of shape
-            :math:`(B, N, K)`, on a CUDA device.
+            :math:`(B, N, K)`.
         log_trans (Tensor): :math:`\log p(z[n + 1] = j \mid z[n] = i)` at
             index :math:`[i, j]`, of shape :math:`(K, K)`,
             :math:`(N - 1, K, K)` or :math:`(B, N - 1, K, K)`.
@@ -409,11 +429,12 @@ def hmm_viterbi(log_emit: Tensor, log_trans: Tensor, log_init: Tensor) -> tuple[
     Raises:
         ValueError: if the inputs are not CUDA tensors or :attr:`log_trans`
             has an unsupported shape.
+        RuntimeError: if Triton is not installed.
 
     .. _Temporal Parallelization of Inference in Hidden Markov Models:
         https://doi.org/10.1109/TSP.2021.3103338
     """
-    log_emit, log_trans, log_init = _parse(log_emit, log_trans, log_init)
+    log_emit, log_trans, log_init = _parse("hmm_viterbi", log_emit, log_trans, log_init)
     batch_size, N, _ = log_emit.shape
     if N == 0:
         return log_emit.new_zeros(batch_size), log_emit.new_zeros(batch_size, 0, dtype=torch.long)

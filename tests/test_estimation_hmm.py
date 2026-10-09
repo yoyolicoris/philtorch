@@ -208,8 +208,19 @@ def test_hmm_chain_takes_an_expanded_gradient():
 
 
 def test_hmm_needs_cuda():
-    with pytest.raises(ValueError, match="CUDA"):
+    with pytest.raises(ValueError, match="hmm_filter runs Triton kernels on CUDA GPUs only"):
         hmm_filter(*_model(1, 3, 2, device="cpu"))
+
+
+def test_hmm_needs_triton():
+    code = (
+        "import sys; sys.modules['triton'] = None; import torch\n"
+        "from philtorch.estimation import hmm_viterbi\n"
+        "x = torch.zeros(1, 3, 2, device='cuda')\n"
+        "hmm_viterbi(x, torch.zeros(2, 2, device='cuda'), torch.zeros(2, device='cuda'))"
+    )
+    run = subprocess.run([sys.executable, "-c", code], capture_output=True, text=True)
+    assert "hmm_viterbi runs Triton kernels, but Triton is not installed" in run.stderr
 
 
 def test_hmm_matches_sequential_in_float32():
