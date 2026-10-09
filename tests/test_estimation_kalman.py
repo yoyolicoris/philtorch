@@ -376,3 +376,28 @@ def test_kalman_em_statistics_empty_inputs(batch_size, N):
         # With no measurements, x[0] keeps its prior and log p(y) = 0.
         torch.testing.assert_close(stats.means[:, 0], m0[0].expand(batch_size, 3))
         torch.testing.assert_close(stats.log_likelihood, y.new_zeros(batch_size))
+
+
+def test_kalman_known_initial_state_with_singular_noise():
+    """An AR(2) model from a known zero state: A[0] P0 A[0]^H + Q[0] = Q is singular."""
+    dtype = torch.float64
+    A = torch.tensor([[1.2, -0.5], [1.0, 0.0]], dtype=dtype)
+    C = torch.tensor([[1.0, 0.0]], dtype=dtype)
+    Q = torch.diag(torch.tensor([1.0, 0.0], dtype=dtype))
+    R = torch.tensor([[0.1]], dtype=dtype)
+    m0, P0 = torch.zeros(2, dtype=dtype), torch.zeros(2, 2, dtype=dtype)
+    y = torch.randn(2, 6, 1, dtype=dtype, generator=torch.Generator().manual_seed(0))
+    args = (y, A, C, Q, R, m0, P0)
+    full = [y, *(t.expand(2, 6, *t.shape) for t in (A, C, Q, R)), m0.expand(2, 2)]
+    means, covs, log_p = _dense_posterior(*full, P0.expand(2, 2, 2))
+    steps = torch.arange(7)
+    smoothed_means, smoothed_covs = kalman_smoother(*args)
+    torch.testing.assert_close(smoothed_means, means[:, 1:], rtol=1e-8, atol=1e-8)
+    stats = kalman_em_statistics(*args)
+    torch.testing.assert_close(stats.means, means, rtol=1e-8, atol=1e-8)
+    torch.testing.assert_close(
+        stats.covs, covs[:, steps, :, steps].transpose(0, 1), atol=1e-8, rtol=1e-8
+    )
+    cross = covs[:, steps[1:], :, steps[:-1]].transpose(0, 1)
+    torch.testing.assert_close(stats.cross_covs, cross, rtol=1e-8, atol=1e-8)
+    torch.testing.assert_close(stats.log_likelihood, log_p, rtol=1e-9, atol=1e-9)

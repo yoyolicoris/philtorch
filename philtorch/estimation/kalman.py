@@ -207,19 +207,29 @@ def _smoothing_operator(
     return E_i @ E_j, _mv(E_i, g_j) + g_i, E_i @ L_j @ E_i.mH + L_i
 
 
-def _smooth(A: Tensor, Q: Tensor, means: Tensor, covs: Tensor) -> tuple[Tensor, Tensor, Tensor]:
-    """Smooth the filtered moments of x[0], ..., x[N] from :func:`_filter`.
+def _smooth(
+    A: Tensor, Q: Tensor, means: Tensor, covs: Tensor, prior: bool = False
+) -> tuple[Tensor, Tensor, Tensor]:
+    """Smooth filtered moments: those of the states, A and Q of the steps out of each.
 
-    Returns the smoothed moments of x[0], ..., x[N] and the gains E[n] of
-    the smoothing elements, which make Cov(x[n], x[n + 1] | y) =
-    E[n] Cov(x[n + 1] | y).
+    Returns the smoothed moments and the gains E[n] of the smoothing
+    elements, which make Cov(x[n], x[n + 1] | y) = E[n] Cov(x[n + 1] | y).
+    With ``prior``, the first state is the prior x[0]: its predicted
+    covariance A[0] P0 A[0]^H + Q[0] can be singular, as with a known initial
+    state and noise that drives only part of the state, so its gain uses a
+    pseudo-inverse, which gives the limit E = 0 when P0 = 0.
     """
-    # Element n describes x[n] given x[n + 1] and y[0], ..., y[n - 1]
-    # (eqs. 48-50 of the GPU paper): x[n] | x[n + 1] ~ N(E x[n + 1] + g, L),
+    # Element n describes x[n] given x[n + 1] and the measurements up to
+    # x[n] (eqs. 48-50 of the GPU paper): x[n] | x[n + 1] ~ N(E x[n + 1] + g, L),
     # through A[n] and Q[n]. The last one is the filtering result itself.
     m_n, P_n = means[:, :-1], covs[:, :-1]
     _, P_pred = _predict(A, Q, m_n, P_n)
-    E = torch.linalg.solve(P_pred, A @ P_n).mH
+    if prior:
+        first = P_n[:, :1] @ A[:, :1].mH @ torch.linalg.pinv(P_pred[:, :1], hermitian=True)
+        rest = torch.linalg.solve(P_pred[:, 1:], A[:, 1:] @ P_n[:, 1:]).mH
+        E = torch.cat([first, rest], dim=1)
+    else:
+        E = torch.linalg.solve(P_pred, A @ P_n).mH
     g = m_n - _mv(E @ A, m_n)
     L = P_n - E @ P_pred @ E.mH
     elements = (
@@ -401,9 +411,10 @@ def kalman_smoother(
         tensor([0.6562, 0.8125, 0.8750], dtype=torch.float64)
     """
     A, C, Q, R, m0, P0 = _parse(y, A, C, Q, R, m0, P0)
-    means, covs, _ = _smooth(A, Q, *_filter(y, A, C, Q, R, m0, P0))
-    # Drop the prior, x[0] given all the measurements.
-    return means[:, 1:], covs[:, 1:]
+    means, covs = _filter(y, A, C, Q, R, m0, P0)
+    # Smooth x[1], ..., x[N], through the steps out of x[1], ..., x[N - 1].
+    means, covs, _ = _smooth(A[:, 1:], Q[:, 1:], means[:, 1:], covs[:, 1:])
+    return means, covs
 
 
 def kalman_log_likelihood(
@@ -540,7 +551,7 @@ def kalman_em_statistics(
     log_likelihood = _log_likelihood(
         y, C, R, *_predict(A, Q, filtered_means[:, :-1], filtered_covs[:, :-1])
     )
-    means, covs, E = _smooth(A, Q, filtered_means, filtered_covs)
+    means, covs, E = _smooth(A, Q, filtered_means, filtered_covs, prior=True)
     # Cov(x[n + 1], x[n] | y) = Cov(x[n], x[n + 1] | y)^H = Cov(x[n + 1] | y) E[n]^H.
     cross_covs = covs[:, 1:] @ E.mH
     return KalmanStatistics(means, covs, cross_covs, log_likelihood)
