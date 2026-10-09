@@ -48,7 +48,11 @@ import torch
 import torch.nn.functional as F
 from torch import Tensor
 
-_SETTINGS = {} if os.environ.get("HELION_AUTOTUNE_EFFORT") else {"autotune_effort": "quick"}
+# Forked precompile processes can hang or fail in a multithreaded parent, which
+# shows up as NoConfigFound once several kernels have been tuned; spawn them.
+_SETTINGS = {"autotune_precompile": "spawn"} | (
+    {} if os.environ.get("HELION_AUTOTUNE_EFFORT") else {"autotune_effort": "quick"}
+)
 _INF = float("inf")
 
 
