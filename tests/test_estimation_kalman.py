@@ -227,7 +227,7 @@ def test_kalman_gradcheck(fn):
     factors = [torch.linalg.cholesky(t) for t in (Q, R, P0)]
 
     def run(y, A, C, Q_factor, R_factor, m0, P0_factor):
-        Q, R, P0 = (L @ L.mT for L in (Q_factor, R_factor, P0_factor))
+        Q, R, P0 = (L @ L.mH for L in (Q_factor, R_factor, P0_factor))
         return tuple(fn(y, A, C, Q, R, m0, P0))
 
     inputs = [t.clone().requires_grad_() for t in (y, A, C, factors[0], factors[1], m0, factors[2])]

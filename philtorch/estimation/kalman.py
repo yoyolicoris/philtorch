@@ -241,7 +241,7 @@ def _smooth(
     """
     # Element n describes x[n] given x[n + 1] and y[0], ..., y[n] (eqs. 48-50
     # of the GPU paper): x[n] | x[n + 1] ~ N(E x[n + 1] + g, L), through A[n]
-    # and Q[n]. The last one is the filtering result itself.
+    # and the predicted moments. The last one is the filtering result itself.
     m_n, P_n = means[:, :-1], covs[:, :-1]
     E = torch.linalg.solve(P_pred, A @ P_n).mH
     g = m_n - _mv(E, m_pred)
