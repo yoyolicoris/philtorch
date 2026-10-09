@@ -154,13 +154,15 @@ def _filtering_operator(
     """Combine two filtering elements (Lemma 3 of the GPU paper)."""
     F_i, b_i, G_i, eta_i, J_i = earlier
     F_j, b_j, G_j, eta_j, J_j = later
-    # I + G_i J_j and I + J_j G_i, adding to the products' diagonals in place.
-    I_GJ, I_JG = G_i @ J_j, J_j @ G_i
+    # I + G_i J_j, adding to the product's diagonal in place. As G and J are
+    # Hermitian, I + J_j G_i is its conjugate transpose, so one factorization
+    # serves X = F_j (I + G_i J_j)^-1, a right solve, and
+    # Y = F_i^H (I + J_j G_i)^-1 = ((I + G_i J_j)^-1 F_i)^H, a left one.
+    I_GJ = G_i @ J_j
     I_GJ.diagonal(dim1=-2, dim2=-1).add_(1)
-    I_JG.diagonal(dim1=-2, dim2=-1).add_(1)
-    # X = F_j (I + G_i J_j)^-1 and Y = F_i^H (I + J_j G_i)^-1, as left solves.
-    X = torch.linalg.solve(I_GJ.mH, F_j.mH).mH
-    Y = torch.linalg.solve(I_JG.mH, F_i).mH
+    LU, pivots = torch.linalg.lu_factor(I_GJ)
+    X = torch.linalg.lu_solve(LU, pivots, F_j, left=False)
+    Y = torch.linalg.lu_solve(LU, pivots, F_i).mH
     return (
         X @ F_i,
         _mv(X, b_i + _mv(G_i, eta_j)) + b_j,
