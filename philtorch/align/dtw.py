@@ -149,6 +149,11 @@ def dtw(
     .. _Parallelizing Dynamic Time Warping Algorithm Using Prefix Computations on GPU:
         https://doi.org/10.1109/HPCC.and.EUC.2013.50
     """
+    _validate("dtw", cost, step_pattern, diagonal_weight)
+    return _dtw(cost, gamma, step_pattern, diagonal_weight, lengths, band)[0]
+
+
+def _validate(name: str, cost: Tensor, step_pattern: str, diagonal_weight: float) -> None:
     if cost.dim() != 3:
         raise ValueError(f"cost must be (B, N, M), got {tuple(cost.shape)}")
     if step_pattern not in ("symmetric", "asymmetric", "orthogonal"):
@@ -157,7 +162,13 @@ def dtw(
         raise ValueError(f"cost has an empty sequence: shape {tuple(cost.shape)}")
     if diagonal_weight != 1.0 and step_pattern != "symmetric":
         raise ValueError(f"diagonal_weight needs the symmetric steps, not {step_pattern!r}.")
-    check_cuda_triton("dtw", cost)
+    check_cuda_triton(name, cost)
+
+
+def _dtw(cost, gamma, step_pattern, diagonal_weight, lengths, band):
+    """dtw's distances, and for dtw_path the kernels' grid: (distance, grid), the
+    grid None if no pair has a path, else (D, its costs, steps, each pair's last
+    cell on it (B, 2), whether it was sheared, whether then transposed)."""
     # Imported here so that philtorch.align imports without Triton.
     from ._dtw_kernels import dtw_dp
 
@@ -177,15 +188,17 @@ def dtw(
         cost = torch.where(_band_mask(N, M, n_len, m_len, band), cost, big)
 
     no_path = torch.zeros(B, dtype=torch.bool, device=cost.device)
-    if step_pattern == "asymmetric":
+    sheared = step_pattern == "asymmetric"
+    if sheared:
         no_path = n_len < m_len
         width = int((n_len - m_len).max()) + 1 if B else 1
         if width <= 0:
             # No pair has a path; stay in the graph, with zero gradients.
-            return torch.where(no_path, float("inf"), cost[:, 0, 0])
+            return torch.where(no_path, float("inf"), cost[:, 0, 0]), None
         cost = _shear(cost, width)
         n_len, m_len = m_len, (n_len - m_len + 1).clamp(min=1)
-    if cost.size(1) > cost.size(2):
+    transposed = cost.size(1) > cost.size(2)
+    if transposed:
         cost, n_len, m_len = cost.mT, m_len, n_len
     # After the shear, the asymmetric steps are orthogonal ones.
     steps = "symmetric" if step_pattern == "symmetric" else "orthogonal"
@@ -193,7 +206,9 @@ def dtw(
     distance = D[torch.arange(B, device=D.device), n_len - 1, m_len - 1]
     if band is not None:
         no_path = no_path | (distance >= big / 2)
-    return torch.where(no_path, float("inf"), distance) / scale
+    distance = torch.where(no_path, float("inf"), distance) / scale
+    ends = torch.stack([n_len, m_len], -1) - 1
+    return distance, (D, cost, steps, ends, sheared, transposed)
 
 
 def dtw_path(
@@ -208,11 +223,11 @@ def dtw_path(
 
     The path is DTW's (:func:`dtw` with :math:`\gamma = 0`) as index pairs
     :math:`(n, m)` from :math:`(0, 0)` to :math:`(N_b - 1, M_b - 1)`, as
-    Viterbi decoding gives a hidden Markov model's states. It is the
-    distance's gradient, the path's indicator, read in order: one backward
-    pass after the forward one, and no backtracking. Under ties, it is one of
-    the optimal paths. The distance is the path's cost, differentiable to
-    any order, its gradient the path.
+    Viterbi decoding gives a hidden Markov model's states: backtracked over
+    the forward pass's accumulated costs, one step per cell of the path, the
+    same path as the distance's gradient marks. Under ties, it is one of the
+    optimal paths. The distance is
+    :func:`dtw`'s, differentiable to any order, its gradient the path.
 
     Note:
         Runs only on CUDA GPUs, as Triton kernels: the inputs must be CUDA
@@ -244,26 +259,26 @@ def dtw_path(
         >>> distance, path = dtw_path(cost)
         >>> path[0, : (path[0, :, 0] >= 0).sum()]  # pair 0's cells, (0, 0) first
     """
-    options = dict(
-        step_pattern=step_pattern, diagonal_weight=diagonal_weight, lengths=lengths, band=band
-    )
-    with torch.enable_grad():
-        leaf = cost.detach().requires_grad_()
-        distance = dtw(leaf, 0.0, **options)
-        (alignment,) = torch.autograd.grad(distance.sum(), leaf)
+    _validate("dtw_path", cost, step_pattern, diagonal_weight)
+    from ._dtw_kernels import backtrack
+
     B, N, M = cost.shape
-    # The path's cells, by pair, row and column: a path is monotone, so this
-    # is its order.
-    cells = alignment.nonzero()
-    counts = torch.bincount(cells[:, 0], minlength=B)
-    starts = counts.cumsum(0) - counts
-    position = torch.arange(len(cells), device=cells.device) - starts[cells[:, 0]]
-    path = cells.new_full((B, N + M - 1, 2), -1)
-    path[cells[:, 0], position] = cells[:, 1:]
-    # The path's cost, with a diagonal step's weight: its gradient is the path.
-    on_path = alignment != 0
-    cost_of_path = torch.where(on_path, alignment * cost, 0.0).sum((1, 2))
-    return torch.where(distance.isinf(), float("inf"), cost_of_path), path
+    distance, grid = _dtw(cost, 0.0, step_pattern, diagonal_weight, lengths, band)
+    path = torch.full((B, N + M - 1, 2), -1, dtype=torch.long, device=cost.device)
+    if grid is None:
+        return distance, path
+    D, grid_cost, steps, ends, sheared, transposed = grid
+    with torch.no_grad():
+        cells = backtrack(D, grid_cost, None, ends, steps, float(diagonal_weight))
+        # From the kernels' grid back to (n, m): undo the transpose, then the
+        # shear, sheared[m, k] = cost[m + k, m].
+        if transposed:
+            cells = cells.flip(-1)
+        if sheared:
+            cells = torch.stack([cells[..., 0] + cells[..., 1], cells[..., 0]], -1)
+        valid = (cells[..., :1] >= 0) & distance.isfinite()[:, None, None]
+        path[:, : cells.size(1)] = torch.where(valid, cells, -1)
+    return distance, path
 
 
 def soft_dtw_divergence(

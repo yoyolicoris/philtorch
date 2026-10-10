@@ -95,7 +95,8 @@ def ctc_loss(
         "ctc_loss", log_probs, targets, input_lengths, target_lengths, blank
     )
     N, T, _ = log_probs.shape
-    ends = _ends(log_probs.gather(2, states[:, None].expand(N, T, -1)), skip, frames, labels, True)
+    state_log_probs = log_probs.gather(2, states[:, None].expand(N, T, -1))
+    ends = _grid(state_log_probs, skip, frames, labels, True)[2]
     none = ends.isinf().all(0)
     loss = -torch.logsumexp(-torch.where(none, 0.0, ends), dim=0)
     loss = torch.where(none, 0.0 if zero_infinity else float("inf"), loss)
@@ -117,10 +118,9 @@ def forced_align(
     ``torchaudio.functional.forced_align``, batch first and batched.
 
     Of the paths that :func:`ctc_loss` sums over, the most probable one: CTC
-    Viterbi decoding, the same grid with a hard minimum, the path read from
-    its gradient, one-hot at each frame, in one backward pass. Under ties, a
-    frame stays in its state rather than advances, and advances rather than
-    skips a blank.
+    Viterbi decoding, the same grid with a hard minimum, backtracked one
+    frame per step. Under ties, a frame stays in its state rather than
+    advances, and advances rather than skips a blank.
 
     Note:
         Runs only on CUDA GPUs, as Triton kernels: the inputs must be CUDA
@@ -158,20 +158,21 @@ def forced_align(
         "forced_align", log_probs, targets, input_lengths, target_lengths, blank
     )
     N, T, _ = log_probs.shape
-    with torch.enable_grad():
-        state_log_probs = log_probs.detach().gather(2, states[:, None].expand(N, T, -1))
-        state_log_probs.requires_grad_()
-        ends = _ends(state_log_probs, skip, frames, labels, False)
-        # The better end, the last label first under a tie.
-        best = ends.gather(0, ends.argmin(0, keepdim=True))[0]
-        possible = best.isfinite()
-        (grad,) = torch.autograd.grad(torch.where(possible, best, 0.0).sum(), state_log_probs)
-    # The gradient is minus the path's one-hot state at each frame.
-    state = grad.argmin(-1)
-    path = states.gather(1, state)
-    scores = log_probs.gather(2, path[..., None])[..., 0]
-    valid = possible[:, None] & (torch.arange(T, device=frames.device) < frames[:, None])
-    path, scores = torch.where(valid, path, -1), torch.where(valid, scores, 0.0)
+    from ._dtw_kernels import backtrack
+
+    with torch.no_grad():
+        state_log_probs = log_probs.gather(2, states[:, None].expand(N, T, -1))
+        D, cost, ends = _grid(state_log_probs, skip, frames, labels, False)
+        # From the better end, the last label first under a tie; the walk
+        # takes one frame per step, from the virtual cell (0, 0).
+        rows = 2 * labels + 1 - ends.argmin(0)
+        cells = backtrack(D, cost, skip, torch.stack([rows, frames], -1), "ctc", 1.0)
+        state = cells[:, 1 : T + 1, 0] - 1
+        possible = ends.min(0).values.isfinite()
+        valid = possible[:, None] & (torch.arange(T, device=frames.device) < frames[:, None])
+        path = states.gather(1, state.clamp(min=0))
+        scores = log_probs.gather(2, path[..., None])[..., 0]
+        path, scores = torch.where(valid, path, -1), torch.where(valid, scores, 0.0)
     return (path[0], scores[0]) if unbatched else (path, scores)
 
 
@@ -210,10 +211,11 @@ def _prepare(name, log_probs, targets, input_lengths, target_lengths, blank):
     return log_probs, states, skip, frames, labels, unbatched
 
 
-def _ends(state_log_probs, skip, frames, labels, soft):
-    """-log p of the paths ending in each sequence's last label and in the blank after
-    it, (2, N), from each frame's log-probabilities of the states, (N, T, 2S + 1):
-    of all paths, or with ``soft`` False the best one."""
+def _grid(state_log_probs, skip, frames, labels, soft):
+    """The kernels' grid from each frame's log-probabilities of the states, (N, T, 2S + 1):
+    its accumulated costs D and costs, and -log p of the paths ending in each
+    sequence's last label and in the blank after it, (2, N): of all paths, or
+    with ``soft`` False the best one."""
     # Imported here so that philtorch.align imports without Triton.
     from ._dtw_kernels import dtw_dp
 
@@ -227,4 +229,4 @@ def _ends(state_log_probs, skip, frames, labels, soft):
     D = dtw_dp(cost, skip, soft, "ctc", 1.0)
     batch = torch.arange(D.size(0), device=D.device)
     ends = torch.stack([D[batch, 2 * labels + 1, frames], D[batch, 2 * labels, frames]])
-    return ends * math.log(2)
+    return D, cost, ends * math.log(2)

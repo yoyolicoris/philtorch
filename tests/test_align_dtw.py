@@ -166,6 +166,13 @@ def test_dtw_band(gamma, N, M, band):
     (expected_grad,) = torch.autograd.grad(D.sum(), cost)
     torch.testing.assert_close(grad, expected_grad)
     assert (grad * ~allowed).abs().max() == 0
+    if gamma == 0:
+        # The path stays in the band, and is the one the gradient marks.
+        _, path = dtw_path(cost, band=band)
+        for b in range(2):
+            cells = path[b][path[b, :, 0] >= 0]
+            assert allowed[b][tuple(cells.T)].all()
+            assert torch.equal(cells, grad[b].nonzero())
 
 
 @requires_cuda

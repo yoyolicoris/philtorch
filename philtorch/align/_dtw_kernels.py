@@ -349,6 +349,80 @@ def _dag_kernel(
             skip_below_next = skip_next
 
 
+@triton.jit
+def _backtrack_kernel(
+    D_ptr, cost_ptr, skip_ptr, ends_ptr, path_ptr, R, L, P, diag_weight,
+    STEPS: tl.constexpr,
+):  # fmt: skip
+    """Each pair's optimal path, walked from its end cell back to (0, 0).
+
+    At each cell, the first best of its up, left, up-left and skip
+    predecessors, from D and the cost as the hard shares choose, so the
+    path is the hard gradient's. The cells, the end first, go to path
+    (B, P, 2) as (row, column), -1 past (0, 0). One program per pair: each
+    step waits on the last, but the walk stays in cache.
+    """
+    b = tl.program_id(0).to(tl.int64)
+    batch = b * R * L
+    out = path_ptr + b * P * 2
+    i = tl.load(ends_ptr + 2 * b)
+    j = tl.load(ends_ptr + 2 * b + 1)
+    for t in range(0, P):
+        active = i >= 0
+        tl.store(out + 2 * t, i)
+        tl.store(out + 2 * t + 1, j)
+        cell = batch + i * L + j
+        c = tl.load(cost_ptr + cell, mask=active, other=0.0)
+        best = _KERNEL_INF
+        best_i = i
+        best_j = j
+        if STEPS != _CTC:
+            up = tl.load(D_ptr + cell - L, mask=active & (i > 0), other=_KERNEL_INF) + c
+            best_i = tl.where(up < best, i - 1, best_i)
+            best = tl.minimum(up, best)
+        left = tl.load(D_ptr + cell - 1, mask=active & (j > 0), other=_KERNEL_INF) + c
+        best_i = tl.where(left < best, i, best_i)
+        best_j = tl.where(left < best, j - 1, best_j)
+        best = tl.minimum(left, best)
+        if STEPS != _ORTHOGONAL:
+            diag = (
+                tl.load(D_ptr + cell - L - 1, mask=active & (i > 0) & (j > 0), other=_KERNEL_INF)
+                + diag_weight * c
+            )
+            best_i = tl.where(diag < best, i - 1, best_i)
+            best_j = tl.where(diag < best, j - 1, best_j)
+            best = tl.minimum(diag, best)
+        if STEPS == _CTC:
+            allowed = active & (i > 1) & (j > 0)
+            allowed &= tl.load(skip_ptr + b * R + i, mask=active, other=0) != 0
+            skip = tl.load(D_ptr + cell - 2 * L - 1, mask=allowed, other=_KERNEL_INF) + c
+            best_i = tl.where(skip < best, i - 2, best_i)
+            best_j = tl.where(skip < best, j - 1, best_j)
+            best = tl.minimum(skip, best)
+        # (0, 0), and any cell no path reaches, has no predecessor: the walk ends.
+        i = tl.where(best == _KERNEL_INF, -1, best_i)
+        j = tl.where(best == _KERNEL_INF, -1, best_j)
+
+
+def backtrack(
+    D: Tensor, cost: Tensor, skip: Tensor | None, ends: Tensor, steps: str, diag_weight: float
+) -> Tensor:
+    """Each pair's optimal path on the kernels' grid, from its end cell ``ends`` (B, 2)
+    to (0, 0), as (row, column) pairs (B, R + L - 1, 2) in order, -1 past the path."""
+    B, R, L = D.shape
+    P = R + L - 1
+    walk = ends.new_empty(B, P, 2)
+    _backtrack_kernel[(B,)](
+        D, cost.contiguous(), skip, ends.contiguous(), walk, R, L, P, diag_weight,
+        _STEPS[steps], num_warps=1,
+    )  # fmt: skip
+    # The walk runs from the end: each path's cells, reversed.
+    count = (walk[..., 0] >= 0).sum(1, keepdim=True)
+    t = torch.arange(P, device=D.device)
+    path = walk.gather(1, (count - 1 - t).clamp(min=0)[..., None].expand(-1, -1, 2))
+    return torch.where((t < count)[..., None], path, -1)
+
+
 def _num_warps(L: int, backward: bool = False, diag: bool = False) -> int:
     """Warps per program by row length, measured on an RTX 5060 Ti.
 
