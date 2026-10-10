@@ -89,27 +89,6 @@ def test_sequential_reference_matches_brute_force(time_varying, N):
 
 
 @requires_cuda
-@pytest.mark.parametrize("time_varying", [True, False])
-@pytest.mark.parametrize("N", [1, 2, 5])
-def test_hmm_matches_brute_force(time_varying, N):
-    args = _model(2, N, 3, time_varying=time_varying)
-    log_likelihood, log_post, best_score, best_path = _brute_force(*args)
-
-    ll, log_filtered = hmm_filter(*args)
-    torch.testing.assert_close(ll, log_likelihood)
-    # The last filtered distribution is also the last posterior.
-    torch.testing.assert_close(log_filtered[:, -1], log_post[:, -1])
-
-    ll, posteriors = hmm_smoother(*args)
-    torch.testing.assert_close(ll, log_likelihood)
-    torch.testing.assert_close(posteriors, log_post)
-
-    score, path = hmm_viterbi(*args)
-    torch.testing.assert_close(score, best_score)
-    torch.testing.assert_close(path, best_path)
-
-
-@requires_cuda
 def test_hmm_posteriors_are_the_gradient_of_the_log_likelihood():
     log_emit, log_trans, log_init = _model(2, 7, 4)
     log_emit.requires_grad_()
@@ -122,17 +101,13 @@ def test_hmm_posteriors_are_the_gradient_of_the_log_likelihood():
 def _transitions(log_trans, kind):
     """The model's transitions, (B, N - 1, K, K), shared as (K, K), per step as
     (N - 1, K, K), constant per signal as (B, K, K), or as they are."""
-    if kind == "shared":
+    if kind in ("shared", "signal_constant"):
         # Drawn anew rather than taken from log_trans, which has no steps when N = 1.
-        gen = torch.Generator().manual_seed(1)
-        K = log_trans.size(-1)
-        shared = torch.randn(K, K, dtype=log_trans.dtype, generator=gen).log_softmax(-1)
-        return shared.to(log_trans.device)
-    if kind == "signal_constant":
-        gen = torch.Generator().manual_seed(1)
         B, K = log_trans.size(0), log_trans.size(-1)
-        constant = torch.randn(B, K, K, dtype=log_trans.dtype, generator=gen).log_softmax(-1)
-        return constant.to(log_trans.device)
+        shape = (K, K) if kind == "shared" else (B, K, K)
+        gen = torch.Generator().manual_seed(1)
+        drawn = torch.randn(*shape, dtype=log_trans.dtype, generator=gen).log_softmax(-1)
+        return drawn.to(log_trans.device)
     return log_trans[0] if kind == "time" else log_trans
 
 
@@ -140,10 +115,7 @@ def _transitions(log_trans, kind):
 @pytest.mark.parametrize("trans", ["shared", "time", "signal_constant", "signal"])
 @pytest.mark.parametrize("K", [3, 17])
 def test_hmm_derivatives_to_second_order(trans, K):
-    """gradcheck and gradgradcheck, with K = 17 in the kernels' tiles for the
-    log and max-plus chains; the linear chains of the derivatives stay in
-    registers to 32 states, and test_hmm_gradients_match_sequential and
-    test_hmm_second_order_matches_sequential tile them.
+    """gradcheck and gradgradcheck; K = 17 runs the log and max-plus chains in tiles.
 
     The numerical derivatives perturb every input entry, so K = 17 takes one
     sequence and one step fewer; B differs from N - 1 throughout, so a
@@ -228,17 +200,13 @@ def test_hmm_rejects_unsupported_shapes():
         hmm_filter(log_emit[0], log_trans, log_init)
     with pytest.raises(ValueError, match="log_trans"):
         hmm_filter(log_emit, log_trans[..., :2], log_init)
-    with pytest.raises(ValueError, match="log_init"):
-        hmm_filter(log_emit, log_trans, log_init[:, :2])
-
-
-def test_hmm_rejects_a_transition_per_state():
     # log_trans has the N - 1 transitions between the N states, not N.
-    log_emit, log_trans, log_init = _model(2, 4, 3, device="cpu")
     with pytest.raises(ValueError, match="log_trans"):
         hmm_filter(log_emit, torch.cat([log_trans, log_trans[:, :1]], dim=1), log_init)
     with pytest.raises(ValueError, match="log_trans"):
         hmm_filter(log_emit, log_trans[0, 0].expand(4, 3, 3), log_init)
+    with pytest.raises(ValueError, match="log_init"):
+        hmm_filter(log_emit, log_trans, log_init[:, :2])
 
 
 def test_estimation_imports_without_triton(tmp_path):
@@ -295,14 +263,15 @@ def test_hmm_needs_its_inputs_on_one_device():
 
 
 @requires_cuda
-def test_hmm_needs_triton():
+def test_hmm_needs_triton(tmp_path):
+    # Outside the checkout, as in test_estimation_imports_without_triton.
     code = (
         "import sys; sys.modules['triton'] = None; import torch\n"
         "from philtorch.estimation import hmm_viterbi\n"
         "x = torch.zeros(1, 3, 2, device='cuda')\n"
         "hmm_viterbi(x, torch.zeros(2, 2, device='cuda'), torch.zeros(2, device='cuda'))"
     )
-    run = subprocess.run([sys.executable, "-c", code], capture_output=True, text=True)
+    run = subprocess.run([sys.executable, "-c", code], cwd=tmp_path, capture_output=True, text=True)
     assert "hmm_viterbi runs Triton kernels, but Triton is not installed" in run.stderr
 
 
@@ -327,10 +296,11 @@ def test_hmm_gradients_with_unreachable_states():
     # most entries of the prior and the transitions are -inf.
     B, N, K = 2, 5, 3
     log_emit, _, _ = _model(B, N, K)
-    stay_or_advance = torch.eye(K, dtype=torch.bool) | torch.eye(K, dtype=torch.bool).roll(1, 1)
-    log_trans = torch.where(torch.triu(stay_or_advance), 0.0, float("-inf")).double().cuda()
+    f64 = dict(dtype=torch.float64, device="cuda")
+    stay = torch.eye(K, dtype=torch.bool, device="cuda")
+    log_trans = torch.where(torch.triu(stay | stay.roll(1, 1)), 0.0, float("-inf")).to(**f64)
     log_trans = log_trans - log_trans.logsumexp(-1, keepdim=True)
-    log_init = torch.tensor([0.0, float("-inf"), float("-inf")], dtype=torch.float64).cuda()
+    log_init = torch.tensor([0.0, float("-inf"), float("-inf")], **f64)
     log_emit.requires_grad_()
     ll, _ = hmm_filter(log_emit, log_trans, log_init)
     (grad,) = torch.autograd.grad(ll.sum(), log_emit)
@@ -371,7 +341,7 @@ def test_hmm_impossible_emissions():
     ("N", "time_varying"), [(1, True), (64, True), (65, False), (66, True), (300, False)]
 )
 def test_hmm_matches_sequential(K, N, time_varying):
-    """The kernels around one chunk and past it, in registers (K <= 16) and in blocks.
+    """The kernels around one chunk and past it, in registers (K <= 16) and in tiles.
 
     The chains run over the N - 1 transitions, so N = 64, 65 and 66 put 63,
     64 and 65 steps around the chunk size.
@@ -428,10 +398,11 @@ def test_hmm_viterbi_path_is_optimal_under_ties(N):
     # two alternating paths tie. Picking each step's best state on its own
     # would stay in state 0, a path the model forbids; the traceback returns
     # one of the two, scoring the best score.
-    log_emit = torch.zeros(1, N, 2, dtype=torch.float64, device="cuda")
-    log_trans = torch.tensor([[float("-inf"), 0.0], [0.0, float("-inf")]], device="cuda")
-    log_init = torch.full((2,), 0.5, dtype=torch.float64, device="cuda").log()
-    score, path = hmm_viterbi(log_emit, log_trans.double(), log_init)
+    f64 = dict(dtype=torch.float64, device="cuda")
+    log_emit = torch.zeros(1, N, 2, **f64)
+    log_trans = torch.tensor([[float("-inf"), 0.0], [0.0, float("-inf")]], **f64)
+    log_init = torch.full((2,), 0.5, **f64).log()
+    score, path = hmm_viterbi(log_emit, log_trans, log_init)
     steps = path[0, 1:] != path[0, :-1]
     assert steps.all(), "the path takes a forbidden transition"
     torch.testing.assert_close(score, log_init[path[:, 0]])
@@ -442,9 +413,10 @@ def test_hmm_viterbi_gradient_under_ties():
     # With uniform probabilities every path ties: the score's gradient is
     # that of the decoded one, so each step's sums to 1.
     B, N, K = 1, 3, 2
-    log_emit = torch.zeros(B, N, K, dtype=torch.float64, device="cuda", requires_grad=True)
-    log_trans = torch.full((K, K), 0.5, dtype=torch.float64, device="cuda").log()
-    log_init = torch.full((K,), 0.5, dtype=torch.float64, device="cuda").log()
+    f64 = dict(dtype=torch.float64, device="cuda")
+    log_emit = torch.zeros(B, N, K, **f64, requires_grad=True)
+    log_trans = torch.full((K, K), 0.5, **f64).log()
+    log_init = torch.full((K,), 0.5, **f64).log()
     score, _ = hmm_viterbi(log_emit, log_trans, log_init)
     (grad,) = torch.autograd.grad(score.sum(), log_emit)
-    torch.testing.assert_close(grad.sum(-1), torch.ones(B, N, dtype=torch.float64, device="cuda"))
+    torch.testing.assert_close(grad.sum(-1), torch.ones(B, N, **f64))
