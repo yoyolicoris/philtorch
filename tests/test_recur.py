@@ -66,6 +66,17 @@ def test_recurrence_many_chunks_repeatedly(sharing, M):
 
 
 @requires_cuda
+@pytest.mark.parametrize("dtype, M", [(torch.float64, 40), (torch.complex128, 24)])
+def test_recurrence_maps_in_scratch(dtype, M):
+    # Time-varying maps too large for registers: their products through
+    # scratch memory, across chunks whose look-backs race.
+    A, zi, x = _problem(2, 1500, M, "both", dtype, "cuda")
+    expected = _sequential(A, zi, x)
+    for _ in range(3):
+        torch.testing.assert_close(recurrence(A, zi, x), expected)
+
+
+@requires_cuda
 @pytest.mark.parametrize(
     "dtype, tolerance",
     [
