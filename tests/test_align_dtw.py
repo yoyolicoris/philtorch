@@ -280,13 +280,19 @@ def test_align_imports_without_triton(tmp_path):
 
 @requires_cuda
 @pytest.mark.parametrize("soft", [False, True])
-@pytest.mark.parametrize("diag, diagonal_weight", [(True, 1.0), (True, 2.0), (False, 1.0)])
-def test_dtw_backward_implementations_agree(soft, diag, diagonal_weight):
+@pytest.mark.parametrize(
+    "steps, diagonal_weight",
+    [("symmetric", 1.0), ("symmetric", 2.0), ("orthogonal", 1.0), ("ctc", 1.0)],
+)
+def test_dtw_backward_implementations_agree(soft, steps, diagonal_weight):
     from philtorch.align import _dtw_kernels as kernels
 
     cost = _cost(3, 7, 9)
-    D = kernels.dtw_dp(cost, soft, diag, diagonal_weight)
+    skip = None
+    if steps == "ctc":
+        skip = (torch.rand(3, 7, generator=torch.Generator().manual_seed(1)) < 0.5).cuda()
+        skip = skip.to(torch.int8)
+    D = kernels.dtw_dp(cost, skip, soft, steps, diagonal_weight)
     grad = torch.randn_like(D)
-    fused = kernels._dtw_backward(D, cost, grad, soft, diag, diagonal_weight)
-    parallel = kernels._dtw_backward_parallel(D, cost, grad, soft, diag, diagonal_weight)
-    torch.testing.assert_close(fused, parallel)
+    args = (D, cost, skip, grad, soft, steps, diagonal_weight)
+    torch.testing.assert_close(kernels._dtw_backward(*args), kernels._dtw_backward_parallel(*args))

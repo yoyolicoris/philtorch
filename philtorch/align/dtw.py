@@ -186,7 +186,8 @@ def dtw(
     if cost.size(1) > cost.size(2):
         cost, n_len, m_len = cost.mT, m_len, n_len
     # After the shear, the asymmetric steps are orthogonal ones.
-    D = dtw_dp(cost, gamma > 0, step_pattern == "symmetric", float(diagonal_weight))
+    steps = "symmetric" if step_pattern == "symmetric" else "orthogonal"
+    D = dtw_dp(cost, None, gamma > 0, steps, float(diagonal_weight))
     distance = D[torch.arange(B, device=D.device), n_len - 1, m_len - 1]
     if band is not None:
         no_path = no_path | (distance >= big / 2)
