@@ -11,11 +11,15 @@ state z[0], ``log_emit[:, n]`` scores y[n] against z[n], and ``log_trans[n]``
 moves z[n] to z[n + 1]. So there are N states and N - 1 transitions, and the
 outputs describe z[0], ..., z[N - 1].
 
-Every message is a chain y[t] = (y[t - 1] (x) M[t]) (+) j[t], computed by
-the chunked parallel scan of :mod:`._hmm_kernels`. A log chain's derivative
-is a linear chain backwards over the same steps, with weights
-W[r, c] = exp(y[t - 1][r] + M[t][r, c] - y[t][c]) in [0, 1] that the kernel
-builds on the fly, and a linear chain's derivative is again one, so
+Every message is a chain y[t] = y[t - 1] (x) M[t], computed by the chunked
+parallel scan of :mod:`._hmm_kernels`, with M[t][i, j] = log_trans[i, j] +
+log_emit[i]: the emission of the state a transition leaves. So the forward
+chain gives the predicted messages log p(y[0..n - 1], z[n]), and the
+backward messages are the same chain over flipped time and transposed
+matrices. A log chain's derivative is a linear chain backwards over the
+same steps, with weights W[r, c] = exp(y[t - 1][r] + M[t][r, c] - y[t][c])
+in [0, 1] that the kernel builds on the fly, and a linear chain's
+derivative is again one, so
 :class:`_LogChain` and :class:`_LinearChain` are differentiable to any
 order in reverse mode; they have no forward-mode rules. The gradients of
 shared transition matrices sum the weighted terms over the batch and time
@@ -128,26 +132,25 @@ def _trans_grad(
         )
         for t, value in zip(terms, (float("-inf"), float("-inf"), 0.0, 0.0))
     )
-    # W[i, m, j] = exp(alpha[m, i] + beta[m, j] - c[i, j]), c = -log_trans.
-    c = -log_trans.reshape(P, 1, K, K).expand(P, blocks, K, K).reshape(P * blocks, K, K)
+    # W[i, m, j] = exp(alpha[m, i] + beta[m, j] + log_trans[i, j]).
+    c = log_trans.reshape(P, 1, K, K).expand(P, blocks, K, K).reshape(P * blocks, K, K)
     ones = torch.ones_like(c)
     out = weighted_contract(alpha.mT, beta, c, fi.mT, ones, fj, "j")
     return out.reshape(P, blocks, K, K).sum(1).reshape(*groups, K, K)
 
 
-def _positions(reverse: bool) -> tuple[int, int, slice, slice]:
+def _positions(adjoint: bool) -> tuple[int, int, slice, slice]:
     """In a chain's (B, T + 1, K) messages: the start, the message no step reads,
     and the steps' inputs and outputs."""
-    if reverse:
+    if adjoint:
         return -1, 0, slice(1, None), slice(0, -1)
     return 0, -1, slice(0, -1), slice(1, None)
 
 
 def _run_chain(
-    semiring, y0, log_trans, log_emit, inj, reverse, transpose, emit_summed,
-    weights=None, argmax=None,
-):  # fmt: skip
-    """The chain's messages with y0 included: (B, T + 1, K), y0 first, or last in reverse.
+    semiring, y0, log_trans, log_emit, inj=None, adjoint=False, weights=None, argmax=None
+):
+    """The chain's messages with y0 included: (B, T + 1, K), y0 first, or last if adjoint.
 
     The semiring is "log", "max" or "linear"; see :func:`._hmm_kernels.chain`.
     """
@@ -156,121 +159,101 @@ def _run_chain(
 
     B, T, K = log_emit.shape
     out = y0.new_empty(B, T + 1, K)
-    start, _, _, steps = _positions(reverse)
+    start, _, _, steps = _positions(adjoint)
     out[:, start] = y0
     if log_trans.dim() == 5:
         trans = log_trans.expand(2, B // 2, T, K, K)
     else:
         trans = log_trans.expand(B, T, K, K)
-    chain(
-        y0, trans, log_emit, inj, semiring, reverse, transpose, emit_summed, out[:, steps],
-        weights, argmax,
-    )  # fmt: skip
+    chain(y0, trans, log_emit, inj, semiring, adjoint, out[:, steps], weights, argmax)
     return out
 
 
 class _LogChain(torch.autograd.Function):
     """The log chain y[t] = y[t - 1] (x) M[t] of :func:`_run_chain`, differentiable.
 
-    M[t] is log_trans[t], or its transpose, plus log_emit[t] on the output
-    states, or on the summed ones with ``emit_summed``. log_trans is
+    M[t][i, j] is log_trans[t][i, j] + log_emit[t][i]. log_trans is
     (1 or B, 1 or T, K, K), or (2, ...) for two chains stacked in the batch,
     each half with its own matrices.
     """
 
     @staticmethod
-    def forward(y0, log_trans, log_emit, reverse, transpose, emit_summed):
-        return _run_chain("log", y0, log_trans, log_emit, None, reverse, transpose, emit_summed)
+    def forward(y0, log_trans, log_emit):
+        return _run_chain("log", y0, log_trans, log_emit)
 
     @staticmethod
     def setup_context(ctx, inputs, output):
-        _, log_trans, log_emit, *flags = inputs
-        ctx.reverse, ctx.transpose, ctx.emit_summed = flags
+        _, log_trans, log_emit = inputs
         ctx.save_for_backward(log_trans, log_emit, output)
 
     @staticmethod
     def backward(ctx, grad):
         log_trans, log_emit, y = ctx.saved_tensors
-        reverse, transpose, emit_summed = ctx.reverse, ctx.transpose, ctx.emit_summed
-        start, last, prev, steps = _positions(reverse)
+        start, last, prev, steps = _positions(False)
         # The chain kernels take time slices of contiguous messages.
         grad = grad.contiguous()
         # A step's weights W[r, c] = exp(y_in[r] + M[r, c] - y_out[c]); an
         # unreachable output, -inf, takes none.
         y_in = y[:, prev]
         neg_out = torch.where(torch.isfinite(y), -y, float("-inf"))[:, steps]
-        # The adjoints a = grad + W a_out run the other way over the same
-        # steps, transposed, from the message no step reads; the emissions
-        # stay with their states, which swap sides.
+        # The adjoints a = grad + W a_out: the adjoint chain over the same
+        # steps, from the message no step reads.
         a = _LinearChain.apply(
-            grad[:, last], log_trans, log_emit, grad[:, prev], neg_out, y_in,
-            not reverse, not transpose, not emit_summed,
-        )  # fmt: skip
+            grad[:, last], log_trans, log_emit, grad[:, prev], neg_out, y_in, True
+        )
         a_out = a[:, steps]
-        # Emissions of each step's inputs, as W's rows, take the inputs'
-        # adjoint less their own gradient; of its outputs, as W's columns,
-        # the outputs' adjoint.
-        grad_emit = a[:, prev] - grad[:, prev] if emit_summed else a_out
+        # The emissions, on W's rows, take the inputs' adjoint less their own
+        # gradient; W[r, c] = exp(y_in[r] + log_emit[r] + log_trans[r, c] - y_out[c]).
+        grad_emit = a[:, prev] - grad[:, prev]
         grad_trans = None
         if ctx.needs_input_grad[1]:
-            # W[r, c] = exp(rows[r] + log_trans[r, c] + cols[c]), stored
-            # transposed with ``transpose``.
-            rows = y_in + log_emit if emit_summed else y_in
-            cols = neg_out if emit_summed else neg_out + log_emit
-            if transpose:
-                grad_trans = _trans_grad(log_trans, cols, rows, a_out, None)
-            else:
-                grad_trans = _trans_grad(log_trans, rows, cols, None, a_out)
-        return a[:, start], grad_trans, grad_emit, None, None, None
+            grad_trans = _trans_grad(log_trans, y_in + log_emit, neg_out, None, a_out)
+        return a[:, start], grad_trans, grad_emit
 
 
 class _LinearChain(torch.autograd.Function):
     """The linear chain x[t] = x[t - 1] A[t] + j[t] of :func:`_run_chain`, differentiable.
 
     A[t][r, c] = exp(M[t][r, c] + p[t][r] + q[t][c]), with M[t] as in
-    :class:`_LogChain` and log weights p and q of shape (B, T, K).
+    :class:`_LogChain`, or with ``adjoint`` its transpose, and log weights p
+    and q of shape (B, T, K).
     """
 
     @staticmethod
-    def forward(x0, log_trans, log_emit, inj, p, q, reverse, transpose, emit_summed):
-        return _run_chain(
-            "linear", x0, log_trans, log_emit, inj, reverse, transpose, emit_summed, (p, q)
-        )
+    def forward(x0, log_trans, log_emit, inj, p, q, adjoint):
+        return _run_chain("linear", x0, log_trans, log_emit, inj, adjoint, (p, q))
 
     @staticmethod
     def setup_context(ctx, inputs, output):
-        _, log_trans, log_emit, inj, p, q, *flags = inputs
-        ctx.reverse, ctx.transpose, ctx.emit_summed = flags
-        ctx.save_for_backward(log_trans, log_emit, inj, p, q, output)
+        *_, adjoint = inputs
+        ctx.adjoint = adjoint
+        ctx.save_for_backward(*inputs[1:6], output)
 
     @staticmethod
     def backward(ctx, grad):
         log_trans, log_emit, inj, p, q, x = ctx.saved_tensors
-        reverse, transpose, emit_summed = ctx.reverse, ctx.transpose, ctx.emit_summed
-        start, last, prev, steps = _positions(reverse)
+        adjoint = ctx.adjoint
+        start, last, prev, steps = _positions(adjoint)
         grad = grad.contiguous()
-        # The adjoints h = grad + A h_out: the transposed chain the other way,
+        # The adjoints h = grad + A h_out: the adjoint chain the other way,
         # whose weights swap p and q.
-        h = _LinearChain.apply(
-            grad[:, last], log_trans, log_emit, grad[:, prev], q, p,
-            not reverse, not transpose, not emit_summed,
-        )  # fmt: skip
+        h = _LinearChain.apply(grad[:, last], log_trans, log_emit, grad[:, prev], q, p, not adjoint)
         x_in, h_out = x[:, prev], h[:, steps]
         # Each step's A[r, c] gets x_in[r] h_out[c], and so p[r] and q[c] its
         # row and column sums, which the chains already hold.
         grad_p = x_in * (h[:, prev] - grad[:, prev])
         grad_q = h_out * (x[:, steps] if inj is None else x[:, steps] - inj)
+        # The emissions are on the stored matrices' rows: A's rows, or with
+        # ``adjoint`` its columns.
+        grad_emit = grad_q if adjoint else grad_p
         grad_trans = None
         if ctx.needs_input_grad[1]:
-            rows = p + log_emit if emit_summed else p
-            cols = q if emit_summed else q + log_emit
-            if transpose:
-                grad_trans = _trans_grad(log_trans, cols, rows, h_out, x_in)
+            if adjoint:
+                grad_trans = _trans_grad(log_trans, q + log_emit, p, h_out, x_in)
             else:
-                grad_trans = _trans_grad(log_trans, rows, cols, x_in, h_out)
-        grad_emit = grad_p if emit_summed else grad_q
+                grad_trans = _trans_grad(log_trans, p + log_emit, q, x_in, h_out)
         grad_inj = h_out if ctx.needs_input_grad[3] else None
-        return h[:, start], grad_trans, grad_emit, grad_inj, grad_p, grad_q, None, None, None
+        return h[:, start], grad_trans, grad_emit, grad_inj, grad_p, grad_q, None
 
 
 class _Viterbi(torch.autograd.Function):
@@ -281,14 +264,12 @@ class _Viterbi(torch.autograd.Function):
         from ._hmm_kernels import trace
 
         B, N, K = log_emit.shape
-        first = log_init + log_emit[:, 0]
         # Each message's best previous state, for the transition into each
         # time, laid out as the messages are.
         pointers = log_emit.new_empty(B, N, K, dtype=torch.int32)[:, 1:]
-        delta = _run_chain(
-            "max", first, log_trans, log_emit[:, 1:], None, False, False, False, argmax=pointers
-        )
-        score, last = delta[:, -1].max(dim=-1)
+        # The best score of a path to each state, without its emission.
+        predicted = _run_chain("max", log_init, log_trans, log_emit[:, :-1], argmax=pointers)
+        score, last = (predicted[:, -1] + log_emit[:, -1]).max(dim=-1)
         # Follow the pointers back from the best last state.
         path = trace(last.int(), pointers, reverse=True)
         return score, torch.cat([path, last.int().unsqueeze(1)], dim=1).long()
@@ -327,31 +308,23 @@ def _empty(log_emit: Tensor, log_trans: Tensor, log_init: Tensor) -> tuple[Tenso
     return zero, log_emit + zero[:, None, None]
 
 
-def _forward(log_emit: Tensor, log_trans: Tensor, log_init: Tensor) -> Tensor:
-    """alpha[n][j] = log p(y[0..n], z[n] = j), (B, N, K)."""
-    first = log_init + log_emit[:, 0]
-    return _LogChain.apply(first, log_trans, log_emit[:, 1:], False, False, False)
-
-
 def _predicted_and_backward(
     log_emit: Tensor, log_trans: Tensor, log_init: Tensor
 ) -> tuple[Tensor, Tensor]:
-    """The predicted messages alpha[n] - log_emit[n] = log p(y[0..n - 1], z[n]) and
+    """The predicted messages log p(y[0..n - 1], z[n]) and the backward messages
     beta[n][i] = log p(y[n + 1..N - 1] | z[n] = i), both (B, N, K).
 
-    Both are forward chains with each step's emissions on its summed states,
-    stacked in the batch of one call: beta runs in flipped time over the
-    transposed matrices. The two halves share those flags, so the forward
-    half gives the predicted messages rather than alpha, and the joint is
-    predicted + log_emit + beta. Moving log_emit between the messages by
-    subtraction instead would give -inf - (-inf) at impossible emissions.
+    Two log chains stacked in the batch of one call: beta's runs in flipped
+    time over the transposed matrices. The joint is then predicted +
+    log_emit + beta, with no subtraction that could give -inf - (-inf) at
+    impossible emissions.
     """
     B = log_emit.size(0)
     trans = torch.stack([log_trans, log_trans.flip(1).mT.contiguous()])
     # Time slices of a contiguous (2B, N, K), as the kernels take steps.
     emit = torch.cat([log_emit, log_emit.flip(1)])[:, :-1]
     y0 = torch.cat([log_init, torch.zeros_like(log_init)])
-    predicted, beta = _LogChain.apply(y0, trans, emit, False, False, True).split(B)
+    predicted, beta = _LogChain.apply(y0, trans, emit).split(B)
     return predicted, beta.flip(1)
 
 
@@ -406,7 +379,8 @@ def hmm_filter(log_emit: Tensor, log_trans: Tensor, log_init: Tensor) -> tuple[T
     log_emit, log_trans, log_init = _parse("hmm_filter", log_emit, log_trans, log_init)
     if log_emit.size(1) == 0:
         return _empty(log_emit, log_trans, log_init)
-    alpha = _forward(log_emit, log_trans, log_init)
+    # alpha[n][j] = log p(y[0..n], z[n] = j), from the predicted messages.
+    alpha = _LogChain.apply(log_init, log_trans, log_emit[:, :-1]) + log_emit
     norm = _logsumexp(alpha, dim=-1, keepdim=True)
     return norm[:, -1, 0], alpha - norm
 

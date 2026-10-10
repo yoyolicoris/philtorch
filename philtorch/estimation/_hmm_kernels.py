@@ -2,13 +2,14 @@
 
 A message chain
 
-    y[t] = (y[t - 1] (x) A[t]) (+) j[t],   t = 0, ..., N - 1,
+    y[t] = (y[t - 1] (x) A[t]) + j[t],   t = 0, ..., N - 1,
 
-with y a vector of K states, A[t] K x K and an optional injection j[t], is
-computed as a parallel scan in two levels instead of N sequential steps:
+with y a vector of K states, A[t] K x K and, for a linear chain, an optional
+injection j[t], is computed as a parallel scan in two levels instead of N
+sequential steps:
 
 1. ``_chunk_totals_kernel`` composes each chunk of T consecutive steps into
-   one map y_end = (y_start (x) P) (+) o, one program per chunk;
+   one map y_end = (y_start (x) P) + o, one program per chunk;
 2. the chain of those maps, whose injections are the o, gives each chunk's
    starting vector, by the same method one level up;
 3. ``_chunk_sweep_kernel`` carries each chunk's starting vector through its
@@ -18,17 +19,16 @@ So a chain costs about N K^3 work for the totals and N K^2 for the sweep, a
 few launches, and a sequential depth of a few T. The semiring is one of
 
 * ``"log"``: (x) is the vector-matrix product with logsumexp in place of
-  sums, (+) is logsumexp, and A[t] = M[t], log-probabilities;
+  sums, and A[t] = M[t], log-probabilities;
 * ``"max"``: the same with max in place of logsumexp;
-* ``"linear"``: the ordinary product and sum, with A[t] = exp(M[t][r, c] +
-  p[t][r] + q[t][c]) for log weights p and q, or explicit matrices.
+* ``"linear"``: the ordinary product, with A[t] = exp(M[t][r, c] + p[t][r] +
+  q[t][c]) for log weights p and q, or explicit matrices.
 
-M[t] at time n is log_trans[n] plus log_emit[n] on its output states'
-columns, or with ``EMIT_SUMMED`` on its summed states' rows, built in the
-kernels from ``log_trans``, which may be shared over the batch or time
-through zero strides, so the B x N x K x K step matrices are never stored.
-With ``REVERSE``, the chain runs from the last time back, and with
-``TRANSPOSE`` it uses each log_trans[n]'s transpose: so a chain's
+M[t] at time n is log_trans[n][i, j] plus log_emit[n][i], the emission of
+the state a transition leaves, built in the kernels from ``log_trans``,
+which may be shared over the batch or time through zero strides, so the
+B x N x K x K step matrices are never stored. With ``ADJOINT``, the chain
+runs from the last time back over each M[t]'s transpose: a chain's
 derivative, a linear chain backwards, runs here too.
 
 A max-plus chain can also record each message's maximizing previous state,
@@ -77,17 +77,6 @@ def _times(a, b, SEMIRING: tl.constexpr):
 
 
 @triton.jit
-def _plus(a, b, SEMIRING: tl.constexpr):
-    if SEMIRING == _LINEAR:
-        return a + b
-    top = tl.maximum(a, b)
-    if SEMIRING == _MAX:
-        return top
-    shift = tl.where(top == _KERNEL_NEG_INF, 0.0, top)
-    return shift + tl.log(tl.exp(a - shift) + tl.exp(b - shift))
-
-
-@triton.jit
 def _time(c, s, N, T: tl.constexpr, REVERSE: tl.constexpr):
     """The time of step s of chunk c, a 64-bit index."""
     t = c * T + s
@@ -104,8 +93,8 @@ def _zero(SEMIRING: tl.constexpr):
 
 @triton.jit
 def _step_matrix(
-    trans, emit, p, q, n, K, stride_tn, rows, cols,
-    EMIT_SUMMED: tl.constexpr, TRANSPOSE: tl.constexpr, SEMIRING: tl.constexpr,
+    trans, emit, p, q, n, K, stride_tn, rows, cols, ADJOINT: tl.constexpr,
+    SEMIRING: tl.constexpr,
 ):  # fmt: skip
     """Entries (rows, cols) of A at time n, from pointers offset to the batch item.
 
@@ -114,32 +103,36 @@ def _step_matrix(
     """
     mask = (rows < K) & (cols < K)
     # (i, j) of the stored matrix for entry (rows, cols).
-    i, j = (cols, rows) if TRANSPOSE else (rows, cols)
+    i, j = (cols, rows) if ADJOINT else (rows, cols)
     offsets = trans + n * stride_tn + i * K + j
     if SEMIRING == _LINEAR and p is None:
         return tl.load(offsets, mask=mask, other=0.0)
     m = tl.load(offsets, mask=mask, other=_KERNEL_NEG_INF)
-    if emit is not None:
-        # The emissions of the summed or of the output states, indexed in the
-        # tile's own shape: a broadcast vector would cost a layout conversion.
-        e = rows + 0 * cols if EMIT_SUMMED else cols + 0 * rows
-        m += tl.load(emit + n * K + e, mask=mask, other=0.0)
+    # The emissions of the states i leaves: with weights, on the columns of
+    # an adjoint chain, they join q's K values; otherwise they are indexed in
+    # the tile's own shape, as a broadcast row vector would cost a layout
+    # conversion.
+    emit_cols = ADJOINT and p is not None
+    if emit is not None and not emit_cols:
+        m += tl.load(emit + n * K + i + 0 * j, mask=mask, other=0.0)
     if p is not None:
-        m += tl.load(p + n * K + rows, mask=rows < K, other=_KERNEL_NEG_INF)
-        m += tl.load(q + n * K + cols, mask=cols < K, other=_KERNEL_NEG_INF)
-        m = tl.exp(m)
+        p_rows = tl.load(p + n * K + rows, mask=rows < K, other=_KERNEL_NEG_INF)
+        q_cols = tl.load(q + n * K + cols, mask=cols < K, other=_KERNEL_NEG_INF)
+        if emit is not None and emit_cols:
+            q_cols += tl.load(emit + n * K + cols, mask=cols < K, other=0.0)
+        m = tl.exp(m + p_rows + q_cols)
     return m
 
 
 @triton.jit
 def _chunk_totals_kernel(
     trans_ptr, emit_ptr, p_ptr, q_ptr, inj_ptr, total_ptr, offset_ptr, scratch_ptr, N, K, C,
-    HB, stride_th, stride_tb, stride_tn, stride_b, T: tl.constexpr, EMIT_SUMMED: tl.constexpr,
-    REVERSE: tl.constexpr, TRANSPOSE: tl.constexpr, SEMIRING: tl.constexpr,
-    BK: tl.constexpr, BC: tl.constexpr, BR: tl.constexpr,
+    HB, stride_th, stride_tb, stride_tn, stride_b, T: tl.constexpr, ADJOINT: tl.constexpr,
+    SEMIRING: tl.constexpr, BK: tl.constexpr, BC: tl.constexpr, BR: tl.constexpr,
 ):  # fmt: skip
     """Chunk c's map: total = A[cT] (x) ... (x) A[cT + T - 1], in chain order, and
-    offset, the chain through those steps of the injections alone."""
+    for a linear chain with injections, offset, the chain through those steps
+    of the injections alone."""
     pid = tl.program_id(0)
     b = (pid // C).to(tl.int64)
     c = (pid % C).to(tl.int64)
@@ -150,34 +143,27 @@ def _chunk_totals_kernel(
     p = p_ptr + b * stride_b if p_ptr is not None else None
     q = q_ptr + b * stride_b if q_ptr is not None else None
     inj = inj_ptr + b * stride_b if inj_ptr is not None else None
-    zero = _zero(SEMIRING)
     states = tl.arange(0, BK)
     rows = states[:, None]
     cols = states[None, :]
-    n = _time(c, 0, N, T, REVERSE)
-    offset = tl.full([BK], zero, total_ptr.dtype.element_ty)
+    n = _time(c, 0, N, T, ADJOINT)
     if inj is not None:
-        offset = tl.load(inj + n * K + states, mask=states < K, other=zero)
+        offset = tl.load(inj + n * K + states, mask=states < K, other=0.0)
     out = total_ptr + pid.to(tl.int64) * K * K
     if BC == BK:
-        total = _step_matrix(
-            trans, emit, p, q, n, K, stride_tn, rows, cols, EMIT_SUMMED, TRANSPOSE, SEMIRING
-        )
+        total = _step_matrix(trans, emit, p, q, n, K, stride_tn, rows, cols, ADJOINT, SEMIRING)
         # A loop of constant length, with steps past the end masked, unrolls
         # and pipelines better for these small matrices.
         for s in range(1, T):
             valid = s < steps
-            n = _time(c, tl.where(valid, s, 0), N, T, REVERSE)
-            m = _step_matrix(
-                trans, emit, p, q, n, K, stride_tn, rows, cols, EMIT_SUMMED, TRANSPOSE, SEMIRING
-            )
+            n = _time(c, tl.where(valid, s, 0), N, T, ADJOINT)
+            m = _step_matrix(trans, emit, p, q, n, K, stride_tn, rows, cols, ADJOINT, SEMIRING)
             # (total (x) m)[i, k] = sum over j of total[i, j] (x) m[j, k].
             product = _reduce(_times(total[:, :, None], m[None, :, :], SEMIRING), 1, SEMIRING)
             total = tl.where(valid, product, total)
             if inj is not None:
-                o = _reduce(_times(offset[:, None], m, SEMIRING), 0, SEMIRING)
-                j = tl.load(inj + n * K + states, mask=states < K, other=zero)
-                offset = tl.where(valid, _plus(o, j, SEMIRING), offset)
+                j = tl.load(inj + n * K + states, mask=states < K, other=0.0)
+                offset = tl.where(valid, tl.sum(offset[:, None] * m, 0) + j, offset)
         tl.store(out + rows * K + cols, total, mask=(rows < K) & (cols < K))
     else:
         # Tiles of BR rows and BC columns: the running product alternates
@@ -187,30 +173,27 @@ def _chunk_totals_kernel(
         block = tl.arange(0, BC)
         for k0 in range(0, BK, BC):
             columns = k0 + block[None, :]
-            m = _step_matrix(
-                trans, emit, p, q, n, K, stride_tn, rows, columns, EMIT_SUMMED, TRANSPOSE,
-                SEMIRING,
-            )  # fmt: skip
+            m = _step_matrix(trans, emit, p, q, n, K, stride_tn, rows, columns, ADJOINT, SEMIRING)
             tl.store(scratch + rows * BK + columns, m)
         tl.debug_barrier()
         for s in range(1, steps):
-            n = _time(c, s, N, T, REVERSE)
+            n = _time(c, s, N, T, ADJOINT)
             current = scratch + ((s - 1) % 2) * BK * BK
             following = scratch + (s % 2) * BK * BK
             for k0 in range(0, BK, BC):
                 columns = k0 + block
                 m = _step_matrix(
-                    trans, emit, p, q, n, K, stride_tn, rows, columns[None, :], EMIT_SUMMED,
-                    TRANSPOSE, SEMIRING,
+                    trans, emit, p, q, n, K, stride_tn, rows, columns[None, :], ADJOINT,
+                    SEMIRING,
                 )  # fmt: skip
                 for i0 in range(0, BK, BR):
                     a = tl.load(current + (i0 + tile_rows) * BK + cols)
                     product = _reduce(_times(a[:, :, None], m[None, :, :], SEMIRING), 1, SEMIRING)
                     tl.store(following + (i0 + tile_rows) * BK + columns[None, :], product)
                 if inj is not None:
-                    o = _reduce(_times(offset[:, None], m, SEMIRING), 0, SEMIRING)
-                    j = tl.load(inj + n * K + columns, mask=columns < K, other=zero)
-                    tl.store(scratch + 2 * BK * BK + columns, _plus(o, j, SEMIRING))
+                    j = tl.load(inj + n * K + columns, mask=columns < K, other=0.0)
+                    o = tl.sum(offset[:, None] * m, 0)
+                    tl.store(scratch + 2 * BK * BK + columns, o + j)
             tl.debug_barrier()
             if inj is not None:
                 offset = tl.load(scratch + 2 * BK * BK + states)
@@ -228,11 +211,10 @@ def _chunk_totals_kernel(
 @triton.jit
 def _chunk_sweep_kernel(
     start_ptr, trans_ptr, emit_ptr, p_ptr, q_ptr, inj_ptr, out_ptr, argmax_ptr, N, K, C,
-    HB, stride_th, stride_tb, stride_tn, stride_b, T: tl.constexpr, EMIT_SUMMED: tl.constexpr,
-    REVERSE: tl.constexpr, TRANSPOSE: tl.constexpr, SEMIRING: tl.constexpr,
-    BK: tl.constexpr, BC: tl.constexpr,
+    HB, stride_th, stride_tb, stride_tn, stride_b, T: tl.constexpr, ADJOINT: tl.constexpr,
+    SEMIRING: tl.constexpr, BK: tl.constexpr, BC: tl.constexpr,
 ):  # fmt: skip
-    """y[t] = (y[t - 1] (x) A[t]) (+) j[t] through chunk c from its start, written at time n.
+    """y[t] = (y[t - 1] (x) A[t]) + j[t] through chunk c from its start, written at time n.
 
     With ``argmax_ptr``, a max-plus chain also writes, for each state k, the
     lowest-index state i attaining y[t][k] = y[t - 1][i] + A[t][i, k].
@@ -256,10 +238,10 @@ def _chunk_sweep_kernel(
     if BC == BK:
         for s in range(0, T):
             valid = s < steps
-            n = _time(c, tl.where(valid, s, 0), N, T, REVERSE)
+            n = _time(c, tl.where(valid, s, 0), N, T, ADJOINT)
             m = _step_matrix(
-                trans, emit, p, q, n, K, stride_tn, rows, states[None, :], EMIT_SUMMED,
-                TRANSPOSE, SEMIRING,
+                trans, emit, p, q, n, K, stride_tn, rows, states[None, :], ADJOINT,
+                SEMIRING,
             )  # fmt: skip
             # (y (x) m)[k] = sum over i of y[i] (x) m[i, k].
             terms = _times(y[:, None], m, SEMIRING)
@@ -268,20 +250,19 @@ def _chunk_sweep_kernel(
                 best = tl.argmax(terms, 0, tie_break_left=True)
                 tl.store(argmax + n * K + states, best, mask=(states < K) & valid)
             if inj is not None:
-                j = tl.load(inj + n * K + states, mask=states < K, other=zero)
-                y_next = _plus(y_next, j, SEMIRING)
+                y_next += tl.load(inj + n * K + states, mask=states < K, other=0.0)
             tl.store(out + n * K + states, y_next, mask=(states < K) & valid)
             y = tl.where(valid, y_next, y)
     else:
         # A block of BC states at a time, through the output itself.
         block = tl.arange(0, BC)
         for s in range(0, steps):
-            n = _time(c, s, N, T, REVERSE)
+            n = _time(c, s, N, T, ADJOINT)
             for k0 in range(0, BK, BC):
                 columns = k0 + block
                 m = _step_matrix(
-                    trans, emit, p, q, n, K, stride_tn, rows, columns[None, :], EMIT_SUMMED,
-                    TRANSPOSE, SEMIRING,
+                    trans, emit, p, q, n, K, stride_tn, rows, columns[None, :], ADJOINT,
+                    SEMIRING,
                 )  # fmt: skip
                 terms = _times(y[:, None], m, SEMIRING)
                 y_block = _reduce(terms, 0, SEMIRING)
@@ -289,8 +270,7 @@ def _chunk_sweep_kernel(
                     best = tl.argmax(terms, 0, tie_break_left=True)
                     tl.store(argmax + n * K + columns, best, mask=columns < K)
                 if inj is not None:
-                    j = tl.load(inj + n * K + columns, mask=columns < K, other=zero)
-                    y_block = _plus(y_block, j, SEMIRING)
+                    y_block += tl.load(inj + n * K + columns, mask=columns < K, other=0.0)
                 tl.store(out + n * K + columns, y_block, mask=columns < K)
             tl.debug_barrier()
             y = tl.load(out + n * K + states, mask=states < K, other=zero)
@@ -316,14 +296,12 @@ def chain(
     log_emit: Tensor | None,
     inj: Tensor | None,
     semiring: str,
-    reverse: bool = False,
-    transpose: bool = False,
-    emit_summed: bool = False,
+    adjoint: bool = False,
     out: Tensor | None = None,
     weights: tuple[Tensor, Tensor] | None = None,
     argmax: Tensor | None = None,
 ) -> Tensor:
-    """The messages y[t] = (y[t - 1] (x) A[t]) (+) j[t], t = 0, ..., N - 1, from y[-1] = y0.
+    """The messages y[t] = (y[t - 1] (x) A[t]) + j[t], t = 0, ..., N - 1, from y[-1] = y0.
 
     The tensors with a value per step, ``log_emit``, ``inj``, ``weights``,
     ``out`` and ``argmax``, share one layout: each step's K values
@@ -336,14 +314,13 @@ def chain(
             contiguous K x K matrices: log_trans, or explicit matrices for
             an unweighted linear chain. Or (2, B / 2, N, K, K) for two chains
             stacked in the batch, each half of it with its own matrices.
-        log_emit: (B, N, K), added to each step's matrix, or None.
-        inj: the injections j, (B, N, K), or None.
+        log_emit: (B, N, K), added to the rows i of each log_trans[n][i, j],
+            or None.
+        inj: for a linear chain, the injections j, (B, N, K), or None.
         semiring: "log", "max" or "linear".
-        reverse: run the chain from time N - 1 down to 0; the message after
-            the step at time n is still written at n.
-        transpose: multiply by each matrix's transpose.
-        emit_summed: add the emissions to the summed states' rows rather
-            than to the output states' columns.
+        adjoint: run the chain from time N - 1 down to 0, over each step's
+            transposed matrix; the message after the step at time n is
+            still written at n.
         out: where to write the messages, (B, N, K), or None for a new
             tensor.
         weights: for a linear chain, the log weights (p, q), each (B, N, K),
@@ -368,6 +345,7 @@ def chain(
     assert weights is not None or not linear or log_emit is None, (
         "explicit matrices take no emissions"
     )
+    assert linear or inj is None, "injections are for linear chains"
     assert argmax is None or semiring == "max", "argmax is for max-plus chains"
     p, q = weights if weights is not None else (None, None)
     per_step = [t for t in (out, log_emit, inj, p, q, argmax) if t is not None]
@@ -382,8 +360,8 @@ def chain(
     else:
         trans_strides = (B, 0, trans.stride(0), trans.stride(1))
     BK, BC, BR, num_warps = _config(K)
-    flags = dict(T=T, EMIT_SUMMED=emit_summed, REVERSE=reverse, TRANSPOSE=transpose)
-    flags |= dict(SEMIRING=_SEMIRINGS[semiring], BK=BK, BC=BC, num_warps=num_warps)
+    flags = dict(T=T, ADJOINT=adjoint, SEMIRING=_SEMIRINGS[semiring])
+    flags |= dict(BK=BK, BC=BC, num_warps=num_warps)
     if C == 1:
         starts = y0.contiguous()
     else:
