@@ -316,6 +316,17 @@ class _Viterbi(torch.autograd.Function):
         return grad_emit, grad_trans, grad_emit[:, 0]
 
 
+def _empty(log_emit: Tensor, log_trans: Tensor, log_init: Tensor) -> tuple[Tensor, Tensor]:
+    """The results for no steps: a log-likelihood of 0, (B,), and no distributions.
+
+    Built from empty slices of every input, rather than as new tensors, so
+    they stay in the autograd graph and give zero gradients; sums over the
+    empty slices avoid 0 * -inf.
+    """
+    zero = log_emit.sum((1, 2)) + log_init[:, :0].sum(-1) + log_trans[..., :0].sum()
+    return zero, log_emit + zero[:, None, None]
+
+
 def _forward(log_emit: Tensor, log_trans: Tensor, log_init: Tensor) -> Tensor:
     """alpha[n][j] = log p(y[0..n], z[n] = j), (B, N, K)."""
     first = log_init + log_emit[:, 0]
@@ -391,7 +402,7 @@ def hmm_filter(log_emit: Tensor, log_trans: Tensor, log_init: Tensor) -> tuple[T
     """
     log_emit, log_trans, log_init = _parse("hmm_filter", log_emit, log_trans, log_init)
     if log_emit.size(1) == 0:
-        return log_emit.new_zeros(log_emit.size(0)), torch.empty_like(log_emit)
+        return _empty(log_emit, log_trans, log_init)
     alpha = _forward(log_emit, log_trans, log_init)
     norm = _logsumexp(alpha, dim=-1, keepdim=True)
     return norm[:, -1, 0], alpha - norm
@@ -436,7 +447,7 @@ def hmm_smoother(log_emit: Tensor, log_trans: Tensor, log_init: Tensor) -> tuple
     """
     log_emit, log_trans, log_init = _parse("hmm_smoother", log_emit, log_trans, log_init)
     if log_emit.size(1) == 0:
-        return log_emit.new_zeros(log_emit.size(0)), torch.empty_like(log_emit)
+        return _empty(log_emit, log_trans, log_init)
     predicted, beta = _predicted_and_backward(log_emit, log_trans, log_init)
     log_likelihood = _logsumexp(predicted[:, -1] + log_emit[:, -1], dim=-1)
     # Normalize each step by its own sum rather than by the likelihood: the
@@ -494,5 +505,6 @@ def hmm_viterbi(log_emit: Tensor, log_trans: Tensor, log_init: Tensor) -> tuple[
     log_emit, log_trans, log_init = _parse("hmm_viterbi", log_emit, log_trans, log_init)
     batch_size, N, _ = log_emit.shape
     if N == 0:
-        return log_emit.new_zeros(batch_size), log_emit.new_zeros(batch_size, 0, dtype=torch.long)
+        score, _ = _empty(log_emit, log_trans, log_init)
+        return score, log_emit.new_zeros(batch_size, 0, dtype=torch.long)
     return _Viterbi.apply(log_emit, log_trans, log_init)
