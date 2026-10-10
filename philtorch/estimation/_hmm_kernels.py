@@ -35,10 +35,11 @@ A max-plus chain can also record each message's maximizing previous state,
 and :func:`trace` follows such backpointers in the same two levels: Viterbi
 decoding's traceback, in parallel.
 
-Up to ``_REGISTER_STATES`` states, a program holds the K x K x K terms of a
-product in registers. Above, it computes them in tiles of rows and columns,
-and the totals' running product alternates between two K x K scratch
-buffers, so registers and shared memory stay bounded for any K.
+Up to ``_REGISTER_STATES`` states, or twice that for a linear chain, a
+program holds the K x K x K terms of a product in registers. Above, it
+computes them in tiles of rows and columns, and the totals' running product
+alternates between two K x K scratch buffers, so registers and shared memory
+stay bounded for any K.
 """
 
 import torch
@@ -52,7 +53,9 @@ _MAX, _LINEAR = (tl.constexpr(_SEMIRINGS[name]) for name in ("max", "linear"))
 _KERNEL_NEG_INF = tl.constexpr(float("-inf"))
 # The chunk length: each kernel program takes T sequential steps.
 _CHUNK = 64
-# The largest K whose products a program holds whole in registers.
+# The largest K whose log or max-plus products a program holds whole in
+# registers; a linear chain's, whose weighted matrices cost more to rebuild
+# per tile, up to twice that.
 _REGISTER_STATES = 16
 
 
@@ -266,17 +269,19 @@ def _chunk_sweep_kernel(
             y = tl.load(out + n * K + states, mask=states < K, other=0.0)
 
 
-def _config(K: int) -> tuple[int, int, int, int]:
+def _config(K: int, semiring: str) -> tuple[int, int, int, int]:
     """The padded K, the column and row tile sizes, and the warps.
 
-    The warps for the register path were measured on an RTX 5060 Ti; the
-    tiles of the blocked path hold about 4096 terms, BR rows by BK summed by
-    BC columns, a size chosen to fit, not tuned.
+    The paths and warps were measured on an RTX 5060 Ti: at 17 to 32 states,
+    tiles are faster for log and max-plus chains, registers for linear ones.
+    The tiles hold about 4096 terms, BR rows by BK summed by BC columns, a
+    size chosen to fit, not tuned.
     """
     BK = max(triton.next_power_of_2(K), 2)
-    if BK <= _REGISTER_STATES:
-        return BK, BK, BK, 1 if BK <= 4 else 2
-    BC = max(1024 // BK, 1)
+    registers = _REGISTER_STATES * (2 if semiring == "linear" else 1)
+    if BK <= registers:
+        return BK, BK, BK, 1 if BK <= 4 else 2 if BK <= 16 else 4
+    BC = min(max(1024 // BK, 1), _REGISTER_STATES)
     return BK, BC, max(4096 // (BK * BC), 1), 4 if BK <= 32 else 8
 
 
@@ -350,7 +355,7 @@ def chain(
         trans_strides = (trans.shape[1], trans.stride(0), trans.stride(1), trans.stride(2))
     else:
         trans_strides = (B, 0, trans.stride(0), trans.stride(1))
-    BK, BC, BR, num_warps = _config(K)
+    BK, BC, BR, num_warps = _config(K, semiring)
     flags = dict(T=T, ADJOINT=adjoint, SEMIRING=_SEMIRINGS[semiring])
     flags |= dict(BK=BK, BC=BC, num_warps=num_warps)
     if C == 1:

@@ -140,7 +140,10 @@ def _transitions(log_trans, kind):
 @pytest.mark.parametrize("trans", ["shared", "time", "signal_constant", "signal"])
 @pytest.mark.parametrize("K", [3, 17])
 def test_hmm_derivatives_to_second_order(trans, K):
-    """gradcheck and gradgradcheck, with K = 17 in the kernels' blocked path.
+    """gradcheck and gradgradcheck, with K = 17 in the kernels' tiles for the
+    log and max-plus chains; the linear chains of the derivatives stay in
+    registers to 32 states, and test_hmm_gradients_match_sequential and
+    test_hmm_second_order_matches_sequential tile them.
 
     The numerical derivatives perturb every input entry, so K = 17 takes one
     sequence and one step fewer; B differs from N - 1 throughout, so a
@@ -162,11 +165,12 @@ def test_hmm_derivatives_to_second_order(trans, K):
 
 @requires_cuda
 @pytest.mark.parametrize("trans", ["shared", "time", "signal_constant", "signal"])
-@pytest.mark.parametrize(("N", "K"), [(1, 3), (66, 5), (300, 17), (1000, 2)])
+@pytest.mark.parametrize(("N", "K"), [(1, 3), (66, 5), (300, 17), (1000, 2), (66, 33)])
 def test_hmm_gradients_match_sequential(trans, N, K):
     """Gradients against autograd through the sequential recursions.
 
-    300 and 1000 steps make the shared transitions' gradient sum over blocks.
+    300 and 1000 steps make the shared transitions' gradient sum over blocks;
+    K = 33 tiles the derivatives' linear chains, over two chunks.
     """
     log_emit, log_trans, log_init = _model(2, N, K)
     inputs = tuple(t.requires_grad_() for t in (log_emit, _transitions(log_trans, trans), log_init))
@@ -191,6 +195,41 @@ def test_hmm_gradients_match_sequential(trans, N, K):
     )
     for a, e in zip(actual, expected):
         torch.testing.assert_close(a, e)
+
+
+@requires_cuda
+@pytest.mark.parametrize("trans", ["shared", "time"])
+def test_hmm_second_order_matches_sequential(trans):
+    """A Hessian-vector product against the sequential recursions, with K = 33
+    tiling the linear chains of both derivative orders over two chunks."""
+    log_emit, log_trans, log_init = _model(2, 66, 33)
+    inputs = tuple(t.requires_grad_() for t in (log_emit, _transitions(log_trans, trans), log_init))
+    w = torch.randn_like(log_emit)
+    vectors = [torch.randn_like(t) for t in inputs]
+
+    def hvp(ll, posteriors):
+        grads = torch.autograd.grad(
+            ll.sum() + (posteriors.exp() * w).sum(), inputs, create_graph=True
+        )
+        product = sum((g * v).sum() for g, v in zip(grads, vectors))
+        return torch.autograd.grad(product, inputs, materialize_grads=True)
+
+    ll, _ = hmm_filter(*inputs)
+    _, posteriors = hmm_smoother(*inputs)
+    actual = hvp(ll, posteriors)
+    expected_ll, _, expected_posteriors, _, _ = _sequential(*inputs)
+    for a, e in zip(actual, hvp(expected_ll, expected_posteriors)):
+        torch.testing.assert_close(a, e)
+
+
+def test_hmm_rejects_unsupported_shapes():
+    log_emit, log_trans, log_init = _model(2, 4, 3, device="cpu")
+    with pytest.raises(ValueError, match="log_emit"):
+        hmm_filter(log_emit[0], log_trans, log_init)
+    with pytest.raises(ValueError, match="log_trans"):
+        hmm_filter(log_emit, log_trans[..., :2], log_init)
+    with pytest.raises(ValueError, match="log_init"):
+        hmm_filter(log_emit, log_trans, log_init[:, :2])
 
 
 def test_hmm_rejects_a_transition_per_state():

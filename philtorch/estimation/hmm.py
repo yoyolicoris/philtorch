@@ -37,11 +37,11 @@ def _parse(
 ) -> tuple[Tensor, Tensor, Tensor]:
     """Validate the model; return log_emit, log_trans as (1 or B, 1 or N - 1, K, K), and
     log_init as (B, K)."""
-    assert log_emit.dim() == 3, f"log_emit must be (B, N, K), got {tuple(log_emit.shape)}"
+    if log_emit.dim() != 3:
+        raise ValueError(f"log_emit must be (B, N, K), got {tuple(log_emit.shape)}")
     batch_size, N, K = log_emit.shape
     transitions = max(N - 1, 0)
-    assert log_trans.shape[-2:] == (K, K), f"log_trans must end in {(K, K)}"
-    match log_trans.dim():
+    match log_trans.dim() if log_trans.shape[-2:] == (K, K) else None:
         case 2:
             log_trans = log_trans[None, None]
         # Per step before per signal when both fit, as in kalman_filter.
@@ -57,9 +57,10 @@ def _parse(
                 f"{(batch_size, K, K)} or {(batch_size, transitions, K, K)}, "
                 f"got {tuple(log_trans.shape)}"
             )
-    assert log_init.shape in ((K,), (batch_size, K)), (
-        f"log_init must be {(K,)} or {(batch_size, K)}, got {tuple(log_init.shape)}"
-    )
+    if log_init.shape not in ((K,), (batch_size, K)):
+        raise ValueError(
+            f"log_init must be of shape {(K,)} or {(batch_size, K)}, got {tuple(log_init.shape)}"
+        )
     check_cuda_triton(name, log_emit, log_trans, log_init)
     # The kernels read each K x K matrix as a contiguous block, where batch
     # and time may broadcast, and the emissions as one contiguous block.
@@ -365,8 +366,8 @@ def hmm_filter(log_emit: Tensor, log_trans: Tensor, log_init: Tensor) -> tuple[T
         filtered log-probabilities, of shape :math:`(B, N, K)`.
 
     Raises:
-        ValueError: if the inputs are not CUDA tensors or :attr:`log_trans`
-            has an unsupported shape.
+        ValueError: if the inputs are not CUDA tensors or have unsupported
+            shapes.
         RuntimeError: if Triton is not installed.
 
     .. _Temporal Parallelization of Inference in Hidden Markov Models:
@@ -411,8 +412,8 @@ def hmm_smoother(log_emit: Tensor, log_trans: Tensor, log_init: Tensor) -> tuple
         posterior log-probabilities, of shape :math:`(B, N, K)`.
 
     Raises:
-        ValueError: if the inputs are not CUDA tensors or :attr:`log_trans`
-            has an unsupported shape.
+        ValueError: if the inputs are not CUDA tensors or have unsupported
+            shapes.
         RuntimeError: if Triton is not installed.
 
     .. _Temporal Parallelization of Inference in Hidden Markov Models:
@@ -468,8 +469,8 @@ def hmm_viterbi(log_emit: Tensor, log_trans: Tensor, log_init: Tensor) -> tuple[
         of that path, of shape :math:`(B, N)`.
 
     Raises:
-        ValueError: if the inputs are not CUDA tensors or :attr:`log_trans`
-            has an unsupported shape.
+        ValueError: if the inputs are not CUDA tensors or have unsupported
+            shapes.
         RuntimeError: if Triton is not installed.
 
     .. _Temporal Parallelization of Inference in Hidden Markov Models:
