@@ -131,6 +131,12 @@ def test_ctc_rejects_bad_arguments():
         ctc_loss(logits, targets, (5,), (2, 2))
     with pytest.raises(ValueError, match="targets must be"):
         ctc_loss(logits, targets[:1], *lengths)
+    with pytest.raises(ValueError, match="input_lengths must be within 0 to 5"):
+        ctc_loss(logits, targets, (5, 6), (2, 2))
+    with pytest.raises(ValueError, match="target_lengths must be within 0 to 2"):
+        ctc_loss(logits, targets, (5, 5), (-1, 2))
+    with pytest.raises(ValueError, match="sum to the 4 concatenated targets"):
+        ctc_loss(logits, targets.flatten(), (5, 5), (2, 1))
     with pytest.raises(ValueError, match="ctc_loss runs Triton kernels on CUDA GPUs only"):
         ctc_loss(logits, targets, *lengths)
 

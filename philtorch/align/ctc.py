@@ -74,8 +74,10 @@ def ctc_loss(
     Raises:
         ValueError: if :attr:`log_probs` is not a CUDA tensor of shape
             :math:`(N, T, C)` or :math:`(T, C)` with :math:`T < 2^{18}`, if
-            the other arguments' shapes do not match it, or if
-            :attr:`reduction` is unknown.
+            the other arguments' shapes do not match it, if a length is
+            negative or past its sequence (or the concatenated targets'
+            lengths do not sum to theirs), or if :attr:`reduction` is
+            unknown.
         RuntimeError: if Triton is not installed.
 
     Example::
@@ -190,17 +192,27 @@ def _prepare(name, log_probs, targets, input_lengths, target_lengths, blank):
         raise ValueError(f"log_probs must be (N, T, C) or (T, C), got {tuple(log_probs.shape)}")
     unbatched = log_probs.dim() == 2
     device = log_probs.device
-    frames = torch.as_tensor(input_lengths, device=device, dtype=torch.long).reshape(-1)
-    labels = torch.as_tensor(target_lengths, device=device, dtype=torch.long).reshape(-1)
+    frames = torch.as_tensor(input_lengths, dtype=torch.long).reshape(-1)
+    labels = torch.as_tensor(target_lengths, dtype=torch.long).reshape(-1)
     if unbatched:
         log_probs, targets = log_probs[None], targets.reshape(1, -1)
-    N = log_probs.size(0)
+    N, T, _ = log_probs.shape
     if frames.shape != (N,) or labels.shape != (N,):
         raise ValueError(f"input_lengths and target_lengths must have {N} entries")
     if targets.dim() not in (1, 2) or (targets.dim() == 2 and targets.size(0) != N):
         raise ValueError(f"targets must be of shape ({N}, S) or 1-D, got {tuple(targets.shape)}")
+    if bool(((frames < 0) | (frames > T)).any()):
+        raise ValueError(f"input_lengths must be within 0 to {T}")
+    if targets.dim() == 2 and bool(((labels < 0) | (labels > targets.size(1))).any()):
+        raise ValueError(f"target_lengths must be within 0 to {targets.size(1)}")
+    if targets.dim() == 1 and ((labels < 0).any() or labels.sum() != targets.numel()):
+        raise ValueError(
+            f"target_lengths must be non-negative and sum to the {targets.numel()} "
+            "concatenated targets"
+        )
     check_cuda_triton(name, log_probs)
 
+    frames, labels = frames.to(device), labels.to(device)
     targets = targets.to(device, torch.long)
     if targets.dim() == 1:
         # Concatenated targets: each one's labels, in order, into a padded row.

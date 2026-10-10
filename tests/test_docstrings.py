@@ -1,4 +1,5 @@
 import doctest
+import importlib
 
 import pytest
 import torch
@@ -33,8 +34,19 @@ MODULES = [
     philtorch.estimation.kalman,
 ]
 
+# Modules whose examples run Triton kernels, checked on CUDA machines only.
+# By import_module, as philtorch.align.dtw is also the name of a function.
+CUDA_MODULES = [
+    importlib.import_module(name) for name in ("philtorch.align.ctc", "philtorch.align.dtw")
+]
+requires_cuda = pytest.mark.skipif(not torch.cuda.is_available(), reason="CUDA not available")
 
-@pytest.mark.parametrize("module", MODULES, ids=lambda module: module.__name__)
+
+@pytest.mark.parametrize(
+    "module",
+    MODULES + [pytest.param(module, marks=requires_cuda) for module in CUDA_MODULES],
+    ids=lambda module: module.__name__,
+)
 def test_docstring_examples(module):
     # Like PyTorch's, the examples assume torch is already imported.
     results = doctest.testmod(

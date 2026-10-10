@@ -129,9 +129,10 @@ def dtw(
         ValueError: if :attr:`cost` is not a CUDA tensor of shape
             :math:`(B, N, M)` with :math:`N, M > 0`, at most
             :math:`2^{31} - 1` cells per pair and :math:`\max(N, M) \le
-            2^{18}`, if :attr:`step_pattern` is unknown, or if
+            2^{18}`, if :attr:`step_pattern` is unknown, if
             :attr:`diagonal_weight` is not 1 with steps that have no weighted
-            diagonal.
+            diagonal, or if :attr:`lengths` are not of shape :math:`(B)`
+            within :math:`1 \le N_b \le N` and :math:`1 \le M_b \le M`.
         RuntimeError: if Triton is not installed.
 
     Example::
@@ -150,19 +151,32 @@ def dtw(
     .. _Parallelizing Dynamic Time Warping Algorithm Using Prefix Computations on GPU:
         https://doi.org/10.1109/HPCC.and.EUC.2013.50
     """
-    _validate("dtw", cost, step_pattern, diagonal_weight)
+    _validate("dtw", cost, step_pattern, diagonal_weight, lengths)
     return _dtw(cost, gamma, step_pattern, diagonal_weight, lengths, band)[0]
 
 
-def _validate(name: str, cost: Tensor, step_pattern: str, diagonal_weight: float) -> None:
+def _validate(
+    name: str,
+    cost: Tensor,
+    step_pattern: str,
+    diagonal_weight: float,
+    lengths: tuple[Tensor, Tensor] | None,
+) -> None:
     if cost.dim() != 3:
         raise ValueError(f"cost must be (B, N, M), got {tuple(cost.shape)}")
     if step_pattern not in ("symmetric", "asymmetric", "orthogonal"):
         raise ValueError(f"unknown step_pattern {step_pattern!r}")
-    if cost.size(1) == 0 or cost.size(2) == 0:
+    B, N, M = cost.shape
+    if N == 0 or M == 0:
         raise ValueError(f"cost has an empty sequence: shape {tuple(cost.shape)}")
     if diagonal_weight != 1.0 and step_pattern != "symmetric":
         raise ValueError(f"diagonal_weight needs the symmetric steps, not {step_pattern!r}.")
+    if lengths is not None:
+        n_len, m_len = lengths
+        if n_len.shape != (B,) or m_len.shape != (B,):
+            raise ValueError(f"lengths must be two tensors of shape ({B},)")
+        if bool((n_len < 1).any() | (n_len > N).any() | (m_len < 1).any() | (m_len > M).any()):
+            raise ValueError(f"lengths must be within 1 to {N} and 1 to {M}")
     check_cuda_triton(name, cost)
 
 
@@ -256,11 +270,20 @@ def dtw_path(
 
         >>> import torch
         >>> from philtorch.align import dtw_path
-        >>> cost = torch.rand(2, 6, 4, device="cuda")
-        >>> distance, path = dtw_path(cost)
-        >>> path[0, : (path[0, :, 0] >= 0).sum()]  # pair 0's cells, (0, 0) first
+        >>> x = torch.tensor([[0.0, 1.0, 2.0]], device="cuda")
+        >>> y = torch.tensor([[0.0, 0.0, 1.0, 2.0]], device="cuda")
+        >>> distance, path = dtw_path((x[..., None] - y[:, None]) ** 2)
+        >>> distance
+        tensor([0.], device='cuda:0')
+        >>> path[0]  # the cells, (0, 0) first, then -1 past the path
+        tensor([[ 0,  0],
+                [ 0,  1],
+                [ 1,  2],
+                [ 2,  3],
+                [-1, -1],
+                [-1, -1]], device='cuda:0')
     """
-    _validate("dtw_path", cost, step_pattern, diagonal_weight)
+    _validate("dtw_path", cost, step_pattern, diagonal_weight, lengths)
     from ._dtw_kernels import backtrack
 
     B, N, M = cost.shape
@@ -322,7 +345,9 @@ def soft_dtw_divergence(
         Tensor: the divergences, of shape :math:`(B)`.
 
     Raises:
-        ValueError: if :attr:`gamma` is not positive, or as :func:`dtw` does.
+        ValueError: if :attr:`gamma` is not positive, if :attr:`cost_xx`
+            and :attr:`cost_yy` are not of shapes :math:`(B, N, N)` and
+            :math:`(B, M, M)`, or as :func:`dtw` does.
         RuntimeError: if Triton is not installed.
 
     .. _Differentiable Divergences Between Time Series:
@@ -330,6 +355,13 @@ def soft_dtw_divergence(
     """
     if not gamma > 0:
         raise ValueError(f"the soft-DTW divergence needs gamma > 0, got {gamma}")
+    if cost_xy.dim() == 3:
+        B, N, M = cost_xy.shape
+        if cost_xx.shape != (B, N, N) or cost_yy.shape != (B, M, M):
+            raise ValueError(
+                f"cost_xx and cost_yy must be ({B}, {N}, {N}) and ({B}, {M}, {M}), "
+                f"got {tuple(cost_xx.shape)} and {tuple(cost_yy.shape)}"
+            )
     n_len, m_len = (None, None) if lengths is None else lengths
     xx = None if lengths is None else (n_len, n_len)
     yy = None if lengths is None else (m_len, m_len)

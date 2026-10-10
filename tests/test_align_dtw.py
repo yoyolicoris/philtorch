@@ -233,8 +233,14 @@ def test_dtw_rejects_bad_arguments():
         dtw(cost[:, :0])
     with pytest.raises(ValueError, match="diagonal_weight"):
         dtw(cost, diagonal_weight=2.0, step_pattern="orthogonal")
+    with pytest.raises(ValueError, match="lengths must be within 1 to 3"):
+        dtw(cost, lengths=(torch.tensor([4]), torch.tensor([3])))
+    with pytest.raises(ValueError, match="lengths must be within"):
+        dtw(cost, lengths=(torch.tensor([3]), torch.tensor([0])))
     with pytest.raises(ValueError, match="gamma > 0"):
         soft_dtw_divergence(cost, cost, cost, 0.0)
+    with pytest.raises(ValueError, match="cost_xx and cost_yy must be"):
+        soft_dtw_divergence(cost.expand(2, -1, -1), cost, cost.expand(2, -1, -1), 0.5)
 
 
 @requires_cuda
