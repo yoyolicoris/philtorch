@@ -196,6 +196,76 @@ def dtw(
     return torch.where(no_path, float("inf"), distance) / scale
 
 
+def dtw_path(
+    cost: Tensor,
+    *,
+    step_pattern: StepPattern = "symmetric",
+    diagonal_weight: float = 1.0,
+    lengths: tuple[Tensor, Tensor] | None = None,
+    band: float | None = None,
+) -> tuple[Tensor, Tensor]:
+    r"""The DTW distance and the optimal warping path between pairs of sequences.
+
+    The path is DTW's (:func:`dtw` with :math:`\gamma = 0`) as index pairs
+    :math:`(n, m)` from :math:`(0, 0)` to :math:`(N_b - 1, M_b - 1)`, as
+    Viterbi decoding gives a hidden Markov model's states. It is the
+    distance's gradient, the path's indicator, read in order: one backward
+    pass after the forward one, and no backtracking. Under ties, it is one of
+    the optimal paths. The distance is the path's cost, differentiable to
+    any order, its gradient the path.
+
+    Note:
+        Runs only on CUDA GPUs, as Triton kernels: the inputs must be CUDA
+        tensors, and Triton must be installed, as it is with PyTorch's CUDA
+        builds for Linux.
+
+    Args:
+        cost (Tensor): the costs :math:`c[n, m]`, of shape :math:`(B, N, M)`.
+        step_pattern (str): as in :func:`dtw`.
+        diagonal_weight (float): as in :func:`dtw`.
+        lengths (tuple of Tensor, optional): as in :func:`dtw`.
+        band (float, optional): as in :func:`dtw`.
+
+    Returns:
+        tuple of Tensor: the distances, of shape :math:`(B)`, ``inf`` for a
+        pair with no path, and the paths, an integer tensor of shape
+        :math:`(B, N + M - 1, 2)` of the cells in order, padded with -1 past
+        each pair's path, all -1 for a pair with none.
+
+    Raises:
+        ValueError: as :func:`dtw` does.
+        RuntimeError: if Triton is not installed.
+
+    Example::
+
+        >>> import torch
+        >>> from philtorch.align import dtw_path
+        >>> cost = torch.rand(2, 6, 4, device="cuda")
+        >>> distance, path = dtw_path(cost)
+        >>> path[0, : (path[0, :, 0] >= 0).sum()]  # pair 0's cells, (0, 0) first
+    """
+    options = dict(
+        step_pattern=step_pattern, diagonal_weight=diagonal_weight, lengths=lengths, band=band
+    )
+    with torch.enable_grad():
+        leaf = cost.detach().requires_grad_()
+        distance = dtw(leaf, 0.0, **options)
+        (alignment,) = torch.autograd.grad(distance.sum(), leaf)
+    B, N, M = cost.shape
+    # The path's cells, by pair, row and column: a path is monotone, so this
+    # is its order.
+    cells = alignment.nonzero()
+    counts = torch.bincount(cells[:, 0], minlength=B)
+    starts = counts.cumsum(0) - counts
+    position = torch.arange(len(cells), device=cells.device) - starts[cells[:, 0]]
+    path = cells.new_full((B, N + M - 1, 2), -1)
+    path[cells[:, 0], position] = cells[:, 1:]
+    # The path's cost, with a diagonal step's weight: its gradient is the path.
+    on_path = alignment != 0
+    cost_of_path = torch.where(on_path, alignment * cost, 0.0).sum((1, 2))
+    return torch.where(distance.isinf(), float("inf"), cost_of_path), path
+
+
 def soft_dtw_divergence(
     cost_xy: Tensor,
     cost_xx: Tensor,

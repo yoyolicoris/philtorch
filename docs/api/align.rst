@@ -18,6 +18,7 @@ Dynamic time warping
    :nosignatures:
 
    dtw
+   dtw_path
    soft_dtw_divergence
 
 Connectionist temporal classification
@@ -28,3 +29,4 @@ Connectionist temporal classification
    :nosignatures:
 
    ctc_loss
+   forced_align

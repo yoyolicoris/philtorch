@@ -2,7 +2,7 @@ import pytest
 import torch
 import torch.nn.functional as F
 
-from philtorch.align import ctc_loss
+from philtorch.align import ctc_loss, forced_align
 
 # ctc_loss runs Triton kernels, so the tests that run it need CUDA; the
 # validation tests run anywhere.
@@ -133,3 +133,51 @@ def test_ctc_rejects_bad_arguments():
         ctc_loss(logits, targets[:1], *lengths)
     with pytest.raises(ValueError, match="ctc_loss runs Triton kernels on CUDA GPUs only"):
         ctc_loss(logits, targets, *lengths)
+
+
+def _viterbi(log_probs, target, blank):
+    """CTC's most probable path for one sequence, by the sequential recursion: its
+    states' labels, one per frame, and its log-probability."""
+    states = [blank]
+    for label in target:
+        states += [label, blank]
+    T, S = log_probs.size(0), len(states)
+    best = torch.full((T, S), float("-inf"), dtype=log_probs.dtype)
+    back = torch.zeros((T, S), dtype=torch.long)
+    best[0, 0] = log_probs[0, states[0]]
+    if S > 1:
+        best[0, 1] = log_probs[0, states[1]]
+    for t in range(1, T):
+        for s in range(S):
+            choices = [(best[t - 1, s], s)]
+            if s > 0:
+                choices.append((best[t - 1, s - 1], s - 1))
+            if s > 1 and states[s] != blank and states[s] != states[s - 2]:
+                choices.append((best[t - 1, s - 2], s - 2))
+            value, back[t, s] = max(choices, key=lambda c: c[0])
+            best[t, s] = value + log_probs[t, states[s]]
+    end = S - 1 if S == 1 or best[T - 1, S - 1] >= best[T - 1, S - 2] else S - 2
+    path = [end]
+    for t in range(T - 1, 0, -1):
+        path.append(int(back[t, path[-1]]))
+    return [states[s] for s in reversed(path)], best[T - 1, end]
+
+
+@requires_cuda
+@pytest.mark.parametrize("blank", [0, 5])
+def test_forced_align_matches_viterbi(blank):
+    logits, targets = _problem(4, 12, 6, 4, blank=blank)
+    targets[0, 1] = targets[0, 0]  # a repeat, which needs a blank between them
+    frames, labels = (12, 9, 6, 2), (4, 3, 0, 3)  # the last cannot fit its frames
+    log_probs = logits.log_softmax(-1).detach()
+    path, scores = forced_align(log_probs, targets, frames, labels, blank)
+    for n in range(4):
+        T = frames[n]
+        if n == 3:
+            assert path[n].eq(-1).all() and scores[n].eq(0).all()
+            continue
+        expected, best = _viterbi(log_probs[n, :T].cpu(), targets[n, : labels[n]].tolist(), blank)
+        assert path[n, :T].tolist() == expected and path[n, T:].eq(-1).all()
+        torch.testing.assert_close(scores[n, :T].sum().cpu(), best)
+    one_path, one_scores = forced_align(log_probs[1], targets[1, :3], 9, 3, blank)
+    assert torch.equal(one_path, path[1]) and torch.equal(one_scores, scores[1])

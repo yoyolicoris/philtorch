@@ -4,7 +4,7 @@ import sys
 import pytest
 import torch
 
-from philtorch.align import dtw, soft_dtw_divergence
+from philtorch.align import dtw, dtw_path, soft_dtw_divergence
 
 # dtw runs Triton kernels, so the tests that run it need CUDA; the validation
 # and import tests run anywhere.
@@ -296,3 +296,43 @@ def test_dtw_backward_implementations_agree(soft, steps, diagonal_weight):
     grad = torch.randn_like(D)
     args = (D, cost, skip, grad, soft, steps, diagonal_weight)
     torch.testing.assert_close(kernels._dtw_backward(*args), kernels._dtw_backward_parallel(*args))
+
+
+_STEPS = {
+    "symmetric": {(1, 0), (0, 1), (1, 1)},
+    "asymmetric": {(1, 0), (1, 1)},
+    "orthogonal": {(1, 0), (0, 1)},
+}
+
+
+@requires_cuda
+@pytest.mark.parametrize(
+    "step_pattern, diagonal_weight",
+    [("symmetric", 1.0), ("symmetric", 2.0), ("asymmetric", 1.0), ("orthogonal", 1.0)],
+)
+def test_dtw_path(step_pattern, diagonal_weight):
+    # The path runs from (0, 0) to each pair's last cell in the pattern's
+    # steps, its cost is DTW's distance, and its distance's gradient is it.
+    cost = _cost(4, 9, 7).requires_grad_()
+    n_len, m_len = torch.tensor([9, 4, 6, 3]), torch.tensor([7, 3, 7, 5])
+    options = dict(
+        step_pattern=step_pattern, diagonal_weight=diagonal_weight, lengths=(n_len, m_len)
+    )
+    distance, path = dtw_path(cost, **options)
+    expected = dtw(cost, **options)
+    torch.testing.assert_close(distance, expected)
+    for b in range(4):
+        cells = path[b][path[b, :, 0] >= 0].tolist()
+        if expected[b].isinf():  # the asymmetric steps with N < M
+            assert cells == []
+            continue
+        assert cells[0] == [0, 0] and cells[-1] == [n_len[b] - 1, m_len[b] - 1]
+        steps = [(n1 - n0, m1 - m0) for (n0, m0), (n1, m1) in zip(cells, cells[1:])]
+        assert set(steps) <= _STEPS[step_pattern]
+        weights = torch.tensor([1.0] + [diagonal_weight if s == (1, 1) else 1.0 for s in steps])
+        on_path = weights.to(cost.dtype) @ cost[b][tuple(zip(*cells))].cpu()
+        torch.testing.assert_close(on_path, expected[b].detach().cpu())
+    possible = expected.isfinite()
+    (grad,) = torch.autograd.grad(distance[possible].sum(), cost)
+    (expected_grad,) = torch.autograd.grad(expected[possible].sum(), cost)
+    torch.testing.assert_close(grad, expected_grad)

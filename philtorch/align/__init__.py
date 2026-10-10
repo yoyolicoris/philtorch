@@ -6,7 +6,7 @@ between frames and a target's states. They run only on CUDA GPUs, as Triton
 kernels.
 """
 
-from .ctc import ctc_loss
-from .dtw import dtw, soft_dtw_divergence
+from .ctc import ctc_loss, forced_align
+from .dtw import dtw, dtw_path, soft_dtw_divergence
 
-__all__ = ["ctc_loss", "dtw", "soft_dtw_divergence"]
+__all__ = ["ctc_loss", "dtw", "dtw_path", "forced_align", "soft_dtw_divergence"]
