@@ -28,19 +28,23 @@ minima, which can differ from the stored D in the last bit.
 
 Two implementations of that gradient:
 
-* for first derivatives, :func:`_dtw_backward`, one kernel that computes the
-  shares on the fly and scans each row from the right, or for a few long
-  rows :func:`_dtw_backward_parallel`, which computes them over all cells
-  first and then accumulates;
+* for first derivatives, :func:`_dtw_backward`, which computes the shares as
+  it scans each row from the right, or for a few long rows
+  :func:`_dtw_backward_parallel`, which computes them over all cells first
+  and then accumulates;
 * :func:`accumulate`, the linear accumulation over the grid in either
   direction, and PyTorch ops, which autograd differentiates again, for
   higher derivatives. accumulate's backward is itself in the other
   direction.
 
 dtw_dp's backward takes the second when gradients of the gradient are
-requested (``create_graph=True``) and the first otherwise. Every kernel
-takes a ``STEPS`` constant or leaves out the steps whose pointers are None,
-and with the ctc steps the (B, R) skip mask.
+requested (``create_graph=True``) and the first otherwise.
+
+Two kernels do all of it. ``_dag_kernel`` is the row-by-row recursion in
+either semiring, min-plus (or soft-min-plus) for the forward pass and
+linear for every accumulation, the first-order backward's included;
+``_shares_kernel`` computes the shares over all cells at once. Both take
+a ``STEPS`` constant, and with the ctc steps the (B, R) skip mask.
 """
 
 import torch
@@ -51,11 +55,9 @@ from torch import Tensor
 
 _INF = float("inf")
 _STEPS = {"orthogonal": 0, "symmetric": 1, "ctc": 2}
-_SEMIRINGS = {"min": 0, "softmin": 1, "linear": 2}
 # Triton kernels can only read module constants made with tl.constexpr.
 _KERNEL_INF = tl.constexpr(_INF)
 _ORTHOGONAL, _CTC = (tl.constexpr(_STEPS[name]) for name in ("orthogonal", "ctc"))
-_SOFTMIN, _LINEAR = (tl.constexpr(_SEMIRINGS[name]) for name in ("softmin", "linear"))
 
 
 @triton.jit
@@ -66,53 +68,31 @@ def _softmin(x, y):
 
 
 @triton.jit
-def _plus(x, y, SEMIRING: tl.constexpr):
-    """The semiring's sum: min, soft-min, or the ordinary sum."""
-    if SEMIRING == _LINEAR:
-        return x + y
-    if SEMIRING == _SOFTMIN:
+def _min(x, y, SOFT: tl.constexpr):
+    if SOFT:
         return _softmin(x, y)
     return tl.minimum(x, y)
 
 
-@triton.jit
-def _times(x, y, SEMIRING: tl.constexpr):
-    """The semiring's product: the ordinary sum, or with linear the product."""
-    if SEMIRING == _LINEAR:
-        return x * y
-    return x + y
-
-
-@triton.jit
-def _zero(SEMIRING: tl.constexpr):
-    """The semiring's additive identity: inf, or with linear 0."""
-    if SEMIRING == _LINEAR:
-        return 0.0
-    return _KERNEL_INF
-
-
-# A row's maps x -> A (+) (C (x) x), composed left (earlier) first; one
-# function per semiring, as associative_scan takes no constants.
+# A row's maps, composed left (earlier) first; one function per semiring, as
+# associative_scan takes no constants.
 
 
 @triton.jit
 def _compose_min(a_l, c_l, a_r, c_r):
+    """x -> min(A, C + x)."""
     return tl.minimum(a_r, c_r + a_l), c_r + c_l
 
 
 @triton.jit
 def _compose_softmin(a_l, c_l, a_r, c_r):
+    """x -> softmin(A, C + x)."""
     return _softmin(a_r, c_r + a_l), c_r + c_l
 
 
 @triton.jit
-def _compose_linear(a_l, c_l, a_r, c_r):
-    return a_r + c_r * a_l, c_r * c_l
-
-
-@triton.jit
 def _compose_affine(a_l, b_l, a_r, b_r):
-    """Compose x -> a x + b maps, the left (earlier) one first."""
+    """x -> a x + b, the multiplier first: as fast as the others' order or faster."""
     return a_r * a_l, a_r * b_l + b_r
 
 
@@ -183,71 +163,6 @@ def _shares(
 
 
 @triton.jit
-def _dtw_backward_kernel(
-    D_ptr, cost_ptr, skip_ptr, g_ptr, e_ptr, out_ptr, R, L, diag_weight,
-    SOFT: tl.constexpr, STEPS: tl.constexpr, WEIGHTED: tl.constexpr, BLOCK: tl.constexpr,
-):  # fmt: skip
-    """The cost's gradient, rows from the last, each row's lanes from its last column.
-
-    Lane t holds column j = L - 1 - t, so e(i, j) = base(j) + a(j) e(i, j + 1)
-    is a scan from lane 0 up. e is written to e_ptr for the diagonal and skip
-    terms of the rows above, and the gradient, e times the cost's weight, to
-    out_ptr, which may be e_ptr when no step is weighted.
-    """
-    b = tl.program_id(0).to(tl.int64)
-    batch = b * R * L
-    lanes = tl.arange(0, BLOCK)
-    cols = L - 1 - lanes
-    mask = lanes < L
-    dtype = g_ptr.dtype.element_ty
-    # The shares of the rows below, kept from earlier iterations: row r + 1
-    # straight down at j and diagonally at j + 1, row r + 2 by a skip at
-    # j + 1. None below the last row.
-    e_below = tl.zeros([BLOCK], dtype)
-    up_below = tl.zeros([BLOCK], dtype)
-    diag_below_next = tl.zeros([BLOCK], dtype)
-    skip_below_next = tl.zeros([BLOCK], dtype)
-    skip_below2_next = tl.zeros([BLOCK], dtype)
-    for k in range(0, R):
-        r = R - 1 - k
-        row = batch + r * L + cols
-        base = tl.load(g_ptr + row, mask=mask, other=0.0)
-        if STEPS != _CTC:
-            base += up_below * e_below
-        if STEPS != _ORTHOGONAL:
-            # e at j + 1 of rows r + 1 and r + 2, written by every thread
-            # before the barrier.
-            tl.debug_barrier()
-            next_col = mask & (cols + 1 < L)
-            base += diag_below_next * tl.load(
-                e_ptr + row + L + 1, mask=next_col & (r + 1 < R), other=0.0
-            )
-            if STEPS == _CTC:
-                base += skip_below2_next * tl.load(
-                    e_ptr + row + 2 * L + 1, mask=next_col & (r + 2 < R), other=0.0
-                )
-        # Row r's shares at j and at j + 1; from the right, e(r, j) gets
-        # a(j) e(r, j + 1), with a(j) the share cell (r, j + 1) takes from its left.
-        up_here, left_here, diag_here, skip_here = _shares(
-            D_ptr, cost_ptr, skip_ptr, b, r, cols, R, L, diag_weight, SOFT, STEPS
-        )
-        _, a, diag_next, skip_next = _shares(
-            D_ptr, cost_ptr, skip_ptr, b, r, cols + 1, R, L, diag_weight, SOFT, STEPS
-        )
-        e = tl.associative_scan((a, base), 0, _compose_affine)[1]
-        tl.store(e_ptr + row, e, mask=mask)
-        if WEIGHTED:
-            none = (up_here + left_here + diag_here) == 0  # cell (0, 0)
-            factor = tl.where(none, 1.0, up_here + left_here + diag_weight * diag_here)
-            tl.store(out_ptr + row, e * factor, mask=mask)
-        e_below = e
-        up_below = up_here
-        diag_below_next = diag_next
-        skip_below2_next = skip_below_next
-        skip_below_next = skip_next
-
-
-@triton.jit
 def _shares_kernel(
     D_ptr, cost_ptr, skip_ptr, up_ptr, left_ptr, diag_ptr, skip_share_ptr, R, L, diag_weight,
     SOFT: tl.constexpr, STEPS: tl.constexpr, BLOCK: tl.constexpr,
@@ -289,20 +204,25 @@ def _weight(ptr, row, L, ROWS: tl.constexpr, COLS: tl.constexpr, REVERSE: tl.con
 
 @triton.jit
 def _dag_kernel(
-    cost_ptr, skip_rows_ptr, up_ptr, left_ptr, diag_ptr, skip_ptr, x_ptr, y_ptr, R, L,
-    diag_weight, SEMIRING: tl.constexpr, STEPS: tl.constexpr, REVERSE: tl.constexpr,
-    BLOCK: tl.constexpr,
+    cost_ptr, D_ptr, skip_rows_ptr, up_ptr, left_ptr, diag_ptr, skip_ptr, x_ptr, y_ptr,
+    out_ptr, R, L, diag_weight, SOFT: tl.constexpr, STEPS: tl.constexpr,
+    REVERSE: tl.constexpr, BLOCK: tl.constexpr,
 ):  # fmt: skip
     """y(s) = x(s) (+) the sum over steps of W(s, p) (x) y(p), predecessors p; with
     REVERSE, the transpose, over successors t of W(t, s) (x) y(t). Each edge's
     weight is stored at its successor.
 
-    The semiring is min-plus, soft-min-plus or linear. Two sources of weights:
+    Three uses, by the pointers given:
 
-    * the forward pass, with ``cost_ptr``: every step's weight is the cost of
-      the cell it enters, the diagonal's times ``diag_weight``, the ctc
-      steps' skips gated by the (B, R) mask ``skip_rows_ptr``; x is None,
-      for D(0, 0) = c(0, 0);
+    * the forward pass, with ``cost_ptr`` alone: min-plus, or soft-min-plus
+      with ``SOFT``; every step's weight is the cost of the cell it enters,
+      the diagonal's times ``diag_weight``, the ctc steps' skips gated by
+      the (B, R) mask ``skip_rows_ptr``; D(0, 0) = c(0, 0);
+    * the first-order backward, with ``cost_ptr`` and the forward pass's
+      ``D_ptr``, REVERSE: linear, x the gradient of D, the weights the
+      shares, computed from D and the cost (soft with ``SOFT``) as each row
+      is reached and kept for the rows above; ``out_ptr``, if not None,
+      takes the cost's gradient when the diagonal is weighted;
     * the linear accumulation, with x and the weights of the steps in the
       set, the others None.
 
@@ -312,69 +232,105 @@ def _dag_kernel(
     after a barrier. The neighbours' offsets are constants: offsets computed
     from REVERSE would cost a fifth of the time on long rows.
     """
+    SHARES: tl.constexpr = D_ptr is not None
+    FORWARD: tl.constexpr = cost_ptr is not None and not SHARES
     b = tl.program_id(0).to(tl.int64)
     batch = b * R * L
     lanes = tl.arange(0, BLOCK)
     mask = lanes < L
     cols = (L - 1 - lanes) if REVERSE else lanes
-    zero = _zero(SEMIRING)
-    COST: tl.constexpr = cost_ptr is not None
-    if COST:
+    zero = _KERNEL_INF if FORWARD else 0.0  # the semiring's zero
+    dtype = y_ptr.dtype.element_ty
+    if FORWARD:
         # Row 0 takes the left steps alone: D(0, j) = c(0, 0) + ... + c(0, j).
         c = tl.load(cost_ptr + batch + cols, mask=mask, other=0.0)
         y_near = tl.cumsum(c, axis=0)
         tl.store(y_ptr + batch + cols, y_near, mask=mask)
     else:
-        y_near = tl.full([BLOCK], zero, x_ptr.dtype.element_ty)  # the up neighbour, in this lane
-    for k in range(1 if COST else 0, R):
+        y_near = tl.full([BLOCK], zero, dtype)  # the up neighbour, in this lane
+    if SHARES:
+        # The shares of the rows below, kept from earlier rows: row r + 1
+        # straight down at j and diagonally at j + 1, row r + 2 by a skip at
+        # j + 1. None below the last row.
+        up_below = tl.zeros([BLOCK], dtype)
+        diag_below_next = tl.zeros([BLOCK], dtype)
+        skip_below_next = tl.zeros([BLOCK], dtype)
+        skip_below2_next = tl.zeros([BLOCK], dtype)
+    for k in range(1 if FORWARD else 0, R):
         r = (R - 1 - k) if REVERSE else k
         row = batch + r * L + cols
         rows_1 = (r + 1 < R) if REVERSE else (r > 0)
         # Recomputed per row: kept live, it costs registers that long rows lack.
         side = mask & ((cols + 1 < L) if REVERSE else (cols > 0))
-        if COST:
+        if FORWARD:
             c = tl.load(cost_ptr + row, mask=mask, other=0.0)
         else:
             base = tl.load(x_ptr + row, mask=mask, other=0.0)
         if STEPS != _CTC:
-            if COST:
+            if FORWARD:
                 base = c + y_near
+            elif SHARES:
+                base += up_below * y_near
             else:
                 w = tl.load(_weight(up_ptr, row, L, 1, 0, REVERSE), mask=mask & rows_1, other=0.0)
                 base += w * y_near
         if STEPS != _ORTHOGONAL:
             tl.debug_barrier()
             ok = side & rows_1
-            if COST:
+            if FORWARD:
                 y = tl.load(_neighbour(y_ptr, row, L, 1, 1, REVERSE), mask=ok, other=zero)
                 term = y + diag_weight * c
                 # The ctc steps have no up step: the diagonal starts the sum.
-                base = term if STEPS == _CTC else _plus(base, term, SEMIRING)
+                base = term if STEPS == _CTC else _min(base, term, SOFT)
             else:
-                w = tl.load(_weight(diag_ptr, row, L, 1, 1, REVERSE), mask=ok, other=0.0)
+                if SHARES:
+                    w = diag_below_next
+                else:
+                    w = tl.load(_weight(diag_ptr, row, L, 1, 1, REVERSE), mask=ok, other=0.0)
                 base += w * tl.load(_neighbour(y_ptr, row, L, 1, 1, REVERSE), mask=ok, other=0.0)
             if STEPS == _CTC:
                 ok &= (r + 2 < R) if REVERSE else (r > 1)
-                if COST:
+                if FORWARD:
                     ok &= tl.load(skip_rows_ptr + b * R + r) != 0
                     y = tl.load(_neighbour(y_ptr, row, L, 2, 1, REVERSE), mask=ok, other=zero)
-                    base = _plus(base, y + c, SEMIRING)
+                    base = _min(base, y + c, SOFT)
                 else:
-                    w = tl.load(_weight(skip_ptr, row, L, 2, 1, REVERSE), mask=ok, other=0.0)
+                    if SHARES:
+                        w = skip_below2_next
+                    else:
+                        w = tl.load(_weight(skip_ptr, row, L, 2, 1, REVERSE), mask=ok, other=0.0)
                     base += w * tl.load(
                         _neighbour(y_ptr, row, L, 2, 1, REVERSE), mask=ok, other=0.0
                     )
-        if COST:
+        if FORWARD:
             a = c
+        elif SHARES:
+            # Row r's shares at j, for the rows above, and at j + 1, whose left
+            # share takes e(r, j + 1) into e(r, j).
+            up_here, left_here, diag_here, _ = _shares(
+                D_ptr, cost_ptr, skip_rows_ptr, b, r, cols, R, L, diag_weight, SOFT, STEPS
+            )
+            _, a, diag_next, skip_next = _shares(
+                D_ptr, cost_ptr, skip_rows_ptr, b, r, cols + 1, R, L, diag_weight, SOFT, STEPS
+            )
         else:
             a = tl.load(_weight(left_ptr, row, L, 0, 1, REVERSE), mask=side, other=0.0)
-        if SEMIRING == _LINEAR:
-            y_near = tl.associative_scan((base, a), 0, _compose_linear)[0]
-        elif SEMIRING == _SOFTMIN:
+        if not FORWARD:
+            y_near = tl.associative_scan((a, base), 0, _compose_affine)[1]
+        elif SOFT:
             y_near = tl.associative_scan((base, a), 0, _compose_softmin)[0]
         else:
             y_near = tl.associative_scan((base, a), 0, _compose_min)[0]
         tl.store(y_ptr + row, y_near, mask=mask)
+        if SHARES:
+            if out_ptr is not None:
+                none = (up_here + left_here + diag_here) == 0  # cell (0, 0)
+                factor = tl.where(none, 1.0, up_here + left_here + diag_weight * diag_here)
+                tl.store(out_ptr + row, y_near * factor, mask=mask)
+            up_below = up_here
+            diag_below_next = diag_next
+            skip_below2_next = skip_below_next
+            skip_below_next = skip_next
 
 
 def _num_warps(L: int, backward: bool = False, diag: bool = False) -> int:
@@ -416,9 +372,9 @@ def _dtw_backward(
     e = _empty(D)
     out = _empty(D) if weighted else e
     _launch(
-        _dtw_backward_kernel, B, L,
-        D, cost, skip, grad.contiguous(), e, out, R, L, diag_weight, soft, _STEPS[steps],
-        weighted, num_warps=_num_warps(L, backward=True, diag=steps != "orthogonal"),
+        _dag_kernel, B, L, cost, D, skip, None, None, None, None, grad.contiguous(), e,
+        out if weighted else None, R, L, diag_weight, soft, _STEPS[steps], True,
+        num_warps=_num_warps(L, backward=True, diag=steps != "orthogonal"),
     )  # fmt: skip
     return out
 
@@ -464,8 +420,8 @@ def _accumulate(
     y = _empty(x)
     weights = (None if w is None else w.contiguous() for w in (w_up, w_left, w_diag, w_skip))
     _launch(
-        _dag_kernel, B, L, None, None, *weights, x.contiguous(), y, R, L, 1.0,
-        _SEMIRINGS["linear"], _STEPS[steps], reverse,
+        _dag_kernel, B, L, None, None, None, *weights, x.contiguous(), y, None, R, L, 1.0,
+        False, _STEPS[steps], reverse,
     )  # fmt: skip
     return y
 
@@ -559,8 +515,8 @@ def dtw_dp(cost: Tensor, skip: Tensor | None, soft: bool, steps: str, diag_weigh
         )
     D = _empty(cost)
     _launch(
-        _dag_kernel, B, L, cost.contiguous(), skip, None, None, None, None, None, D, R, L,
-        diag_weight, _SEMIRINGS["softmin" if soft else "min"], _STEPS[steps], False,
+        _dag_kernel, B, L, cost.contiguous(), None, skip, None, None, None, None, None, D, None,
+        R, L, diag_weight, soft, _STEPS[steps], False,
     )  # fmt: skip
     return D
 
