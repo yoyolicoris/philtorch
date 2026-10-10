@@ -1,7 +1,7 @@
 """Triton kernels for the linear recurrence h[t] = A[t] h[t - 1] + x[t].
 
 :func:`recurrence` computes it on CUDA for any state size M up to
-``_SWEEP_STATES`` (half that for complex), in row-vector form, y[t] = y[t - 1]
+``MAX_STATES`` (half that for complex), in row-vector form, y[t] = y[t - 1]
 A[t]^T + x[t], as one single-pass scan with decoupled look-back
 (``_scan_kernel``). Each program claims the next chunk of a batch item from
 an atomic counter, so every chunk it waits on belongs to a program already
@@ -18,7 +18,7 @@ With time-invariant A, every full chunk's P is the same power of A^T,
 computed once by repeated squaring (``_power_kernel``), so a chunk's map
 costs O(M^2) per step, as the steps themselves; time-varying A costs O(M^3)
 per step for P. With many batch items the batch alone fills the GPU, and
-one chunk per item, the steps alone, does less work (:func:`_sweep_only`).
+one chunk per item, the steps alone, does less work (:func:`_single_chunk`).
 
 Complex inputs run as their real and imaginary parts (``view_as_real``),
 multiplied out: four real products per complex one, as complex arithmetic
@@ -33,10 +33,10 @@ from torch import Tensor
 
 # The largest padded state sizes, a complex state counting twice: of a
 # time-varying chunk's map, which holds M^3 products in registers, and of an
-# M x M matrix in registers. Between the two, a time-varying recurrence runs
-# one chunk per batch item.
+# M x M matrix in registers, the kernels' limit. Between the two, a
+# time-varying recurrence runs one chunk per batch item.
 _SCAN_STATES = 32
-_SWEEP_STATES = 128
+MAX_STATES = 128
 
 
 @triton.jit
@@ -113,16 +113,15 @@ def _store_matrix(ptr, offset, rows, cols, M, re, im, COMPLEX: tl.constexpr):
 
 @triton.jit
 def _power_kernel(
-    a_ptr, out_ptr, M, SQUARINGS: tl.constexpr, TRANSPOSE: tl.constexpr,
-    COMPLEX: tl.constexpr, BM: tl.constexpr,
+    a_ptr, out_ptr, M, SQUARINGS: tl.constexpr, COMPLEX: tl.constexpr, BM: tl.constexpr,
 ):  # fmt: skip
-    """Matrix b's (or its transpose's) 2^SQUARINGS-th power, one program per matrix."""
+    """Matrix b's transpose's 2^SQUARINGS-th power, one program per matrix."""
     b = tl.program_id(0).to(tl.int64)
     ACC: tl.constexpr = out_ptr.dtype.element_ty
     states = tl.arange(0, BM)
     rows = states[:, None]
     cols = states[None, :]
-    pr, pi = _matrix(a_ptr, b * M * M, 0, 0, M, rows, cols, ACC, TRANSPOSE, COMPLEX)
+    pr, pi = _matrix(a_ptr, b * M * M, 0, 0, M, rows, cols, ACC, True, COMPLEX)
     for _ in tl.static_range(SQUARINGS):
         # P P needs P's rows and columns in the product's two roles.
         qr, qi = _matmul(pr, pi, pr, pi, COMPLEX)
@@ -134,12 +133,13 @@ def _power_kernel(
 @triton.jit
 def _scan_kernel(
     a_ptr, x_ptr, zi_ptr, power_ptr, out_ptr, offset_ptr, map_ptr, state_ptr, flag_ptr,
-    counter_ptr, N, M, C, chunk, stride_ab, stride_at, stride_pb, VARYING: tl.constexpr,
-    COMPLEX: tl.constexpr, BM: tl.constexpr,
+    counter_ptr, N, M, C, chunk, stride_ab, stride_at, stride_pb, SCAN: tl.constexpr,
+    VARYING: tl.constexpr, COMPLEX: tl.constexpr, BM: tl.constexpr,
 ):  # fmt: skip
     """The steps of one chunk of ``chunk`` steps of one batch item; see the module docstring.
 
-    A chunk's flag is 1 once its map (o, and P for time-varying A) is
+    Without ``SCAN``, a batch item is one chunk, and runs its steps alone. A
+    chunk's flag is 1 once its map (o, and P for time-varying A) is
     published, and 2 once its end state is.
     """
     tile = tl.atomic_add(counter_ptr, 1).to(tl.int64)
@@ -154,33 +154,41 @@ def _scan_kernel(
     x_base = b * N * M
     first = c * chunk
     index = b * C + c
-    # Time-invariant A is loaded once, transposed into row-vector form.
+    # The chunk's first matrix, transposed into row-vector form: time-invariant
+    # A's only one, so loaded once, or time-varying A's first factor of P.
     mr, mi = _matrix(a_ptr, base, first, stride_at, M, rows, cols, ACC, True, COMPLEX)
     yr, yi = _vector(zi_ptr, b * M, states, M, ACC, COMPLEX)
-    if C > 1:
-        # 1. The chunk's map: o from a zero start, and P.
-        o_r, o_i = _vector(x_ptr, x_base + first * M, states, M, ACC, COMPLEX)
-        pr = mr
-        pi = mi
-        for s in range(1, steps):
-            n = first + s
-            if VARYING:
-                mr, mi = _matrix(a_ptr, base, n, stride_at, M, rows, cols, ACC, True, COMPLEX)
-                pr, pi = _matmul(pr, pi, mr, mi, COMPLEX)
-            xr, xi = _vector(x_ptr, x_base + n * M, states, M, ACC, COMPLEX)
-            nr, ni = _times(o_r, o_i, mr, mi, COMPLEX)
-            o_r = nr + xr
-            if COMPLEX:
-                o_i = ni + xi
+    if SCAN:
+        # Time-invariant A's chunks share P, for the look-back and the end state.
         if not VARYING:
             pr, pi = _matrix(power_ptr, b * stride_pb, 0, 0, M, rows, cols, ACC, False, COMPLEX)
-        if c > 0:
-            if c < C - 1:
+        else:
+            pr = mr
+            pi = mi
+        o_r = tl.zeros([BM], ACC)
+        o_i = tl.zeros([BM], ACC)
+        last = c == C - 1
+        if not last:
+            # 1. The chunk's map: o from a zero start, and P; the last chunk's
+            # is never read.
+            o_r, o_i = _vector(x_ptr, x_base + first * M, states, M, ACC, COMPLEX)
+            for s in range(1, steps):
+                n = first + s
+                if VARYING:
+                    mr, mi = _matrix(a_ptr, base, n, stride_at, M, rows, cols, ACC, True, COMPLEX)
+                    pr, pi = _matmul(pr, pi, mr, mi, COMPLEX)
+                xr, xi = _vector(x_ptr, x_base + n * M, states, M, ACC, COMPLEX)
+                nr, ni = _times(o_r, o_i, mr, mi, COMPLEX)
+                o_r = nr + xr
+                if COMPLEX:
+                    o_i = ni + xi
+            if c > 0:
                 _store_vector(offset_ptr, index * M, states, M, o_r, o_i, COMPLEX)
                 if VARYING:
                     _store_matrix(map_ptr, index * M * M, rows, cols, M, pr, pi, COMPLEX)
                 tl.debug_barrier()
                 tl.atomic_xchg(flag_ptr + index, 1, sem="release")
+        if c > 0:
             # 2. Back over the flags to the latest predecessor with its end
             # state, then forward from it through the maps in between.
             j = c - 1
@@ -188,6 +196,8 @@ def _scan_kernel(
             while flag != 2:
                 j = tl.where(flag == 1, j - 1, j)
                 flag = tl.atomic_add(flag_ptr + b * C + j, 0, sem="acquire")
+            # Every thread reads what the acquire made visible.
+            tl.debug_barrier()
             yr, yi = _vector(state_ptr, (b * C + j) * M, states, M, ACC, COMPLEX)
             for i in range(j + 1, c):
                 ar, ai = _vector(offset_ptr, (b * C + i) * M, states, M, ACC, COMPLEX)
@@ -202,7 +212,7 @@ def _scan_kernel(
                 yr = ur + ar
                 if COMPLEX:
                     yi = ui + ai
-        if c < C - 1:
+        if not last:
             # 3. The chunk's end state.
             er, ei = _times(yr, yi, pr, pi, COMPLEX)
             _store_vector(state_ptr, index * M, states, M, er + o_r, ei + o_i, COMPLEX)
@@ -236,22 +246,23 @@ def _padded_states(M: int) -> int:
 
 
 def _num_warps(BM: int) -> int:
-    """Measured on an RTX 5060 Ti: one warp up to 16 states, more costs more."""
-    return 1 if BM <= 16 else 2 if BM <= 64 else 4
+    """Measured on an RTX 5060 Ti: one warp up to 32 states, complex too; more costs more."""
+    return 1 if BM <= 32 else 2 if BM <= 64 else 4
 
 
-def _sweep_only(B: int, BM: int, complex_: bool, varying: bool) -> bool:
+def _single_chunk(B: int, BM: int, complex_: bool, varying: bool) -> bool:
     """Whether one chunk per batch item beats the scan, a complex state counting twice.
 
-    Measured on an RTX 5060 Ti: once the batch fills the GPU, the maps'
-    extra work dominates, at B M = 2048 for time-varying A, whose maps
-    multiply matrices, and 8192 for time-invariant A, whose don't. Above
-    ``_SCAN_STATES``, a time-varying map doesn't fit in registers.
+    Measured on an RTX 5060 Ti, within about a tenth of the faster: once the
+    batch fills the GPU, the maps' extra work dominates, from B M = 4096 for
+    time-varying A, whose maps multiply matrices, and from B = 1024 or B M =
+    16384 for time-invariant A, whose don't. Above ``_SCAN_STATES``, a
+    time-varying map doesn't fit in registers.
     """
-    size = B * BM * (2 if complex_ else 1)
+    states = BM * (2 if complex_ else 1)
     if varying:
-        return size >= 2048 or BM * (2 if complex_ else 1) > _SCAN_STATES
-    return size >= 8192
+        return B * states >= 4096 or states > _SCAN_STATES
+    return B >= 1024 or B * states >= 16384
 
 
 def _chunk(BM: int, complex_: bool, varying: bool) -> int:
@@ -264,19 +275,19 @@ def _chunk(BM: int, complex_: bool, varying: bool) -> int:
     return 256 if size <= 16 else 128
 
 
-def _power(A: Tensor, n: int, transpose: bool, acc: torch.dtype) -> Tensor:
-    """(A^T)^n with ``transpose``, else A^n, of each of A's (k, M, M) matrices, n a power of 2."""
+def _power(A: Tensor, n: int, acc: torch.dtype) -> Tensor:
+    """(A^T)^n of each of A's (k, M, M) matrices, n a power of 2, in dtype ``acc``."""
     k, M, _ = A.shape
     BM = _padded_states(M)
     if BM * (2 if A.is_complex() else 1) > _SCAN_STATES:
         # Too large for the products in registers: squarings in PyTorch, once per call.
-        power = (A.mT if transpose else A).to(acc)
+        power = A.mT.to(acc)
         for _ in range(n.bit_length() - 1):
             power = power @ power
         return power.contiguous()
     out = A.new_empty(k, M, M, dtype=acc)
     _power_kernel[(k,)](
-        _real(A.contiguous()), _real(out), M, SQUARINGS=n.bit_length() - 1, TRANSPOSE=transpose,
+        _real(A.contiguous()), _real(out), M, SQUARINGS=n.bit_length() - 1,
         COMPLEX=A.is_complex(), BM=BM, num_warps=_num_warps(BM),
     )  # fmt: skip
     return out
@@ -284,7 +295,7 @@ def _power(A: Tensor, n: int, transpose: bool, acc: torch.dtype) -> Tensor:
 
 def fits(x: Tensor, M: int) -> bool:
     """Whether the kernels take state size M in x's dtype."""
-    return _padded_states(M) * (2 if x.is_complex() else 1) <= _SWEEP_STATES
+    return _padded_states(M) * (2 if x.is_complex() else 1) <= MAX_STATES
 
 
 def recurrence(A: Tensor, zi: Tensor, x: Tensor) -> Tensor:
@@ -298,7 +309,7 @@ def recurrence(A: Tensor, zi: Tensor, x: Tensor) -> Tensor:
     A, zi, x = A.contiguous(), zi.contiguous(), x.contiguous()
     stride_ab = Ta * M * M if Ba > 1 else 0
     stride_at = M * M if varying else 0
-    chunk = T if _sweep_only(B, BM, complex_, varying) else _chunk(BM, complex_, varying)
+    chunk = T if _single_chunk(B, BM, complex_, varying) else _chunk(BM, complex_, varying)
     C = triton.cdiv(T, chunk)
     out = torch.empty_like(x)
     # Each chunk's end state, map and flag; unused pointers take a placeholder.
@@ -307,13 +318,13 @@ def recurrence(A: Tensor, zi: Tensor, x: Tensor) -> Tensor:
     maps = x.new_empty(B * C, M, M, dtype=acc) if C > 1 and varying else states
     power, stride_pb = states, 0
     if C > 1 and not varying:
-        power = _power(A.reshape(-1, M, M), chunk, True, acc)
+        power = _power(A.reshape(-1, M, M), chunk, acc)
         stride_pb = M * M if Ba > 1 else 0
     # The flags, then the count of chunks claimed.
     flags = torch.zeros(B * C + 1, dtype=torch.int32, device=x.device)
     _scan_kernel[(B * C,)](
         _real(A), _real(x), _real(zi), _real(power), _real(out), _real(offsets), _real(maps),
         _real(states), flags, flags[B * C :], T, M, C, chunk, stride_ab, stride_at, stride_pb,
-        VARYING=varying, COMPLEX=complex_, BM=BM, num_warps=_num_warps(BM),
+        SCAN=C > 1, VARYING=varying, COMPLEX=complex_, BM=BM, num_warps=_num_warps(BM),
     )  # fmt: skip
     return out

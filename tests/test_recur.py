@@ -46,9 +46,10 @@ def test_recurrence_matches_sequential(device, sharing, M, dtype):
 @requires_cuda
 @pytest.mark.parametrize("sharing", SHARING)
 @pytest.mark.parametrize("M", [1, 2, 3, 4, 8])
-def test_recurrence_sweep_only(sharing, M):
-    # Enough batch items for one chunk per item (the sweep alone) in Triton.
-    A, zi, x = _problem(1024, 100, M, sharing, device="cuda")
+def test_recurrence_single_chunk(sharing, M):
+    # Enough batch items for one chunk per item (the steps alone) in Triton,
+    # for time-invariant A too.
+    A, zi, x = _problem(2048, 100, M, sharing, device="cuda")
     torch.testing.assert_close(recurrence(A, zi, x), _sequential(A, zi, x))
 
 

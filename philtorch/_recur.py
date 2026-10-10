@@ -15,10 +15,10 @@ The forward pass picks a kernel from the input (:func:`_forward`):
 
 * CPU: the C++ kernels, ``lti_recur`` (M = 1) and ``lti_recurN`` for
   time-invariant A, ``recurN`` otherwise;
-* CUDA: CUB scans for M <= 2 (``lti_recur``, ``lti_recur2``, ``scan``,
-  ``recur2``), the ParaRNN kernels for real time-varying M = 2 and 3 within
-  their limits, and the Triton kernels of :mod:`philtorch._recur_triton`
-  for the rest;
+* CUDA: CUB scans for M <= 2 (``lti_recur``, ``lti_recur2``, ``scan``, and
+  ``recur2`` for real time-varying M = 2), the ParaRNN kernels for real
+  time-varying M = 2 and 3 within their limits, and the Triton kernels of
+  :mod:`philtorch._recur_triton` for the rest, which they beat;
 * MPS: the Metal ``lti_recur`` for time-invariant M = 1 in float32.
 
 Anything else raises: there is no fallback to PyTorch ops.
@@ -106,7 +106,8 @@ def _forward(A: Tensor, zi: Tensor, x: Tensor) -> Tensor:
                 else torch.ops.parallel_reduce_cuda.parallel_reduce_block_diag_2x2_cuda
             )
             return reduce(jac.contiguous(), rhs)[:, 1:]
-        if not time_invariant and M == 2:
+        if not time_invariant and M == 2 and not x.is_complex():
+            # Complex inputs run faster in the Triton kernels.
             return ops.recur2(A_lpv.contiguous(), zi, x.contiguous())
         if _triton_applies(x, M):
             return recur_triton(A, zi, x)
@@ -118,7 +119,7 @@ def _forward(A: Tensor, zi: Tensor, x: Tensor) -> Tensor:
         if _recur_triton is None:
             reason = ": Triton is not installed"
         else:
-            most = _recur_triton._SWEEP_STATES
+            most = _recur_triton.MAX_STATES
             reason = f"; the Triton kernels take M up to {most} ({most // 2} complex)"
     raise NotImplementedError(
         f"no recurrence kernel for {kind} A with M = {M} in {x.dtype} on {device}{reason}"
