@@ -31,17 +31,16 @@ Two implementations of that gradient:
 * for first derivatives, :func:`_dtw_backward`, one kernel that computes the
   shares on the fly and scans each row from the right, or for a few long
   rows :func:`_dtw_backward_parallel`, which computes them over all cells
-  first;
-* :func:`dag_forward` (the linear accumulation over the grid, a kernel like
-  the forward one) and PyTorch ops, which autograd differentiates again, for
-  higher derivatives. dag_forward's own backward is dag_forward on the
-  flipped grid.
-
-Every kernel takes a ``STEPS`` constant, and with the ctc steps a pointer to
-the (B, R) skip mask.
+  first and then accumulates;
+* :func:`accumulate`, the linear accumulation over the grid in either
+  direction, and PyTorch ops, which autograd differentiates again, for
+  higher derivatives. accumulate's backward is itself in the other
+  direction.
 
 dtw_dp's backward takes the second when gradients of the gradient are
-requested (``create_graph=True``) and the first otherwise.
+requested (``create_graph=True``) and the first otherwise. Every kernel
+takes a ``STEPS`` constant or leaves out the steps whose pointers are None,
+and with the ctc steps the (B, R) skip mask.
 """
 
 import torch
@@ -65,6 +64,13 @@ def _softmin(x, y):
 
 
 @triton.jit
+def _min(x, y, SOFT: tl.constexpr):
+    if SOFT:
+        return _softmin(x, y)
+    return tl.minimum(x, y)
+
+
+@triton.jit
 def _compose_min_plus(a_l, c_l, a_r, c_r):
     """Compose x -> min(A, C + x) maps, the left (earlier) one first."""
     return tl.minimum(a_r, c_r + a_l), c_r + c_l
@@ -82,23 +88,10 @@ def _compose_affine(a_l, b_l, a_r, b_r):
     return a_r * a_l, a_r * b_l + b_r
 
 
-@triton.jit
-def _compose_affine_g(a_l, b_l, ga_l, gb_l, a_r, b_r, ga_r, gb_r):
-    """As :func:`_compose_affine`, also carrying G, the segment without its last map."""
-    return a_r * a_l, a_r * b_l + b_r, ga_r * a_l, ga_r * b_l + gb_r
-
-
 # The kernels take contiguous (B, R, L) tensors, one program per batch item
 # with a whole row in BLOCK >= L lanes. In the forward kernels, lanes past L
 # hold padding; the scans run left to right, so it never reaches the real
 # columns.
-
-
-@triton.jit
-def _min(x, y, SOFT: tl.constexpr):
-    if SOFT:
-        return _softmin(x, y)
-    return tl.minimum(x, y)
 
 
 @triton.jit
@@ -116,15 +109,14 @@ def _dtw_dp_kernel(
     for n in range(1, R):
         row = batch + n * L + cols
         c = tl.load(cost_ptr + row, mask=mask, other=0.0)
-        if STEPS != _CTC:
-            a = c + prev
-        else:
-            a = tl.full([BLOCK], _KERNEL_INF, c.dtype)
+        a = c + prev
         if STEPS != _ORTHOGONAL:
             # Earlier rows at j - 1, written by every thread before the barrier.
             tl.debug_barrier()
             up_left = tl.load(D_ptr + row - L - 1, mask=mask & (cols > 0), other=_KERNEL_INF)
-            a = _min(a, up_left + diag_weight * c, SOFT)
+            diag = up_left + diag_weight * c
+            # The ctc steps have no up step: the diagonal starts the minimum.
+            a = diag if STEPS == _CTC else _min(a, diag, SOFT)
         if STEPS == _CTC:
             allowed = mask & (cols > 0) & (n > 1) & (tl.load(skip_ptr + b * R + n) != 0)
             skip = tl.load(D_ptr + row - 2 * L - 1, mask=allowed, other=_KERNEL_INF)
@@ -204,9 +196,9 @@ def _dtw_backward_kernel(
     """The cost's gradient, rows from the last, each row's lanes from its last column.
 
     Lane t holds column j = L - 1 - t, so e(i, j) = base(j) + a(j) e(i, j + 1)
-    is a scan from lane 0 up. e is written to e_ptr for the next row's
-    diagonal term, and the gradient, e times the cost's weight, to out_ptr,
-    which may be e_ptr when no step is weighted.
+    is a scan from lane 0 up. e is written to e_ptr for the diagonal and skip
+    terms of the rows above, and the gradient, e times the cost's weight, to
+    out_ptr, which may be e_ptr when no step is weighted.
     """
     b = tl.program_id(0).to(tl.int64)
     batch = b * R * L
@@ -266,7 +258,7 @@ def _shares_kernel(
     D_ptr, cost_ptr, skip_ptr, up_ptr, left_ptr, diag_ptr, skip_share_ptr, R, L, diag_weight,
     SOFT: tl.constexpr, STEPS: tl.constexpr, BLOCK: tl.constexpr,
 ):  # fmt: skip
-    """Every cell's shares, one program per BLOCK cells of a row."""
+    """Every cell's shares of the steps in the set, one program per BLOCK cells of a row."""
     batch_row = tl.program_id(0)
     b = (batch_row // R).to(tl.int64)
     r = batch_row % R
@@ -276,80 +268,75 @@ def _shares_kernel(
     )
     offset = b * R * L + r * L + cols
     mask = cols < L
-    tl.store(up_ptr + offset, up, mask=mask)
+    if STEPS != _CTC:
+        tl.store(up_ptr + offset, up, mask=mask)
     tl.store(left_ptr + offset, left, mask=mask)
-    tl.store(diag_ptr + offset, diag, mask=mask)
+    if STEPS != _ORTHOGONAL:
+        tl.store(diag_ptr + offset, diag, mask=mask)
     if STEPS == _CTC:
         tl.store(skip_share_ptr + offset, skip, mask=mask)
 
 
 @triton.jit
-def _reverse_kernel(
-    up_ptr, left_ptr, diag_ptr, skip_ptr, g_ptr, e_ptr, R, L,
-    STEPS: tl.constexpr, BLOCK: tl.constexpr,
-):  # fmt: skip
-    """The reverse accumulation from stored shares, laid out as in _dtw_backward_kernel."""
-    batch = tl.program_id(0).to(tl.int64) * R * L
-    lanes = tl.arange(0, BLOCK)
-    cols = L - 1 - lanes
-    mask = lanes < L
-    e_below = tl.zeros([BLOCK], g_ptr.dtype.element_ty)
-    for k in range(0, R):
-        r = R - 1 - k
-        row = batch + r * L + cols
-        below = mask & (r + 1 < R)
-        base = tl.load(g_ptr + row, mask=mask, other=0.0)
-        if STEPS != _CTC:
-            base += e_below * tl.load(up_ptr + row + L, mask=below, other=0.0)
-        if STEPS != _ORTHOGONAL:
-            tl.debug_barrier()
-            diagonal = below & (cols + 1 < L)
-            base += tl.load(diag_ptr + row + L + 1, mask=diagonal, other=0.0) * tl.load(
-                e_ptr + row + L + 1, mask=diagonal, other=0.0
-            )
-            if STEPS == _CTC:
-                skip = diagonal & (r + 2 < R)
-                base += tl.load(skip_ptr + row + 2 * L + 1, mask=skip, other=0.0) * tl.load(
-                    e_ptr + row + 2 * L + 1, mask=skip, other=0.0
-                )
-        a = tl.load(left_ptr + row + 1, mask=mask & (cols + 1 < L), other=0.0)
-        e = tl.associative_scan((a, base), 0, _compose_affine)[1]
-        tl.store(e_ptr + row, e, mask=mask)
-        e_below = e
+def _neighbour(ptr, row, L, ROWS: tl.constexpr, COLS: tl.constexpr, REVERSE: tl.constexpr):
+    """ptr at the cell ROWS rows and COLS columns after row's, or with REVERSE before."""
+    if REVERSE:
+        return ptr + row + ROWS * L + COLS
+    return ptr + row - ROWS * L - COLS
 
 
 @triton.jit
-def _dag_forward_kernel(
-    w_down_ptr, w_right_next_ptr, w_diag_next_ptr, w_skip_next_ptr, x_ptr, y_ptr, R, L,
-    BLOCK: tl.constexpr,
-):  # fmt: skip
-    """y of the forward accumulation; the *_next weights are taken at column j + 1.
+def _weight(ptr, row, L, ROWS: tl.constexpr, COLS: tl.constexpr, REVERSE: tl.constexpr):
+    """An edge's weight, stored at its successor: the neighbour with REVERSE, else here."""
+    if REVERSE:
+        return ptr + row + ROWS * L + COLS
+    return ptr + row
 
-    Row by row, z(j) = W_right(j + 1) y(j) + W_diag(j + 1) y_prev(j) +
-    W_skip(j + 1) y_prev2(j) is a scan of affine maps, and y(j) = base(j) +
-    z(j - 1): G, each segment's composition without its last map, gives
-    z(j - 1) at lane j. ``w_skip_next_ptr`` may be None.
+
+@triton.jit
+def _accumulate_kernel(
+    up_ptr, left_ptr, diag_ptr, skip_ptr, x_ptr, y_ptr, R, L,
+    REVERSE: tl.constexpr, BLOCK: tl.constexpr,
+):  # fmt: skip
+    """y(s) = x(s) + sum over predecessors p of W(s, p) y(p), each edge's weight stored at
+    its successor s; with REVERSE, the transpose, over successors t of W(t, s) y(t).
+
+    The steps are up, left, up-left and skip (two rows up, one left); the
+    pointers of absent ones are None. Row by row, the left step makes each
+    row a scan of affine maps, from the right with REVERSE, where lane t
+    holds column L - 1 - t. The other rows' terms come from y already
+    written, after a barrier. The neighbours' offsets are constants: offsets
+    computed from REVERSE would cost a fifth of the time on long rows.
     """
     batch = tl.program_id(0).to(tl.int64) * R * L
-    cols = tl.arange(0, BLOCK)
-    mask = cols < L
-    y_prev = tl.zeros([BLOCK], x_ptr.dtype.element_ty)
-    y_prev2 = tl.zeros([BLOCK], x_ptr.dtype.element_ty)
-    identity_a = tl.full([BLOCK], 1.0, y_prev.dtype)
-    identity_b = tl.zeros([BLOCK], y_prev.dtype)
-    for i in range(0, R):
-        row = batch + i * L + cols
-        base = tl.load(x_ptr + row, mask=mask, other=0.0) + (
-            tl.load(w_down_ptr + row, mask=mask, other=0.0) * y_prev
-        )
-        a = tl.load(w_right_next_ptr + row, mask=mask, other=0.0)
-        b = a * base + tl.load(w_diag_next_ptr + row, mask=mask, other=0.0) * y_prev
-        if w_skip_next_ptr is not None:
-            b += tl.load(w_skip_next_ptr + row, mask=mask, other=0.0) * y_prev2
-        z_left = tl.associative_scan((a, b, identity_a, identity_b), 0, _compose_affine_g)[3]
-        y_prev2 = y_prev
-        y_prev = base + z_left
-        tl.store(y_ptr + row, y_prev, mask=mask)
+    lanes = tl.arange(0, BLOCK)
+    mask = lanes < L
+    cols = (L - 1 - lanes) if REVERSE else lanes
+    y_near = tl.zeros([BLOCK], x_ptr.dtype.element_ty)  # the up neighbour, in this lane
+    for k in range(0, R):
+        r = (R - 1 - k) if REVERSE else k
+        row = batch + r * L + cols
+        rows_1 = (r + 1 < R) if REVERSE else (r > 0)
+        # Recomputed per row: kept live, it costs registers that long rows lack.
+        side = mask & ((cols + 1 < L) if REVERSE else (cols > 0))
+        base = tl.load(x_ptr + row, mask=mask, other=0.0)
+        if up_ptr is not None:
+            w = tl.load(_weight(up_ptr, row, L, 1, 0, REVERSE), mask=mask & rows_1, other=0.0)
+            base += w * y_near
+        if diag_ptr is not None or skip_ptr is not None:
+            tl.debug_barrier()
+            if diag_ptr is not None:
+                ok = side & rows_1
+                w = tl.load(_weight(diag_ptr, row, L, 1, 1, REVERSE), mask=ok, other=0.0)
+                base += w * tl.load(_neighbour(y_ptr, row, L, 1, 1, REVERSE), mask=ok, other=0.0)
+            if skip_ptr is not None:
+                ok = side & rows_1 & ((r + 2 < R) if REVERSE else (r > 1))
+                w = tl.load(_weight(skip_ptr, row, L, 2, 1, REVERSE), mask=ok, other=0.0)
+                base += w * tl.load(_neighbour(y_ptr, row, L, 2, 1, REVERSE), mask=ok, other=0.0)
+        # The left step: y(j) = base(j) + W y(j -/+ 1), a scan from lane 0 up.
+        a = tl.load(_weight(left_ptr, row, L, 0, 1, REVERSE), mask=side, other=0.0)
+        y_near = tl.associative_scan((a, base), 0, _compose_affine)[1]
+        tl.store(y_ptr + row, y_near, mask=mask)
 
 
 def _num_warps(L: int, backward: bool = False, diag: bool = False) -> int:
@@ -408,21 +395,19 @@ def _dtw_backward_parallel(
     program per batch item, leaving most of the GPU idle.
     """
     B, R, L = D.shape
-    up, left, diag_share = _empty(D), _empty(D), _empty(D)
+    up = _empty(D) if steps != "ctc" else None
+    left = _empty(D)
+    diag = _empty(D) if steps != "orthogonal" else None
     skip_share = _empty(D) if steps == "ctc" else None
     block = 1024
     _shares_kernel[(B * R, triton.cdiv(L, block))](
-        D, cost, skip, up, left, diag_share, skip_share, R, L, diag_weight, soft, _STEPS[steps],
+        D, cost, skip, up, left, diag, skip_share, R, L, diag_weight, soft, _STEPS[steps],
         BLOCK=block, num_warps=4,
     )  # fmt: skip
-    e = _empty(D)
-    _launch(
-        _reverse_kernel, B, L, up, left, diag_share, skip_share, grad.contiguous(), e, R, L,
-        _STEPS[steps], num_warps=_num_warps(L),
-    )  # fmt: skip
+    e = _accumulate(up, left, diag, skip_share, grad, True)
     if diag_weight != 1.0:
-        none = (up + left + diag_share) == 0
-        e = e * torch.where(none, 1.0, up + left + diag_weight * diag_share)
+        none = (up + left + diag) == 0
+        e = e * torch.where(none, 1.0, up + left + diag_weight * diag)
     return e
 
 
@@ -432,102 +417,81 @@ def _shift(t: Tensor, rows: int, cols: int, fill: float = 0.0) -> Tensor:
     return F.pad(t, (cols, 0, rows, 0), value=fill)[..., :R, :L]
 
 
-def _flip(t: Tensor) -> Tensor:
-    return t.flip(-2, -1)
-
-
-@torch.library.custom_op("philtorch::dtw_dag_forward", mutates_args=())
-def dag_forward(
-    w_down: Tensor, w_right: Tensor, w_diag: Tensor, w_skip: Tensor | None, x: Tensor
-) -> Tensor:
-    """y(i, j) = x(i, j) + W_down y(i - 1, j) + W_right y(i, j - 1) + W_diag y(i - 1, j - 1)
-    + W_skip y(i - 2, j - 1).
-
-    Each edge's weight is stored at its successor (i, j); ``w_skip`` may be None.
-    """
+def _accumulate(
+    w_up: Tensor | None, w_left: Tensor, w_diag: Tensor | None, w_skip: Tensor | None,
+    x: Tensor, reverse: bool,
+) -> Tensor:  # fmt: skip
     B, R, L = x.shape
-
-    def next_column(w):
-        """Weights at column j + 1, zero past the last column."""
-        return F.pad(w[..., 1:], (0, 1)).contiguous()
-
     y = _empty(x)
-    _launch(
-        _dag_forward_kernel, B, L,
-        w_down.contiguous(), next_column(w_right), next_column(w_diag),
-        None if w_skip is None else next_column(w_skip), x.contiguous(), y, R, L,
-    )  # fmt: skip
+    weights = (None if w is None else w.contiguous() for w in (w_up, w_left, w_diag, w_skip))
+    _launch(_accumulate_kernel, B, L, *weights, x.contiguous(), y, R, L, reverse)
     return y
 
 
-@dag_forward.register_fake
-def _(w_down, w_right, w_diag, w_skip, x):
+@torch.library.custom_op("philtorch::dtw_accumulate", mutates_args=())
+def accumulate(
+    w_up: Tensor | None, w_left: Tensor, w_diag: Tensor | None, w_skip: Tensor | None,
+    x: Tensor, reverse: bool,
+) -> Tensor:  # fmt: skip
+    """y(i, j) = x(i, j) + W_up y(i - 1, j) + W_left y(i, j - 1) + W_diag y(i - 1, j - 1)
+    + W_skip y(i - 2, j - 1), or with ``reverse`` its transpose.
+
+    Each edge's weight is stored at its successor; the weights of absent
+    steps are None.
+    """
+    return _accumulate(w_up, w_left, w_diag, w_skip, x, reverse)
+
+
+@accumulate.register_fake
+def _(w_up, w_left, w_diag, w_skip, x, reverse):
     return _empty(x)
 
 
-def dag_reverse(
-    w_down: Tensor, w_right: Tensor, w_diag: Tensor, w_skip: Tensor | None, g: Tensor
-) -> Tensor:
-    """The reverse accumulation, dag_forward's transpose.
-
-    It is dag_forward on the grid flipped in both directions, where each
-    cell's successors become its predecessors. Each edge's weight moves from
-    its successor to its predecessor before the flip, a shift by the step.
-    """
-    R, L = g.shape[-2:]
-
-    def to_predecessor(w, rows, cols):
-        return _flip(F.pad(w, (0, cols, 0, rows))[..., rows : rows + R, cols : cols + L])
-
-    e = dag_forward(
-        to_predecessor(w_down, 1, 0),
-        to_predecessor(w_right, 0, 1),
-        to_predecessor(w_diag, 1, 1),
-        None if w_skip is None else to_predecessor(w_skip, 2, 1),
-        _flip(g),
-    )
-    return _flip(e)
+# The (row, column) offsets of the up, left, up-left and skip steps.
+_OFFSETS = ((1, 0), (0, 1), (1, 1), (2, 1))
 
 
-def _dag_forward_setup(ctx, inputs, output):
+def _accumulate_setup(ctx, inputs, output):
+    ctx.reverse = inputs[-1]
     ctx.save_for_backward(*inputs[:4], output)
 
 
-def _dag_forward_backward(ctx, grad_y):
-    w_down, w_right, w_diag, w_skip, y = ctx.saved_tensors
-    # y = (I - W)^-1 x, so x's gradient is the transposed accumulation, and an
-    # edge's is that gradient at its successor times y at its predecessor.
-    grad_x = dag_reverse(w_down, w_right, w_diag, w_skip, grad_y)
-    return (
-        grad_x * _shift(y, 1, 0),
-        grad_x * _shift(y, 0, 1),
-        grad_x * _shift(y, 1, 1),
-        None if w_skip is None else grad_x * _shift(y, 2, 1),
-        grad_x,
-    )
+def _accumulate_backward(ctx, grad_y):
+    *weights, y = ctx.saved_tensors
+    # y = (I - W)^-1 x, so x's gradient is the accumulation the other way, and
+    # an edge's is that gradient at its successor times y at its predecessor,
+    # or, the other way, the gradient at its predecessor times y at its successor.
+    grad_x = accumulate(*weights, grad_y, not ctx.reverse)
+    grads = [
+        None if w is None
+        else _shift(grad_x, *step) * y if ctx.reverse
+        else grad_x * _shift(y, *step)
+        for w, step in zip(weights, _OFFSETS)
+    ]  # fmt: skip
+    return (*grads, grad_x, None)
 
 
-dag_forward.register_autograd(_dag_forward_backward, setup_context=_dag_forward_setup)
+accumulate.register_autograd(_accumulate_backward, setup_context=_accumulate_setup)
 
 
 def shares(
     D: Tensor, cost: Tensor, skip: Tensor | None, soft: bool, steps: str, diag_weight: float
-) -> tuple[Tensor, Tensor, Tensor, Tensor | None]:
+) -> list[Tensor | None]:
     """The shares of each cell from its up, left, up-left and skip predecessors.
 
     As the kernels compute them, with PyTorch ops that autograd
     differentiates: a softmax of the negated arguments for soft-DTW, a
     one-hot of the first best for DTW; zero for predecessors outside the
-    grid or not among the steps, and all zero for cell (0, 0). The skip
-    shares are None without the ctc steps.
+    grid, and all zero for cell (0, 0). None for the steps not in the set.
     """
-    absent = torch.full_like(D, _INF)
-    args = [
-        absent if steps == "ctc" else _shift(D, 1, 0, _INF) + cost,
-        _shift(D, 0, 1, _INF) + cost,
-        absent if steps == "orthogonal" else _shift(D, 1, 1, _INF) + diag_weight * cost,
-    ]
-    if steps == "ctc":
+    present = (steps != "ctc", True, steps != "orthogonal", steps == "ctc")
+    args = []
+    if present[0]:
+        args.append(_shift(D, 1, 0, _INF) + cost)
+    args.append(_shift(D, 0, 1, _INF) + cost)
+    if present[2]:
+        args.append(_shift(D, 1, 1, _INF) + diag_weight * cost)
+    if present[3]:
         args.append(torch.where(skip.bool()[..., None], _shift(D, 2, 1, _INF) + cost, _INF))
     args = torch.stack(args)
     outside = torch.isinf(args)
@@ -536,8 +500,8 @@ def shares(
         weights = torch.softmax(torch.where(none, 0.0, -args), dim=0)
     else:
         weights = F.one_hot(args.argmin(0), len(args)).movedim(-1, 0).to(D.dtype)
-    weights = torch.where(outside, 0.0, weights)
-    return weights[0], weights[1], weights[2], weights[3] if steps == "ctc" else None
+    weights = iter(torch.where(outside, 0.0, weights))
+    return [next(weights) if p else None for p in present]
 
 
 @torch.library.custom_op("philtorch::dtw_dp", mutates_args=())
@@ -548,7 +512,9 @@ def dtw_dp(cost: Tensor, skip: Tensor | None, soft: bool, steps: str, diag_weigh
     docstring."""
     B, R, L = cost.shape
     if R * L > _MAX_CELLS:
-        raise ValueError(f"dtw handles at most 2^31 - 1 cells per pair, got {tuple(cost.shape)}")
+        raise ValueError(
+            f"the DTW kernels take at most 2^31 - 1 cells per pair, got {tuple(cost.shape)}"
+        )
     D = _empty(cost)
     _launch(
         _dtw_dp_kernel, B, L,
@@ -580,7 +546,7 @@ def _dtw_dp_backward(ctx, grad_D):
     # Gradients of this gradient are wanted: build it from ops that autograd
     # differentiates.
     w_up, w_left, w_diag, w_skip = shares(D, cost, skip, soft, steps, diag_weight)
-    e = dag_reverse(w_up, w_left, w_diag, w_skip, grad_D)
+    e = accumulate(w_up, w_left, w_diag, w_skip, grad_D, True)
     if diag_weight != 1.0:
         none = (w_up + w_left + w_diag) == 0
         e = e * torch.where(none, 1.0, w_up + w_left + diag_weight * w_diag)

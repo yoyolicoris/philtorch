@@ -12,8 +12,8 @@ requires_cuda = pytest.mark.skipif(not torch.cuda.is_available(), reason="CUDA n
 def _problem(B, N, C, U, *, blank=0, seed=0, dtype=torch.float64, device="cuda"):
     gen = torch.Generator().manual_seed(seed)
     logits = torch.randn(B, N, C, dtype=dtype, generator=gen)
-    labels = torch.randint(1, C, (B, U), generator=gen)
-    targets = torch.where(labels <= blank, labels - 1, labels)  # every class but the blank
+    labels = torch.randint(0, C - 1, (B, U), generator=gen)
+    targets = labels + (labels >= blank)  # every class but the blank
     return logits.to(device).requires_grad_(), targets.to(device)
 
 
