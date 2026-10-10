@@ -5,6 +5,8 @@ from typing import Literal
 import torch
 from torch import Tensor
 
+from .._triton import check_cuda_triton
+
 StepPattern = Literal["symmetric", "asymmetric", "orthogonal"]
 
 
@@ -87,9 +89,13 @@ def dtw(
     tensor, from any differentiable function of the sequences, such as the
     squared Euclidean distances between their frames.
 
+    Note:
+        Runs only on CUDA GPUs, as Triton kernels: the inputs must be CUDA
+        tensors, and Triton must be installed, as it is with PyTorch's CUDA
+        builds for Linux.
+
     Args:
-        cost (Tensor): the costs :math:`c[n, m]`, of shape :math:`(B, N, M)`,
-            on a CUDA device.
+        cost (Tensor): the costs :math:`c[n, m]`, of shape :math:`(B, N, M)`.
         gamma (float): 0 for DTW, positive for soft-DTW. Default: 0.
         step_pattern (str): the steps a path may take, as (row, column)
             increments: ``"symmetric"`` for (1, 0), (0, 1) and (1, 1);
@@ -119,10 +125,12 @@ def dtw(
         no path, such as the asymmetric steps with :math:`N_b < M_b`.
 
     Raises:
-        ValueError: if :attr:`cost` is not on a CUDA device, is empty or has
-            more than :math:`2^{31} - 1` cells per pair, if
-            :attr:`step_pattern` is unknown, or if :attr:`diagonal_weight` is
-            not 1 with steps that have no weighted diagonal.
+        ValueError: if :attr:`cost` is not a CUDA tensor of shape
+            :math:`(B, N, M)` with :math:`N, M > 0` and at most
+            :math:`2^{31} - 1` cells per pair, if :attr:`step_pattern` is
+            unknown, or if :attr:`diagonal_weight` is not 1 with steps that
+            have no weighted diagonal.
+        RuntimeError: if Triton is not installed.
 
     Example::
 
@@ -140,15 +148,16 @@ def dtw(
     .. _Parallelizing Dynamic Time Warping Algorithm Using Prefix Computations on GPU:
         https://doi.org/10.1109/HPCC.and.EUC.2013.50
     """
-    assert cost.dim() == 3, f"cost must be (B, N, M), got {tuple(cost.shape)}"
-    if not cost.is_cuda:
-        raise ValueError("dtw runs Triton kernels, which need a CUDA tensor.")
+    if cost.dim() != 3:
+        raise ValueError(f"cost must be (B, N, M), got {tuple(cost.shape)}")
     if step_pattern not in ("symmetric", "asymmetric", "orthogonal"):
         raise ValueError(f"unknown step_pattern {step_pattern!r}")
     if cost.size(1) == 0 or cost.size(2) == 0:
         raise ValueError(f"cost has an empty sequence: shape {tuple(cost.shape)}")
     if diagonal_weight != 1.0 and step_pattern != "symmetric":
         raise ValueError(f"diagonal_weight needs the symmetric steps, not {step_pattern!r}.")
+    check_cuda_triton("dtw", cost)
+    # Imported here so that philtorch.align imports without Triton.
     from ._dtw_kernels import dtw_dp
 
     B, N, M = cost.shape
@@ -203,6 +212,11 @@ def soft_dtw_divergence(
     and Vert, 2021). Unlike soft-DTW itself, it is zero for identical
     sequences, and with the squared Euclidean cost it is non-negative.
 
+    Note:
+        Runs only on CUDA GPUs, as Triton kernels: the inputs must be CUDA
+        tensors, and Triton must be installed, as it is with PyTorch's CUDA
+        builds for Linux.
+
     Args:
         cost_xy (Tensor): costs between the sequences, of shape
             :math:`(B, N, M)`.
@@ -218,10 +232,15 @@ def soft_dtw_divergence(
     Returns:
         Tensor: the divergences, of shape :math:`(B)`.
 
+    Raises:
+        ValueError: if :attr:`gamma` is not positive, or as :func:`dtw` does.
+        RuntimeError: if Triton is not installed.
+
     .. _Differentiable Divergences Between Time Series:
         https://proceedings.mlr.press/v130/blondel21a.html
     """
-    assert gamma > 0, "the soft-DTW divergence needs gamma > 0"
+    if not gamma > 0:
+        raise ValueError(f"the soft-DTW divergence needs gamma > 0, got {gamma}")
     n_len, m_len = (None, None) if lengths is None else lengths
     xx = None if lengths is None else (n_len, n_len)
     yy = None if lengths is None else (m_len, m_len)

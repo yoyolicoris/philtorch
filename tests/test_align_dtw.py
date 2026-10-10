@@ -1,17 +1,21 @@
+import subprocess
+import sys
+
 import pytest
 import torch
 
 from philtorch.align import dtw, soft_dtw_divergence
 
-# dtw runs Triton kernels, so it needs CUDA.
-pytestmark = pytest.mark.skipif(not torch.cuda.is_available(), reason="CUDA not available")
+# dtw runs Triton kernels, so the tests that run it need CUDA; the validation
+# and import tests run anywhere.
+requires_cuda = pytest.mark.skipif(not torch.cuda.is_available(), reason="CUDA not available")
 
 STEP_PATTERNS = ["symmetric", "asymmetric", "orthogonal"]
 
 
-def _cost(batch_size, N, M, *, seed=0, dtype=torch.float64):
+def _cost(batch_size, N, M, *, seed=0, dtype=torch.float64, device="cuda"):
     gen = torch.Generator().manual_seed(seed)
-    return torch.rand(batch_size, N, M, dtype=dtype, generator=gen).cuda()
+    return torch.rand(batch_size, N, M, dtype=dtype, generator=gen).to(device)
 
 
 def _softmin(values, gamma):
@@ -56,6 +60,7 @@ def _distance(cost, gamma, step_pattern="symmetric", diagonal_weight=1.0):
     return torch.where(D > 1e9, float("inf"), D)
 
 
+@requires_cuda
 @pytest.mark.parametrize("step_pattern", STEP_PATTERNS)
 @pytest.mark.parametrize("gamma", [0.0, 0.1, 1.0])
 @pytest.mark.parametrize("N, M", [(1, 1), (1, 4), (4, 1), (5, 5), (9, 6), (6, 9), (40, 3)])
@@ -70,6 +75,7 @@ def test_dtw_matches_sequential(step_pattern, gamma, N, M):
         torch.testing.assert_close(grad, expected_grad)
 
 
+@requires_cuda
 @pytest.mark.parametrize("gamma", [0.0, 0.5])
 @pytest.mark.parametrize("diagonal_weight", [2.0, 0.5])
 def test_dtw_diagonal_weight(gamma, diagonal_weight):
@@ -82,6 +88,7 @@ def test_dtw_diagonal_weight(gamma, diagonal_weight):
     torch.testing.assert_close(grad, expected_grad)
 
 
+@requires_cuda
 @pytest.mark.parametrize("step_pattern", STEP_PATTERNS)
 @pytest.mark.parametrize("gamma", [0.0, 0.5])
 def test_dtw_alignment_is_the_gradient(step_pattern, gamma):
@@ -97,11 +104,12 @@ def test_dtw_alignment_is_the_gradient(step_pattern, gamma):
         assert (grad >= 0).all() and (grad <= 1 + 1e-12).all()
 
 
-@pytest.mark.parametrize("step_pattern", STEP_PATTERNS)
-@pytest.mark.parametrize("diagonal_weight", [1.0, 2.0])
+@requires_cuda
+@pytest.mark.parametrize(
+    "step_pattern, diagonal_weight",
+    [("symmetric", 1.0), ("symmetric", 2.0), ("asymmetric", 1.0), ("orthogonal", 1.0)],
+)
 def test_soft_dtw_second_derivatives(step_pattern, diagonal_weight):
-    if diagonal_weight != 1.0 and step_pattern != "symmetric":
-        pytest.skip("diagonal weights need the symmetric steps")
     cost = _cost(2, 5, 4).requires_grad_()
 
     def run(c):
@@ -110,6 +118,7 @@ def test_soft_dtw_second_derivatives(step_pattern, diagonal_weight):
     assert torch.autograd.gradgradcheck(run, (cost,))
 
 
+@requires_cuda
 @pytest.mark.parametrize("step_pattern", STEP_PATTERNS)
 @pytest.mark.parametrize("gamma", [0.0, 0.5])
 def test_dtw_lengths(step_pattern, gamma):
@@ -143,6 +152,7 @@ def _band(N, M, band):
     return offset <= max(band, slope / 2)
 
 
+@requires_cuda
 @pytest.mark.parametrize("gamma", [0.0, 0.5])
 @pytest.mark.parametrize("N, M, band", [(12, 9, 2.0), (9, 12, 2.0), (10, 40, 1.0), (1, 5, 1.0)])
 def test_dtw_band(gamma, N, M, band):
@@ -158,12 +168,14 @@ def test_dtw_band(gamma, N, M, band):
     assert (grad * ~allowed).abs().max() == 0
 
 
+@requires_cuda
 def test_dtw_zero_band_on_a_square_grid_is_the_diagonal():
     square = _cost(2, 6, 6)
     diagonal = square.diagonal(dim1=1, dim2=2).sum(-1)
     torch.testing.assert_close(dtw(square, band=0.0), diagonal)
 
 
+@requires_cuda
 @pytest.mark.parametrize("gamma", [0.0, 0.5])
 @pytest.mark.parametrize("step_pattern", STEP_PATTERNS)
 def test_dtw_inf_costs_forbid_cells(gamma, step_pattern):
@@ -181,6 +193,7 @@ def test_dtw_inf_costs_forbid_cells(gamma, step_pattern):
         assert grad.isfinite().all() and grad[blocked].abs().max() == 0
 
 
+@requires_cuda
 @pytest.mark.parametrize("gamma", [0.0, 0.5])
 def test_dtw_inf_padding_with_lengths(gamma):
     cost = _cost(2, 4, 4)
@@ -194,6 +207,7 @@ def test_dtw_inf_padding_with_lengths(gamma):
     assert grad.isfinite().all()
 
 
+@requires_cuda
 def test_dtw_asymmetric_without_a_path():
     cost = _cost(2, 3, 5).requires_grad_()
     distance = dtw(cost, step_pattern="asymmetric")
@@ -203,12 +217,20 @@ def test_dtw_asymmetric_without_a_path():
 
 
 def test_dtw_rejects_bad_arguments():
+    cost = _cost(1, 3, 3, device="cpu")
+    with pytest.raises(ValueError, match="cost must be"):
+        dtw(cost[0])
     with pytest.raises(ValueError, match="step_pattern"):
-        dtw(_cost(1, 3, 3), step_pattern="symmetric2")
+        dtw(cost, step_pattern="symmetric2")
     with pytest.raises(ValueError, match="empty"):
-        dtw(_cost(1, 0, 3))
+        dtw(cost[:, :0])
+    with pytest.raises(ValueError, match="diagonal_weight"):
+        dtw(cost, diagonal_weight=2.0, step_pattern="orthogonal")
+    with pytest.raises(ValueError, match="gamma > 0"):
+        soft_dtw_divergence(cost, cost, cost, 0.0)
 
 
+@requires_cuda
 def test_soft_dtw_divergence():
     gen = torch.Generator().manual_seed(0)
     x = torch.randn(3, 8, 2, dtype=torch.float64, generator=gen).cuda()
@@ -225,6 +247,7 @@ def test_soft_dtw_divergence():
     torch.testing.assert_close(zero, torch.zeros_like(zero))
 
 
+@requires_cuda
 @pytest.mark.parametrize("gamma", [0.0, 0.5])
 @pytest.mark.parametrize("step_pattern", STEP_PATTERNS)
 def test_dtw_float32_long(gamma, step_pattern):
@@ -240,15 +263,22 @@ def test_dtw_float32_long(gamma, step_pattern):
 
 
 def test_dtw_needs_cuda():
-    with pytest.raises(ValueError, match="CUDA"):
-        dtw(_cost(1, 3, 3).cpu())
+    with pytest.raises(ValueError, match="dtw runs Triton kernels on CUDA GPUs only"):
+        dtw(_cost(1, 3, 3, device="cpu"))
 
 
-def test_dtw_rejects_diagonal_weight_without_diagonal():
-    with pytest.raises(ValueError, match="diagonal_weight"):
-        dtw(_cost(1, 3, 3), diagonal_weight=2.0, step_pattern="orthogonal")
+def test_align_imports_without_triton(tmp_path):
+    # The kernels are imported on first use. Run outside the checkout, whose
+    # philtorch/ has no built extension, so the subprocess imports the
+    # installed package as the tests do.
+    code = "import sys; sys.modules['triton'] = None; import philtorch.align"
+    result = subprocess.run(
+        [sys.executable, "-c", code], cwd=tmp_path, capture_output=True, text=True
+    )
+    assert result.returncode == 0, result.stderr
 
 
+@requires_cuda
 @pytest.mark.parametrize("soft", [False, True])
 @pytest.mark.parametrize("diag, diagonal_weight", [(True, 1.0), (True, 2.0), (False, 1.0)])
 def test_dtw_backward_implementations_agree(soft, diag, diagonal_weight):
