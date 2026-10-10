@@ -462,6 +462,9 @@ def _num_warps(L: int, backward: bool = False, diag: bool = False) -> int:
 # strides, and the kernels write rows contiguously. Offsets within a pair are
 # 32-bit, which keeps long rows fast; the batch offset is 64-bit.
 _MAX_CELLS = 2**31 - 1
+# A program holds a whole row: 2^18 lanes compile in about half a minute,
+# once, and twice that did not within minutes.
+_MAX_ROW = 2**18
 
 
 def _launch(kernel, B: int, L: int, *args, num_warps: int | None = None):
@@ -626,9 +629,10 @@ def dtw_dp(cost: Tensor, skip: Tensor | None, soft: bool, steps: str, diag_weigh
 
 def _forward(cost, skip, soft, steps, diag_weight, steps_back):
     B, R, L = cost.shape
-    if R * L > _MAX_CELLS:
+    if R * L > _MAX_CELLS or L > _MAX_ROW:
         raise ValueError(
-            f"the DTW kernels take at most 2^31 - 1 cells per pair, got {tuple(cost.shape)}"
+            "the DTW kernels take at most 2^31 - 1 cells per pair and 2^18 per row, "
+            f"got {tuple(cost.shape)}"
         )
     D = _empty(cost)
     _launch(

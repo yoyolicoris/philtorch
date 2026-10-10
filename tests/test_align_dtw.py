@@ -343,3 +343,9 @@ def test_dtw_path(step_pattern, diagonal_weight):
     (grad,) = torch.autograd.grad(distance[possible].sum(), cost)
     (expected_grad,) = torch.autograd.grad(expected[possible].sum(), cost)
     torch.testing.assert_close(grad, expected_grad)
+
+
+@requires_cuda
+def test_dtw_rejects_rows_too_long_to_compile():
+    with pytest.raises(ValueError, match="2\\^18 per row"):
+        dtw(_cost(1, 2, 2**18 + 1, dtype=torch.float32))

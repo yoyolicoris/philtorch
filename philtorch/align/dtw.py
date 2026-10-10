@@ -127,10 +127,11 @@ def dtw(
 
     Raises:
         ValueError: if :attr:`cost` is not a CUDA tensor of shape
-            :math:`(B, N, M)` with :math:`N, M > 0` and at most
-            :math:`2^{31} - 1` cells per pair, if :attr:`step_pattern` is
-            unknown, or if :attr:`diagonal_weight` is not 1 with steps that
-            have no weighted diagonal.
+            :math:`(B, N, M)` with :math:`N, M > 0`, at most
+            :math:`2^{31} - 1` cells per pair and :math:`\max(N, M) \le
+            2^{18}`, if :attr:`step_pattern` is unknown, or if
+            :attr:`diagonal_weight` is not 1 with steps that have no weighted
+            diagonal.
         RuntimeError: if Triton is not installed.
 
     Example::

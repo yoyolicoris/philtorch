@@ -73,8 +73,9 @@ def ctc_loss(
 
     Raises:
         ValueError: if :attr:`log_probs` is not a CUDA tensor of shape
-            :math:`(N, T, C)` or :math:`(T, C)`, if the other arguments'
-            shapes do not match it, or if :attr:`reduction` is unknown.
+            :math:`(N, T, C)` or :math:`(T, C)` with :math:`T < 2^{18}`, if
+            the other arguments' shapes do not match it, or if
+            :attr:`reduction` is unknown.
         RuntimeError: if Triton is not installed.
 
     Example::
@@ -164,7 +165,7 @@ def forced_align(
     with torch.no_grad():
         state_log_probs = log_probs.gather(2, states[:, None].expand(N, T, -1))
         D, steps_back, ends = _grid(state_log_probs, skip, frames, labels, True)
-        # From the better end, the last label first under a tie. Each frame's
+        # From the better end, the final blank first under a tie. Each frame's
         # steps back are offsets to the row before; past a sequence's frames
         # they stay, so its traceback starts at its own end.
         rows = (2 * labels + 1 - ends.argmin(0)).int()
@@ -220,8 +221,8 @@ def _prepare(name, log_probs, targets, input_lengths, target_lengths, blank):
 def _grid(state_log_probs, skip, frames, labels, viterbi):
     """The kernels' grid from each frame's log-probabilities of the states, (N, T, 2S + 1):
     its accumulated costs D, with ``viterbi`` its cells' best steps back, and -log p
-    of the paths ending in each sequence's last label and in the blank after it,
-    (2, N): of all paths, or with ``viterbi`` the best one."""
+    of the paths ending in each sequence's final blank and in its last label, rows
+    2S + 1 and 2S, (2, N): of all paths, or with ``viterbi`` the best one."""
     # Imported here so that philtorch.align imports without Triton.
     from ._dtw_kernels import ctc_viterbi, dtw_dp
 
