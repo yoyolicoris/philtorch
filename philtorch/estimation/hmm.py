@@ -341,7 +341,10 @@ def _predicted_and_backward(
 
     Both are forward chains with each step's emissions on its summed states,
     stacked in the batch of one call: beta runs in flipped time over the
-    transposed matrices.
+    transposed matrices. The two halves share those flags, so the forward
+    half gives the predicted messages rather than alpha, and the joint is
+    predicted + log_emit + beta. Moving log_emit between the messages by
+    subtraction instead would give -inf - (-inf) at impossible emissions.
     """
     B = log_emit.size(0)
     trans = torch.stack([log_trans, log_trans.flip(1).mT.contiguous()])
