@@ -1,5 +1,7 @@
 """Connectionist temporal classification (CTC) as soft-DTW."""
 
+import math
+
 import torch
 import torch.nn.functional as F
 from torch import Tensor
@@ -96,7 +98,9 @@ def ctc_loss(
     skip = torch.zeros_like(states, dtype=torch.bool)
     skip[:, 1] = True
     skip[:, 3::2] = targets[:, 1:] != targets[:, :-1]
-    cost = -log_probs.gather(2, states[:, None].expand(B, N, -1)).mT  # (B, 2U + 1, N)
+    # (B, 2U + 1, N), in bits, as the kernels' soft-min is in base 2: one
+    # multiply both negates and converts.
+    cost = log_probs.gather(2, states[:, None].expand(B, N, -1)).mT * (-1 / math.log(2))
     # A virtual first state and frame, at no cost where they meet, from which
     # both the first blank and the first label begin.
     cost = F.pad(cost, (1, 0, 1, 0), value=float("inf"))
@@ -106,6 +110,7 @@ def ctc_loss(
     # A path ends in the last label or the blank after it, at the last frame.
     batch = torch.arange(B, device=device)
     ends = torch.stack([D[batch, 2 * labels + 1, frames], D[batch, 2 * labels, frames]])
+    ends = ends * math.log(2)
     none = ends.isinf().all(0)
     loss = -torch.logsumexp(-torch.where(none, 0.0, ends), dim=0)
     return torch.where(none, float("inf"), loss)

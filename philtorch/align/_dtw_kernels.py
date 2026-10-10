@@ -1,7 +1,8 @@
 """Triton kernels for DTW, soft-DTW and CTC, differentiable to any order.
 
 The accumulated costs D of a cost matrix (B, R, L) follow, with soft-min for
-soft-DTW,
+soft-DTW, in base 2 (-log2 of a sum of powers of 2: the hardware's exp2 and
+log2, the multiplies of exp and log saved; callers scale costs by log2 e),
 
     D(i, j) = min(D(i - 1, j) + c(i, j), D(i, j - 1) + c(i, j),
                   D(i - 1, j - 1) + w c(i, j), D(i - 2, j - 1) + c(i, j)),
@@ -47,6 +48,8 @@ linear for every accumulation, the first-order backward's included;
 a ``STEPS`` constant, and with the ctc steps the (B, R) skip mask.
 """
 
+import math
+
 import torch
 import torch.nn.functional as F
 import triton
@@ -62,9 +65,9 @@ _ORTHOGONAL, _CTC = (tl.constexpr(_STEPS[name]) for name in ("orthogonal", "ctc"
 
 @triton.jit
 def _softmin(x, y):
-    """-log(e^-x + e^-y) as min(x, y) - log(1 + e^-|x - y|), and inf if both are."""
+    """-log2(2^-x + 2^-y) as min(x, y) - log2(1 + 2^-|x - y|), and inf if both are."""
     smaller = tl.minimum(x, y)
-    return tl.where(smaller == _KERNEL_INF, smaller, smaller - tl.log(1 + tl.exp(-tl.abs(x - y))))
+    return tl.where(smaller == _KERNEL_INF, smaller, smaller - tl.log2(1 + tl.exp2(-tl.abs(x - y))))
 
 
 @triton.jit
@@ -136,17 +139,17 @@ def _shares(
     if SOFT:
         # Only the steps in the set: an absent one's exp would be 0, at a cost.
         safe = tl.where(none, 0.0, best)
-        e_left = tl.exp(safe - left)
+        e_left = tl.exp2(safe - left)
         zero = tl.zeros(c.shape, c.dtype)
         e_up = zero
         e_diag = zero
         e_skip = zero
         if STEPS != _CTC:
-            e_up = tl.exp(safe - up)
+            e_up = tl.exp2(safe - up)
         if STEPS != _ORTHOGONAL:
-            e_diag = tl.exp(safe - diag)
+            e_diag = tl.exp2(safe - diag)
         if STEPS == _CTC:
-            e_skip = tl.exp(safe - skip)
+            e_skip = tl.exp2(safe - skip)
         scale = tl.where(none, 0.0, 1.0 / (e_up + e_left + e_diag + e_skip))
         w_up, w_left, w_diag, w_skip = e_up * scale, e_left * scale, e_diag * scale, e_skip * scale
     else:
@@ -494,7 +497,7 @@ def shares(
     """The shares of each cell from its up, left, up-left and skip predecessors.
 
     As the kernels compute them, with PyTorch ops that autograd
-    differentiates: a softmax of the negated arguments for soft-DTW, a
+    differentiates: a softmax of the negated arguments, in base 2, for soft-DTW, a
     one-hot of the first best for DTW; zero for predecessors outside the
     grid, and all zero for cell (0, 0). None for the steps not in the set.
     """
@@ -511,7 +514,7 @@ def shares(
     outside = torch.isinf(args)
     if soft:
         none = outside.all(0, keepdim=True)
-        weights = torch.softmax(torch.where(none, 0.0, -args), dim=0)
+        weights = torch.softmax(torch.where(none, 0.0, -args) * math.log(2), dim=0)
     else:
         weights = F.one_hot(args.argmin(0), len(args)).movedim(-1, 0).to(D.dtype)
     weights = iter(torch.where(outside, 0.0, weights))
@@ -521,9 +524,9 @@ def shares(
 @torch.library.custom_op("philtorch::dtw_dp", mutates_args=())
 def dtw_dp(cost: Tensor, skip: Tensor | None, soft: bool, steps: str, diag_weight: float) -> Tensor:
     """The accumulated costs D of cost (B, R, L) over the steps ``steps``, the
-    diagonal weighted by ``diag_weight``; ``skip`` is the (B, R) mask of the
-    rows the ctc steps may skip into, and None for the others. See the module
-    docstring."""
+    diagonal weighted by ``diag_weight``, soft-min in base 2 with ``soft``;
+    ``skip`` is the (B, R) mask of the rows the ctc steps may skip into, and
+    None for the others. See the module docstring."""
     B, R, L = cost.shape
     if R * L > _MAX_CELLS:
         raise ValueError(

@@ -1,5 +1,6 @@
 """Dynamic time warping (DTW) and soft-DTW."""
 
+import math
 from typing import Literal
 
 import torch
@@ -166,7 +167,8 @@ def dtw(
         m_len = torch.full((B,), M, device=cost.device)
     else:
         n_len, m_len = (t.to(cost.device, torch.long) for t in lengths)
-    scale = 1.0 / gamma if gamma > 0 else 1.0
+    # The kernels' soft-min is in base 2: costs in units of gamma / log2(e).
+    scale = 1.0 / (gamma * math.log(2)) if gamma > 0 else 1.0
     cost = cost * scale
     if band is not None:
         # A large finite cost, not inf, keeps soft-min's arithmetic finite; a
