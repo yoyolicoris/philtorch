@@ -217,7 +217,9 @@ def test_hmm_chain_takes_an_expanded_gradient():
 
     log_emit, log_trans, log_init = _model(2, 70, 3, time_varying=False)
     first = (log_init + log_emit[:, 0]).requires_grad_()
-    alpha = _LogChain.apply(first, log_trans[None, None], log_emit[:, 1:], None, False, False)
+    alpha = _LogChain.apply(
+        first, log_trans[None, None], log_emit[:, 1:], None, False, False, False
+    )
     (grad,) = torch.autograd.grad(alpha.sum(), first, retain_graph=True)
     (expected,) = torch.autograd.grad(alpha, first, torch.ones_like(alpha))
     torch.testing.assert_close(grad, expected)
@@ -296,6 +298,29 @@ def test_hmm_gradients_with_unreachable_states():
     _, posteriors = hmm_smoother(log_emit, log_trans, log_init)
     (grad_post,) = torch.autograd.grad(posteriors.exp().sum(), log_emit)
     assert torch.isfinite(grad_post).all()
+
+
+@requires_cuda
+def test_hmm_impossible_emissions():
+    # Each state can't emit some observations: -inf emissions must give no
+    # NaN in the messages or their gradients. The reference takes -1e4
+    # instead, whose exp is 0 too, as torch's own logsumexp has NaN
+    # gradients at -inf.
+    emissions, log_trans, log_init = _model(2, 70, 3, time_varying=False)
+    gen = torch.Generator().manual_seed(2)
+    impossible = (torch.rand(emissions.shape, generator=gen) < 0.3).to(emissions.device)
+    impossible[..., 0] = False  # state 0 can emit anything, so a path exists
+    emissions.requires_grad_()
+    log_emit = emissions.masked_fill(impossible, float("-inf"))
+    finite = emissions.masked_fill(impossible, -1e4)
+    expected_ll, _, expected, _, _ = _sequential(finite, log_trans, log_init)
+    ll, posteriors = hmm_smoother(log_emit, log_trans, log_init)
+    torch.testing.assert_close(ll, expected_ll)
+    torch.testing.assert_close(posteriors.exp(), expected.exp())
+    weights = torch.randn_like(emissions)
+    (grad,) = torch.autograd.grad((posteriors.exp() * weights).sum(), emissions)
+    (expected_grad,) = torch.autograd.grad((expected.exp() * weights).sum(), emissions)
+    torch.testing.assert_close(grad, expected_grad)
 
 
 @requires_cuda
