@@ -1,22 +1,24 @@
 """Triton kernels for the linear recurrence h[t] = A[t] h[t - 1] + x[t].
 
 :func:`recurrence` computes it on CUDA for any state size M up to
-``_SWEEP_STATES`` (half that for complex), as a chunked scan in row-vector
-form, y[t] = y[t - 1] A[t]^T + x[t], in two levels, as the HMM's message
-chains do (:mod:`philtorch.estimation._hmm_kernels`):
+``_SWEEP_STATES`` (half that for complex), in row-vector form, y[t] = y[t - 1]
+A[t]^T + x[t], as one single-pass scan with decoupled look-back
+(``_scan_kernel``). Each program claims the next chunk of a batch item from
+an atomic counter, so every chunk it waits on belongs to a program already
+running, and
 
-1. ``_totals_kernel`` composes each chunk of ``_CHUNK`` steps into one map
-   y_end = y_start P + o, one program per chunk;
-2. the chain of those maps gives each chunk's starting state, by the same
-   method one level up;
-3. ``_sweep_kernel`` carries each chunk's starting state through its steps.
+1. composes its chunk into the map y_end = y_start P + o and publishes it;
+2. looks back over its predecessors' flags to the latest that has published
+   its end state, and from it applies the maps in between, y <- y P + o, to
+   get its own start;
+3. publishes its own end state, y_start P + o;
+4. carries its start through its steps.
 
-With time-invariant A, every chunk's P is the same power of A^T, computed
-once by repeated squaring (``_power_kernel``), so the totals only carry
-the offsets o: O(M^2) work per step, as the sweep. Time-varying A costs
-O(M^3) per step for the totals. With many batch items the batch alone fills
-the GPU, and one chunk per item, the sweep alone, does less work
-(:func:`_sweep_only`).
+With time-invariant A, every full chunk's P is the same power of A^T,
+computed once by repeated squaring (``_power_kernel``), so a chunk's map
+costs O(M^2) per step, as the steps themselves; time-varying A costs O(M^3)
+per step for P. With many batch items the batch alone fills the GPU, and
+one chunk per item, the steps alone, does less work (:func:`_sweep_only`).
 
 Complex inputs run as their real and imaginary parts (``view_as_real``),
 multiplied out: four real products per complex one, as complex arithmetic
@@ -29,12 +31,10 @@ import triton
 import triton.language as tl
 from torch import Tensor
 
-# Steps per chunk of the scan.
-_CHUNK = 64
 # The largest padded state sizes, a complex state counting twice: of a
-# time-varying scan, which holds M^3 products in registers, and of an M x M
-# matrix in registers, for the sweep and the time-invariant scan. Between
-# the two, a time-varying recurrence runs the sweep alone.
+# time-varying chunk's map, which holds M^3 products in registers, and of an
+# M x M matrix in registers. Between the two, a time-varying recurrence runs
+# one chunk per batch item.
 _SCAN_STATES = 32
 _SWEEP_STATES = 128
 
@@ -100,6 +100,18 @@ def _matmul(pr, pi, mr, mi, COMPLEX: tl.constexpr):
 
 
 @triton.jit
+def _store_matrix(ptr, offset, rows, cols, M, re, im, COMPLEX: tl.constexpr):
+    dtype = ptr.dtype.element_ty
+    mask = (rows < M) & (cols < M)
+    out = offset + rows * M + cols
+    if COMPLEX:
+        tl.store(ptr + 2 * out, re.to(dtype), mask=mask)
+        tl.store(ptr + 2 * out + 1, im.to(dtype), mask=mask)
+    else:
+        tl.store(ptr + out, re.to(dtype), mask=mask)
+
+
+@triton.jit
 def _power_kernel(
     a_ptr, out_ptr, M, SQUARINGS: tl.constexpr, TRANSPOSE: tl.constexpr,
     COMPLEX: tl.constexpr, BM: tl.constexpr,
@@ -116,90 +128,91 @@ def _power_kernel(
         qr, qi = _matmul(pr, pi, pr, pi, COMPLEX)
         pr = qr
         pi = qi
-    out = b * M * M + rows * M + cols
-    mask = (rows < M) & (cols < M)
-    if COMPLEX:
-        tl.store(out_ptr + 2 * out, pr, mask=mask)
-        tl.store(out_ptr + 2 * out + 1, pi, mask=mask)
-    else:
-        tl.store(out_ptr + out, pr, mask=mask)
+    _store_matrix(out_ptr, b * M * M, rows, cols, M, pr, pi, COMPLEX)
 
 
 @triton.jit
-def _totals_kernel(
-    a_ptr, x_ptr, total_ptr, offset_ptr, N, M, C, stride_ab, stride_at,
-    T: tl.constexpr, VARYING: tl.constexpr, TRANSPOSE: tl.constexpr,
+def _scan_kernel(
+    a_ptr, x_ptr, zi_ptr, power_ptr, out_ptr, offset_ptr, map_ptr, state_ptr, flag_ptr,
+    counter_ptr, N, M, C, chunk, stride_ab, stride_at, stride_pb, VARYING: tl.constexpr,
     COMPLEX: tl.constexpr, BM: tl.constexpr,
 ):  # fmt: skip
-    """Chunk c's map y_end = y_start P + o: o, and with time-varying A, P.
+    """The steps of one chunk of ``chunk`` steps of one batch item; see the module docstring.
 
-    With time-invariant A, P is a power of the one matrix, which the
-    caller computes once, so only o is carried.
+    A chunk's flag is 1 once its map (o, and P for time-varying A) is
+    published, and 2 once its end state is.
     """
-    pid = tl.program_id(0)
-    b = (pid // C).to(tl.int64)
-    c = (pid % C).to(tl.int64)
-    steps = tl.minimum(T, N - c * T)
-    ACC: tl.constexpr = offset_ptr.dtype.element_ty
-    base = b * stride_ab
-    states = tl.arange(0, BM)
-    rows = states[:, None]
-    cols = states[None, :]
-    n = c * T
-    x_base = b * N * M
-    o_r, o_i = _vector(x_ptr, x_base + n * M, states, M, ACC, COMPLEX)
-    mr, mi = _matrix(a_ptr, base, n, stride_at, M, rows, cols, ACC, TRANSPOSE, COMPLEX)
-    pr = mr
-    pi = mi
-    for s in range(1, T):
-        valid = s < steps
-        n = c * T + tl.where(valid, s, 0)
-        if VARYING:
-            mr, mi = _matrix(a_ptr, base, n, stride_at, M, rows, cols, ACC, TRANSPOSE, COMPLEX)
-            qr, qi = _matmul(pr, pi, mr, mi, COMPLEX)
-            pr = tl.where(valid, qr, pr)
-            if COMPLEX:
-                pi = tl.where(valid, qi, pi)
-        xr, xi = _vector(x_ptr, x_base + n * M, states, M, ACC, COMPLEX)
-        nr, ni = _times(o_r, o_i, mr, mi, COMPLEX)
-        o_r = tl.where(valid, nr + xr, o_r)
-        if COMPLEX:
-            o_i = tl.where(valid, ni + xi, o_i)
-    _store_vector(offset_ptr, pid.to(tl.int64) * M, states, M, o_r, o_i, COMPLEX)
-    if VARYING:
-        out = pid.to(tl.int64) * M * M + rows * M + cols
-        mask = (rows < M) & (cols < M)
-        if COMPLEX:
-            tl.store(total_ptr + 2 * out, pr, mask=mask)
-            tl.store(total_ptr + 2 * out + 1, pi, mask=mask)
-        else:
-            tl.store(total_ptr + out, pr, mask=mask)
-
-
-@triton.jit
-def _sweep_kernel(
-    start_ptr, a_ptr, x_ptr, out_ptr, N, M, C, chunk, stride_ab, stride_at,
-    VARYING: tl.constexpr, TRANSPOSE: tl.constexpr, COMPLEX: tl.constexpr,
-    BM: tl.constexpr,
-):  # fmt: skip
-    """y[t] = y[t - 1] A[t]^T + x[t] through chunk c of ``chunk`` steps, from its start."""
-    pid = tl.program_id(0)
-    b = (pid // C).to(tl.int64)
-    c = (pid % C).to(tl.int64)
+    tile = tl.atomic_add(counter_ptr, 1).to(tl.int64)
+    b = tile // C
+    c = tile % C
     steps = tl.minimum(chunk, N - c * chunk)
-    ACC: tl.constexpr = start_ptr.dtype.element_ty
+    ACC: tl.constexpr = state_ptr.dtype.element_ty
     base = b * stride_ab
     states = tl.arange(0, BM)
     rows = states[:, None]
     cols = states[None, :]
-    yr, yi = _vector(start_ptr, pid.to(tl.int64) * M, states, M, ACC, COMPLEX)
     x_base = b * N * M
-    # Time-invariant A is loaded once.
-    mr, mi = _matrix(a_ptr, base, 0, 0, M, rows, cols, ACC, TRANSPOSE, COMPLEX)
+    first = c * chunk
+    index = b * C + c
+    # Time-invariant A is loaded once, transposed into row-vector form.
+    mr, mi = _matrix(a_ptr, base, first, stride_at, M, rows, cols, ACC, True, COMPLEX)
+    yr, yi = _vector(zi_ptr, b * M, states, M, ACC, COMPLEX)
+    if C > 1:
+        # 1. The chunk's map: o from a zero start, and P.
+        o_r, o_i = _vector(x_ptr, x_base + first * M, states, M, ACC, COMPLEX)
+        pr = mr
+        pi = mi
+        for s in range(1, steps):
+            n = first + s
+            if VARYING:
+                mr, mi = _matrix(a_ptr, base, n, stride_at, M, rows, cols, ACC, True, COMPLEX)
+                pr, pi = _matmul(pr, pi, mr, mi, COMPLEX)
+            xr, xi = _vector(x_ptr, x_base + n * M, states, M, ACC, COMPLEX)
+            nr, ni = _times(o_r, o_i, mr, mi, COMPLEX)
+            o_r = nr + xr
+            if COMPLEX:
+                o_i = ni + xi
+        if not VARYING:
+            pr, pi = _matrix(power_ptr, b * stride_pb, 0, 0, M, rows, cols, ACC, False, COMPLEX)
+        if c > 0:
+            if c < C - 1:
+                _store_vector(offset_ptr, index * M, states, M, o_r, o_i, COMPLEX)
+                if VARYING:
+                    _store_matrix(map_ptr, index * M * M, rows, cols, M, pr, pi, COMPLEX)
+                tl.debug_barrier()
+                tl.atomic_xchg(flag_ptr + index, 1, sem="release")
+            # 2. Back over the flags to the latest predecessor with its end
+            # state, then forward from it through the maps in between.
+            j = c - 1
+            flag = tl.atomic_add(flag_ptr + b * C + j, 0, sem="acquire")
+            while flag != 2:
+                j = tl.where(flag == 1, j - 1, j)
+                flag = tl.atomic_add(flag_ptr + b * C + j, 0, sem="acquire")
+            yr, yi = _vector(state_ptr, (b * C + j) * M, states, M, ACC, COMPLEX)
+            for i in range(j + 1, c):
+                ar, ai = _vector(offset_ptr, (b * C + i) * M, states, M, ACC, COMPLEX)
+                if VARYING:
+                    qr, qi = _matrix(
+                        map_ptr, (b * C + i) * M * M, 0, 0, M, rows, cols, ACC, False, COMPLEX
+                    )
+                else:
+                    qr = pr
+                    qi = pi
+                ur, ui = _times(yr, yi, qr, qi, COMPLEX)
+                yr = ur + ar
+                if COMPLEX:
+                    yi = ui + ai
+        if c < C - 1:
+            # 3. The chunk's end state.
+            er, ei = _times(yr, yi, pr, pi, COMPLEX)
+            _store_vector(state_ptr, index * M, states, M, er + o_r, ei + o_i, COMPLEX)
+            tl.debug_barrier()
+            tl.atomic_xchg(flag_ptr + index, 2, sem="release")
+    # 4. The chunk's steps.
     for s in range(0, steps):
-        n = c * chunk + s
+        n = first + s
         if VARYING:
-            mr, mi = _matrix(a_ptr, base, n, stride_at, M, rows, cols, ACC, TRANSPOSE, COMPLEX)
+            mr, mi = _matrix(a_ptr, base, n, stride_at, M, rows, cols, ACC, True, COMPLEX)
         xr, xi = _vector(x_ptr, x_base + n * M, states, M, ACC, COMPLEX)
         nr, ni = _times(yr, yi, mr, mi, COMPLEX)
         yr = nr + xr
@@ -230,15 +243,25 @@ def _num_warps(BM: int) -> int:
 def _sweep_only(B: int, BM: int, complex_: bool, varying: bool) -> bool:
     """Whether one chunk per batch item beats the scan, a complex state counting twice.
 
-    Measured on an RTX 5060 Ti: once the batch fills the GPU, the scan's
-    extra work dominates, at B M = 2048 for time-varying A, whose scan
-    multiplies matrices, and 8192 for time-invariant A, whose doesn't. Above
-    ``_SCAN_STATES``, a time-varying scan doesn't fit in registers.
+    Measured on an RTX 5060 Ti: once the batch fills the GPU, the maps'
+    extra work dominates, at B M = 2048 for time-varying A, whose maps
+    multiply matrices, and 8192 for time-invariant A, whose don't. Above
+    ``_SCAN_STATES``, a time-varying map doesn't fit in registers.
     """
     size = B * BM * (2 if complex_ else 1)
     if varying:
         return size >= 2048 or BM * (2 if complex_ else 1) > _SCAN_STATES
     return size >= 8192
+
+
+def _chunk(BM: int, complex_: bool, varying: bool) -> int:
+    """Steps per chunk of the scan, measured on an RTX 5060 Ti: longer chunks mean
+    fewer look-backs, shorter ones more programs, and the matrices' size moves
+    the balance. A power of 2, for the time-invariant maps' power."""
+    size = BM * (2 if complex_ else 1)
+    if varying:
+        return 128 if size <= 16 else 64
+    return 256 if size <= 16 else 128
 
 
 def _power(A: Tensor, n: int, transpose: bool, acc: torch.dtype) -> Tensor:
@@ -259,51 +282,6 @@ def _power(A: Tensor, n: int, transpose: bool, acc: torch.dtype) -> Tensor:
     return out
 
 
-def _chain(A: Tensor, stride_ab: int, stride_at: int, zi: Tensor, x: Tensor, transpose: bool,
-           chunk: int) -> Tensor:  # fmt: skip
-    """The row-vector recurrence y[t] = y[t - 1] A[t] + x[t] (A[t]^T with ``transpose``).
-
-    x is a contiguous (B, N, M), zi a (B, M); A[t] of batch item b starts at
-    ``b * stride_ab + t * stride_at`` in A's contiguous storage of M x M
-    matrices, with 0 strides for what is shared, so that time-invariant A
-    holds one matrix or one per batch item.
-    """
-    B, N, M = x.shape
-    out = torch.empty_like(x)
-    acc = _accumulation_dtype(x.dtype)
-    BM = _padded_states(M)
-    flags = dict(
-        VARYING=stride_at != 0, TRANSPOSE=transpose, COMPLEX=x.is_complex(), BM=BM,
-        num_warps=_num_warps(BM),
-    )  # fmt: skip
-    C = triton.cdiv(N, chunk)
-    if C == 1:
-        starts = zi.to(acc).contiguous()
-    else:
-        offsets = x.new_empty(B, C, M, dtype=acc)
-        if stride_at == 0:
-            # Each chunk's map is the same power of the matrix, one per batch
-            # item or one for all: A holds just those.
-            totals = _power(A.reshape(-1, M, M), chunk, transpose, acc)
-            totals_strides = (stride_ab, 0)
-        else:
-            totals = x.new_empty(B, C, M, M, dtype=acc)
-            totals_strides = (C * M * M, M * M)
-        _totals_kernel[(B * C,)](
-            _real(A), _real(x), _real(totals), _real(offsets), N, M, C, stride_ab, stride_at,
-            T=chunk, **flags,
-        )  # fmt: skip
-        # The chunks' maps are in row-vector form already: their own chain.
-        ends = _chain(totals, *totals_strides, zi.to(acc), offsets, False,
-                      _CHUNK if C > _CHUNK else C)  # fmt: skip
-        starts = torch.cat([zi.to(acc).unsqueeze(1), ends[:, :-1]], 1).contiguous()
-    _sweep_kernel[(B * C,)](
-        _real(starts), _real(A), _real(x), _real(out), N, M, C, chunk, stride_ab, stride_at,
-        **flags,
-    )  # fmt: skip
-    return out
-
-
 def fits(x: Tensor, M: int) -> bool:
     """Whether the kernels take state size M in x's dtype."""
     return _padded_states(M) * (2 if x.is_complex() else 1) <= _SWEEP_STATES
@@ -313,7 +291,29 @@ def recurrence(A: Tensor, zi: Tensor, x: Tensor) -> Tensor:
     """h[t] = A[t] h[t - 1] + x[t]: A (B or 1, T or 1, M, M), zi (B, M), x (B, T, M)."""
     B, T, M = x.shape
     Ba, Ta = A.shape[:2]
+    varying = Ta > 1
+    complex_ = x.is_complex()
+    acc = _accumulation_dtype(x.dtype)
+    BM = _padded_states(M)
+    A, zi, x = A.contiguous(), zi.contiguous(), x.contiguous()
     stride_ab = Ta * M * M if Ba > 1 else 0
-    stride_at = M * M if Ta > 1 else 0
-    chunk = T if _sweep_only(B, _padded_states(M), x.is_complex(), Ta > 1) else _CHUNK
-    return _chain(A.contiguous(), stride_ab, stride_at, zi, x.contiguous(), True, chunk)
+    stride_at = M * M if varying else 0
+    chunk = T if _sweep_only(B, BM, complex_, varying) else _chunk(BM, complex_, varying)
+    C = triton.cdiv(T, chunk)
+    out = torch.empty_like(x)
+    # Each chunk's end state, map and flag; unused pointers take a placeholder.
+    states = x.new_empty(B * C, M, dtype=acc)
+    offsets = x.new_empty(B * C, M, dtype=acc) if C > 1 else states
+    maps = x.new_empty(B * C, M, M, dtype=acc) if C > 1 and varying else states
+    power, stride_pb = states, 0
+    if C > 1 and not varying:
+        power = _power(A.reshape(-1, M, M), chunk, True, acc)
+        stride_pb = M * M if Ba > 1 else 0
+    # The flags, then the count of chunks claimed.
+    flags = torch.zeros(B * C + 1, dtype=torch.int32, device=x.device)
+    _scan_kernel[(B * C,)](
+        _real(A), _real(x), _real(zi), _real(power), _real(out), _real(offsets), _real(maps),
+        _real(states), flags, flags[B * C :], T, M, C, chunk, stride_ab, stride_at, stride_pb,
+        VARYING=varying, COMPLEX=complex_, BM=BM, num_warps=_num_warps(BM),
+    )  # fmt: skip
+    return out

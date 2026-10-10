@@ -55,10 +55,13 @@ def test_recurrence_sweep_only(sharing, M):
 @requires_cuda
 @pytest.mark.parametrize("sharing", ["one", "both"])
 @pytest.mark.parametrize("M", [3, 8])
-def test_recurrence_long_two_levels(sharing, M):
-    # More than 64 chunks: the chain of the chunks' maps is itself chunked.
-    A, zi, x = _problem(2, 64 * 64 + 1000, M, sharing, device="cuda")
-    torch.testing.assert_close(recurrence(A, zi, x), _sequential(A, zi, x))
+def test_recurrence_many_chunks_repeatedly(sharing, M):
+    # Hundreds of chunks, whose starts come from look-backs that race their
+    # predecessors' publishing: every run must still be right.
+    A, zi, x = _problem(4, 40000, M, sharing, device="cuda")
+    expected = _sequential(A, zi, x)
+    for _ in range(20):
+        torch.testing.assert_close(recurrence(A, zi, x), expected)
 
 
 @requires_cuda
