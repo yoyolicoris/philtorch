@@ -49,8 +49,7 @@ from torch import Tensor
 _SEMIRINGS = {"log": 0, "max": 1, "linear": 2}
 # Triton kernels can only read module constants made with tl.constexpr.
 _MAX, _LINEAR = (tl.constexpr(_SEMIRINGS[name]) for name in ("max", "linear"))
-_NEG_INF = float("-inf")
-_KERNEL_NEG_INF = tl.constexpr(_NEG_INF)
+_KERNEL_NEG_INF = tl.constexpr(float("-inf"))
 # The chunk length: each kernel program takes T sequential steps.
 _CHUNK = 64
 # The largest K whose products a program holds whole in registers.
@@ -84,14 +83,6 @@ def _time(c, s, N, T: tl.constexpr, REVERSE: tl.constexpr):
 
 
 @triton.jit
-def _zero(SEMIRING: tl.constexpr):
-    """The semiring's additive identity: 0 for the linear one, -inf otherwise."""
-    if SEMIRING == _LINEAR:
-        return 0.0
-    return _KERNEL_NEG_INF
-
-
-@triton.jit
 def _step_matrix(
     trans, emit, p, q, n, K, stride_tn, rows, cols, ADJOINT: tl.constexpr,
     SEMIRING: tl.constexpr,
@@ -108,17 +99,16 @@ def _step_matrix(
     if SEMIRING == _LINEAR and p is None:
         return tl.load(offsets, mask=mask, other=0.0)
     m = tl.load(offsets, mask=mask, other=_KERNEL_NEG_INF)
-    # The emissions of the states i leaves: with weights, on the columns of
-    # an adjoint chain, they join q's K values; otherwise they are indexed in
-    # the tile's own shape, as a broadcast row vector would cost a layout
-    # conversion.
-    emit_cols = ADJOINT and p is not None
-    if emit is not None and not emit_cols:
+    # The emissions of the states i leaves: on the columns of an adjoint
+    # chain, which is weighted, they join q's K values; on the rows, they are
+    # indexed in the tile's own shape, as a broadcast row vector would cost a
+    # layout conversion.
+    if emit is not None and not ADJOINT:
         m += tl.load(emit + n * K + i + 0 * j, mask=mask, other=0.0)
     if p is not None:
         p_rows = tl.load(p + n * K + rows, mask=rows < K, other=_KERNEL_NEG_INF)
         q_cols = tl.load(q + n * K + cols, mask=cols < K, other=_KERNEL_NEG_INF)
-        if emit is not None and emit_cols:
+        if emit is not None and ADJOINT:
             q_cols += tl.load(emit + n * K + cols, mask=cols < K, other=0.0)
         m = tl.exp(m + p_rows + q_cols)
     return m
@@ -197,8 +187,8 @@ def _chunk_totals_kernel(
             tl.debug_barrier()
             if inj is not None:
                 offset = tl.load(scratch + 2 * BK * BK + states)
-            # Every thread reads the offset before the next step rewrites it.
-            tl.debug_barrier()
+                # Every thread reads the offset before the next step rewrites it.
+                tl.debug_barrier()
         last = scratch + ((steps - 1) % 2) * BK * BK
         for k0 in range(0, BK, BC):
             columns = k0 + block[None, :]
@@ -231,10 +221,10 @@ def _chunk_sweep_kernel(
     inj = inj_ptr + b * stride_b if inj_ptr is not None else None
     argmax = argmax_ptr + b * stride_b if argmax_ptr is not None else None
     out = out_ptr + b * stride_b
-    zero = _zero(SEMIRING)
     states = tl.arange(0, BK)
     rows = states[:, None]
-    y = tl.load(start_ptr + pid.to(tl.int64) * K + states, mask=states < K, other=zero)
+    # Padded states read 0, which a padded matrix row turns into the zero.
+    y = tl.load(start_ptr + pid.to(tl.int64) * K + states, mask=states < K, other=0.0)
     if BC == BK:
         for s in range(0, T):
             valid = s < steps
@@ -273,7 +263,7 @@ def _chunk_sweep_kernel(
                     y_block += tl.load(inj + n * K + columns, mask=columns < K, other=0.0)
                 tl.store(out + n * K + columns, y_block, mask=columns < K)
             tl.debug_barrier()
-            y = tl.load(out + n * K + states, mask=states < K, other=zero)
+            y = tl.load(out + n * K + states, mask=states < K, other=0.0)
 
 
 def _config(K: int) -> tuple[int, int, int, int]:
@@ -346,6 +336,7 @@ def chain(
         "explicit matrices take no emissions"
     )
     assert linear or inj is None, "injections are for linear chains"
+    assert not adjoint or weights is not None, "adjoint chains are weighted linear ones"
     assert argmax is None or semiring == "max", "argmax is for max-plus chains"
     p, q = weights if weights is not None else (None, None)
     per_step = [t for t in (out, log_emit, inj, p, q, argmax) if t is not None]

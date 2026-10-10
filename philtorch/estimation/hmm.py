@@ -87,12 +87,10 @@ def _logsumexp(x: Tensor, dim: int, keepdim: bool = False) -> Tensor:
 _REDUCE_BLOCK = 256
 
 
-def _trans_grad(
-    log_trans: Tensor, alpha: Tensor, beta: Tensor, fi: Tensor | None, fj: Tensor | None
-) -> Tensor:
+def _trans_grad(log_trans: Tensor, alpha: Tensor, beta: Tensor, fi: Tensor, fj: Tensor) -> Tensor:
     """The sum of exp(log_trans[i, j] + alpha[i] + beta[j]) fi[i] fj[j] over shared steps.
 
-    alpha, beta and the factors fi and fj, or None for ones, are (B, T, K);
+    alpha, beta and the factors fi and fj are (B, T, K);
     the result has log_trans's shape, (1 or B, 1 or T, K, K), summed over the
     batch and time that it is shared over, or (2, ...) for a stacked pair of
     chains, each half of the batch summed into its own matrices.
@@ -100,18 +98,12 @@ def _trans_grad(
     from ._contract import weighted_contract
 
     if log_trans.dim() == 5:
-        halves = zip(
-            log_trans,
-            *((None, None) if t is None else t.chunk(2) for t in (alpha, beta, fi, fj)),
-            strict=True,
-        )
+        halves = zip(log_trans, *(t.chunk(2) for t in (alpha, beta, fi, fj)), strict=True)
         return torch.stack([_trans_grad(*half) for half in halves])
     B, T, K = alpha.shape
     groups = log_trans.shape[:2]
     if alpha.numel() == 0:
         return torch.zeros_like(log_trans)
-    fi = torch.ones_like(alpha) if fi is None else fi
-    fj = torch.ones_like(beta) if fj is None else fj
     if groups == (B, T):
         weights = torch.exp(log_trans + alpha.unsqueeze(-1) + beta.unsqueeze(-2))
         return weights * fi.unsqueeze(-1) * fj.unsqueeze(-2)
@@ -207,7 +199,8 @@ class _LogChain(torch.autograd.Function):
         grad_emit = a[:, prev] - grad[:, prev]
         grad_trans = None
         if ctx.needs_input_grad[1]:
-            grad_trans = _trans_grad(log_trans, y_in + log_emit, neg_out, None, a_out)
+            ones = torch.ones_like(a_out)
+            grad_trans = _trans_grad(log_trans, y_in + log_emit, neg_out, ones, a_out)
         return a[:, start], grad_trans, grad_emit
 
 
@@ -242,7 +235,7 @@ class _LinearChain(torch.autograd.Function):
         # Each step's A[r, c] gets x_in[r] h_out[c], and so p[r] and q[c] its
         # row and column sums, which the chains already hold.
         grad_p = x_in * (h[:, prev] - grad[:, prev])
-        grad_q = h_out * (x[:, steps] if inj is None else x[:, steps] - inj)
+        grad_q = h_out * (x[:, steps] - inj)
         # The emissions are on the stored matrices' rows: A's rows, or with
         # ``adjoint`` its columns.
         grad_emit = grad_q if adjoint else grad_p
@@ -320,7 +313,7 @@ def _predicted_and_backward(
     impossible emissions.
     """
     B = log_emit.size(0)
-    trans = torch.stack([log_trans, log_trans.flip(1).mT.contiguous()])
+    trans = torch.stack([log_trans, log_trans.flip(1).mT])
     # Time slices of a contiguous (2B, N, K), as the kernels take steps.
     emit = torch.cat([log_emit, log_emit.flip(1)])[:, :-1]
     y0 = torch.cat([log_init, torch.zeros_like(log_init)])

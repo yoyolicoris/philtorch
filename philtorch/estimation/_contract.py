@@ -22,9 +22,8 @@ import triton
 import triton.language as tl
 from torch import Tensor
 
-_NEG_INF = float("-inf")
 # Triton kernels can only read module constants made with tl.constexpr.
-_KERNEL_NEG_INF = tl.constexpr(_NEG_INF)
+_KERNEL_NEG_INF = tl.constexpr(float("-inf"))
 
 
 @triton.jit
@@ -129,10 +128,8 @@ def _output_factor(over: str) -> str:
 def weighted_contract(
     a: Tensor, b: Tensor, c: Tensor, x: Tensor, y: Tensor, z: Tensor, over: str
 ) -> Tensor:
-    """Sum W x y z over index ``over`` (one of "i", "j", "k"); see the module docstring."""
-    out_like = {"x": a, "y": c, "z": b}[_output_factor(over)]
-    if out_like.numel() == 0 or a.size(-1) == 0:
-        return torch.zeros_like(out_like)
+    """Sum W x y z over index ``over`` (one of "i", "j", "k"), with a nonempty output;
+    see the module docstring."""
     return _contract(*_over_j(over, a, b, c, x, y, z))
 
 
