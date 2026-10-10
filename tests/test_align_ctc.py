@@ -9,18 +9,22 @@ from philtorch.align import ctc_loss
 requires_cuda = pytest.mark.skipif(not torch.cuda.is_available(), reason="CUDA not available")
 
 
-def _problem(B, N, C, U, *, blank=0, seed=0, dtype=torch.float64, device="cuda"):
+def _problem(N, T, C, S, *, blank=0, seed=0, dtype=torch.float64, device="cuda"):
+    """Logits of shape (N, T, C), and padded targets (N, S) of every class but the blank."""
     gen = torch.Generator().manual_seed(seed)
-    logits = torch.randn(B, N, C, dtype=dtype, generator=gen)
-    labels = torch.randint(0, C - 1, (B, U), generator=gen)
-    targets = labels + (labels >= blank)  # every class but the blank
-    return logits.to(device).requires_grad_(), targets.to(device)
+    logits = torch.randn(N, T, C, dtype=dtype, generator=gen)
+    labels = torch.randint(0, C - 1, (N, S), generator=gen)
+    return logits.to(device).requires_grad_(), (labels + (labels >= blank)).to(device)
 
 
-def _reference(logits, targets, input_lengths, target_lengths, blank):
-    """F.ctc_loss, per sequence, and its gradient with respect to the logits."""
-    log_probs = logits.log_softmax(-1).transpose(0, 1)
-    loss = F.ctc_loss(log_probs, targets, input_lengths, target_lengths, blank, reduction="none")
+def _pytorch(log_probs, *args, **kwargs):
+    """F.ctc_loss on batch-first log-probabilities."""
+    return F.ctc_loss(log_probs.transpose(0, 1), *args, **kwargs)
+
+
+def _losses_and_grads(fn, logits, *args, **kwargs):
+    """fn's loss through a log_softmax, and its gradient with respect to the logits."""
+    loss = fn(logits.log_softmax(-1), *args, **kwargs)
     (grad,) = torch.autograd.grad(loss.sum(), logits)
     return loss, grad
 
@@ -28,25 +32,55 @@ def _reference(logits, targets, input_lengths, target_lengths, blank):
 @requires_cuda
 @pytest.mark.parametrize("blank", [0, 5])
 @pytest.mark.parametrize(
-    "N, frames, labels",
+    "T, frames, labels",
     [
         (30, [30, 25, 17, 12], [8, 5, 0, 6]),
         (9, [6, 3, 4, 1], [4, 3, 2, 2]),  # two exact fits, and a target too long
         (5000, [5000, 3000], [40, 7]),  # rows long enough for the backward over all cells
     ],
 )
-def test_ctc_matches_pytorch(blank, N, frames, labels):
-    B, U = len(frames), max(labels)
-    logits, targets = _problem(B, N, 6, U, blank=blank)
+def test_ctc_matches_pytorch(blank, T, frames, labels):
+    logits, targets = _problem(len(frames), T, 6, max(labels), blank=blank)
     targets[0, 1:3] = targets[0, 0]  # repeats, which need a blank between them
-    frames, labels = torch.tensor(frames), torch.tensor(labels)
-    expected, expected_grad = _reference(logits, targets, frames, labels, blank)
-    loss = ctc_loss(logits.log_softmax(-1), targets, frames, labels, blank)
+    args = (targets, torch.tensor(frames), torch.tensor(labels), blank)
+    loss = ctc_loss(logits.log_softmax(-1), *args, reduction="none")
+    expected = _pytorch(logits.log_softmax(-1), *args, reduction="none")
     torch.testing.assert_close(loss, expected)
     possible = expected.isfinite()
     (grad,) = torch.autograd.grad(loss[possible].sum(), logits)
+    (expected_grad,) = torch.autograd.grad(expected[possible].sum(), logits)
+    # F.ctc_loss leaves the impossible targets' gradients nonzero; ours are zero.
     torch.testing.assert_close(grad[possible], expected_grad[possible])
     assert grad[~possible].eq(0).all()
+
+
+@requires_cuda
+@pytest.mark.parametrize("reduction", ["none", "mean", "sum"])
+@pytest.mark.parametrize("zero_infinity", [False, True])
+def test_ctc_reductions(reduction, zero_infinity):
+    # The last target is too long for its frames: an infinite loss.
+    logits, targets = _problem(4, 9, 6, 4)
+    args = (targets, torch.tensor([6, 3, 4, 1]), torch.tensor([4, 3, 0, 2]))
+    kwargs = dict(reduction=reduction, zero_infinity=zero_infinity)
+    loss, grad = _losses_and_grads(ctc_loss, logits, *args, **kwargs)
+    expected, expected_grad = _losses_and_grads(_pytorch, logits, *args, **kwargs)
+    torch.testing.assert_close(loss, expected)
+    if zero_infinity:
+        torch.testing.assert_close(grad, expected_grad)
+
+
+@requires_cuda
+def test_ctc_target_formats():
+    # Concatenated targets with lengths as tuples, and one unbatched sequence.
+    logits, targets = _problem(3, 20, 5, 6)
+    frames, labels = (20, 18, 15), (6, 0, 4)
+    concatenated = torch.cat([targets[n, :s] for n, s in enumerate(labels)])
+    padded = ctc_loss(logits.log_softmax(-1), targets, frames, labels, reduction="none")
+    torch.testing.assert_close(
+        ctc_loss(logits.log_softmax(-1), concatenated, frames, labels, reduction="none"), padded
+    )
+    unbatched = ctc_loss(logits[2].log_softmax(-1), targets[2, :4], 15, 4, reduction="none")
+    torch.testing.assert_close(unbatched, padded[2])
 
 
 @requires_cuda
@@ -55,7 +89,8 @@ def test_ctc_gradient_is_the_occupancy():
     # frame's expected occupancy of each class, which sums to 1 per frame.
     logits, targets = _problem(3, 20, 5, 6)
     log_probs = logits.log_softmax(-1).detach().requires_grad_()
-    (grad,) = torch.autograd.grad(ctc_loss(log_probs, targets).sum(), log_probs)
+    loss = ctc_loss(log_probs, targets, (20,) * 3, (6,) * 3, reduction="sum")
+    (grad,) = torch.autograd.grad(loss, log_probs)
     assert (grad <= 0).all()
     torch.testing.assert_close(grad.sum(-1), -torch.ones(3, 20, dtype=grad.dtype, device="cuda"))
 
@@ -64,11 +99,10 @@ def test_ctc_gradient_is_the_occupancy():
 def test_ctc_second_derivatives():
     logits, targets = _problem(2, 7, 4, 3)
     targets[0, 2] = targets[0, 1]
-    lengths = torch.tensor([3, 2])
     log_probs = logits.log_softmax(-1).detach().requires_grad_()
 
     def loss(x):
-        return ctc_loss(x, targets, None, lengths)
+        return ctc_loss(x, targets, (7, 7), (3, 2), reduction="none")
 
     # The gather's backward sums with atomics, so repeated runs differ in the last bits.
     assert torch.autograd.gradgradcheck(loss, (log_probs,), nondet_tol=1e-12)
@@ -77,17 +111,25 @@ def test_ctc_second_derivatives():
 @requires_cuda
 def test_ctc_float32():
     logits, targets = _problem(4, 500, 30, 60, dtype=torch.float32)
-    expected, _ = _reference(logits, targets, torch.full((4,), 500), torch.full((4,), 60), 0)
+    args = (targets, (500,) * 4, (60,) * 4)
     torch.testing.assert_close(
-        ctc_loss(logits.log_softmax(-1), targets), expected, rtol=1e-5, atol=0
+        ctc_loss(logits.log_softmax(-1), *args, reduction="none"),
+        _pytorch(logits.log_softmax(-1), *args, reduction="none"),
+        rtol=1e-5,
+        atol=0,
     )
 
 
 def test_ctc_rejects_bad_arguments():
     logits, targets = _problem(2, 5, 3, 2, device="cpu")
+    lengths = ((5, 5), (2, 2))
     with pytest.raises(ValueError, match="log_probs must be"):
-        ctc_loss(logits[0], targets)
+        ctc_loss(logits[0, 0], targets, *lengths)
+    with pytest.raises(ValueError, match="unknown reduction"):
+        ctc_loss(logits, targets, *lengths, reduction="max")
+    with pytest.raises(ValueError, match="must have 2 entries"):
+        ctc_loss(logits, targets, (5,), (2, 2))
     with pytest.raises(ValueError, match="targets must be"):
-        ctc_loss(logits, targets[0])
+        ctc_loss(logits, targets[:1], *lengths)
     with pytest.raises(ValueError, match="ctc_loss runs Triton kernels on CUDA GPUs only"):
-        ctc_loss(logits, targets)
+        ctc_loss(logits, targets, *lengths)

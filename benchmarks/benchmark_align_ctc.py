@@ -42,8 +42,8 @@ def main():
                 lengths = torch.full((B,), N), torch.full((B,), U)
 
                 def ours():
-                    loss = ctc_loss(logits.log_softmax(-1), targets)
-                    torch.autograd.grad(loss.sum(), logits)
+                    loss = ctc_loss(logits.log_softmax(-1), targets, *lengths, reduction="sum")
+                    torch.autograd.grad(loss, logits)
 
                 def pytorch():
                     log_probs = logits.log_softmax(-1).transpose(0, 1)
