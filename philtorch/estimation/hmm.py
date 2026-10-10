@@ -57,12 +57,11 @@ def _parse(
         f"log_init must be {(K,)} or {(batch_size, K)}, got {tuple(log_init.shape)}"
     )
     check_cuda_triton(name, log_emit, log_trans, log_init)
-    # The kernels read each K x K matrix and each step's K emissions as
-    # contiguous blocks; batch and time may broadcast.
+    # The kernels read each K x K matrix as a contiguous block, where batch
+    # and time may broadcast, and the emissions as one contiguous block.
     if log_trans.stride(-1) != 1 or log_trans.stride(-2) != K:
         log_trans = log_trans.contiguous()
-    if log_emit.stride(-1) != 1:
-        log_emit = log_emit.contiguous()
+    log_emit = log_emit.contiguous()
     return log_emit, log_trans, log_init.expand(batch_size, K)
 
 
@@ -171,34 +170,35 @@ def _run_chain(
 
 
 class _LogChain(torch.autograd.Function):
-    """The log chain y[t] = (y[t - 1] (x) M[t]) (+) j[t] of :func:`_run_chain`, differentiable.
+    """The log chain y[t] = y[t - 1] (x) M[t] of :func:`_run_chain`, differentiable.
 
     M[t] is log_trans[t], or its transpose, plus log_emit[t] on the output
     states, or on the summed ones with ``emit_summed``. log_trans is
     (1 or B, 1 or T, K, K), or (2, ...) for two chains stacked in the batch,
-    each half with its own matrices; ``log_inj`` is the injections j,
-    (B, T, K), or None.
+    each half with its own matrices.
     """
 
     @staticmethod
-    def forward(y0, log_trans, log_emit, log_inj, reverse, transpose, emit_summed):
-        return _run_chain("log", y0, log_trans, log_emit, log_inj, reverse, transpose, emit_summed)
+    def forward(y0, log_trans, log_emit, reverse, transpose, emit_summed):
+        return _run_chain("log", y0, log_trans, log_emit, None, reverse, transpose, emit_summed)
 
     @staticmethod
     def setup_context(ctx, inputs, output):
-        _, log_trans, log_emit, log_inj, *flags = inputs
+        _, log_trans, log_emit, *flags = inputs
         ctx.reverse, ctx.transpose, ctx.emit_summed = flags
-        ctx.save_for_backward(log_trans, log_emit, log_inj, output)
+        ctx.save_for_backward(log_trans, log_emit, output)
 
     @staticmethod
     def backward(ctx, grad):
-        log_trans, log_emit, log_inj, y = ctx.saved_tensors
+        log_trans, log_emit, y = ctx.saved_tensors
         reverse, transpose, emit_summed = ctx.reverse, ctx.transpose, ctx.emit_summed
         start, last, prev, steps = _positions(reverse)
-        y_in, y_out = y[:, prev], y[:, steps]
+        # The chain kernels take time slices of contiguous messages.
+        grad = grad.contiguous()
         # A step's weights W[r, c] = exp(y_in[r] + M[r, c] - y_out[c]); an
         # unreachable output, -inf, takes none.
-        neg_out = torch.where(torch.isfinite(y_out), -y_out, float("-inf"))
+        y_in = y[:, prev]
+        neg_out = torch.where(torch.isfinite(y), -y, float("-inf"))[:, steps]
         # The adjoints a = grad + W a_out run the other way over the same
         # steps, transposed, from the message no step reads; the emissions
         # stay with their states, which swap sides.
@@ -207,17 +207,10 @@ class _LogChain(torch.autograd.Function):
             not reverse, not transpose, not emit_summed,
         )  # fmt: skip
         a_out = a[:, steps]
-        grad_inj = None
-        if log_inj is not None:
-            grad_inj = torch.exp(log_inj + neg_out) * a_out
-        if emit_summed:
-            # Emissions of each step's input, as W's rows: the input's
-            # adjoint less its own gradient.
-            grad_emit = a[:, prev] - grad[:, prev]
-        else:
-            # Emissions of each step's output, as W's columns: the output's
-            # adjoint less the part its injection takes.
-            grad_emit = a_out if grad_inj is None else a_out - grad_inj
+        # Emissions of each step's inputs, as W's rows, take the inputs'
+        # adjoint less their own gradient; of its outputs, as W's columns,
+        # the outputs' adjoint.
+        grad_emit = a[:, prev] - grad[:, prev] if emit_summed else a_out
         grad_trans = None
         if ctx.needs_input_grad[1]:
             # W[r, c] = exp(rows[r] + log_trans[r, c] + cols[c]), stored
@@ -228,7 +221,7 @@ class _LogChain(torch.autograd.Function):
                 grad_trans = _trans_grad(log_trans, cols, rows, a_out, None)
             else:
                 grad_trans = _trans_grad(log_trans, rows, cols, None, a_out)
-        return a[:, start], grad_trans, grad_emit, grad_inj, None, None, None
+        return a[:, start], grad_trans, grad_emit, None, None, None
 
 
 class _LinearChain(torch.autograd.Function):
@@ -255,6 +248,7 @@ class _LinearChain(torch.autograd.Function):
         log_trans, log_emit, inj, p, q, x = ctx.saved_tensors
         reverse, transpose, emit_summed = ctx.reverse, ctx.transpose, ctx.emit_summed
         start, last, prev, steps = _positions(reverse)
+        grad = grad.contiguous()
         # The adjoints h = grad + A h_out: the transposed chain the other way,
         # whose weights swap p and q.
         h = _LinearChain.apply(
@@ -288,8 +282,9 @@ class _Viterbi(torch.autograd.Function):
 
         B, N, K = log_emit.shape
         first = log_init + log_emit[:, 0]
-        # Each message's best previous state, for the transition into each time.
-        pointers = torch.empty(B, N - 1, K, dtype=torch.int32, device=log_emit.device)
+        # Each message's best previous state, for the transition into each
+        # time, laid out as the messages are.
+        pointers = log_emit.new_empty(B, N, K, dtype=torch.int32)[:, 1:]
         delta = _run_chain(
             "max", first, log_trans, log_emit[:, 1:], None, False, False, False, argmax=pointers
         )
@@ -324,7 +319,7 @@ class _Viterbi(torch.autograd.Function):
 def _forward(log_emit: Tensor, log_trans: Tensor, log_init: Tensor) -> Tensor:
     """alpha[n][j] = log p(y[0..n], z[n] = j), (B, N, K)."""
     first = log_init + log_emit[:, 0]
-    return _LogChain.apply(first, log_trans, log_emit[:, 1:], None, False, False, False)
+    return _LogChain.apply(first, log_trans, log_emit[:, 1:], False, False, False)
 
 
 def _predicted_and_backward(
@@ -339,9 +334,10 @@ def _predicted_and_backward(
     """
     B = log_emit.size(0)
     trans = torch.stack([log_trans, log_trans.flip(1).mT.contiguous()])
-    emit = torch.cat([log_emit[:, :-1], log_emit[:, 1:].flip(1)])
+    # Time slices of a contiguous (2B, N, K), as the kernels take steps.
+    emit = torch.cat([log_emit, log_emit.flip(1)])[:, :-1]
     y0 = torch.cat([log_init, torch.zeros_like(log_init)])
-    predicted, beta = _LogChain.apply(y0, trans, emit, None, False, False, True).split(B)
+    predicted, beta = _LogChain.apply(y0, trans, emit, False, False, True).split(B)
     return predicted, beta.flip(1)
 
 

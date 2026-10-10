@@ -217,9 +217,7 @@ def test_hmm_chain_takes_an_expanded_gradient():
 
     log_emit, log_trans, log_init = _model(2, 70, 3, time_varying=False)
     first = (log_init + log_emit[:, 0]).requires_grad_()
-    alpha = _LogChain.apply(
-        first, log_trans[None, None], log_emit[:, 1:], None, False, False, False
-    )
+    alpha = _LogChain.apply(first, log_trans[None, None], log_emit[:, 1:], False, False, False)
     (grad,) = torch.autograd.grad(alpha.sum(), first, retain_graph=True)
     (expected,) = torch.autograd.grad(alpha, first, torch.ones_like(alpha))
     torch.testing.assert_close(grad, expected)
