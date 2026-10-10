@@ -188,18 +188,15 @@ def _shares_kernel(
 
 @triton.jit
 def _neighbour(ptr, row, L, ROWS: tl.constexpr, COLS: tl.constexpr, REVERSE: tl.constexpr):
-    """ptr at the cell ROWS rows and COLS columns after row's, or with REVERSE before."""
+    """ptr at the cell ROWS rows and COLS columns after row's with REVERSE, else before.
+
+    An edge's weight is stored at its successor, so it is
+    ``_neighbour(ptr, row, L, ROWS * REVERSE, COLS * REVERSE, REVERSE)``: the
+    neighbour with REVERSE, else row's own cell.
+    """
     if REVERSE:
         return ptr + row + ROWS * L + COLS
     return ptr + row - ROWS * L - COLS
-
-
-@triton.jit
-def _weight(ptr, row, L, ROWS: tl.constexpr, COLS: tl.constexpr, REVERSE: tl.constexpr):
-    """An edge's weight, stored at its successor: the neighbour with REVERSE, else here."""
-    if REVERSE:
-        return ptr + row + ROWS * L + COLS
-    return ptr + row
 
 
 @triton.jit
@@ -272,7 +269,11 @@ def _dag_kernel(
             elif SHARES:
                 base += up_below * y_near
             else:
-                w = tl.load(_weight(up_ptr, row, L, 1, 0, REVERSE), mask=mask & rows_1, other=0.0)
+                w = tl.load(
+                    _neighbour(up_ptr, row, L, 1 * REVERSE, 0 * REVERSE, REVERSE),
+                    mask=mask & rows_1,
+                    other=0.0,
+                )
                 base += w * y_near
         if STEPS != _ORTHOGONAL:
             tl.debug_barrier()
@@ -286,7 +287,11 @@ def _dag_kernel(
                 if SHARES:
                     w = diag_below_next
                 else:
-                    w = tl.load(_weight(diag_ptr, row, L, 1, 1, REVERSE), mask=ok, other=0.0)
+                    w = tl.load(
+                        _neighbour(diag_ptr, row, L, 1 * REVERSE, 1 * REVERSE, REVERSE),
+                        mask=ok,
+                        other=0.0,
+                    )
                 base += w * tl.load(_neighbour(y_ptr, row, L, 1, 1, REVERSE), mask=ok, other=0.0)
             if STEPS == _CTC:
                 ok &= (r + 2 < R) if REVERSE else (r > 1)
@@ -298,7 +303,11 @@ def _dag_kernel(
                     if SHARES:
                         w = skip_below2_next
                     else:
-                        w = tl.load(_weight(skip_ptr, row, L, 2, 1, REVERSE), mask=ok, other=0.0)
+                        w = tl.load(
+                            _neighbour(skip_ptr, row, L, 2 * REVERSE, 1 * REVERSE, REVERSE),
+                            mask=ok,
+                            other=0.0,
+                        )
                     base += w * tl.load(
                         _neighbour(y_ptr, row, L, 2, 1, REVERSE), mask=ok, other=0.0
                     )
@@ -314,7 +323,11 @@ def _dag_kernel(
                 D_ptr, cost_ptr, skip_rows_ptr, b, r, cols + 1, R, L, diag_weight, SOFT, STEPS
             )
         else:
-            a = tl.load(_weight(left_ptr, row, L, 0, 1, REVERSE), mask=side, other=0.0)
+            a = tl.load(
+                _neighbour(left_ptr, row, L, 0 * REVERSE, 1 * REVERSE, REVERSE),
+                mask=side,
+                other=0.0,
+            )
         if not FORWARD:
             y_near = tl.associative_scan((a, base), 0, _compose_affine)[1]
         elif SOFT:
@@ -379,6 +392,12 @@ def _dtw_backward(
     return out
 
 
+def _weigh(e: Tensor, up: Tensor, left: Tensor, diag: Tensor, diag_weight: float) -> Tensor:
+    """The cost's gradient from e, with a weighted diagonal: e times the cell's weight."""
+    none = (up + left + diag) == 0  # cell (0, 0)
+    return e * torch.where(none, 1.0, up + left + diag_weight * diag)
+
+
 def _dtw_backward_parallel(
     D: Tensor, cost: Tensor, skip: Tensor | None, grad: Tensor, soft: bool, steps: str,
     diag_weight: float,
@@ -399,10 +418,7 @@ def _dtw_backward_parallel(
         BLOCK=block, num_warps=4,
     )  # fmt: skip
     e = _accumulate(up, left, diag, skip_share, grad, True)
-    if diag_weight != 1.0:
-        none = (up + left + diag) == 0
-        e = e * torch.where(none, 1.0, up + left + diag_weight * diag)
-    return e
+    return _weigh(e, up, left, diag, diag_weight) if diag_weight != 1.0 else e
 
 
 def _shift(t: Tensor, rows: int, cols: int, fill: float = 0.0) -> Tensor:
@@ -546,8 +562,7 @@ def _dtw_dp_backward(ctx, grad_D):
     w_up, w_left, w_diag, w_skip = shares(D, cost, skip, soft, steps, diag_weight)
     e = accumulate(w_up, w_left, w_diag, w_skip, grad_D, True)
     if diag_weight != 1.0:
-        none = (w_up + w_left + w_diag) == 0
-        e = e * torch.where(none, 1.0, w_up + w_left + diag_weight * w_diag)
+        e = _weigh(e, w_up, w_left, w_diag, diag_weight)
     return e, None, None, None, None
 
 
