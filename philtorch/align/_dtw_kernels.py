@@ -217,7 +217,8 @@ def _dag_kernel(
     * the forward pass, with ``cost_ptr`` alone: min-plus, or soft-min-plus
       with ``SOFT``; every step's weight is the cost of the cell it enters,
       the diagonal's times ``diag_weight``, the ctc steps' skips gated by
-      the (B, R) mask ``skip_rows_ptr``; D(0, 0) = c(0, 0);
+      the (B, R) mask ``skip_rows_ptr``; D(0, 0) = c(0, 0). With the ctc
+      steps, ``out_ptr``, if not None, takes each cell's best step back;
     * the first-order backward, with ``cost_ptr`` and the forward pass's
       ``D_ptr``, REVERSE: linear, x the gradient of D, the weights the
       shares, computed from D and the cost (soft with ``SOFT``) as each row
@@ -301,7 +302,8 @@ def _dag_kernel(
                 if FORWARD:
                     ok &= tl.load(skip_rows_ptr + b * R + r) != 0
                     y = tl.load(_neighbour(y_ptr, row, L, 2, 1, REVERSE), mask=ok, other=zero)
-                    base = _min(base, y + c, SOFT)
+                    skip_term = y + c
+                    base = _min(base, skip_term, SOFT)
                 else:
                     if SHARES:
                         w = skip_below2_next
@@ -338,6 +340,14 @@ def _dag_kernel(
         else:
             y_near = tl.associative_scan((base, a), 0, _compose_min)[0]
         tl.store(y_ptr + row, y_near, mask=mask)
+        if FORWARD and STEPS == _CTC and out_ptr is not None:
+            # Each cell's best step back, 0 to stay, 1 to advance, 2 to skip:
+            # from the stored D, the first best as the hard shares choose.
+            tl.debug_barrier()
+            stay = tl.load(y_ptr + row - 1, mask=side, other=_KERNEL_INF) + c
+            best = tl.minimum(tl.minimum(stay, term), skip_term)
+            step = tl.where(stay == best, 0, tl.where(term == best, 1, 2))
+            tl.store(out_ptr + row, step.to(tl.int8), mask=mask)
         if SHARES:
             if out_ptr is not None:
                 none = (up_here + left_here + diag_here) == 0  # cell (0, 0)
@@ -351,14 +361,15 @@ def _dag_kernel(
 
 @triton.jit
 def _backtrack_kernel(
-    D_ptr, cost_ptr, skip_ptr, ends_ptr, path_ptr, R, L, P, diag_weight,
-    STEPS: tl.constexpr,
-):  # fmt: skip
-    """Each pair's optimal path, walked from its end cell back to (0, 0).
+    D_ptr, cost_ptr, ends_ptr, path_ptr, R, L, P, diag_weight, STEPS: tl.constexpr
+):
+    """Each pair's optimal DTW path, walked from its end cell back to (0, 0).
 
-    At each cell, the first best of its up, left, up-left and skip
-    predecessors, from D and the cost as the hard shares choose, so the
-    path is the hard gradient's. The cells, the end first, go to path
+    At each cell, the first best of its up, left and up-left predecessors,
+    from D and the cost as the hard shares choose, so the path is the hard
+    gradient's. (The ctc steps take one frame each, so their paths are a
+    parallel traceback instead: :func:`ctc_viterbi` and
+    :func:`philtorch._trace.trace`.) The cells, the end first, go to path
     (B, P, 2) as (row, column), -1 past (0, 0). One program per pair: each
     step waits on the last, but the walk stays in cache.
     """
@@ -373,13 +384,9 @@ def _backtrack_kernel(
         tl.store(out + 2 * t + 1, j)
         cell = batch + i * L + j
         c = tl.load(cost_ptr + cell, mask=active, other=0.0)
-        best = _KERNEL_INF
-        best_i = i
+        best = tl.load(D_ptr + cell - L, mask=active & (i > 0), other=_KERNEL_INF) + c
+        best_i = i - 1
         best_j = j
-        if STEPS != _CTC:
-            up = tl.load(D_ptr + cell - L, mask=active & (i > 0), other=_KERNEL_INF) + c
-            best_i = tl.where(up < best, i - 1, best_i)
-            best = tl.minimum(up, best)
         left = tl.load(D_ptr + cell - 1, mask=active & (j > 0), other=_KERNEL_INF) + c
         best_i = tl.where(left < best, i, best_i)
         best_j = tl.where(left < best, j - 1, best_j)
@@ -392,29 +399,20 @@ def _backtrack_kernel(
             best_i = tl.where(diag < best, i - 1, best_i)
             best_j = tl.where(diag < best, j - 1, best_j)
             best = tl.minimum(diag, best)
-        if STEPS == _CTC:
-            allowed = active & (i > 1) & (j > 0)
-            allowed &= tl.load(skip_ptr + b * R + i, mask=active, other=0) != 0
-            skip = tl.load(D_ptr + cell - 2 * L - 1, mask=allowed, other=_KERNEL_INF) + c
-            best_i = tl.where(skip < best, i - 2, best_i)
-            best_j = tl.where(skip < best, j - 1, best_j)
-            best = tl.minimum(skip, best)
         # (0, 0), and any cell no path reaches, has no predecessor: the walk ends.
         i = tl.where(best == _KERNEL_INF, -1, best_i)
         j = tl.where(best == _KERNEL_INF, -1, best_j)
 
 
-def backtrack(
-    D: Tensor, cost: Tensor, skip: Tensor | None, ends: Tensor, steps: str, diag_weight: float
-) -> Tensor:
+def backtrack(D: Tensor, cost: Tensor, ends: Tensor, steps: str, diag_weight: float) -> Tensor:
     """Each pair's optimal path on the kernels' grid, from its end cell ``ends`` (B, 2)
     to (0, 0), as (row, column) pairs (B, R + L - 1, 2) in order, -1 past the path."""
     B, R, L = D.shape
     P = R + L - 1
     walk = ends.new_empty(B, P, 2)
     _backtrack_kernel[(B,)](
-        D, cost.contiguous(), skip, ends.contiguous(), walk, R, L, P, diag_weight,
-        _STEPS[steps], num_warps=1,
+        D, cost.contiguous(), ends.contiguous(), walk, R, L, P, diag_weight, _STEPS[steps],
+        num_warps=1,
     )  # fmt: skip
     # The walk runs from the end: each path's cells, reversed.
     count = (walk[..., 0] >= 0).sum(1, keepdim=True)
@@ -601,6 +599,10 @@ def dtw_dp(cost: Tensor, skip: Tensor | None, soft: bool, steps: str, diag_weigh
     diagonal weighted by ``diag_weight``, soft-min in base 2 with ``soft``;
     ``skip`` is the (B, R) mask of the rows the ctc steps may skip into, and
     None for the others. See the module docstring."""
+    return _forward(cost, skip, soft, steps, diag_weight, None)
+
+
+def _forward(cost, skip, soft, steps, diag_weight, steps_back):
     B, R, L = cost.shape
     if R * L > _MAX_CELLS:
         raise ValueError(
@@ -608,10 +610,18 @@ def dtw_dp(cost: Tensor, skip: Tensor | None, soft: bool, steps: str, diag_weigh
         )
     D = _empty(cost)
     _launch(
-        _dag_kernel, B, L, cost.contiguous(), None, skip, None, None, None, None, None, D, None,
-        R, L, diag_weight, soft, _STEPS[steps], False,
+        _dag_kernel, B, L, cost.contiguous(), None, skip, None, None, None, None, None, D,
+        steps_back, R, L, diag_weight, soft, _STEPS[steps], False,
     )  # fmt: skip
     return D
+
+
+def ctc_viterbi(cost: Tensor, skip: Tensor) -> tuple[Tensor, Tensor]:
+    """The hard ctc forward pass over cost (B, R, L): D, and each cell's best step back,
+    int8, 0 to stay in its row, 1 to advance from the row above, 2 to skip from two
+    rows above, the first best under ties as the hard shares choose."""
+    steps_back = torch.empty_like(cost, dtype=torch.int8, memory_format=torch.contiguous_format)
+    return _forward(cost, skip, False, "ctc", 1.0, steps_back), steps_back
 
 
 @dtw_dp.register_fake

@@ -96,7 +96,7 @@ def ctc_loss(
     )
     N, T, _ = log_probs.shape
     state_log_probs = log_probs.gather(2, states[:, None].expand(N, T, -1))
-    ends = _grid(state_log_probs, skip, frames, labels, True)[2]
+    ends = _grid(state_log_probs, skip, frames, labels, False)[2]
     none = ends.isinf().all(0)
     loss = -torch.logsumexp(-torch.where(none, 0.0, ends), dim=0)
     loss = torch.where(none, 0.0 if zero_infinity else float("inf"), loss)
@@ -118,9 +118,10 @@ def forced_align(
     ``torchaudio.functional.forced_align``, batch first and batched.
 
     Of the paths that :func:`ctc_loss` sums over, the most probable one: CTC
-    Viterbi decoding, the same grid with a hard minimum, backtracked one
-    frame per step. Under ties, a frame stays in its state rather than
-    advances, and advances rather than skips a blank.
+    Viterbi decoding, the same grid with a hard minimum that records each
+    cell's best step back, and the traceback of :func:`~philtorch.estimation.hmm_viterbi`,
+    parallel over the frames. Under ties, a frame stays in its state rather
+    than advances, and advances rather than skips a blank.
 
     Note:
         Runs only on CUDA GPUs, as Triton kernels: the inputs must be CUDA
@@ -158,18 +159,23 @@ def forced_align(
         "forced_align", log_probs, targets, input_lengths, target_lengths, blank
     )
     N, T, _ = log_probs.shape
-    from ._dtw_kernels import backtrack
+    from .._trace import trace
 
     with torch.no_grad():
         state_log_probs = log_probs.gather(2, states[:, None].expand(N, T, -1))
-        D, cost, ends = _grid(state_log_probs, skip, frames, labels, False)
-        # From the better end, the last label first under a tie; the walk
-        # takes one frame per step, from the virtual cell (0, 0).
-        rows = 2 * labels + 1 - ends.argmin(0)
-        cells = backtrack(D, cost, skip, torch.stack([rows, frames], -1), "ctc", 1.0)
-        state = cells[:, 1 : T + 1, 0] - 1
+        D, steps_back, ends = _grid(state_log_probs, skip, frames, labels, True)
+        # From the better end, the last label first under a tie. Each frame's
+        # steps back are offsets to the row before; past a sequence's frames
+        # they stay, so its traceback starts at its own end.
+        rows = (2 * labels + 1 - ends.argmin(0)).int()
+        offsets = steps_back[:, :, 1:].mT
+        past = torch.arange(T, device=frames.device) >= frames[:, None]
+        offsets = torch.where(past[..., None], 0, offsets).contiguous()
+        # The row at each frame, from the virtual cell's: frame t's at t + 1.
+        before = trace(rows, offsets, reverse=True, relative=True)
+        state = torch.cat([before[:, 1:], rows[:, None]], 1).long() - 1
         possible = ends.min(0).values.isfinite()
-        valid = possible[:, None] & (torch.arange(T, device=frames.device) < frames[:, None])
+        valid = possible[:, None] & ~past
         path = states.gather(1, state.clamp(min=0))
         scores = log_probs.gather(2, path[..., None])[..., 0]
         path, scores = torch.where(valid, path, -1), torch.where(valid, scores, 0.0)
@@ -211,13 +217,13 @@ def _prepare(name, log_probs, targets, input_lengths, target_lengths, blank):
     return log_probs, states, skip, frames, labels, unbatched
 
 
-def _grid(state_log_probs, skip, frames, labels, soft):
+def _grid(state_log_probs, skip, frames, labels, viterbi):
     """The kernels' grid from each frame's log-probabilities of the states, (N, T, 2S + 1):
-    its accumulated costs D and costs, and -log p of the paths ending in each
-    sequence's last label and in the blank after it, (2, N): of all paths, or
-    with ``soft`` False the best one."""
+    its accumulated costs D, with ``viterbi`` its cells' best steps back, and -log p
+    of the paths ending in each sequence's last label and in the blank after it,
+    (2, N): of all paths, or with ``viterbi`` the best one."""
     # Imported here so that philtorch.align imports without Triton.
-    from ._dtw_kernels import dtw_dp
+    from ._dtw_kernels import ctc_viterbi, dtw_dp
 
     # (N, 2S + 1, T), in bits, as the kernels' soft-min is in base 2: one
     # multiply both negates and converts.
@@ -226,7 +232,10 @@ def _grid(state_log_probs, skip, frames, labels, soft):
     # both the first blank and the first label begin.
     cost = F.pad(cost, (1, 0, 1, 0), value=float("inf"))
     cost[:, 0, 0] = 0.0
-    D = dtw_dp(cost, skip, soft, "ctc", 1.0)
+    if viterbi:
+        D, steps_back = ctc_viterbi(cost, skip)
+    else:
+        D, steps_back = dtw_dp(cost, skip, True, "ctc", 1.0), None
     batch = torch.arange(D.size(0), device=D.device)
     ends = torch.stack([D[batch, 2 * labels + 1, frames], D[batch, 2 * labels, frames]])
-    return D, cost, ends * math.log(2)
+    return D, steps_back, ends * math.log(2)

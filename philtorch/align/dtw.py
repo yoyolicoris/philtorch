@@ -269,7 +269,7 @@ def dtw_path(
         return distance, path
     D, grid_cost, steps, ends, sheared, transposed = grid
     with torch.no_grad():
-        cells = backtrack(D, grid_cost, None, ends, steps, float(diagonal_weight))
+        cells = backtrack(D, grid_cost, ends, steps, float(diagonal_weight))
         # From the kernels' grid back to (n, m): undo the transpose, then the
         # shear, sheared[m, k] = cost[m + k, m].
         if transposed:
