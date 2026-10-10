@@ -44,7 +44,8 @@ requested (``create_graph=True``) and the first otherwise.
 Two kernels do all of it. ``_dag_kernel`` is the row-by-row recursion in
 either semiring, min-plus (or soft-min-plus) for the forward pass and
 linear for every accumulation, the first-order backward's included;
-``_shares_kernel`` computes the shares over all cells at once. Both take
+``_shares_kernel`` computes the shares over all cells at once, or for
+CTC's forced alignment each cell's best step back. Both take
 a ``STEPS`` constant, and with the ctc steps the (B, R) skip mask.
 """
 
@@ -167,10 +168,12 @@ def _shares(
 
 @triton.jit
 def _shares_kernel(
-    D_ptr, cost_ptr, skip_ptr, up_ptr, left_ptr, diag_ptr, skip_share_ptr, R, L, diag_weight,
-    SOFT: tl.constexpr, STEPS: tl.constexpr, BLOCK: tl.constexpr,
+    D_ptr, cost_ptr, skip_ptr, up_ptr, left_ptr, diag_ptr, skip_share_ptr, back_ptr, R, L,
+    diag_weight, SOFT: tl.constexpr, STEPS: tl.constexpr, BLOCK: tl.constexpr,
 ):  # fmt: skip
-    """Every cell's shares of the steps in the set, one program per BLOCK cells of a row."""
+    """Every cell's shares of the steps in the set, one program per BLOCK cells of a row;
+    or, with ``back_ptr`` and the hard ctc steps, its best step back as int8: 0 to stay
+    in its row, 1 to advance from the row above, 2 to skip from two rows above."""
     batch_row = tl.program_id(0)
     b = (batch_row // R).to(tl.int64)
     r = batch_row % R
@@ -180,13 +183,16 @@ def _shares_kernel(
     )
     offset = b * R * L + r * L + cols
     mask = cols < L
-    if STEPS != _CTC:
-        tl.store(up_ptr + offset, up, mask=mask)
-    tl.store(left_ptr + offset, left, mask=mask)
-    if STEPS != _ORTHOGONAL:
-        tl.store(diag_ptr + offset, diag, mask=mask)
-    if STEPS == _CTC:
-        tl.store(skip_share_ptr + offset, skip, mask=mask)
+    if back_ptr is not None:
+        tl.store(back_ptr + offset, (diag + 2 * skip).to(tl.int8), mask=mask)
+    else:
+        if STEPS != _CTC:
+            tl.store(up_ptr + offset, up, mask=mask)
+        tl.store(left_ptr + offset, left, mask=mask)
+        if STEPS != _ORTHOGONAL:
+            tl.store(diag_ptr + offset, diag, mask=mask)
+        if STEPS == _CTC:
+            tl.store(skip_share_ptr + offset, skip, mask=mask)
 
 
 @triton.jit
@@ -217,8 +223,7 @@ def _dag_kernel(
     * the forward pass, with ``cost_ptr`` alone: min-plus, or soft-min-plus
       with ``SOFT``; every step's weight is the cost of the cell it enters,
       the diagonal's times ``diag_weight``, the ctc steps' skips gated by
-      the (B, R) mask ``skip_rows_ptr``; D(0, 0) = c(0, 0). With the ctc
-      steps, ``out_ptr``, if not None, takes each cell's best step back;
+      the (B, R) mask ``skip_rows_ptr``; D(0, 0) = c(0, 0);
     * the first-order backward, with ``cost_ptr`` and the forward pass's
       ``D_ptr``, REVERSE: linear, x the gradient of D, the weights the
       shares, computed from D and the cost (soft with ``SOFT``) as each row
@@ -340,14 +345,6 @@ def _dag_kernel(
         else:
             y_near = tl.associative_scan((base, a), 0, _compose_min)[0]
         tl.store(y_ptr + row, y_near, mask=mask)
-        if FORWARD and STEPS == _CTC and out_ptr is not None:
-            # Each cell's best step back, 0 to stay, 1 to advance, 2 to skip:
-            # from the stored D, the first best as the hard shares choose.
-            tl.debug_barrier()
-            stay = tl.load(y_ptr + row - 1, mask=side, other=_KERNEL_INF) + c
-            best = tl.minimum(tl.minimum(stay, term), skip_term)
-            step = tl.where(stay == best, 0, tl.where(term == best, 1, 2))
-            tl.store(out_ptr + row, step.to(tl.int8), mask=mask)
         if SHARES:
             if out_ptr is not None:
                 none = (up_here + left_here + diag_here) == 0  # cell (0, 0)
@@ -467,6 +464,10 @@ _MAX_CELLS = 2**31 - 1
 _MAX_ROW = 2**18
 
 
+# The cells per program of _shares_kernel.
+_SHARES_BLOCK = 1024
+
+
 def _launch(kernel, B: int, L: int, *args, num_warps: int | None = None):
     num_warps = _num_warps(L) if num_warps is None else num_warps
     kernel[(B,)](*args, BLOCK=triton.next_power_of_2(L), num_warps=num_warps)
@@ -512,10 +513,9 @@ def _dtw_backward_parallel(
     left = _empty(D)
     diag = _empty(D) if steps != "orthogonal" else None
     skip_share = _empty(D) if steps == "ctc" else None
-    block = 1024
-    _shares_kernel[(B * R, triton.cdiv(L, block))](
-        D, cost, skip, up, left, diag, skip_share, R, L, diag_weight, soft, _STEPS[steps],
-        BLOCK=block, num_warps=4,
+    _shares_kernel[(B * R, triton.cdiv(L, _SHARES_BLOCK))](
+        D, cost, skip, up, left, diag, skip_share, None, R, L, diag_weight, soft,
+        _STEPS[steps], BLOCK=_SHARES_BLOCK, num_warps=4,
     )  # fmt: skip
     e = _accumulate(up, left, diag, skip_share, grad, True)
     return _weigh(e, up, left, diag, diag_weight) if diag_weight != 1.0 else e
@@ -624,10 +624,10 @@ def dtw_dp(cost: Tensor, skip: Tensor | None, soft: bool, steps: str, diag_weigh
     diagonal weighted by ``diag_weight``, soft-min in base 2 with ``soft``;
     ``skip`` is the (B, R) mask of the rows the ctc steps may skip into, and
     None for the others. See the module docstring."""
-    return _forward(cost, skip, soft, steps, diag_weight, None)
+    return _forward(cost, skip, soft, steps, diag_weight)
 
 
-def _forward(cost, skip, soft, steps, diag_weight, steps_back):
+def _forward(cost, skip, soft, steps, diag_weight):
     B, R, L = cost.shape
     if R * L > _MAX_CELLS or L > _MAX_ROW:
         raise ValueError(
@@ -637,7 +637,7 @@ def _forward(cost, skip, soft, steps, diag_weight, steps_back):
     D = _empty(cost)
     _launch(
         _dag_kernel, B, L, cost.contiguous(), None, skip, None, None, None, None, None, D,
-        steps_back, R, L, diag_weight, soft, _STEPS[steps], False,
+        None, R, L, diag_weight, soft, _STEPS[steps], False,
     )  # fmt: skip
     return D
 
@@ -646,8 +646,17 @@ def ctc_viterbi(cost: Tensor, skip: Tensor) -> tuple[Tensor, Tensor]:
     """The hard ctc forward pass over cost (B, R, L): D, and each cell's best step back,
     int8, 0 to stay in its row, 1 to advance from the row above, 2 to skip from two
     rows above, the first best under ties as the hard shares choose."""
-    steps_back = torch.empty_like(cost, dtype=torch.int8, memory_format=torch.contiguous_format)
-    return _forward(cost, skip, False, "ctc", 1.0, steps_back), steps_back
+    D = _forward(cost, skip, False, "ctc", 1.0)
+    B, R, L = D.shape
+    # From D afterwards, over all cells at once: recorded in the forward pass,
+    # they would add a barrier and a reload to each row's sequential step,
+    # nearly doubling it on long rows.
+    steps_back = torch.empty_like(D, dtype=torch.int8)
+    _shares_kernel[(B * R, triton.cdiv(L, _SHARES_BLOCK))](
+        D, cost.contiguous(), skip, None, None, None, None, steps_back, R, L, 1.0, False,
+        _STEPS["ctc"], BLOCK=_SHARES_BLOCK, num_warps=4,
+    )  # fmt: skip
+    return D, steps_back
 
 
 @dtw_dp.register_fake
