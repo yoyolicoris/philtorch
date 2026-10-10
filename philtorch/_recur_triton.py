@@ -21,8 +21,12 @@ per step for P, in registers up to ``_SCAN_STATES``, and above a row at a
 time against A[t]^T in registers, the running product alternating between
 two scratch buffers. M is a compile-time constant: with a run-time M that
 is not a multiple of 16, the loads of A lose their vectorization, up to
-4.5 times slower. With many batch items the batch alone fills the GPU, and
-one chunk per item, the steps alone, does less work (:func:`_chunk`).
+4.5 times slower.
+
+Every sequence longer than a chunk is scanned, whatever the batch: on a
+batch that alone fills the GPU, running each sequence in one program would
+skip the maps' extra work, but where that pays depends on the GPU, so the
+kernels keep one behaviour everywhere.
 
 Complex inputs run as their real and imaginary parts (``view_as_real``),
 multiplied out: four real products per complex one, as complex arithmetic
@@ -162,7 +166,7 @@ def _scan_kernel(
 ):  # fmt: skip
     """The steps of one chunk of ``chunk`` steps of one batch item; see the module docstring.
 
-    Without ``SCAN``, a batch item is one chunk, and runs its steps alone.
+    Without ``SCAN``, the sequences fit in one chunk, which runs its steps alone.
     With ``SCRATCH``, a time-varying chunk's P alternates between two scratch
     buffers, computed a row at a time. A chunk's flag
     is 1 once its map (o, and P for time-varying A) is published, and 2 once
@@ -306,27 +310,14 @@ def _num_warps(BM: int) -> int:
     return 1 if BM <= 32 else 2 if BM <= 64 else 4
 
 
-def _chunk(B: int, T: int, BM: int, complex_: bool, varying: bool) -> int:
-    """Steps per chunk: T, one chunk per batch item, once the batch alone fills the
-    GPU and the scan's maps would only add work; else a power of 2, for the
-    time-invariant maps' power. A complex state counts twice.
-
-    Measured on an RTX 5060 Ti. One chunk from B M = 4096 for time-varying A,
-    whose maps multiply matrices, and from B = 1024 or B M = 16384 for
-    time-invariant A, whose don't; with the maps' products through scratch
-    memory, from B M = 512, and always at M = 128, where they cost more than
-    the parallelism gains. Otherwise longer chunks mean fewer look-backs,
-    shorter ones more programs, and the matrices' size moves the balance.
-    """
+def _chunk(BM: int, complex_: bool, varying: bool) -> int:
+    """Steps per chunk, a complex state counting twice, measured on an RTX 5060 Ti:
+    longer chunks mean fewer look-backs, shorter ones more programs, and the
+    matrices' size moves the balance. A power of 2, for the time-invariant
+    maps' power."""
     states = BM * (2 if complex_ else 1)
     if varying:
-        if states > _SCAN_STATES:
-            single = BM > 64 or B * states > 512
-        else:
-            single = B * states >= 4096
-        return T if single else 128 if states <= 16 else 64
-    if B >= 1024 or B * states >= 16384:
-        return T
+        return 128 if states <= 16 else 64
     return 256 if states <= 16 else 128
 
 
@@ -364,7 +355,7 @@ def recurrence(A: Tensor, zi: Tensor, x: Tensor) -> Tensor:
     A, zi, x = A.contiguous(), zi.contiguous(), x.contiguous()
     stride_ab = Ta * M * M if Ba > 1 else 0
     stride_at = M * M if varying else 0
-    chunk = _chunk(B, T, BM, complex_, varying)
+    chunk = _chunk(BM, complex_, varying)
     C = triton.cdiv(T, chunk)
     out = torch.empty_like(x)
     # Each chunk's end state, map and flag; unused pointers take a placeholder.
