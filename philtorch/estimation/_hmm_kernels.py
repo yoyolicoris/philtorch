@@ -53,9 +53,8 @@ _MAX, _LINEAR = (tl.constexpr(_SEMIRINGS[name]) for name in ("max", "linear"))
 _KERNEL_NEG_INF = tl.constexpr(float("-inf"))
 # The chunk length: each kernel program takes T sequential steps.
 _CHUNK = 64
-# The largest K whose log or max-plus products a program holds whole in
-# registers; a linear chain's, whose weighted matrices cost more to rebuild
-# per tile, up to twice that.
+# The largest K whose products a program holds in registers; twice that for a
+# linear chain (see _config).
 _REGISTER_STATES = 16
 
 
@@ -102,10 +101,9 @@ def _step_matrix(
     if SEMIRING == _LINEAR and p is None:
         return tl.load(offsets, mask=mask, other=0.0)
     m = tl.load(offsets, mask=mask, other=_KERNEL_NEG_INF)
-    # The emissions of the states i leaves: on the columns of an adjoint
-    # chain, which is weighted, they join q's K values; on the rows, they are
-    # indexed in the tile's own shape, as a broadcast row vector would cost a
-    # layout conversion.
+    # The emissions of the states i leaves. On an adjoint chain's columns they
+    # join q; on rows they take the tile's shape, as a broadcast row vector
+    # would cost a layout conversion.
     if emit is not None and not ADJOINT:
         m += tl.load(emit + n * K + i + 0 * j, mask=mask, other=0.0)
     if p is not None:
@@ -273,9 +271,10 @@ def _config(K: int, semiring: str) -> tuple[int, int, int, int]:
     """The padded K, the column and row tile sizes, and the warps.
 
     The paths and warps were measured on an RTX 5060 Ti: at 17 to 32 states,
-    tiles are faster for log and max-plus chains, registers for linear ones.
-    The tiles hold about 4096 terms, BR rows by BK summed by BC columns, a
-    size chosen to fit, not tuned.
+    tiles are faster for log and max-plus chains, while a linear chain's
+    weighted matrices cost more to rebuild per tile. The tiles hold about
+    4096 terms, BR rows by BK summed by BC columns, a size chosen to fit,
+    not tuned.
     """
     BK = max(triton.next_power_of_2(K), 2)
     registers = _REGISTER_STATES * (2 if semiring == "linear" else 1)

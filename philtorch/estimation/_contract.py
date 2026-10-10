@@ -63,9 +63,8 @@ def _contract_kernel(
     tl.store(out_ptr + (p * n_i + i) * n_k + k, acc * y, mask=ik_mask)
 
 
-# The terms a program sums at once; with BK of at most 32 and BI of at most 4,
-# from a search of block sizes over the HMM's three shapes on an RTX 5060 Ti,
-# where it came within the search's noise of the best for K from 8 to 64.
+# Terms per program. With BK <= 32 and BI <= 4, this matched the best blocks of
+# a search over the HMM's three shapes, K = 8 to 64, on an RTX 5060 Ti.
 _PROGRAM_TERMS = 1024
 
 

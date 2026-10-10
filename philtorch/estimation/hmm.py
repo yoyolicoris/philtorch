@@ -13,17 +13,18 @@ outputs describe z[0], ..., z[N - 1].
 
 Every message is a chain y[t] = y[t - 1] (x) M[t], computed by the chunked
 parallel scan of :mod:`._hmm_kernels`, with M[t][i, j] = log_trans[i, j] +
-log_emit[i]: the emission of the state a transition leaves. So the forward
+log_emit[i], the emission of the state a transition leaves. So the forward
 chain gives the predicted messages log p(y[0..n - 1], z[n]), and the
 backward messages are the same chain over flipped time and transposed
-matrices. A log chain's derivative is a linear chain backwards over the
-same steps, with weights W[r, c] = exp(y[t - 1][r] + M[t][r, c] - y[t][c])
-in [0, 1] that the kernel builds on the fly, and a linear chain's
-derivative is again one, so
-:class:`_LogChain` and :class:`_LinearChain` are differentiable to any
-order in reverse mode; they have no forward-mode rules. The gradients of
-shared transition matrices sum the weighted terms over the batch and time
-with :func:`._contract.weighted_contract`.
+matrices.
+
+A log chain's derivative is a linear chain backwards over the same steps,
+with weights W[r, c] = exp(y[t - 1][r] + M[t][r, c] - y[t][c]) in [0, 1]
+that the kernel builds on the fly, and a linear chain's derivative is again
+one. So :class:`_LogChain` and :class:`_LinearChain` are differentiable to
+any order in reverse mode; they have no forward-mode rules. The gradients
+of shared transition matrices sum the weighted terms over the batch and
+time with :func:`._contract.weighted_contract`.
 """
 
 import torch
@@ -91,10 +92,10 @@ _REDUCE_BLOCK = 256
 def _trans_grad(log_trans: Tensor, alpha: Tensor, beta: Tensor, fi: Tensor, fj: Tensor) -> Tensor:
     """The sum of exp(log_trans[i, j] + alpha[i] + beta[j]) fi[i] fj[j] over shared steps.
 
-    alpha, beta and the factors fi and fj are (B, T, K);
-    the result has log_trans's shape, (1 or B, 1 or T, K, K), summed over the
-    batch and time that it is shared over, or (2, ...) for a stacked pair of
-    chains, each half of the batch summed into its own matrices.
+    alpha, beta and the factors fi and fj are (B, T, K). The result has
+    log_trans's shape, (1 or B, 1 or T, K, K), summed over the batch and time
+    that it is shared over, or (2, ...) for a stacked pair of chains, each
+    half of the batch summed into its own matrices.
     """
     from ._contract import weighted_contract
 
@@ -196,7 +197,7 @@ class _LogChain(torch.autograd.Function):
         )
         a_out = a[:, steps]
         # The emissions, on W's rows, take the inputs' adjoint less their own
-        # gradient; W[r, c] = exp(y_in[r] + log_emit[r] + log_trans[r, c] - y_out[c]).
+        # gradient.
         grad_emit = a[:, prev] - grad[:, prev]
         grad_trans = None
         if ctx.needs_input_grad[1]:
@@ -259,10 +260,8 @@ class _Viterbi(torch.autograd.Function):
         from ._hmm_kernels import trace
 
         B, N, K = log_emit.shape
-        # Each message's best previous state, for the transition into each
-        # time, laid out as the messages are: time slices of (B, N, K), as
-        # the kernels take every per-step tensor with the messages' batch
-        # stride.
+        # Each state's best predecessor per step, as time slices of (B, N, K):
+        # the kernels need the messages' batch stride.
         pointers = log_emit.new_empty(B, N, K, dtype=torch.int32)[:, 1:]
         # The best score of a path to each state, without its emission.
         predicted = _run_chain("max", log_init, log_trans, log_emit[:, :-1], argmax=pointers)
@@ -388,8 +387,8 @@ def hmm_smoother(log_emit: Tensor, log_trans: Tensor, log_init: Tensor) -> tuple
     For the model of :func:`hmm_filter`, this returns the log-likelihood and
     :math:`\log p(z[n] \mid y[0], \dots, y[N - 1])`, from a forward and an
     independent backward scan, as in `Temporal Parallelization of Inference
-    in Hidden Markov Models`_ (Hassan et al., 2021). The arguments,
-    implementation and differentiability are those of :func:`hmm_filter`.
+    in Hidden Markov Models`_ (Hassan et al., 2021). Its implementation and
+    differentiability are those of :func:`hmm_filter`.
 
     Note:
         Runs only on CUDA GPUs, as Triton kernels: the inputs must be CUDA
