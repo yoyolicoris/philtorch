@@ -202,11 +202,16 @@ def test_hmm_rejects_a_transition_per_state():
         hmm_filter(log_emit, log_trans[0, 0].expand(4, 3, 3), log_init)
 
 
-def test_estimation_imports_without_triton():
+def test_estimation_imports_without_triton(tmp_path):
     # The kernels are imported on first use, so the Kalman functions, and
-    # the package, still import where Triton is missing.
+    # the package, still import where Triton is missing. Run outside the
+    # checkout, whose philtorch/ has no built extension, so the subprocess
+    # imports the installed package as the tests do.
     code = "import sys; sys.modules['triton'] = None; import philtorch.estimation"
-    subprocess.run([sys.executable, "-c", code], check=True, capture_output=True)
+    result = subprocess.run(
+        [sys.executable, "-c", code], cwd=tmp_path, capture_output=True, text=True
+    )
+    assert result.returncode == 0, result.stderr
 
 
 @requires_cuda
