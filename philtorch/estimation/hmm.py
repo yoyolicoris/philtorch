@@ -208,8 +208,9 @@ class _LinearChain(torch.autograd.Function):
     """The linear chain x[t] = x[t - 1] A[t] + j[t] of :func:`_run_chain`, differentiable.
 
     A[t][r, c] = exp(M[t][r, c] + p[t][r] + q[t][c]), with M[t] as in
-    :class:`_LogChain`, or with ``adjoint`` its transpose, and log weights p
-    and q of shape (B, T, K).
+    :class:`_LogChain` and log weights p and q of shape (B, T, K). With
+    ``adjoint``, the chain runs from the last step back over each M[t]'s
+    transpose; the emissions stay on log_trans's rows i, now A's columns.
     """
 
     @staticmethod
@@ -258,7 +259,9 @@ class _Viterbi(torch.autograd.Function):
 
         B, N, K = log_emit.shape
         # Each message's best previous state, for the transition into each
-        # time, laid out as the messages are.
+        # time, laid out as the messages are: time slices of (B, N, K), as
+        # the kernels take every per-step tensor with the messages' batch
+        # stride.
         pointers = log_emit.new_empty(B, N, K, dtype=torch.int32)[:, 1:]
         # The best score of a path to each state, without its emission.
         predicted = _run_chain("max", log_init, log_trans, log_emit[:, :-1], argmax=pointers)
