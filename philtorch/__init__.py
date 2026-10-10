@@ -1,8 +1,8 @@
 """Differentiable, time-domain linear digital filters for PyTorch.
 
 Time-invariant filters live in :mod:`philtorch.lti`, time-varying (linear
-parameter-varying) filters in :mod:`philtorch.lpv`, and state estimation in
-:mod:`philtorch.estimation`.
+parameter-varying) filters in :mod:`philtorch.lpv`, state estimation in
+:mod:`philtorch.estimation`, and sequence alignment in :mod:`philtorch.align`.
 """
 
 import warnings

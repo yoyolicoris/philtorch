@@ -32,8 +32,8 @@ runs from the last time back over each M[t]'s transpose: a chain's
 derivative, a linear chain backwards, runs here too.
 
 A max-plus chain can also record each message's maximizing previous state,
-and :func:`trace` follows such backpointers in the same two levels: Viterbi
-decoding's traceback, in parallel.
+and :func:`philtorch._trace.trace` follows such backpointers in the same two
+levels: Viterbi decoding's traceback, in parallel.
 
 Up to ``_REGISTER_STATES`` states, or twice that for a linear chain, a
 program holds the K x K x K terms of a product in registers. Above, it
@@ -376,81 +376,4 @@ def chain(
         starts, trans, log_emit, p, q, inj, out, argmax, N, K, C, *trans_strides, stride_b,
         **flags,
     )  # fmt: skip
-    return out
-
-
-@triton.jit
-def _trace_totals_kernel(
-    maps_ptr, total_ptr, L, K, C, stride_mb, T: tl.constexpr, REVERSE: tl.constexpr,
-    BK: tl.constexpr,
-):  # fmt: skip
-    """Chunk c's composed map, total[k] = F[cT + T - 1](... F[cT](k)), in chain order."""
-    pid = tl.program_id(0)
-    b = (pid // C).to(tl.int64)
-    c = (pid % C).to(tl.int64)
-    steps = tl.minimum(T, L - c * T)
-    maps = maps_ptr + b * stride_mb
-    states = tl.arange(0, BK)
-    current = states
-    for s in range(0, steps):
-        n = _time(c, s, L, T, REVERSE)
-        current = tl.load(maps + n * K + current, mask=states < K, other=0)
-    tl.store(total_ptr + pid.to(tl.int64) * K + states, current, mask=states < K)
-
-
-@triton.jit
-def _trace_sweep_kernel(
-    start_ptr, maps_ptr, out_ptr, L, K, C, stride_mb, T: tl.constexpr, REVERSE: tl.constexpr
-):
-    """x[t] = F[t](x[t - 1]) through chunk c from its start, written at time n."""
-    pid = tl.program_id(0)
-    b = (pid // C).to(tl.int64)
-    c = (pid % C).to(tl.int64)
-    steps = tl.minimum(T, L - c * T)
-    maps = maps_ptr + b * stride_mb
-    current = tl.load(start_ptr + pid)
-    for s in range(0, steps):
-        n = _time(c, s, L, T, REVERSE)
-        current = tl.load(maps + n * K + current)
-        tl.store(out_ptr + b * L + n, current)
-
-
-def trace(x0: Tensor, maps: Tensor, reverse: bool = False) -> Tensor:
-    """The states x[t] = maps[t][x[t - 1]], t = 0, ..., L - 1, from x[-1] = x0.
-
-    Following backpointers is a chain of maps of K states, so it runs as the
-    message chains do: each chunk's maps composed, the chain of the
-    compositions one level up, then each chunk from its start.
-
-    Args:
-        x0: the starting states, (B,) int32.
-        maps: (B, L, K) int32, each step's K values contiguous, the steps
-            contiguous; maps[b, t, k] is the state that state k leads to at
-            step t.
-        reverse: run from time L - 1 down to 0; the state after the step at
-            time n is still written at n.
-
-    Returns:
-        The states, (B, L) int32, each written at its step's time.
-    """
-    B, L, K = maps.shape
-    out = maps.new_empty(B, L)
-    if B == 0 or L == 0:
-        return out
-    assert maps.stride()[1:] == (K, 1), "steps of K contiguous values"
-    T = _CHUNK
-    C = triton.cdiv(L, T)
-    if C == 1:
-        starts = x0.contiguous()
-    else:
-        totals = maps.new_empty(B, C, K)
-        BK = max(triton.next_power_of_2(K), 2)
-        _trace_totals_kernel[(B * C,)](
-            maps, totals, L, K, C, maps.stride(0), T=T, REVERSE=reverse, BK=BK, num_warps=1
-        )
-        ends = trace(x0, totals)
-        starts = torch.cat([x0.unsqueeze(1), ends[:, :-1]], dim=1).contiguous()
-    _trace_sweep_kernel[(B * C,)](
-        starts, maps, out, L, K, C, maps.stride(0), T=T, REVERSE=reverse, num_warps=1
-    )
     return out

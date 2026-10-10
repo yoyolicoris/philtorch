@@ -257,7 +257,7 @@ class _Viterbi(torch.autograd.Function):
 
     @staticmethod
     def forward(log_emit, log_trans, log_init):
-        from ._hmm_kernels import trace
+        from .._trace import trace
 
         B, N, K = log_emit.shape
         # Each state's best predecessor per step, as time slices of (B, N, K):
