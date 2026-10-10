@@ -361,47 +361,63 @@ def _dag_kernel(
 
 @triton.jit
 def _backtrack_kernel(
-    D_ptr, cost_ptr, ends_ptr, path_ptr, R, L, P, diag_weight, STEPS: tl.constexpr
-):
+    D_ptr, cost_ptr, ends_ptr, path_ptr, R, L, P, diag_weight,
+    STEPS: tl.constexpr, BLOCK: tl.constexpr,
+):  # fmt: skip
     """Each pair's optimal DTW path, walked from its end cell back to (0, 0).
 
-    At each cell, the first best of its up, left and up-left predecessors,
+    Each cell's best step back is the first best of up, left and up-left,
     from D and the cost as the hard shares choose, so the path is the hard
-    gradient's. (The ctc steps take one frame each, so their paths are a
-    parallel traceback instead: :func:`ctc_viterbi` and
-    :func:`philtorch._trace.trace`.) The cells, the end first, go to path
-    (B, P, 2) as (row, column), -1 past (0, 0). One program per pair: each
-    step waits on the last, but the walk stays in cache.
+    gradient's. Within a row the path runs left until a cell steps up or
+    diagonally: the walk takes BLOCK cells of the row at a time and finds
+    that exit as the last such cell by a max over the lanes, so a run of
+    left steps costs a step per BLOCK cells. The cells, the end first, go to
+    path (B, P, 2) as (row, column). One program per pair; each step waits
+    on the last, but the walk stays in cache. (The ctc steps take one frame
+    each, so their traceback is parallel instead: :func:`ctc_viterbi` and
+    :func:`philtorch._trace.trace`.)
     """
     b = tl.program_id(0).to(tl.int64)
     batch = b * R * L
     out = path_ptr + b * P * 2
     i = tl.load(ends_ptr + 2 * b)
     j = tl.load(ends_ptr + 2 * b + 1)
-    for t in range(0, P):
-        active = i >= 0
-        tl.store(out + 2 * t, i)
-        tl.store(out + 2 * t + 1, j)
-        cell = batch + i * L + j
-        c = tl.load(cost_ptr + cell, mask=active, other=0.0)
-        best = tl.load(D_ptr + cell - L, mask=active & (i > 0), other=_KERNEL_INF) + c
-        best_i = i - 1
-        best_j = j
-        left = tl.load(D_ptr + cell - 1, mask=active & (j > 0), other=_KERNEL_INF) + c
-        best_i = tl.where(left < best, i, best_i)
-        best_j = tl.where(left < best, j - 1, best_j)
-        best = tl.minimum(left, best)
+    written = i * 0
+    lanes = tl.arange(0, BLOCK)
+    while i >= 0:
+        cols = j - (BLOCK - 1) + lanes
+        valid = cols >= 0
+        cell = batch + i * L + cols
+        c = tl.load(cost_ptr + cell, mask=valid, other=0.0)
+        up = tl.load(D_ptr + cell - L, mask=valid & (i > 0), other=_KERNEL_INF) + c
+        left = tl.load(D_ptr + cell - 1, mask=valid & (cols > 0), other=_KERNEL_INF) + c
+        best = tl.minimum(up, left)
         if STEPS != _ORTHOGONAL:
             diag = (
-                tl.load(D_ptr + cell - L - 1, mask=active & (i > 0) & (j > 0), other=_KERNEL_INF)
+                tl.load(D_ptr + cell - L - 1, mask=valid & (i > 0) & (cols > 0), other=_KERNEL_INF)
                 + diag_weight * c
             )
-            best_i = tl.where(diag < best, i - 1, best_i)
-            best_j = tl.where(diag < best, j - 1, best_j)
-            best = tl.minimum(diag, best)
-        # (0, 0), and any cell no path reaches, has no predecessor: the walk ends.
-        i = tl.where(best == _KERNEL_INF, -1, best_i)
-        j = tl.where(best == _KERNEL_INF, -1, best_j)
+            best = tl.minimum(best, diag)
+        is_up = up == best
+        is_left = (left == best) & ~is_up
+        # The row's exit: the last cell that steps up or diagonally, or (0, 0),
+        # which has no step back.
+        leaves = valid & (~is_left | (best == _KERNEL_INF))
+        exit_col = tl.max(tl.where(leaves, cols, -1), axis=0)
+        found = exit_col >= 0
+        # This block's cells of the path, from column j down to the exit.
+        stop = tl.where(found, exit_col, j - BLOCK + 1)
+        keep = valid & (cols >= stop)
+        slot = out + 2 * (written + j - cols)
+        tl.store(slot, i + 0 * cols, mask=keep)
+        tl.store(slot + 1, cols, mask=keep)
+        written += j - stop + 1
+        at_exit = cols == exit_col
+        exit_up = tl.max(tl.where(at_exit & is_up, 1, 0), axis=0) == 1
+        origin = tl.max(tl.where(at_exit & (best == _KERNEL_INF), 1, 0), axis=0) == 1
+        next_i = tl.where(found, tl.where(origin, -1, i - 1), i)
+        j = tl.where(found, tl.where(exit_up, exit_col, exit_col - 1), j - BLOCK)
+        i = next_i
 
 
 def backtrack(D: Tensor, cost: Tensor, ends: Tensor, steps: str, diag_weight: float) -> Tensor:
@@ -409,10 +425,16 @@ def backtrack(D: Tensor, cost: Tensor, ends: Tensor, steps: str, diag_weight: fl
     to (0, 0), as (row, column) pairs (B, R + L - 1, 2) in order, -1 past the path."""
     B, R, L = D.shape
     P = R + L - 1
-    walk = ends.new_empty(B, P, 2)
+    walk = ends.new_full((B, P, 2), -1)
+    # Blocks of about twice the path's cells per row, L / R on rows of L >= R,
+    # one more without the diagonal: one cell at a time on near-square grids
+    # with it, where wider blocks would mostly be wasted. Measured on an RTX
+    # 5060 Ti.
+    per_row = L / R + (steps == "orthogonal")
+    block = 1 if per_row < 1.5 else min(triton.next_power_of_2(int(2 * per_row)), 128)
     _backtrack_kernel[(B,)](
         D, cost.contiguous(), ends.contiguous(), walk, R, L, P, diag_weight, _STEPS[steps],
-        num_warps=1,
+        BLOCK=block, num_warps=1,
     )  # fmt: skip
     # The walk runs from the end: each path's cells, reversed.
     count = (walk[..., 0] >= 0).sum(1, keepdim=True)
