@@ -30,7 +30,8 @@ kernels keep one behaviour everywhere.
 
 Complex inputs run as their real and imaginary parts (``view_as_real``),
 multiplied out: four real products per complex one, as complex arithmetic
-takes anyway. Half and bfloat16 inputs accumulate in float32. Autograd and
+takes anyway. Half and bfloat16 inputs accumulate in float32, and int64 in
+int64, exactly, wrapping around as integer arithmetic does. Autograd and
 the choice of kernel are :mod:`philtorch._recur`'s.
 """
 
@@ -303,7 +304,19 @@ def _real(t: Tensor) -> Tensor:
 def _accumulation_dtype(dtype: torch.dtype) -> torch.dtype:
     if dtype in (torch.float64, torch.complex128):
         return dtype
-    return torch.complex64 if dtype.is_complex else torch.float32
+    if dtype.is_complex:
+        return torch.complex64
+    return torch.float32 if dtype.is_floating_point else torch.int64
+
+
+def _square(P: Tensor) -> Tensor:
+    """P @ P for each of P's (k, M, M) matrices."""
+    if P.is_floating_point() or P.is_complex():
+        return P @ P
+    # CUDA's matmuls take no integers: the products summed elementwise, for
+    # groups of matrices whose M^3 products stay within 2^25 entries.
+    group = max(1, 2**25 // P.size(-1) ** 3)
+    return torch.cat([(p.unsqueeze(-1) * p.unsqueeze(-3)).sum(-2) for p in P.split(group)])
 
 
 def _padded_states(M: int) -> int:
@@ -334,7 +347,7 @@ def _power(A: Tensor, n: int, acc: torch.dtype) -> Tensor:
         # Too large for the products in registers: squarings in PyTorch, once per call.
         power = A.mT.to(acc)
         for _ in range(n.bit_length() - 1):
-            power = power @ power
+            power = _square(power)
         return power.contiguous()
     out = A.new_empty(k, M, M, dtype=acc)
     _power_kernel[(k,)](
@@ -345,12 +358,8 @@ def _power(A: Tensor, n: int, acc: torch.dtype) -> Tensor:
 
 
 def fits(x: Tensor, M: int) -> bool:
-    """Whether the kernels take x's dtype and M.
-
-    Integers are left out: accumulated in float32, int64 states would lose
-    precision past 2^24, silently.
-    """
-    if not (x.is_floating_point() or x.is_complex()):
+    """Whether the kernels take x's dtype, floating point, complex or int64, and M."""
+    if not (x.is_floating_point() or x.is_complex() or x.dtype == torch.int64):
         return False
     return _padded_states(M) * (2 if x.is_complex() else 1) <= MAX_STATES
 

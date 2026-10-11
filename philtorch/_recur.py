@@ -24,7 +24,9 @@ The forward pass runs the first kernel of ``_KERNELS`` that takes the input:
   :mod:`philtorch._recur_kernels` for the rest, which they beat;
 * MPS: the Metal ``lti_recur`` for time-invariant M = 1 in float32.
 
-Anything else raises: there is no fallback to PyTorch ops.
+Every kernel but ``lti_recur``, ``scan`` and ParaRNN takes int64 too, so
+integer recurrences such as the Fibonacci numbers run exactly. Anything else
+raises: there is no fallback to PyTorch ops.
 """
 
 import torch
@@ -58,6 +60,15 @@ def _time_invariant(A: Tensor) -> bool:
     return A.size(1) == 1
 
 
+def _floating(x: Tensor) -> bool:
+    return x.is_floating_point() or x.is_complex()
+
+
+def _floating_or_int64(x: Tensor) -> bool:
+    """The dtypes of the kernels of order M: integers only as int64."""
+    return _floating(x) or x.dtype == torch.int64
+
+
 def _lti_matrices(A: Tensor) -> Tensor:
     return A[0, 0] if A.size(0) == 1 else A[:, 0]
 
@@ -71,6 +82,7 @@ def _lti_recur_applies(A: Tensor, x: Tensor) -> bool:
     return (
         _time_invariant(A)
         and x.size(-1) == 1
+        and _floating(x)
         and (device in ("cpu", "cuda") or device == "mps" and x.dtype == torch.float32)
     )
 
@@ -81,7 +93,7 @@ def _lti_recur(A: Tensor, zi: Tensor, x: Tensor) -> Tensor:
 
 
 def _lti_recurN_applies(A: Tensor, x: Tensor) -> bool:
-    return x.is_cpu and _time_invariant(A)
+    return x.is_cpu and _time_invariant(A) and _floating_or_int64(x)
 
 
 def _lti_recurN(A: Tensor, zi: Tensor, x: Tensor) -> Tensor:
@@ -89,7 +101,7 @@ def _lti_recurN(A: Tensor, zi: Tensor, x: Tensor) -> Tensor:
 
 
 def _recurN_applies(A: Tensor, x: Tensor) -> bool:
-    return x.is_cpu and not _time_invariant(A)
+    return x.is_cpu and not _time_invariant(A) and _floating_or_int64(x)
 
 
 def _recurN(A: Tensor, zi: Tensor, x: Tensor) -> Tensor:
@@ -97,7 +109,7 @@ def _recurN(A: Tensor, zi: Tensor, x: Tensor) -> Tensor:
 
 
 def _lti_recur2_applies(A: Tensor, x: Tensor) -> bool:
-    return x.is_cuda and _time_invariant(A) and x.size(-1) == 2
+    return x.is_cuda and _time_invariant(A) and x.size(-1) == 2 and _floating_or_int64(x)
 
 
 def _lti_recur2(A: Tensor, zi: Tensor, x: Tensor) -> Tensor:
@@ -156,7 +168,13 @@ def _pararnn(A: Tensor, zi: Tensor, x: Tensor) -> Tensor:
 
 def _recur2_applies(A: Tensor, x: Tensor) -> bool:
     # Complex inputs run faster in the Triton kernels.
-    return x.is_cuda and not _time_invariant(A) and x.size(-1) == 2 and not x.is_complex()
+    return (
+        x.is_cuda
+        and not _time_invariant(A)
+        and x.size(-1) == 2
+        and not x.is_complex()
+        and _floating_or_int64(x)
+    )
 
 
 def _recur2(A: Tensor, zi: Tensor, x: Tensor) -> Tensor:
@@ -194,8 +212,8 @@ def _forward(A: Tensor, zi: Tensor, x: Tensor) -> Tensor:
     if x.is_cuda:
         if _recur_kernels is None:
             reason = ": Triton is not installed"
-        elif not (x.is_floating_point() or x.is_complex()):
-            reason = "; the Triton kernels take floating-point and complex dtypes"
+        elif not _floating_or_int64(x):
+            reason = "; the Triton kernels take floating-point, complex and int64 dtypes"
         else:
             most = _recur_kernels.MAX_STATES
             reason = f"; the Triton kernels take M up to {most} ({most // 2} complex)"

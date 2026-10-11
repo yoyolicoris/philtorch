@@ -198,7 +198,7 @@ def test_triton_state_limits():
 
     assert applies(128) and not applies(129)
     assert applies(64, torch.complex64) and not applies(65, torch.complex64)
-    assert not applies(4, torch.int32) and not applies(4, torch.bool)
+    assert applies(4, torch.int64) and not applies(4, torch.int32)
     assert not applies(4, device="cpu")
 
 
@@ -233,7 +233,25 @@ DISPATCH = [
 ]
 
 
-@pytest.mark.parametrize("time_invariant, M, dtype, device, B, kernel", DISPATCH)
+# Integers, which the native kernels of order M take as int64 only.
+INTEGER_DISPATCH = [
+    (True, 1, torch.int64, "cpu", 1, "_lti_recurN"),
+    (True, 2, torch.int64, "cpu", 1, "_lti_recurN"),
+    (False, 2, torch.int64, "cpu", 1, "_recurN"),
+    *(
+        pytest.param(*case, marks=pytest.mark.cuda)
+        for case in [
+            (True, 1, torch.int64, "cuda", 1, "recur_triton"),
+            (True, 2, torch.int64, "cuda", 1, "_lti_recur2"),
+            (False, 1, torch.int64, "cuda", 1, "recur_triton"),
+            (False, 2, torch.int64, "cuda", 1, "_recur2"),
+            (False, 3, torch.int64, "cuda", 1, "recur_triton"),
+        ]
+    ),
+]
+
+
+@pytest.mark.parametrize("time_invariant, M, dtype, device, B, kernel", DISPATCH + INTEGER_DISPATCH)
 def test_dispatch(time_invariant, M, dtype, device, B, kernel):
     assert _kernel(time_invariant, M, dtype, device, B) is getattr(_recur, kernel)
 
@@ -302,14 +320,37 @@ def test_recurrence_in_integers(device):
     assert h[0, :, 0].tolist() == fib[1:]
 
 
+def _integer_problem(B, T, M, sharing, dtype, device):
+    """Small integers, whose states grow, and overflow, as integer arithmetic does."""
+    gen = torch.Generator().manual_seed(0)
+    Ba = B if sharing in ("per_item", "both") else 1
+    Ta = T if sharing in ("per_step", "both") else 1
+    A = torch.randint(-2, 3, (Ba, Ta, M, M), generator=gen)
+    x = torch.randint(-5, 6, (B, T, M), generator=gen)
+    zi = torch.randint(-5, 6, (B, M), generator=gen)
+    return [t.to(device, dtype) for t in (A, zi, x)]
+
+
 @pytest.mark.cuda
-def test_recurrence_in_integers_past_the_native_kernels():
-    # The Triton kernels accumulate in floating point, so they take no
-    # integers: CUDA has no kernel for int64 with M = 3.
-    A = torch.eye(3, dtype=torch.long, device="cuda")[None, None]
-    zi = torch.zeros(1, 3, dtype=torch.long, device="cuda")
-    x = torch.ones(1, 5, 3, dtype=torch.long, device="cuda")
-    with pytest.raises(NotImplementedError, match="floating-point and complex dtypes"):
+@pytest.mark.parametrize("sharing", SHARING)
+@pytest.mark.parametrize("M", [1, 3, 40])
+def test_recurrence_in_integers_on_triton(sharing, M):
+    # Exact, overflow included: int64's wrap-around survives the scan's
+    # reordering. M = 40 takes the
+    # scratch maps, or, time-invariant, the power squared elementwise.
+    A, zi, x = _integer_problem(3, 300, M, sharing, torch.int64, "cuda")
+    # CUDA's matmuls take no integers: the reference runs on CPU.
+    expected = _sequential(*(t.cpu() for t in (A, zi, x)))
+    assert torch.equal(recurrence(A, zi, x).cpu(), expected)
+
+
+@pytest.mark.cuda
+@pytest.mark.parametrize("dtype", [torch.int32, torch.bool])
+def test_recurrence_takes_integers_as_int64_only(dtype):
+    A = torch.eye(3, dtype=dtype, device="cuda")[None, None]
+    zi = torch.zeros(1, 3, dtype=dtype, device="cuda")
+    x = torch.ones(1, 5, 3, dtype=dtype, device="cuda")
+    with pytest.raises(NotImplementedError, match="complex and int64 dtypes"):
         recurrence(A, zi, x)
 
 
