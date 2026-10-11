@@ -11,7 +11,7 @@ whatever kernel runs: the gradient is the same recurrence backward in time
 over A[t]^H, and the tangent the same recurrence forward, so both are
 differentiable again, to any order.
 
-The forward pass picks a kernel from the input (:func:`_forward`):
+The forward pass runs the first kernel of ``_KERNELS`` that takes the input:
 
 * CPU: the C++ kernels, ``lti_recur`` (M = 1) and ``lti_recurN`` for
   time-invariant A, ``recurN`` otherwise;
@@ -45,8 +45,74 @@ def _(A, zi, x):
     return torch.empty_like(x, memory_format=torch.contiguous_format)
 
 
-def _triton_applies(x: Tensor, M: int) -> bool:
-    return _recur_triton is not None and x.is_cuda and _recur_triton.fits(x, M)
+# Each kernel is a condition on the input, (A, x), and a launch, (A, zi, x),
+# listed in _KERNELS in order of preference. The native kernels take A as one
+# matrix (M, M) or one per batch item (B, M, M) when it is time-invariant,
+# and as (T, M, M) shared over the batch or (B, T, M, M) otherwise.
+
+
+def _time_invariant(A: Tensor) -> bool:
+    return A.size(1) == 1
+
+
+def _lti_matrices(A: Tensor) -> Tensor:
+    return A[0, 0] if A.size(0) == 1 else A[:, 0]
+
+
+def _lpv_matrices(A: Tensor) -> Tensor:
+    return A[0] if A.size(0) == 1 else A
+
+
+def _lti_recur_applies(A: Tensor, x: Tensor) -> bool:
+    device = x.device.type
+    return (
+        _time_invariant(A)
+        and x.size(-1) == 1
+        and (device in ("cpu", "cuda") or device == "mps" and x.dtype == torch.float32)
+    )
+
+
+def _lti_recur(A: Tensor, zi: Tensor, x: Tensor) -> Tensor:
+    A = _lti_matrices(A)[..., 0, 0]
+    return torch.ops.philtorch.lti_recur(A, zi[:, 0], x[..., 0]).unsqueeze(-1)
+
+
+def _lti_recurN_applies(A: Tensor, x: Tensor) -> bool:
+    return x.is_cpu and _time_invariant(A)
+
+
+def _lti_recurN(A: Tensor, zi: Tensor, x: Tensor) -> Tensor:
+    return torch.ops.philtorch.lti_recurN(_lti_matrices(A).contiguous(), zi, x.contiguous())
+
+
+def _recurN_applies(A: Tensor, x: Tensor) -> bool:
+    return x.is_cpu and not _time_invariant(A)
+
+
+def _recurN(A: Tensor, zi: Tensor, x: Tensor) -> Tensor:
+    return torch.ops.philtorch.recurN(_lpv_matrices(A).contiguous(), zi, x.contiguous())
+
+
+def _lti_recur2_applies(A: Tensor, x: Tensor) -> bool:
+    return x.is_cuda and _time_invariant(A) and x.size(-1) == 2
+
+
+def _lti_recur2(A: Tensor, zi: Tensor, x: Tensor) -> Tensor:
+    return torch.ops.philtorch.lti_recur2(_lti_matrices(A).contiguous(), zi, x.contiguous())
+
+
+# The dtypes of the ``scan`` kernel, the vendored torchlpc's.
+_SCAN_DTYPES = (torch.float32, torch.float64, torch.complex64, torch.complex128)
+
+
+def _scan_applies(A: Tensor, x: Tensor) -> bool:
+    return x.is_cuda and not _time_invariant(A) and x.size(-1) == 1 and x.dtype in _SCAN_DTYPES
+
+
+def _scan(A: Tensor, zi: Tensor, x: Tensor) -> Tensor:
+    B, T, _ = x.shape
+    decay = A[..., 0, 0].expand(B, T).contiguous()
+    return torch.ops.philtorch.scan(x[..., 0].contiguous(), decay, zi[:, 0]).unsqueeze(-1)
 
 
 # Launch limits of the vendored ParaRNN kernels (third_party/pararnn/csrc):
@@ -55,14 +121,16 @@ def _triton_applies(x: Tensor, M: int) -> bool:
 # steps, combined by one block of at most 1024 threads. The chunk sizes are
 # dtype2chunkSizeBlockDiag in helpers.h: 1 for 3 x 3 float64, 2 otherwise.
 _PARARNN_MAX_BATCH = 65535
-# The dtypes of the ``scan`` kernel, the vendored torchlpc's.
-_SCAN_DTYPES = (torch.float32, torch.float64, torch.complex64, torch.complex128)
 
 
-def _pararnn_applies(x: Tensor, M: int) -> bool:
+def _pararnn_applies(A: Tensor, x: Tensor) -> bool:
+    # ParaRNN takes half and bfloat16 too, but accumulates in them; the
+    # Triton kernels accumulate those in float32.
+    M = x.size(-1)
     chunk = 1 if M == 3 and x.dtype == torch.float64 else 2
     return (
         x.is_cuda
+        and not _time_invariant(A)
         and x.dtype in (torch.float32, torch.float64)
         and M in (2, 3)
         and x.size(0) <= _PARARNN_MAX_BATCH
@@ -70,59 +138,62 @@ def _pararnn_applies(x: Tensor, M: int) -> bool:
     )
 
 
-def _forward(A: Tensor, zi: Tensor, x: Tensor) -> Tensor:
-    """The recurrence by the fastest kernel for the input; see the module docstring."""
+def _pararnn(A: Tensor, zi: Tensor, x: Tensor) -> Tensor:
     B, T, M = x.shape
-    Ba, Ta = A.shape[:2]
-    if T == 0 or B == 0:
+    jac = F.pad(-A.expand(B, T, M, M), (0, 0, 0, 0, 1, 0)).contiguous()
+    rhs = torch.cat([zi.unsqueeze(1), x], 1)
+    ops = torch.ops.parallel_reduce_cuda
+    reduce = (
+        ops.parallel_reduce_block_diag_3x3_cuda
+        if M == 3
+        else ops.parallel_reduce_block_diag_2x2_cuda
+    )
+    return reduce(jac, rhs)[:, 1:]
+
+
+def _recur2_applies(A: Tensor, x: Tensor) -> bool:
+    # Complex inputs run faster in the Triton kernels.
+    return x.is_cuda and not _time_invariant(A) and x.size(-1) == 2 and not x.is_complex()
+
+
+def _recur2(A: Tensor, zi: Tensor, x: Tensor) -> Tensor:
+    return torch.ops.philtorch.recur2(_lpv_matrices(A).contiguous(), zi, x.contiguous())
+
+
+def _triton_applies(A: Tensor, x: Tensor) -> bool:
+    return _recur_triton is not None and x.is_cuda and _recur_triton.fits(x, x.size(-1))
+
+
+_KERNELS = (
+    (_lti_recur_applies, _lti_recur),
+    (_lti_recurN_applies, _lti_recurN),
+    (_recurN_applies, _recurN),
+    (_lti_recur2_applies, _lti_recur2),
+    (_scan_applies, _scan),
+    (_pararnn_applies, _pararnn),
+    (_recur2_applies, _recur2),
+    (_triton_applies, recur_triton),
+)
+
+
+def _forward(A: Tensor, zi: Tensor, x: Tensor) -> Tensor:
+    """The recurrence by the first kernel of _KERNELS that takes the input."""
+    if x.size(0) == 0 or x.size(1) == 0:
         return torch.empty_like(x)
-    ops = torch.ops.philtorch
-    time_invariant = Ta == 1
-    # The native kernels' layouts: one matrix (M, M) or one per batch item (B, M, M)
-    # for time-invariant A; (T, M, M) shared over the batch or (B, T, M, M) otherwise.
-    A_lti = A[0, 0] if Ba == 1 else A[:, 0]
-    A_lpv = A[0] if Ba == 1 else A
-    device = x.device.type
-    if device == "cpu":
-        if time_invariant:
-            if M == 1:
-                return ops.lti_recur(A_lti[..., 0, 0], zi[:, 0], x[..., 0]).unsqueeze(-1)
-            return ops.lti_recurN(A_lti.contiguous(), zi, x.contiguous())
-        return ops.recurN(A_lpv.contiguous(), zi, x.contiguous())
-    if device == "cuda":
-        if time_invariant and M == 1:
-            return ops.lti_recur(A_lti[..., 0, 0], zi[:, 0], x[..., 0]).unsqueeze(-1)
-        if time_invariant and M == 2:
-            return ops.lti_recur2(A_lti.contiguous(), zi, x.contiguous())
-        if not time_invariant and M == 1 and x.dtype in _SCAN_DTYPES:
-            decay = A[..., 0, 0].expand(B, T)
-            return ops.scan(x[..., 0].contiguous(), decay.contiguous(), zi[:, 0]).unsqueeze(-1)
-        if not time_invariant and _pararnn_applies(x, M):
-            jac = F.pad(-A.expand(B, T, M, M), (0, 0, 0, 0, 1, 0))
-            rhs = torch.cat([zi.unsqueeze(1), x], 1)
-            reduce = (
-                torch.ops.parallel_reduce_cuda.parallel_reduce_block_diag_3x3_cuda
-                if M == 3
-                else torch.ops.parallel_reduce_cuda.parallel_reduce_block_diag_2x2_cuda
-            )
-            return reduce(jac.contiguous(), rhs)[:, 1:]
-        if not time_invariant and M == 2 and not x.is_complex():
-            # Complex inputs run faster in the Triton kernels.
-            return ops.recur2(A_lpv.contiguous(), zi, x.contiguous())
-        if _triton_applies(x, M):
-            return recur_triton(A, zi, x)
-    if device == "mps" and time_invariant and M == 1 and x.dtype == torch.float32:
-        return ops.lti_recur(A_lti[..., 0, 0], zi[:, 0], x[..., 0]).unsqueeze(-1)
-    kind = "time-invariant" if time_invariant else "time-varying"
+    for applies, run in _KERNELS:
+        if applies(A, x):
+            return run(A, zi, x)
+    kind = "time-invariant" if _time_invariant(A) else "time-varying"
     reason = ""
-    if device == "cuda":
+    if x.is_cuda:
         if _recur_triton is None:
             reason = ": Triton is not installed"
         else:
             most = _recur_triton.MAX_STATES
             reason = f"; the Triton kernels take M up to {most} ({most // 2} complex)"
     raise NotImplementedError(
-        f"no recurrence kernel for {kind} A with M = {M} in {x.dtype} on {device}{reason}"
+        f"no recurrence kernel for {kind} A with M = {x.size(-1)} in {x.dtype} "
+        f"on {x.device.type}{reason}"
     )
 
 
@@ -194,11 +265,21 @@ def recurrence(A: Tensor, zi: Tensor, x: Tensor) -> Tensor:
 
     Returns:
         The states h, (B, T, M).
+
+    Raises:
+        ValueError: if the shapes disagree, or the tensors' dtypes or devices.
+        NotImplementedError: if no kernel takes the input; see the module
+            docstring.
     """
+    if x.dim() != 3:
+        raise ValueError(f"x must be (B, T, M), got {tuple(x.shape)}")
     B, T, M = x.shape
-    if A.dim() != 4 or A.shape[0] not in (1, B) or A.shape[1] not in (1, T) or A.shape[2:] != (
-        M, M
-    ):  # fmt: skip
+    if (
+        A.dim() != 4
+        or A.shape[0] not in (1, B)
+        or A.shape[1] not in (1, T)
+        or A.shape[2:] != (M, M)
+    ):
         raise ValueError(
             f"A must be (1 or {B}, 1 or {T}, {M}, {M}) for x of shape {tuple(x.shape)}, "
             f"got {tuple(A.shape)}"

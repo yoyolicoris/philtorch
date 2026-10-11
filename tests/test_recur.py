@@ -1,7 +1,8 @@
 import pytest
 import torch
 
-from philtorch._recur import _forward, _triton_applies, recurrence
+from philtorch import _recur
+from philtorch._recur import _forward, recur_triton, recurrence
 
 requires_cuda = pytest.mark.skipif(not torch.cuda.is_available(), reason="CUDA not available")
 DEVICES = ["cpu", pytest.param("cuda", marks=requires_cuda)]
@@ -78,6 +79,17 @@ def test_recurrence_maps_in_scratch(dtype, M):
 
 
 @requires_cuda
+@pytest.mark.parametrize("dtype", [torch.float32, torch.complex64])
+def test_recurrence_ignores_memory_past_the_states(dtype):
+    # The scratch tiles' rows from M on are never written: NaN left in freed
+    # memory, where the allocator places them, must not reach the states.
+    A, zi, x = _problem(2, 1500, 40 if dtype == torch.float32 else 24, "both", dtype, "cuda")
+    for _ in range(4):
+        torch.full((2**24,), float("nan"), device="cuda")
+    assert not recurrence(A, zi, x).isnan().any()
+
+
+@requires_cuda
 @pytest.mark.parametrize(
     "dtype, tolerance",
     [
@@ -130,15 +142,63 @@ def test_recurrence_empty(device):
 
 
 @requires_cuda
-def test_triton_covers_cuda_without_a_native_kernel():
-    x = torch.zeros(1, 1, 1, device="cuda")
-    assert _triton_applies(x, 128) and not _triton_applies(x, 129)
-    assert _triton_applies(x.cfloat(), 64) and not _triton_applies(x.cfloat(), 65)
-    assert not _triton_applies(x.cpu(), 4)
+def test_triton_state_limits():
+    def applies(M, dtype=torch.float32, device="cuda"):
+        A = torch.zeros(1, 1, M, M, dtype=dtype, device=device)
+        return _recur._triton_applies(A, torch.zeros(1, 1, M, dtype=dtype, device=device))
+
+    assert applies(128) and not applies(129)
+    assert applies(64, torch.complex64) and not applies(65, torch.complex64)
+    assert not applies(4, device="cpu")
+
+
+def _kernel(time_invariant, M, dtype, device, B=1):
+    """The launch _forward picks for A and x of these properties."""
+    A = torch.zeros(1, 1 if time_invariant else 2, M, M, dtype=dtype, device=device)
+    x = torch.zeros(B, 2, M, dtype=dtype, device=device)
+    return next(run for applies, run in _recur._KERNELS if applies(A, x))
+
+
+@pytest.mark.parametrize(
+    "time_invariant, M, dtype, device, B, kernel",
+    [
+        (True, 1, torch.float64, "cpu", 1, "_lti_recur"),
+        (True, 3, torch.float64, "cpu", 1, "_lti_recurN"),
+        (False, 1, torch.float64, "cpu", 1, "_recurN"),
+        *(
+            pytest.param(*case, marks=requires_cuda)
+            for case in [
+                (True, 1, torch.float16, "cuda", 1, "_lti_recur"),
+                (True, 2, torch.complex64, "cuda", 1, "_lti_recur2"),
+                (True, 3, torch.float32, "cuda", 1, "recur_triton"),
+                (False, 1, torch.complex64, "cuda", 1, "_scan"),
+                (False, 1, torch.float16, "cuda", 1, "recur_triton"),
+                (False, 2, torch.float32, "cuda", 1, "_pararnn"),
+                (False, 3, torch.float64, "cuda", 1, "_pararnn"),
+                (False, 2, torch.float32, "cuda", 65536, "_recur2"),
+                (False, 2, torch.float16, "cuda", 1, "_recur2"),
+                (False, 2, torch.complex64, "cuda", 1, "recur_triton"),
+                (False, 3, torch.float16, "cuda", 1, "recur_triton"),
+            ]
+        ),
+    ],
+)
+def test_dispatch(time_invariant, M, dtype, device, B, kernel):
+    assert _kernel(time_invariant, M, dtype, device, B) is getattr(_recur, kernel)
+
+
+@requires_cuda
+@pytest.mark.parametrize("sharing", SHARING)
+def test_recur_triton_custom_op(sharing):
+    # The fake implementation and the op's registration, for torch.compile.
+    A, zi, x = _problem(2, 70, 3, sharing, torch.float32, "cuda")
+    torch.library.opcheck(recur_triton, (A, zi, x))
 
 
 def test_recurrence_rejects_bad_shapes():
     A, zi, x = _problem(2, 5, 3, "both")
+    with pytest.raises(ValueError, match="x must be"):
+        recurrence(A, zi, x[0])
     with pytest.raises(ValueError, match="A must be"):
         recurrence(A[0], zi, x)
     with pytest.raises(ValueError, match="A must be"):
