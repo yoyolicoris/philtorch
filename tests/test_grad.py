@@ -36,22 +36,19 @@ _REQUIRES_GRAD_CASES = (
             True,
             2,
             "cuda",
-            marks=pytest.mark.skipif(not torch.cuda.is_available(), reason="CUDA not available"),
+            marks=pytest.mark.cuda,
         ),
         pytest.param(
             False,
             2,
             "cuda",
-            marks=pytest.mark.skipif(not torch.cuda.is_available(), reason="CUDA not available"),
+            marks=pytest.mark.cuda,
         ),
         pytest.param(
             False,
             3,
             "cuda",
-            marks=pytest.mark.skipif(
-                not torch.cuda.is_available(),
-                reason="CUDA not available",
-            ),
+            marks=pytest.mark.cuda,
         ),
     ],
 )
@@ -113,7 +110,7 @@ def test_N_order(
         "cpu",
         pytest.param(
             "cuda",
-            marks=pytest.mark.skipif(not torch.cuda.is_available(), reason="CUDA not available"),
+            marks=pytest.mark.cuda,
         ),
     ],
 )
@@ -175,7 +172,7 @@ def test_second_order_lti(
         "cpu",
         pytest.param(
             "cuda",
-            marks=pytest.mark.skipif(not torch.cuda.is_available(), reason="CUDA not available"),
+            marks=pytest.mark.cuda,
         ),
     ],
 )

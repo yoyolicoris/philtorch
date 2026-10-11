@@ -82,12 +82,12 @@ def test_recurN_pt2_compatibility(
         pytest.param(
             True,
             "cuda",
-            marks=pytest.mark.skipif(not torch.cuda.is_available(), reason="CUDA not available"),
+            marks=pytest.mark.cuda,
         ),
         pytest.param(
             False,
             "cuda",
-            marks=pytest.mark.skipif(not torch.cuda.is_available(), reason="CUDA not available"),
+            marks=pytest.mark.cuda,
         ),
     ],
 )
@@ -148,7 +148,7 @@ def test_recur2_pt2_compatibility(
         "cpu",
         pytest.param(
             "cuda",
-            marks=pytest.mark.skipif(not torch.cuda.is_available(), reason="CUDA not available"),
+            marks=pytest.mark.cuda,
         ),
     ],
 )
@@ -266,7 +266,7 @@ def test_lti_recurN_pt2_compatibility(
         "cpu",
         pytest.param(
             "cuda",
-            marks=pytest.mark.skipif(not torch.cuda.is_available(), reason="CUDA not available"),
+            marks=pytest.mark.cuda,
         ),
     ],
 )

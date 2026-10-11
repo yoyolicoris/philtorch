@@ -17,7 +17,7 @@ from .test_lpv_filters import _generate_test_signal, _generate_time_varying_coef
         "cpu",
         pytest.param(
             "cuda",
-            marks=pytest.mark.skipif(not torch.cuda.is_available(), reason="CUDA not available"),
+            marks=pytest.mark.cuda,
         ),
     ],
 )
@@ -55,7 +55,7 @@ def test_ssm_equivalence(device):
         "cpu",
         pytest.param(
             "cuda",
-            marks=pytest.mark.skipif(not torch.cuda.is_available(), reason="CUDA not available"),
+            marks=pytest.mark.cuda,
         ),
     ],
 )

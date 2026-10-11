@@ -89,7 +89,7 @@ def test_state_space_unsupported_fallback(module, monkeypatch):
         "cpu",
         pytest.param(
             "cuda",
-            marks=pytest.mark.skipif(not torch.cuda.is_available(), reason="CUDA not available"),
+            marks=pytest.mark.cuda,
         ),
     ],
 )
@@ -186,7 +186,7 @@ def test_lti_recurN_cpu_dispatch_equiv(dtype: torch.dtype, batch: bool):
         "cpu",
         pytest.param(
             "cuda",
-            marks=pytest.mark.skipif(not torch.cuda.is_available(), reason="CUDA not available"),
+            marks=pytest.mark.cuda,
         ),
         pytest.param(
             "mps",
@@ -219,7 +219,7 @@ def test_lti_recur_equiv(device: str, batch: bool):
         "meta",
         pytest.param(
             "cuda",
-            marks=pytest.mark.skipif(not torch.cuda.is_available(), reason="CUDA not available"),
+            marks=pytest.mark.cuda,
         ),
         pytest.param(
             "mps",
@@ -348,7 +348,7 @@ def test_recurN_extension_matches_fallback(order: int):
         "cpu",
         pytest.param(
             "cuda",
-            marks=pytest.mark.skipif(not torch.cuda.is_available(), reason="CUDA not available"),
+            marks=pytest.mark.cuda,
         ),
     ],
 )
@@ -375,7 +375,7 @@ def test_recur2_extension_matches_fallback(device):
         )
 
 
-@pytest.mark.skipif(not torch.cuda.is_available(), reason="CUDA not available")
+@pytest.mark.cuda
 def test_lpv_pararnn_order3_matches_fallback():
     """Test the CUDA floating order-3 ParaRNN selector boundary."""
     batch_size = 2
@@ -441,7 +441,7 @@ def _cuda_scan_case(name: str):
     return op, args, op(*args)
 
 
-@pytest.mark.skipif(not torch.cuda.is_available(), reason="CUDA not available")
+@pytest.mark.cuda
 @pytest.mark.parametrize(
     "case",
     [
@@ -485,7 +485,7 @@ def test_cuda_scan_runs_on_the_current_stream(case: str):
     assert torch.allclose(actual.cpu(), expected), torch.max(torch.abs(actual.cpu() - expected))
 
 
-@pytest.mark.skipif(not torch.cuda.is_available(), reason="CUDA not available")
+@pytest.mark.cuda
 @pytest.mark.parametrize(
     ("M", "dtype", "max_steps"),
     [
@@ -508,7 +508,7 @@ def test_pararnn_applicable_within_launch_limits(M, dtype, max_steps):
     assert not lpv_ssm._pararnn_applicable(x(65536, 4), M)
 
 
-@pytest.mark.skipif(not torch.cuda.is_available(), reason="CUDA not available")
+@pytest.mark.cuda
 @pytest.mark.parametrize(
     ("B", "T", "M"),
     [(70_000, 8, 2), (70_000, 8, 3), (1, 2**21, 2)],
@@ -528,7 +528,7 @@ def test_lpv_state_space_recursion_past_pararnn_limits(B, T, M):
     assert torch.allclose(actual.cpu(), expected), torch.max(torch.abs(actual.cpu() - expected))
 
 
-@pytest.mark.skipif(not torch.cuda.is_available(), reason="CUDA not available")
+@pytest.mark.cuda
 @pytest.mark.parametrize(
     "case",
     ["lti_recur-shared", "lti_recur2-batched", "recur2-batched", "lpc", "scan"],
@@ -543,7 +543,7 @@ def test_cuda_ops_reject_coefficients_on_another_device(case: str):
         op(*cuda_args)
 
 
-@pytest.mark.skipif(not torch.cuda.is_available(), reason="CUDA not available")
+@pytest.mark.cuda
 @pytest.mark.parametrize(("B", "steps"), [(65536, 4), (1, 2**21 + 1)], ids=["batch", "length"])
 def test_pararnn_op_rejects_inputs_past_its_launch_limits(B, steps):
     """Called directly, the ParaRNN op names the limit instead of failing to launch."""
@@ -553,6 +553,7 @@ def test_pararnn_op_rejects_inputs_past_its_launch_limits(B, steps):
         torch.ops.parallel_reduce_cuda.parallel_reduce_block_diag_2x2_cuda(jac, rhs)
 
 
+@pytest.mark.cuda
 @pytest.mark.skipif(torch.cuda.device_count() < 2, reason="needs two CUDA devices")
 def test_pararnn_op_rejects_inputs_on_different_cuda_devices():
     jac = torch.zeros(1, 4, 2, 2, device="cuda:0")

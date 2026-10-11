@@ -4,8 +4,7 @@ import torch
 from philtorch import _recur
 from philtorch._recur import _forward, recur_triton, recurrence
 
-requires_cuda = pytest.mark.skipif(not torch.cuda.is_available(), reason="CUDA not available")
-DEVICES = ["cpu", pytest.param("cuda", marks=requires_cuda)]
+DEVICES = ["cpu", pytest.param("cuda", marks=pytest.mark.cuda)]
 # How A is shared: (batch items, steps) it has, of B and T.
 SHARING = ["one", "per_item", "per_step", "both"]
 
@@ -44,7 +43,7 @@ def test_recurrence_matches_sequential(device, sharing, M, dtype):
     torch.testing.assert_close(recurrence(A, zi, x), _sequential(A, zi, x))
 
 
-@requires_cuda
+@pytest.mark.cuda
 @pytest.mark.parametrize("sharing", SHARING)
 @pytest.mark.parametrize("M", [3, 8, 24])
 @pytest.mark.parametrize("T", [50, 300])
@@ -55,7 +54,7 @@ def test_recurrence_large_batch(sharing, M, T):
     torch.testing.assert_close(recurrence(A, zi, x), _sequential(A, zi, x))
 
 
-@requires_cuda
+@pytest.mark.cuda
 @pytest.mark.parametrize("sharing", ["one", "both"])
 @pytest.mark.parametrize("M", [3, 8])
 def test_recurrence_many_chunks_repeatedly(sharing, M):
@@ -67,7 +66,7 @@ def test_recurrence_many_chunks_repeatedly(sharing, M):
         torch.testing.assert_close(recurrence(A, zi, x), expected)
 
 
-@requires_cuda
+@pytest.mark.cuda
 @pytest.mark.parametrize("dtype, M", [(torch.float64, 40), (torch.complex128, 24)])
 def test_recurrence_maps_in_scratch(dtype, M):
     # Time-varying maps too large for registers: their products through
@@ -78,7 +77,7 @@ def test_recurrence_maps_in_scratch(dtype, M):
         torch.testing.assert_close(recurrence(A, zi, x), expected)
 
 
-@requires_cuda
+@pytest.mark.cuda
 @pytest.mark.parametrize("dtype", [torch.float32, torch.complex64])
 def test_recurrence_ignores_memory_past_the_states(dtype):
     # The scratch tiles' rows from M on are never written: NaN left in freed
@@ -89,7 +88,7 @@ def test_recurrence_ignores_memory_past_the_states(dtype):
     assert not recurrence(A, zi, x).isnan().any()
 
 
-@requires_cuda
+@pytest.mark.cuda
 @pytest.mark.parametrize(
     "dtype, tolerance",
     [
@@ -134,7 +133,7 @@ def test_recurrence_derivatives_of_short_sequences(device, sharing, T):
     assert torch.autograd.gradgradcheck(recurrence, inputs)
 
 
-@requires_cuda
+@pytest.mark.cuda
 def test_recurrence_cuda_matches_cpu_gradients():
     A, zi, x = _problem(3, 200, 4, "both")
     grads = []
@@ -162,7 +161,7 @@ def test_recurrence_empty(device, compiled):
         assert not grad.any()
 
 
-@requires_cuda
+@pytest.mark.cuda
 def test_triton_state_limits():
     def applies(M, dtype=torch.float32, device="cuda"):
         A = torch.zeros(1, 1, M, M, dtype=dtype, device=device)
@@ -186,7 +185,7 @@ DISPATCH = [
     (True, 3, torch.float64, "cpu", 1, "_lti_recurN"),
     (False, 1, torch.float64, "cpu", 1, "_recurN"),
     *(
-        pytest.param(*case, marks=requires_cuda)
+        pytest.param(*case, marks=pytest.mark.cuda)
         for case in [
             (True, 1, torch.float16, "cuda", 1, "_lti_recur"),
             (True, 2, torch.complex64, "cuda", 1, "_lti_recur2"),
@@ -209,7 +208,7 @@ def test_dispatch(time_invariant, M, dtype, device, B, kernel):
     assert _kernel(time_invariant, M, dtype, device, B) is getattr(_recur, kernel)
 
 
-@requires_cuda
+@pytest.mark.cuda
 @pytest.mark.parametrize("sharing", SHARING)
 def test_recur_triton_custom_op(sharing):
     # The fake implementation and the op's gradients, for torch.compile.
@@ -261,7 +260,7 @@ def test_recurrence_raises_where_no_kernel_applies():
         _forward(A, zi, x)
 
 
-@requires_cuda
+@pytest.mark.cuda
 def test_recurrence_raises_past_the_largest_triton_state():
     A, zi, x = _problem(2, 7, 129, "one", device="cuda")
     with pytest.raises(NotImplementedError, match="take M up to 128"):

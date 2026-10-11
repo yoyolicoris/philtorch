@@ -11,7 +11,7 @@ DEVICES = [
     "cpu",
     pytest.param(
         "cuda",
-        marks=pytest.mark.skipif(not torch.cuda.is_available(), reason="CUDA not available"),
+        marks=pytest.mark.cuda,
     ),
 ]
 
@@ -259,7 +259,7 @@ def test_kalman_known_inputs_recipe(fn):
     torch.testing.assert_close(result.covs, expected[1], rtol=1e-9, atol=1e-9)
 
 
-@pytest.mark.skipif(not torch.cuda.is_available(), reason="CUDA not available")
+@pytest.mark.cuda
 def test_kalman_float32_long_sequence():
     args = _model(2, 4096, 4, 2)
     expected = _reference(*args, "first_state")
