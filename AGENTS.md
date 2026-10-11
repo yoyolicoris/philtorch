@@ -54,7 +54,7 @@ Benchmarks live in `benchmarks/` and run as `pixi run python benchmarks/<name>.p
 ## Tests and CI
 
 - pytest runs with `--import-mode=importlib`, so the tests import the installed philtorch, with its compiled extension, rather than the source tree. A test that runs a subprocess should pass `cwd=tmp_path`, or the subprocess imports the checkout.
-- Mark tests that need a CUDA device with `pytest.mark.cuda`, on the test or on its `"cuda"` parameter. `tests/conftest.py` skips them where no CUDA device is available, as on the CPU CI runners, and the CUDA workflow (`build-cuda-wheels.yml`) runs exactly them, `-m cuda`, on a Modal GPU, uploading their coverage to Codecov with the `gpu` flag. Coverage leaves out `@triton.jit` functions, which it can't trace, and `tests/conftest.py` runs autograd's backward passes on the calling thread, since coverage can't trace the thread autograd starts for CUDA.
+- Mark tests that need a CUDA device with `pytest.mark.cuda`, on the test or on its `"cuda"` parameter. `tests/conftest.py` skips them where no CUDA device is available, as on the CPU CI runners, and the CUDA workflow (`build-cuda-wheels.yml`) runs exactly them, `-m cuda`, on a Modal GPU, uploading their coverage to Codecov with the `gpu` flag, which `codecov.yml` carries forward to commits that don't run it. Coverage leaves out `@triton.jit` functions, which it can't trace, and `tests/conftest.py` runs autograd's backward passes on the calling thread, since coverage can't trace the thread autograd starts for CUDA.
 
 ## Branches and releases
 

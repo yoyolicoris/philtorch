@@ -1,0 +1,10 @@
+# The GPU job (build-cuda-wheels.yml) uploads its coverage with the gpu flag,
+# and Codecov merges it with the CPU tests' report for the same commit. That job
+# runs only when the CUDA build, the Triton kernels or their tests change, and
+# never for pull requests from forks: a commit without a gpu upload reuses the
+# flag's coverage from the last commit that has one, instead of reporting the
+# CUDA-only code as uncovered.
+flag_management:
+  individual_flags:
+    - name: gpu
+      carryforward: true
