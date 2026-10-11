@@ -9,6 +9,7 @@ from philtorch.lti import diag_state_space, state_space, state_space_recursion
 from philtorch.lti.ssm import _ssm_B, _ssm_C_D
 from philtorch.mat import companion
 
+from ._cases import each_choice
 from .test_lti_lfilter import _generate_random_signal
 
 
@@ -94,24 +95,32 @@ def test_out_idx(order: int, out_idx: int):
     assert np.allclose(y_torch.numpy(), y_scipy)
 
 
+# diag_state_space folds A's eigenvectors into B or into x, so B's and x's
+# shapes meet A's: those go together; C and zi are independent of them.
 @pytest.mark.parametrize(
-    ("x_shape", "B_shape"),
-    [
-        ((5, 97), (3,)),
-        ((5, 97), (5, 3)),
-        ((5, 97), None),
-        ((5, 97, 3), None),
-        ((5, 97, 2), (3, 2)),
-        ((5, 97, 2), (5, 3, 2)),
-    ],
+    ("x_B_A_shape", "C_shape", "zi_shape"),
+    each_choice(
+        list(
+            product(
+                [
+                    ((5, 97), (3,)),
+                    ((5, 97), (5, 3)),
+                    ((5, 97), None),
+                    ((5, 97, 3), None),
+                    ((5, 97, 2), (3, 2)),
+                    ((5, 97, 2), (5, 3, 2)),
+                ],
+                [(3, 3), (5, 3, 3)],
+            )
+        ),
+        [None, (3,), (5, 3), (2, 3), (5, 2, 3)],
+        [None, (3,), (5, 3)],
+    ),
 )
-@pytest.mark.parametrize("A_shape", [(3, 3), (5, 3, 3)])
-@pytest.mark.parametrize("C_shape", [None, (3,), (5, 3), (2, 3), (5, 2, 3)])
-@pytest.mark.parametrize("D_shape", [None])
-@pytest.mark.parametrize("zi_shape", [None, (3,), (5, 3)])
 @pytest.mark.parametrize("ssm", [state_space, diag_state_space])
-def test_ssm_shape_handling(x_shape, A_shape, B_shape, C_shape, D_shape, zi_shape, ssm):
+def test_ssm_shape_handling(x_B_A_shape, C_shape, zi_shape, ssm):
     unroll_factor = 4
+    ((x_shape, B_shape), A_shape), D_shape = x_B_A_shape, None
 
     x = torch.randn(*x_shape)
     A = _generate_diagonalizable_matrix(A_shape)
@@ -144,45 +153,58 @@ def test_ssm_shape_handling(x_shape, A_shape, B_shape, C_shape, D_shape, zi_shap
             assert False, f"Unexpected C_shape: {C_shape}"
 
 
+# Each group fixes x's dimensions and the D, B and C shapes that go with them.
+_A_SHAPES = [(3, 3), (5, 3, 3)]
+_ZI_SHAPES = [None, (3,), (5, 3)]
+
+
 @pytest.mark.parametrize(
-    ("D_shape", "x_shape", "B_shape", "C_shape"),
+    ("D_shape", "x_shape", "B_shape", "C_shape", "A_shape", "zi_shape"),
     list(
         chain(
-            product(
+            each_choice(
                 [(5,), (1,), ()],
                 [(5, 97)],
                 [(3,), (5, 3)],
                 [(3,), (5, 3)],
+                _A_SHAPES,
+                _ZI_SHAPES,
             ),
-            product(
+            each_choice(
                 [(1,), (), (2, 2), (5, 2, 2)],
                 [(5, 97, 2)],
                 [(3, 2), (5, 3, 2)],
                 [(2, 3), (5, 2, 3)],
+                _A_SHAPES,
+                _ZI_SHAPES,
             ),
-            product(
+            each_choice(
                 [(4,), (5, 4)],
                 [(5, 97)],
                 [(3,), (5, 3)],
                 [(4, 3), (5, 4, 3)],
+                _A_SHAPES,
+                _ZI_SHAPES,
             ),
-            product(
+            each_choice(
                 [(7, 2), (5, 7, 2)],
                 [(5, 97, 2)],
                 [(3, 2), (5, 3, 2)],
                 [(7, 3), (5, 7, 3)],
+                _A_SHAPES,
+                _ZI_SHAPES,
             ),
-            product(
+            each_choice(
                 [(2,), (5, 2)],
                 [(5, 97, 2)],
                 [(3, 2), (5, 3, 2)],
                 [(3,), (5, 3)],
+                _A_SHAPES,
+                _ZI_SHAPES,
             ),
         )
     ),
 )
-@pytest.mark.parametrize("A_shape", [(3, 3), (5, 3, 3)])
-@pytest.mark.parametrize("zi_shape", [None, (3,), (5, 3)])
 @pytest.mark.parametrize("ssm", [state_space, diag_state_space])
 def test_ssm_D_shape_handling(x_shape, A_shape, B_shape, C_shape, D_shape, zi_shape, ssm):
     unroll_factor = 4

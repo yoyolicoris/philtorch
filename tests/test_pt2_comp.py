@@ -5,311 +5,6 @@ import torch
 
 import philtorch  # noqa: F401  (registers its ops)
 
-_REQUIRES_GRAD_CASES = [
-    (True, False, False),
-    (False, True, False),
-    (False, False, True),
-    (True, True, False),
-    (True, False, True),
-    (False, True, True),
-    (True, True, True),
-]
-
-
-@pytest.mark.parametrize(
-    ("x_requires_grad", "A_requires_grad", "zi_requires_grad"),
-    _REQUIRES_GRAD_CASES,
-)
-@pytest.mark.parametrize(
-    "samples",
-    [11],
-)
-@pytest.mark.parametrize(
-    ("cmplx", "order", "device"),
-    [
-        (True, 3, "cpu"),
-        (False, 3, "cpu"),
-    ],
-)
-@pytest.mark.parametrize(
-    "share_A",
-    [True, False],
-)
-def test_recurN_pt2_compatibility(
-    x_requires_grad: bool,
-    A_requires_grad: bool,
-    zi_requires_grad: bool,
-    share_A: bool,
-    samples: int,
-    cmplx: bool,
-    device: str,
-    order: int,
-):
-    batch_size = 3
-    x, A, zi = tuple(
-        x.to(device)
-        for x in [
-            torch.randn(
-                batch_size,
-                samples,
-                order,
-                dtype=torch.double if not cmplx else torch.complex128,
-            ),
-            torch.randn(
-                *((batch_size, samples, order, order) if not share_A else (samples, order, order)),
-                dtype=torch.double if not cmplx else torch.complex128,
-            )
-            / order**2,
-            torch.randn(batch_size, order, dtype=torch.double if not cmplx else torch.complex128),
-        ]
-    )
-    A.requires_grad = A_requires_grad
-    x.requires_grad = x_requires_grad
-    zi.requires_grad = zi_requires_grad
-
-    torch.library.opcheck(torch.ops.philtorch.recurN, (A, zi, x))
-
-
-@pytest.mark.parametrize(
-    ("x_requires_grad", "A_requires_grad", "zi_requires_grad"),
-    _REQUIRES_GRAD_CASES,
-)
-@pytest.mark.parametrize(
-    "samples",
-    [11],
-)
-@pytest.mark.parametrize(
-    ("cmplx", "device"),
-    [
-        (True, "cpu"),
-        (False, "cpu"),
-        pytest.param(
-            True,
-            "cuda",
-            marks=pytest.mark.cuda,
-        ),
-        pytest.param(
-            False,
-            "cuda",
-            marks=pytest.mark.cuda,
-        ),
-    ],
-)
-@pytest.mark.parametrize(
-    "share_A",
-    [True, False],
-)
-def test_recur2_pt2_compatibility(
-    x_requires_grad: bool,
-    A_requires_grad: bool,
-    zi_requires_grad: bool,
-    share_A: bool,
-    samples: int,
-    cmplx: bool,
-    device: str,
-):
-    order = 2
-    batch_size = 3
-    x, A, zi = tuple(
-        x.to(device)
-        for x in [
-            torch.randn(
-                batch_size,
-                samples,
-                order,
-                dtype=torch.double if not cmplx else torch.complex128,
-            ),
-            torch.randn(
-                *((batch_size, samples, order, order) if not share_A else (samples, order, order)),
-                dtype=torch.double if not cmplx else torch.complex128,
-            )
-            / order**2,
-            torch.randn(batch_size, order, dtype=torch.double if not cmplx else torch.complex128),
-        ]
-    )
-    A.requires_grad = A_requires_grad
-    x.requires_grad = x_requires_grad
-    zi.requires_grad = zi_requires_grad
-
-    torch.library.opcheck(torch.ops.philtorch.recur2, (A, zi, x))
-
-
-@pytest.mark.parametrize(
-    ("x_requires_grad", "A_requires_grad", "zi_requires_grad"),
-    _REQUIRES_GRAD_CASES,
-)
-@pytest.mark.parametrize(
-    "samples",
-    [11],
-)
-@pytest.mark.parametrize(
-    "cmplx",
-    [True, False],
-)
-@pytest.mark.parametrize(
-    "device",
-    [
-        "cpu",
-        pytest.param(
-            "cuda",
-            marks=pytest.mark.cuda,
-        ),
-    ],
-)
-@pytest.mark.parametrize(
-    "share_A",
-    [True, False],
-)
-def test_lti_recur2_pt2_compatibility(
-    x_requires_grad: bool,
-    A_requires_grad: bool,
-    zi_requires_grad: bool,
-    samples: int,
-    cmplx: bool,
-    device: str,
-    share_A: bool,
-):
-    batch_size = 3
-    order = 2
-    x, A, zi = tuple(
-        x.to(device)
-        for x in [
-            torch.randn(
-                batch_size,
-                samples,
-                2,
-                dtype=torch.double if not cmplx else torch.complex128,
-            ),
-            torch.randn(
-                *((batch_size, order, order) if not share_A else (order, order)),
-                dtype=torch.double if not cmplx else torch.complex128,
-            )
-            * 0.25,
-            torch.randn(batch_size, order, dtype=torch.double if not cmplx else torch.complex128),
-        ]
-    )
-    A.requires_grad = A_requires_grad
-    x.requires_grad = x_requires_grad
-    zi.requires_grad = zi_requires_grad
-
-    torch.library.opcheck(torch.ops.philtorch.lti_recur2, (A, zi, x))
-
-
-@pytest.mark.parametrize(
-    ("x_requires_grad", "A_requires_grad", "zi_requires_grad"),
-    _REQUIRES_GRAD_CASES,
-)
-@pytest.mark.parametrize(
-    "samples",
-    [11],
-)
-@pytest.mark.parametrize(
-    "cmplx",
-    [True, False],
-)
-@pytest.mark.parametrize(
-    "device",
-    [
-        "cpu",
-    ],
-)
-@pytest.mark.parametrize(
-    "share_A",
-    [True, False],
-)
-def test_lti_recurN_pt2_compatibility(
-    x_requires_grad: bool,
-    A_requires_grad: bool,
-    zi_requires_grad: bool,
-    samples: int,
-    cmplx: bool,
-    device: str,
-    share_A: bool,
-):
-    batch_size = 3
-    order = 4
-    x, A, zi = tuple(
-        x.to(device)
-        for x in [
-            torch.randn(
-                batch_size,
-                samples,
-                order,
-                dtype=torch.double if not cmplx else torch.complex128,
-            ),
-            torch.randn(
-                *((batch_size, order, order) if not share_A else (order, order)),
-                dtype=torch.double if not cmplx else torch.complex128,
-            )
-            * 0.25,
-            torch.randn(batch_size, order, dtype=torch.double if not cmplx else torch.complex128),
-        ]
-    )
-    A.requires_grad = A_requires_grad
-    x.requires_grad = x_requires_grad
-    zi.requires_grad = zi_requires_grad
-
-    torch.library.opcheck(torch.ops.philtorch.lti_recurN, (A, zi, x))
-
-
-@pytest.mark.parametrize(
-    ("x_requires_grad", "a_requires_grad", "zi_requires_grad"),
-    _REQUIRES_GRAD_CASES,
-)
-@pytest.mark.parametrize(
-    "samples",
-    [11],
-)
-@pytest.mark.parametrize(
-    "cmplx",
-    [True, False],
-)
-@pytest.mark.parametrize(
-    "device",
-    [
-        "cpu",
-        pytest.param(
-            "cuda",
-            marks=pytest.mark.cuda,
-        ),
-    ],
-)
-@pytest.mark.parametrize(
-    "share_a",
-    [True, False],
-)
-def test_lti_recur_pt2_compatibility(
-    x_requires_grad: bool,
-    a_requires_grad: bool,
-    zi_requires_grad: bool,
-    samples: int,
-    cmplx: bool,
-    device: str,
-    share_a: bool,
-):
-    batch_size = 3
-    x, a, zi = tuple(
-        x.to(device)
-        for x in [
-            torch.randn(
-                batch_size,
-                samples,
-                dtype=torch.double if not cmplx else torch.complex128,
-            ),
-            torch.randn(
-                *((batch_size,) if not share_a else (1,)),
-                dtype=torch.double if not cmplx else torch.complex128,
-            )
-            * 0.5,
-            torch.randn(batch_size, dtype=torch.double if not cmplx else torch.complex128),
-        ]
-    )
-    a.requires_grad = a_requires_grad
-    x.requires_grad = x_requires_grad
-    zi.requires_grad = zi_requires_grad
-
-    torch.library.opcheck(torch.ops.philtorch.lti_recur, (a, zi, x))
-
 
 def _op_inputs(op, shared, dtype):
     """Stable inputs to a native recurrence op, in its own layout."""
@@ -336,32 +31,25 @@ def _op_inputs(op, shared, dtype):
 
 
 _RECURRENCE_OPS = ["recur2", "recurN", "lti_recur2", "lti_recur", "lti_recurN", "scan", "lpc"]
+# The layouts each op takes: scan and lpc have no shared coefficients.
+_LAYOUTS = [
+    (op, shared)
+    for op in _RECURRENCE_OPS
+    for shared in (True, False)
+    if op not in ("scan", "lpc") or not shared
+]
 
 
-@pytest.mark.parametrize("op", _RECURRENCE_OPS)
-@pytest.mark.parametrize("shared", [True, False])
+@pytest.mark.parametrize("op, shared", _LAYOUTS)
 @pytest.mark.parametrize("dtype", [torch.float64, torch.complex128])
 def test_registered_gradients(op, shared, dtype):
     # The ops' registered backwards, which compiled code differentiates, map
     # each op's layout to philtorch._recur's gradients: check them, and their
     # own derivatives, against finite differences.
-    if op in ("scan", "lpc") and shared:
-        pytest.skip(f"{op} has no shared layout")
     fn = getattr(torch.ops.philtorch, op)
     inputs = tuple(t.requires_grad_() for t in _op_inputs(op, shared, dtype))
     assert torch.autograd.gradcheck(fn, inputs)
     assert torch.autograd.gradgradcheck(fn, inputs)
-
-
-@pytest.mark.parametrize(
-    "device",
-    ["cpu", pytest.param("cuda", marks=pytest.mark.cuda)],
-)
-@pytest.mark.parametrize("op", ["scan", "lpc"])
-def test_vendored_ops_opcheck(op, device):
-    # Their fakes and registered gradients, as torch.compile dispatches them.
-    inputs = tuple(t.to(device).requires_grad_() for t in _op_inputs(op, False, torch.float64))
-    torch.library.opcheck(getattr(torch.ops.philtorch, op), inputs)
 
 
 def _pararnn_inputs(M, dtype=torch.float64):
@@ -480,3 +168,29 @@ def test_alignment_and_hmm_ops_opcheck(op, calls):
     recorded = calls()
     assert recorded, f"{op} was not called"
     torch.library.opcheck(getattr(torch.ops.philtorch, op), recorded[0])
+
+
+# The ops with a CUDA kernel too; recurN and lti_recurN run on CPU only.
+_CUDA_OPS = {"recur2", "lti_recur2", "lti_recur", "scan", "lpc"}
+
+
+def _opcheck_cases():
+    for op, shared in _LAYOUTS:
+        for device in ("cpu", "cuda") if op in _CUDA_OPS else ("cpu",):
+            marks = [pytest.mark.cuda] if device == "cuda" else []
+            layout = "shared" if shared else "per-item"
+            yield pytest.param(op, shared, device, marks=marks, id=f"{op}-{layout}-{device}")
+
+
+@pytest.mark.parametrize("op, shared, device", list(_opcheck_cases()))
+@pytest.mark.parametrize("dtype", [torch.float64, torch.complex128])
+@pytest.mark.parametrize("grads", ["all", "first", "last"])
+def test_opcheck(op, device, shared, dtype, grads):
+    # Each op's fake, schema and registered gradients, as torch.compile
+    # dispatches it. Gradients for every input, or for the first or the last
+    # alone, take each backward's needs_input_grad branches both ways.
+    inputs = [t.to(device) for t in _op_inputs(op, shared, dtype)]
+    wanted = {"all": range(len(inputs)), "first": [0], "last": [len(inputs) - 1]}[grads]
+    for i in wanted:
+        inputs[i].requires_grad_()
+    torch.library.opcheck(getattr(torch.ops.philtorch, op), tuple(inputs))
