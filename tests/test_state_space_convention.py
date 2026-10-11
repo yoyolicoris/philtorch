@@ -196,3 +196,35 @@ def test_lti_linear_recurrence_returns_the_next_states(signals):
         s["zi"][:, :1],
     )
     assert torch.allclose(lti.linear_recurrence(a, s["zi"][:, 0], s["u"]), states[..., 0])
+
+
+def _recursion_inputs(module, dtype):
+    """Small integer A, zi and x in module's layout: A shared over the batch."""
+    gen = torch.Generator().manual_seed(0)
+    A = torch.randint(-1, 2, (M, M) if module is lti else (N, M, M), generator=gen)
+    zi = torch.randint(-3, 4, (BATCH, M), generator=gen)
+    x = torch.randint(-3, 4, (BATCH, N, M), generator=gen)
+    return [t.to(dtype) for t in (A, zi, x)]
+
+
+@pytest.mark.parametrize("module", [lti, lpv], ids=["lti", "lpv"])
+def test_state_space_recursion_falls_back_to_the_loop(module):
+    # No kernel takes int32, so the recurrence runs the loop over time: the
+    # same states as the kernels' int64.
+    expected = module.state_space_recursion(*_recursion_inputs(module, torch.int64))
+    actual = module.state_space_recursion(*_recursion_inputs(module, torch.int32))
+    assert actual.dtype == torch.int32
+    assert torch.equal(actual.long(), expected)
+
+
+@pytest.mark.parametrize("module", [lti, lpv], ids=["lti", "lpv"])
+def test_state_space_recursion_rejects_bad_shapes(module):
+    A, zi, x = _recursion_inputs(module, torch.float64)
+    with pytest.raises(ValueError, match="2D or 3D"):
+        module.state_space_recursion(A, zi, x[0, 0])
+    with pytest.raises(ValueError, match="must be square"):
+        module.state_space_recursion(A[..., :-1], zi, x)
+    with pytest.raises(ValueError, match="Batch size of zi"):
+        module.state_space_recursion(A, zi[:1], x)
+    with pytest.raises(ValueError, match="Last dimension of zi"):
+        module.state_space_recursion(A, zi[:, :-1], x)

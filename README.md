@@ -233,17 +233,19 @@ Coefficients are normalized so that `a0 = 1`: divide SciPy's `b` and `a` by `a[0
 
 ## Performance
 
-Recursive filters are hard to parallelize, so PhilTorch implements custom C++ and CUDA kernels.
-With the default `unroll_factor=1`, the state-space paths (`lfilter`, `state_space`, and `state_space_recursion`) choose a kernel from the device and the filter order, which is the state size `M`:
+Recursive filters are hard to parallelize, so PhilTorch implements custom C++, CUDA and Triton kernels.
+With the default `unroll_factor=1`, the state-space paths (`lfilter`, `state_space`, and `state_space_recursion`) choose a kernel from the device, the dtype and the filter order, which is the state size `M`:
 
 | Device | LTI, M = 1 | LTI, M = 2 | LTI, M ≥ 3 | LPV, M = 1 | LPV, M = 2 | LPV, M = 3 | LPV, M ≥ 4 |
 | --- | :---: | :---: | :---: | :---: | :---: | :---: | :---: |
 | CPU | ✓ | ✓ | ✓ | ✓ | ✓ | ✓ | ✓ |
-| CUDA (source builds) | ✓ | ✓ | loop | ✓ | ✓ | ✓¹ | loop |
-| MPS | ✓² | ✗ | loop | ✗ | ✗ | loop | loop |
+| CUDA (source builds) | ✓ | ✓ | ✓¹ | ✓ | ✓ | ✓ | ✓¹ |
+| MPS | ✓² | loop | loop | loop | loop | loop | loop |
 
-✓ native kernel · loop: PyTorch recurrence loop · ✗ raises an error because no kernel exists for the device; use CPU or `unroll_factor > 1` instead.
-¹ Real dtypes only; complex inputs use the loop. ² float32 only.
+✓ native or Triton kernel · loop: PyTorch recurrence loop, where no kernel takes the input.
+¹ Triton, up to M = 128 (64 for complex dtypes); larger M runs the loop. ² float32 only.
+
+The kernels take floating-point and complex dtypes, and int64, exactly; other dtypes run the loop.
 
 Setting `1 < unroll_factor < sequence length` switches to a block-unrolled PyTorch recursion, which computes blocks in parallel with matrix multiplications ([background](https://iamycy.github.io/posts/2025/06/28/unroll-ssm/)); larger values fall back to a plain PyTorch loop.
 It is slower than the native kernels but much faster than a naive loop.

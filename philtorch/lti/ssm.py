@@ -1,103 +1,13 @@
 """State-space models with time-invariant coefficients."""
 
 from functools import partial
-from typing import Any
 
 import torch
 import torch.nn.functional as F
 from torch import Tensor
-from torch.autograd import Function
 
 from ..mat import find_eigenvectors, matrix_power_accumulate
 from .recur import LTIRecurrence, linear_recurrence
-
-
-def extension_backend_indicator(x: Tensor, M: int) -> bool:
-    r"""Return whether to dispatch this input to the native extension.
-
-    This is a dispatch heuristic, not a check that a kernel exists: it
-    assumes kernels for :math:`M \le 2` on every device. Some are still
-    missing for a device or dtype, such as :math:`M = 2` on MPS, and calling
-    one raises an error; the README lists them.
-
-    Args:
-        x (Tensor): the input, whose device is checked.
-        M (int): the state size.
-
-    Returns:
-        bool: ``True`` on CPU, or when :math:`M \le 2`.
-    """
-    return M <= 2 or x.is_cpu
-
-
-class LTIMatrixRecurrence(Function):
-    r"""Autograd function for the matrix recurrence of :func:`_ext_ss_recur`.
-
-    The forward pass runs the native ``lti_recur2`` kernel for
-    :math:`M = 2` and the ``lti_recurN`` kernel otherwise. The backward pass runs the recurrence
-    backward in time with :math:`A^H`, and the JVP runs it forward on the
-    tangents, so both reverse- and forward-mode differentiation work.
-    """
-
-    @staticmethod
-    def forward(A: Tensor, zi: Tensor, x: Tensor) -> Tensor:
-        if x.size(-1) == 2:
-            return torch.ops.philtorch.lti_recur2(A, zi, x)
-        return torch.ops.philtorch.lti_recurN(A, zi, x)
-
-    @staticmethod
-    def setup_context(ctx: Any, inputs: list[Any], output: Any) -> Any:
-        A, zi, _ = inputs
-        y = output
-        ctx.save_for_backward(A, zi, y)
-        ctx.save_for_forward(A, zi, y)
-
-    @staticmethod
-    def backward(
-        ctx: Any, grad_y: torch.Tensor
-    ) -> tuple[torch.Tensor | None, torch.Tensor | None, torch.Tensor | None]:
-        A, zi, y = ctx.saved_tensors
-        grad_x = grad_A = grad_zi = None
-
-        AmT = A.mT.conj_physical()
-
-        flipped_grad_x = LTIMatrixRecurrence.apply(AmT, torch.zeros_like(zi), grad_y.flip(1))
-
-        if ctx.needs_input_grad[1]:
-            grad_zi = (AmT @ flipped_grad_x[:, -1, :, None]).squeeze(-1)
-
-        if ctx.needs_input_grad[2]:
-            grad_x = flipped_grad_x.flip(1)
-
-        if ctx.needs_input_grad[0]:
-            valid_y = y[:, :-1]
-            padded_y = torch.cat([zi.unsqueeze(1), valid_y], dim=1)
-            if A.dim() == 2:
-                grad_A = flipped_grad_x.flip(1).flatten(0, 1).T @ padded_y.conj_physical().flatten(
-                    0, 1
-                )
-            else:
-                grad_A = flipped_grad_x.flip(1).mT @ padded_y.conj_physical()
-
-        return grad_A, grad_zi, grad_x
-
-    @staticmethod
-    def jvp(
-        ctx: Any, grad_A: torch.Tensor, grad_zi: torch.Tensor, grad_x: torch.Tensor
-    ) -> torch.Tensor:
-        A, zi, y = ctx.saved_tensors
-
-        fwd_zi = grad_zi if grad_zi is not None else torch.zeros_like(zi)
-        fwd_x = grad_x if grad_x is not None else torch.zeros_like(y)
-
-        if grad_A is not None:
-            padded_y = torch.cat([zi.unsqueeze(1), y[:, :-1]], dim=1)
-            fwd_A = (
-                (grad_A if grad_A.dim() == 2 else grad_A.unsqueeze(-3)) @ padded_y.unsqueeze(-1)
-            ).squeeze(-1)
-            fwd_x = fwd_x + fwd_A
-
-        return LTIMatrixRecurrence.apply(A, fwd_zi, fwd_x)
 
 
 def _recursion_loop(
@@ -141,31 +51,22 @@ def _recursion_loop(
     return output
 
 
-def _ext_ss_recur(A: Tensor, zi: Tensor, x: Tensor, *, out_idx: int | None = None, **_) -> Tensor:
-    """Run :math:`h[n + 1] = A h[n] + x[n]` with the native kernels.
+def _kernel_recursion(A: Tensor, zi: Tensor, x: Tensor, out_idx: int | None = None) -> Tensor:
+    """Run :math:`h[n + 1] = A h[n] + x[n]` with :func:`philtorch._recur.recurrence`'s
+    kernels, or with :func:`_recursion_loop` where none takes the input.
 
     Takes the same arguments and returns the same as :func:`_recursion_loop`.
     """
-    if x.dim() == 2 and A.size(-1) == 1:
-        y = LTIRecurrence.apply(A[..., 0, 0], zi.squeeze(-1), x).unsqueeze(-1)
-    elif A.size(-1) == 1:
-        y = LTIRecurrence.apply(A[..., 0, 0], zi.squeeze(-1), x.squeeze(-1)).unsqueeze(-1)
-    else:
-        x = (
-            torch.cat([x.unsqueeze(-1), x.new_zeros(*x.shape, A.size(-1) - 1)], dim=-1)
-            if x.dim() == 2
-            else x
-        )
-        y = LTIMatrixRecurrence.apply(A, zi, x)
-    if out_idx is not None and y.dim() == 3:
-        y = y[:, :, out_idx]
-    return y
+    # Imported here, so that importing philtorch doesn't load Triton.
+    from .._recur import recurrence
 
-
-def _select_recursion_runner(x: Tensor, M: int, unroll_factor: int):
-    if unroll_factor == 1 and extension_backend_indicator(x, M):
-        return _ext_ss_recur
-    return _recursion_loop
+    M = A.size(-1)
+    states = F.pad(x.unsqueeze(-1), (0, M - 1)) if x.dim() == 2 else x
+    try:
+        h = recurrence(A[None, None] if A.dim() == 2 else A[:, None], zi, states)
+    except NotImplementedError:
+        return _recursion_loop(A, zi, x, out_idx=out_idx)
+    return h if out_idx is None else h[..., out_idx]
 
 
 def state_space_recursion(
@@ -188,13 +89,13 @@ def state_space_recursion(
     :math:`\mathbf{h}[1], \dots, \mathbf{h}[N]`. A 2-D input feeds the
     first state only: :math:`\mathbf{x}[n] = x[n] \mathbf{e}_1`.
 
-    With ``unroll_factor=1``, this calls the native extension on CPU, and on
-    other devices when :math:`M \le 2`, and otherwise runs a loop over time
-    steps. On other devices the extension may lack a kernel for the device or
-    dtype, such as :math:`M = 2` on MPS, which raises an error; the README
-    lists them. On any device, an :attr:`unroll_factor` greater than 1 and
-    less than :math:`N` runs a block-unrolled PyTorch recursion instead, and
-    one of :math:`N` or more runs a plain PyTorch loop.
+    With ``unroll_factor=1``, this runs a kernel chosen by device, dtype and
+    :math:`M`: native ones on CPU, CUDA and MPS, and a Triton scan on CUDA for
+    the rest. Where no kernel takes the input, such as :math:`M \ge 2` on
+    MPS, it runs a loop over time steps. On any device, an
+    :attr:`unroll_factor` greater than 1 and less than :math:`N` runs a
+    block-unrolled PyTorch recursion instead, and one of :math:`N` or more
+    runs a plain PyTorch loop.
 
     Args:
         A (Tensor): state matrices, of shape :math:`(M, M)` or
@@ -202,11 +103,10 @@ def state_space_recursion(
         zi (Tensor): the initial state :math:`\mathbf{h}[0]`, of shape
             :math:`(B, M)`.
         x (Tensor): inputs, of shape :math:`(B, N, M)` or :math:`(B, N)`.
-        unroll_factor (int, optional): ``1`` for the dispatch described
-            above: the native extension on CPU, or for :math:`M \le 2` on other
-            devices, and a loop otherwise. A value less than :math:`N` is the
-            block length of the unrolled recursion, and :math:`N` or more
-            runs a plain loop. Default: ``1``.
+        unroll_factor (int, optional): ``1`` for the kernels described
+            above. A value less than :math:`N` is the block length of the
+            unrolled recursion, and :math:`N` or more runs a plain loop.
+            Default: ``1``.
         out_idx (int, optional): return only this state. Default: ``None``.
 
     Returns:
@@ -214,8 +114,8 @@ def state_space_recursion(
         shape :math:`(B, N, M)`, or :math:`(B, N)` with :attr:`out_idx`.
 
     Raises:
-        AssertionError: if the shapes do not match.
-        ValueError: if :attr:`unroll_factor` is less than 1.
+        ValueError: if the shapes do not match, or :attr:`unroll_factor` is
+            less than 1.
 
     Note:
         These are the states after each input, :math:`\mathbf{h}[1]` to
@@ -231,19 +131,18 @@ def state_space_recursion(
         >>> state_space_recursion(A, torch.zeros(1, 2), x, out_idx=0)
         tensor([[1., 1., 2., 3., 5.]])
     """
-    assert x.dim() in (
-        2,
-        3,
-    ), f"Input signal must be 2D or 3D (batch, time, [features]), got {x.shape}"
-    assert A.dim() in (2, 3), f"State matrix A must be 2D or 3D, got {A.shape}"
-    assert A.size(-2) == A.size(-1), f"State matrix A must be square, got {A.shape}"
-    if A.dim() == 3:
-        assert x.size(0) == A.size(0), (
+    if x.dim() not in (2, 3):
+        raise ValueError(f"Input signal must be 2D or 3D (batch, time, [features]), got {x.shape}")
+    if A.dim() not in (2, 3):
+        raise ValueError(f"State matrix A must be 2D or 3D, got {A.shape}")
+    if A.size(-2) != A.size(-1):
+        raise ValueError(f"State matrix A must be square, got {A.shape}")
+    if A.dim() == 3 and x.size(0) != A.size(0):
+        raise ValueError(
             f"Batch size of A must match batch size of x, got A: {A.size(0)}, x: {x.size(0)}"
         )
-
-    if x.dim() == 3:
-        assert A.size(-1) == x.size(-1), (
+    if x.dim() == 3 and A.size(-1) != x.size(-1):
+        raise ValueError(
             f"Last dimension of A must match last dimension of x, "
             f"got A: {A.size(-1)}, x: {x.size(-1)}"
         )
@@ -251,20 +150,23 @@ def state_space_recursion(
     batch_size, N = x.size(0), x.size(1)
     M = A.size(-1)
 
-    assert zi.dim() == 2, f"Initial conditions zi must be 2D, got {zi.shape}"
-    assert zi.size(0) == batch_size, (
-        f"Batch size of zi must match batch size of x, got zi: {zi.size(0)}, x: {batch_size}"
-    )
-    assert zi.size(1) == M, (
-        f"Last dimension of zi must match last dimension of A, got zi: {zi.size(1)}, A: {M}"
-    )
+    if zi.dim() != 2:
+        raise ValueError(f"Initial conditions zi must be 2D, got {zi.shape}")
+    if zi.size(0) != batch_size:
+        raise ValueError(
+            f"Batch size of zi must match batch size of x, got zi: {zi.size(0)}, x: {batch_size}"
+        )
+    if zi.size(1) != M:
+        raise ValueError(
+            f"Last dimension of zi must match last dimension of A, got zi: {zi.size(1)}, A: {M}"
+        )
 
     if unroll_factor < 1:
         raise ValueError("Unroll factor must be >= 1")
     else:
         block_size = unroll_factor
 
-    runner = _select_recursion_runner(x, M, block_size)
+    runner = _kernel_recursion if block_size == 1 else _recursion_loop
 
     # boundary condition
     if block_size == 1 or block_size >= N:
