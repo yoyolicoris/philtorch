@@ -213,7 +213,7 @@ def _kernel(time_invariant, M, dtype, device, B=1):
 DISPATCH = [
     (True, 1, torch.float64, "cpu", 1, "_lti_recur"),
     (True, 3, torch.float64, "cpu", 1, "_lti_recurN"),
-    (False, 1, torch.float64, "cpu", 1, "_recurN"),
+    (False, 1, torch.float64, "cpu", 1, "_scan"),
     *(
         pytest.param(*case, marks=pytest.mark.cuda)
         for case in [

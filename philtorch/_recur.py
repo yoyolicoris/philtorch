@@ -17,7 +17,7 @@ no forward mode.
 The forward pass runs the first kernel of ``_KERNELS`` that takes the input:
 
 * CPU: the C++ kernels, ``lti_recur`` (M = 1) and ``lti_recurN`` for
-  time-invariant A, ``recurN`` otherwise;
+  time-invariant A, ``scan`` (M = 1) and ``recurN`` otherwise;
 * CUDA: CUB scans for M <= 2 (``lti_recur``, ``lti_recur2``, ``scan``, and
   ``recur2`` for real time-varying M = 2), the ParaRNN kernels for real
   time-varying M = 2 and 3 within their limits, and the Triton kernels of
@@ -121,7 +121,13 @@ _SCAN_DTYPES = (torch.float32, torch.float64, torch.complex64, torch.complex128)
 
 
 def _scan_applies(A: Tensor, x: Tensor) -> bool:
-    return x.is_cuda and not _time_invariant(A) and x.size(-1) == 1 and x.dtype in _SCAN_DTYPES
+    # On CPU too: 3-7 times faster than recurN at M = 1.
+    return (
+        x.device.type in ("cpu", "cuda")
+        and not _time_invariant(A)
+        and x.size(-1) == 1
+        and x.dtype in _SCAN_DTYPES
+    )
 
 
 def _scan(A: Tensor, zi: Tensor, x: Tensor) -> Tensor:
@@ -188,9 +194,9 @@ def _triton_applies(A: Tensor, x: Tensor) -> bool:
 _KERNELS = (
     (_lti_recur_applies, _lti_recur),
     (_lti_recurN_applies, _lti_recurN),
+    (_scan_applies, _scan),
     (_recurN_applies, _recurN),
     (_lti_recur2_applies, _lti_recur2),
-    (_scan_applies, _scan),
     (_pararnn_applies, _pararnn),
     (_recur2_applies, _recur2),
     (_triton_applies, recur_triton),
@@ -246,6 +252,12 @@ def _sum_outer(lam: Tensor, h_prev_conj: Tensor, Ba: int, Ta: int) -> Tensor:
     """sum of lam[b, t] h_prev[b, t]^H over the batch items and steps that share A[b, t],
     from h_prev's conjugate."""
     h = h_prev_conj
+    if lam.size(-1) == 1:
+        # Scalar states: the outer products are products, summed elementwise.
+        # As matmuls of 1 x 1 matrices, they cost more to dispatch than to run.
+        products = (lam * h).unsqueeze(-1)
+        shared = [dim for dim, size in ((0, Ba), (1, Ta)) if size == 1]
+        return products.sum(shared, keepdim=True) if shared else products
     if Ba == 1 and Ta == 1:
         return _contract(lam.flatten(0, 1)[None], h.flatten(0, 1)[None])[None]
     if Ta == 1:
@@ -284,7 +296,10 @@ def _gradients(run, A, zi, h, grad, needs_A, needs_zi):
     if needs_A:
         grad_A = _sum_outer(lam, _previous(zi.conj(), h.conj()), Ba, Ta)
     if needs_zi:
-        grad_zi = (A[:, 0].mH @ lam[:, 0].unsqueeze(-1)).squeeze(-1)
+        # A[0]^H lam[0], summed elementwise: as a batched matmul of small
+        # matrices, PyTorch routes it through a Triton kernel whose launch
+        # costs more than the product.
+        grad_zi = (A[:, 0].conj() * lam[:, 0].unsqueeze(-1)).sum(-2)
     return grad_A, grad_zi, lam
 
 
