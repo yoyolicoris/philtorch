@@ -133,6 +133,21 @@ def test_recurrence_derivatives_of_short_sequences(device, sharing, T):
     assert torch.autograd.gradgradcheck(recurrence, inputs)
 
 
+@pytest.mark.parametrize("device", DEVICES)
+@pytest.mark.parametrize("sharing", ["one", "per_item"])
+@pytest.mark.parametrize("dtype", [torch.float64, torch.complex128])
+def test_recurrence_gradients_of_long_sequences(device, sharing, dtype):
+    # The gradient of A shared over time sums over more steps than one block
+    # of _CONTRACT_BLOCK: blocks, the last padded with zeros, then their sum.
+    A, zi, x = _problem(2, 1300, 3, sharing, dtype, device)
+    inputs = [t.requires_grad_() for t in (A, zi, x)]
+    g = torch.randn_like(x)
+    actual = torch.autograd.grad(recurrence(*inputs), inputs, g)
+    expected = torch.autograd.grad(_sequential(*inputs), inputs, g)
+    for a, e in zip(actual, expected):
+        torch.testing.assert_close(a, e)
+
+
 @pytest.mark.cuda
 def test_recurrence_cuda_matches_cpu_gradients():
     A, zi, x = _problem(3, 200, 4, "both")
@@ -159,6 +174,20 @@ def test_recurrence_empty(device, compiled):
     assert h.shape == (2, 0, 3)
     for grad in torch.autograd.grad(h.sum(), inputs):
         assert not grad.any()
+
+
+@pytest.mark.cuda
+def test_chunk_lengths_are_powers_of_two():
+    # The time-invariant maps' power squares its way to the chunk length, and
+    # the scratch maps' product ends in their second buffer after an even
+    # number of steps: both need a power of 2.
+    from philtorch import _recur_kernels
+
+    for BM in (2, 4, 8, 16, 32, 64, 128):
+        for complex_ in (False, True):
+            for varying in (False, True):
+                chunk = _recur_kernels._chunk(BM, complex_, varying)
+                assert chunk >= 2 and chunk & (chunk - 1) == 0
 
 
 @pytest.mark.cuda
