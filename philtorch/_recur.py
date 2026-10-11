@@ -21,7 +21,7 @@ The forward pass runs the first kernel of ``_KERNELS`` that takes the input:
 * CUDA: CUB scans for M <= 2 (``lti_recur``, ``lti_recur2``, ``scan``, and
   ``recur2`` for real time-varying M = 2), the ParaRNN kernels for real
   time-varying M = 2 and 3 within their limits, and the Triton kernels of
-  :mod:`philtorch._recur_triton` for the rest, which they beat;
+  :mod:`philtorch._recur_kernels` for the rest, which they beat;
 * MPS: the Metal ``lti_recur`` for time-invariant M = 1 in float32.
 
 Anything else raises: there is no fallback to PyTorch ops.
@@ -32,15 +32,15 @@ import torch.nn.functional as F
 from torch import Tensor
 
 try:
-    from . import _recur_triton
+    from . import _recur_kernels
 except ImportError:  # pragma: no cover - Triton comes with PyTorch's CUDA builds for Linux
-    _recur_triton = None
+    _recur_kernels = None
 
 
 @torch.library.custom_op("philtorch::recur_triton", mutates_args=())
 def recur_triton(A: Tensor, zi: Tensor, x: Tensor) -> Tensor:
     """The recurrence by the Triton kernels: A (B or 1, T or 1, M, M), zi (B, M), x (B, T, M)."""
-    return _recur_triton.recurrence(A, zi, x)
+    return _recur_kernels.recurrence(A, zi, x)
 
 
 @recur_triton.register_fake
@@ -164,7 +164,7 @@ def _recur2(A: Tensor, zi: Tensor, x: Tensor) -> Tensor:
 
 
 def _triton_applies(A: Tensor, x: Tensor) -> bool:
-    return _recur_triton is not None and x.is_cuda and _recur_triton.fits(x, x.size(-1))
+    return _recur_kernels is not None and x.is_cuda and _recur_kernels.fits(x, x.size(-1))
 
 
 _KERNELS = (
@@ -192,10 +192,10 @@ def _forward(A: Tensor, zi: Tensor, x: Tensor) -> Tensor:
     kind = "time-invariant" if _time_invariant(A) else "time-varying"
     reason = ""
     if x.is_cuda:
-        if _recur_triton is None:
+        if _recur_kernels is None:
             reason = ": Triton is not installed"
         else:
-            most = _recur_triton.MAX_STATES
+            most = _recur_kernels.MAX_STATES
             reason = f"; the Triton kernels take M up to {most} ({most // 2} complex)"
     raise NotImplementedError(
         f"no recurrence kernel for {kind} A with M = {x.size(-1)} in {x.dtype} "

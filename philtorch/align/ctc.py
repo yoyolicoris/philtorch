@@ -162,7 +162,7 @@ def forced_align(
         "forced_align", log_probs, targets, input_lengths, target_lengths, blank
     )
     N, T, _ = log_probs.shape
-    from .._trace import trace
+    from .._trace_kernels import trace
 
     with torch.no_grad():
         state_log_probs = log_probs.gather(2, states[:, None].expand(N, T, -1))

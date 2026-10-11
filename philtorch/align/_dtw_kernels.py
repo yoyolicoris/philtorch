@@ -372,7 +372,7 @@ def _backtrack_kernel(
     path (B, P, 2) as (row, column). One program per pair; each step waits
     on the last, but the walk stays in cache. (The ctc steps take one frame
     each, so their traceback is parallel instead: :func:`ctc_viterbi` and
-    :func:`philtorch._trace.trace`.)
+    :func:`philtorch._trace_kernels.trace`.)
     """
     b = tl.program_id(0).to(tl.int64)
     batch = b * R * L
