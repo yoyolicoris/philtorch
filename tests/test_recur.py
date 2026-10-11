@@ -235,13 +235,13 @@ DISPATCH = [
 
 # Integers, which the native kernels of order M take as int64 only.
 INTEGER_DISPATCH = [
-    (True, 1, torch.int64, "cpu", 1, "_lti_recurN"),
+    (True, 1, torch.int64, "cpu", 1, "_lti_recur"),
     (True, 2, torch.int64, "cpu", 1, "_lti_recurN"),
     (False, 2, torch.int64, "cpu", 1, "_recurN"),
     *(
         pytest.param(*case, marks=pytest.mark.cuda)
         for case in [
-            (True, 1, torch.int64, "cuda", 1, "recur_triton"),
+            (True, 1, torch.int64, "cuda", 1, "_lti_recur"),
             (True, 2, torch.int64, "cuda", 1, "_lti_recur2"),
             (False, 1, torch.int64, "cuda", 1, "recur_triton"),
             (False, 2, torch.int64, "cuda", 1, "_recur2"),
@@ -331,13 +331,28 @@ def _integer_problem(B, T, M, sharing, dtype, device):
     return [t.to(device, dtype) for t in (A, zi, x)]
 
 
+@pytest.mark.parametrize(
+    "device",
+    ["cpu", pytest.param("cuda", marks=pytest.mark.cuda)],
+)
+@pytest.mark.parametrize("per_item", [False, True])
+def test_recurrence_in_integers_of_order_one(device, per_item):
+    # Powers of 3, exact up to 3^39 < 2^63, through lti_recur's int64.
+    A = torch.full((2 if per_item else 1, 1, 1, 1), 3, device=device)
+    zi = torch.ones(2, 1, dtype=torch.long, device=device)
+    x = torch.zeros(2, 39, 1, dtype=torch.long, device=device)
+    h = recurrence(A, zi, x)
+    assert h.dtype == torch.long
+    assert h[:, :, 0].tolist() == [[3**n for n in range(1, 40)]] * 2
+
+
 @pytest.mark.cuda
 @pytest.mark.parametrize("sharing", SHARING)
 @pytest.mark.parametrize("M", [1, 3, 40])
-def test_recurrence_in_integers_on_triton(sharing, M):
+def test_recurrence_in_integers_against_sequential(sharing, M):
     # Exact, overflow included: int64's wrap-around survives the scan's
-    # reordering. M = 40 takes the
-    # scratch maps, or, time-invariant, the power squared elementwise.
+    # reordering. M = 40 takes the scratch maps, or, time-invariant, the
+    # power squared elementwise.
     A, zi, x = _integer_problem(3, 300, M, sharing, torch.int64, "cuda")
     # CUDA's matmuls take no integers: the reference runs on CPU.
     expected = _sequential(*(t.cpu() for t in (A, zi, x)))

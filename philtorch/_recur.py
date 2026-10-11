@@ -24,8 +24,8 @@ The forward pass runs the first kernel of ``_KERNELS`` that takes the input:
   :mod:`philtorch._recur_kernels` for the rest, which they beat;
 * MPS: the Metal ``lti_recur`` for time-invariant M = 1 in float32.
 
-Every kernel but ``lti_recur``, ``scan`` and ParaRNN takes int64 too, so
-integer recurrences such as the Fibonacci numbers run exactly. Anything else
+Every kernel but ``scan``, ParaRNN and the Metal ``lti_recur`` takes int64
+too, so integer recurrences such as the Fibonacci numbers run exactly. Anything else
 raises: there is no fallback to PyTorch ops.
 """
 
@@ -60,13 +60,9 @@ def _time_invariant(A: Tensor) -> bool:
     return A.size(1) == 1
 
 
-def _floating(x: Tensor) -> bool:
-    return x.is_floating_point() or x.is_complex()
-
-
 def _floating_or_int64(x: Tensor) -> bool:
     """The dtypes of the kernels of order M: integers only as int64."""
-    return _floating(x) or x.dtype == torch.int64
+    return x.is_floating_point() or x.is_complex() or x.dtype == torch.int64
 
 
 def _lti_matrices(A: Tensor) -> Tensor:
@@ -82,8 +78,12 @@ def _lti_recur_applies(A: Tensor, x: Tensor) -> bool:
     return (
         _time_invariant(A)
         and x.size(-1) == 1
-        and _floating(x)
-        and (device in ("cpu", "cuda") or device == "mps" and x.dtype == torch.float32)
+        and (
+            device in ("cpu", "cuda")
+            and _floating_or_int64(x)
+            or device == "mps"
+            and x.dtype == torch.float32
+        )
     )
 
 
