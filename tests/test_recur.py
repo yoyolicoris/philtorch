@@ -123,6 +123,17 @@ def test_recurrence_derivatives(device, sharing, M, dtype):
     assert torch.autograd.gradgradcheck(recurrence, inputs, fast_mode=True)
 
 
+@pytest.mark.parametrize("device", DEVICES)
+@pytest.mark.parametrize("sharing", SHARING)
+@pytest.mark.parametrize("T", [1, 2])
+def test_recurrence_derivatives_of_short_sequences(device, sharing, T):
+    # The adjoints start from the last step and run back over the T - 1 before.
+    A, zi, x = _problem(2, T, 3, sharing, torch.complex128, device)
+    inputs = tuple(t.requires_grad_() for t in (A, zi, x))
+    assert torch.autograd.gradcheck(recurrence, inputs, check_forward_ad=True)
+    assert torch.autograd.gradgradcheck(recurrence, inputs)
+
+
 @requires_cuda
 def test_recurrence_cuda_matches_cpu_gradients():
     A, zi, x = _problem(3, 200, 4, "both")

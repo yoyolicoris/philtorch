@@ -197,16 +197,44 @@ def _forward(A: Tensor, zi: Tensor, x: Tensor) -> Tensor:
     )
 
 
-def _sum_outer(lam: Tensor, h_prev: Tensor, Ba: int, Ta: int) -> Tensor:
-    """sum of lam[b, t] h_prev[b, t]^H over the batch items and steps that share A[b, t]."""
-    h_prev = h_prev.conj()
+# Rows per block of the long contractions in _sum_outer. As one matmul over
+# B * T rows, cuBLAS takes its slow large-K path; blocks summed after ran
+# 2-4 times faster, and add up in a shallower tree.
+_CONTRACT_BLOCK = 1024
+
+
+def _contract(lam: Tensor, h: Tensor) -> Tensor:
+    """sum over k of lam[p, k] h[p, k]^T: (P, K, M) twice, to (P, M, M)."""
+    P, K, M = lam.shape
+    if K <= _CONTRACT_BLOCK:
+        return lam.mT @ h
+    blocks = -(-K // _CONTRACT_BLOCK)
+    pad = blocks * _CONTRACT_BLOCK - K
+    if pad:
+        lam, h = F.pad(lam, (0, 0, 0, pad)), F.pad(h, (0, 0, 0, pad))
+    lam, h = (t.reshape(P * blocks, _CONTRACT_BLOCK, M) for t in (lam, h))
+    return (lam.mT @ h).reshape(P, blocks, M, M).sum(1)
+
+
+def _sum_outer(lam: Tensor, h_prev_conj: Tensor, Ba: int, Ta: int) -> Tensor:
+    """sum of lam[b, t] h_prev[b, t]^H over the batch items and steps that share A[b, t],
+    from h_prev's conjugate."""
+    h = h_prev_conj
     if Ba == 1 and Ta == 1:
-        return (lam.flatten(0, 1).mT @ h_prev.flatten(0, 1))[None, None]
+        return _contract(lam.flatten(0, 1)[None], h.flatten(0, 1)[None])[None]
     if Ta == 1:
-        return (lam.mT @ h_prev).unsqueeze(1)
+        return _contract(lam, h).unsqueeze(1)
     if Ba == 1:
-        return (lam.permute(1, 2, 0) @ h_prev.transpose(0, 1)).unsqueeze(0)
-    return lam.unsqueeze(-1) * h_prev.unsqueeze(-2)
+        return (lam.permute(1, 2, 0) @ h.transpose(0, 1)).unsqueeze(0)
+    return lam.unsqueeze(-1) * h.unsqueeze(-2)
+
+
+def _previous(zi: Tensor, h: Tensor) -> Tensor:
+    """The states each step starts from, h[t - 1]: zi, then h but its last.
+
+    Conjugate views in come out conjugated in memory, as the copy goes.
+    """
+    return torch.cat([zi.unsqueeze(1), h[:, :-1]], 1)
 
 
 class Recurrence(torch.autograd.Function):
@@ -231,26 +259,39 @@ class Recurrence(torch.autograd.Function):
     def backward(ctx, grad):
         A, zi, h = ctx.saved_tensors
         Ba, Ta = A.shape[:2]
+        if grad.size(1) == 0:
+            return torch.zeros_like(A), torch.zeros_like(zi), grad
         A_H = A.mH
-        # Step s of the reversed recurrence takes A[T - s]^H; the first step's
-        # matrix multiplies a zero state, so any will do.
-        reversed_A = A_H if Ta == 1 else A_H.roll(-1, 1).flip(1)
-        lam = Recurrence.apply(reversed_A, torch.zeros_like(zi), grad.flip(1)).flip(1)
+        if Ta > 1:
+            # Step s of the reversed recurrence takes A[T - s]^H; the first
+            # step's matrix multiplies a zero state, so A[0]^H will do. One
+            # gather reverses them, already contiguous.
+            A_H = A_H.index_select(1, torch.arange(Ta, 0, -1, device=A.device) % Ta)
+        lam = Recurrence.apply(A_H, torch.zeros_like(zi), grad.flip(1)).flip(1)
         grad_A = grad_zi = None
         if ctx.needs_input_grad[0]:
-            h_prev = torch.cat([zi.unsqueeze(1), h[:, :-1]], 1)
-            grad_A = _sum_outer(lam, h_prev, Ba, Ta)
+            grad_A = _sum_outer(lam, _previous(zi.conj(), h.conj()), Ba, Ta)
         if ctx.needs_input_grad[1]:
-            grad_zi = (A_H[:, 0] @ lam[:, 0].unsqueeze(-1)).squeeze(-1)
+            grad_zi = (A[:, 0].mH @ lam[:, 0].unsqueeze(-1)).squeeze(-1)
         return grad_A, grad_zi, lam
 
     @staticmethod
     def jvp(ctx, dA, dzi, dx):
         A, zi, h = ctx.saved_tensors
-        tangent = dx if dx is not None else torch.zeros_like(h)
+        if h.size(1) == 0:
+            return torch.zeros_like(h)
+        # The tangent's inputs: dx, and dA[t] h[t - 1]; for time-invariant A
+        # a matmul over each sequence's steps at once.
+        tangent = dx
         if dA is not None:
-            h_prev = torch.cat([zi.unsqueeze(1), h[:, :-1]], 1)
-            tangent = tangent + (dA @ h_prev.unsqueeze(-1)).squeeze(-1)
+            h_prev = _previous(zi, h)
+            if dA.size(1) == 1:
+                term = h_prev @ dA[:, 0].mT
+            else:
+                term = (dA @ h_prev.unsqueeze(-1)).squeeze(-1)
+            tangent = term if tangent is None else tangent + term
+        if tangent is None:
+            tangent = torch.zeros_like(h)
         return Recurrence.apply(A, dzi if dzi is not None else torch.zeros_like(zi), tangent)
 
 
