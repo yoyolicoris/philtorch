@@ -1,79 +1,11 @@
 """State-space models with time-varying coefficients."""
 
+from functools import partial
+
 import torch
-import torch.nn.functional as F
 from torch import Tensor
 
-from ..mat import matrices_cumdot
-
-
-def _recursion_loop(
-    A: Tensor,
-    zi: Tensor,
-    x: Tensor,
-    out_idx: int | None = None,
-) -> Tensor:
-    r"""Run the time-varying matrix recurrence with a loop over time steps.
-
-    This computes
-    :math:`\mathbf{h}[n + 1] = A[n] \mathbf{h}[n] + \mathbf{x}[n]` from
-    :math:`\mathbf{h}[0] = \mathbf{z}_i` and returns
-    :math:`\mathbf{h}[1], \dots, \mathbf{h}[N]`.
-
-    Args:
-        A (Tensor): state matrices, of shape :math:`(N, M, M)` or
-            :math:`(B, N, M, M)`.
-        zi (Tensor): the initial state, of shape :math:`(B, M)`.
-        x (Tensor): inputs, of shape :math:`(B, N, M)`, or :math:`(B, N)` to
-            feed the first state only.
-        out_idx (int, optional): return only this state. Default: ``None``.
-
-    Returns:
-        Tensor: the states, of shape :math:`(B, N, M)`, or :math:`(B, N)`
-        with :attr:`out_idx`.
-    """
-    assert x.size(1) == A.size(-3), (
-        f"State matrix A must have the same time dimension as x, "
-        f"got A: {A.size(-3)}, x: {x.size(1)}"
-    )
-    results = []
-    AT = A.mT
-    if x.dim() == 2:
-        M = A.size(-1)
-        x = torch.cat([x.unsqueeze(-1), x.new_zeros(*x.shape, M - 1)], dim=-1)  # (batch, time, M)
-    if A.dim() == 3:
-        h = zi
-        for xn, AnT in zip(x.unbind(1), AT.unbind(0)):
-            h = torch.addmm(xn, h, AnT)
-            results.append(h if out_idx is None else h[:, out_idx])
-        output = torch.stack(results, dim=1)
-    else:
-        h = zi.unsqueeze(1)
-        for xn, AnT in zip(x.unbind(1), AT.unbind(1)):
-            h = torch.baddbmm(xn.unsqueeze(1), h, AnT)
-            results.append(h if out_idx is None else h[:, :, out_idx])
-        output = torch.cat(results, dim=1)
-
-    return output
-
-
-def _kernel_recursion(A: Tensor, zi: Tensor, x: Tensor, out_idx: int | None = None) -> Tensor:
-    """Run the time-varying matrix recurrence with
-    :func:`philtorch._recur.recurrence`'s kernels, or with :func:`_recursion_loop`
-    where none takes the input.
-
-    Takes the same arguments and returns the same as :func:`_recursion_loop`.
-    """
-    # Imported here, so that importing philtorch doesn't load Triton.
-    from .._recur import recurrence
-
-    M = A.size(-1)
-    states = F.pad(x.unsqueeze(-1), (0, M - 1)) if x.dim() == 2 else x
-    try:
-        h = recurrence(A[None] if A.dim() == 3 else A, zi, states)
-    except NotImplementedError:
-        return _recursion_loop(A, zi, x, out_idx=out_idx)
-    return h if out_idx is None else h[..., out_idx]
+from .. import _ssm
 
 
 def state_space_recursion(
@@ -158,7 +90,7 @@ def state_space_recursion(
             f"got A: {A.size(-1)}, x: {x.size(-1)}"
         )
 
-    batch_size, N = x.size(0), x.size(1)
+    batch_size = x.size(0)
     M = A.size(-1)
 
     if zi.dim() != 2:
@@ -172,73 +104,7 @@ def state_space_recursion(
             f"Last dimension of zi must match last dimension of A, got zi: {zi.size(1)}, A: {M}"
         )
 
-    if unroll_factor < 1:
-        raise ValueError("Unroll factor must be >= 1")
-    else:
-        block_size = unroll_factor
-
-    runner = _kernel_recursion if block_size == 1 else _recursion_loop
-
-    # boundary condition
-    if block_size == 1 or block_size >= N:
-        return runner(A, zi, x, out_idx=out_idx)
-
-    remainder = N % block_size
-    if remainder != 0:
-        x = F.pad(x, (0, 0) * (x.dim() - 2) + (0, block_size - remainder))
-        A = F.pad(A, (0,) * 4 + (0, block_size - remainder))  # pad
-        N = x.size(1)  # Update T after padding
-
-    unrolled_x = x.unflatten(1, (-1, block_size))
-    unrolled_x_flatten = unrolled_x.flatten(2, -1)
-    unrolled_A = A.unflatten(-3, (-1, block_size))
-
-    A_cums = matrices_cumdot(unrolled_A[..., 1:, :, :].flip(-3)).flip(-3)
-    A_last_cum = A_cums[..., 0, :, :] @ unrolled_A[..., 0, :, :]
-    A_cums_plus_I = torch.cat(
-        [
-            A_cums,
-            torch.eye(M, device=A.device, dtype=A.dtype).broadcast_to(
-                A_cums.shape[:-3] + (1, M, M)
-            ),
-        ],
-        dim=-3,
-    )
-    mat1 = (
-        A_cums_plus_I.mT.flatten(-3, -2)
-        if x.dim() == 3
-        else A_cums_plus_I[..., 0]  # assume x -> x * [1, 0, 0, ...] in the 2D case
-    )
-    z = torch.squeeze(unrolled_x_flatten.unsqueeze(-2) @ mat1, -2)
-
-    initials = torch.cat(
-        [
-            zi.unsqueeze(1),
-            state_space_recursion(A_last_cum, zi, z, unroll_factor=unroll_factor),
-        ],
-        dim=1,
-    )
-
-    output = runner(
-        (
-            unrolled_A[:, :, :-1].flatten(0, 1)
-            if unrolled_A.dim() == 5
-            else unrolled_A[:, :-1].repeat(batch_size, 1, 1, 1)
-        ),
-        initials[:, :-1].flatten(0, 1),
-        unrolled_x[:, :, :-1].flatten(0, 1),
-        out_idx=out_idx,
-    ).unflatten(0, (batch_size, -1))
-
-    # concat the first M - 1 outputs with the last one
-    if out_idx is None:
-        output = torch.cat([output, initials[:, 1:, None, :]], dim=2).flatten(1, 2)
-    else:
-        output = torch.cat([output, initials[:, 1:, out_idx, None]], dim=2).flatten(1, 2)
-    if remainder != 0:
-        # if we padded the input, we need to remove the padding from the output
-        output = output[:, : -(block_size - remainder)]
-    return output
+    return _ssm.recursion(_ssm.from_lpv(A), zi, x, unroll_factor=unroll_factor, out_idx=out_idx)
 
 
 def state_space(
@@ -395,18 +261,12 @@ def state_space(
     else:
         Bx = x
 
-    if return_zf or out_idx is None:
-        h = state_space_recursion(A, zi, Bx, unroll_factor=unroll_factor, out_idx=None)
-        zf = h[:, -1, :] if return_zf else None
-        h = (
-            torch.cat([zi.unsqueeze(1), h[:, :-1]], dim=1)
-            if out_idx is None
-            else torch.cat([zi[:, None, out_idx], h[:, :-1, out_idx]], dim=1)
-        )
-    else:
-        zf = None
-        h = state_space_recursion(A, zi, Bx, unroll_factor=unroll_factor, out_idx=out_idx)
-        h = torch.cat([zi[:, None, out_idx], h[:, :-1]], dim=1)
+    h, zf = _ssm.states(
+        partial(state_space_recursion, A, zi, Bx, unroll_factor=unroll_factor),
+        zi,
+        out_idx=out_idx,
+        final_state=return_zf,
+    )
 
     if x.dim() == 2:
         features = -1
