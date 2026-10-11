@@ -33,6 +33,8 @@ import torch
 import torch.nn.functional as F
 from torch import Tensor
 
+from ._ssm import to_lpv, to_lti
+
 try:
     from . import _recur_kernels
 except ImportError:  # pragma: no cover - Triton comes with PyTorch's CUDA builds for Linux
@@ -65,14 +67,6 @@ def _floating_or_int64(x: Tensor) -> bool:
     return x.is_floating_point() or x.is_complex() or x.dtype == torch.int64
 
 
-def _lti_matrices(A: Tensor) -> Tensor:
-    return A[0, 0] if A.size(0) == 1 else A[:, 0]
-
-
-def _lpv_matrices(A: Tensor) -> Tensor:
-    return A[0] if A.size(0) == 1 else A
-
-
 def _lti_recur_applies(A: Tensor, x: Tensor) -> bool:
     device = x.device.type
     return (
@@ -88,7 +82,7 @@ def _lti_recur_applies(A: Tensor, x: Tensor) -> bool:
 
 
 def _lti_recur(A: Tensor, zi: Tensor, x: Tensor) -> Tensor:
-    A = _lti_matrices(A)[..., 0, 0]
+    A = to_lti(A)[..., 0, 0]
     return torch.ops.philtorch.lti_recur(A, zi[:, 0], x[..., 0]).unsqueeze(-1)
 
 
@@ -97,7 +91,7 @@ def _lti_recurN_applies(A: Tensor, x: Tensor) -> bool:
 
 
 def _lti_recurN(A: Tensor, zi: Tensor, x: Tensor) -> Tensor:
-    return torch.ops.philtorch.lti_recurN(_lti_matrices(A).contiguous(), zi, x.contiguous())
+    return torch.ops.philtorch.lti_recurN(to_lti(A).contiguous(), zi, x.contiguous())
 
 
 def _recurN_applies(A: Tensor, x: Tensor) -> bool:
@@ -105,7 +99,7 @@ def _recurN_applies(A: Tensor, x: Tensor) -> bool:
 
 
 def _recurN(A: Tensor, zi: Tensor, x: Tensor) -> Tensor:
-    return torch.ops.philtorch.recurN(_lpv_matrices(A).contiguous(), zi, x.contiguous())
+    return torch.ops.philtorch.recurN(to_lpv(A).contiguous(), zi, x.contiguous())
 
 
 def _lti_recur2_applies(A: Tensor, x: Tensor) -> bool:
@@ -113,7 +107,7 @@ def _lti_recur2_applies(A: Tensor, x: Tensor) -> bool:
 
 
 def _lti_recur2(A: Tensor, zi: Tensor, x: Tensor) -> Tensor:
-    return torch.ops.philtorch.lti_recur2(_lti_matrices(A).contiguous(), zi, x.contiguous())
+    return torch.ops.philtorch.lti_recur2(to_lti(A).contiguous(), zi, x.contiguous())
 
 
 # The dtypes of the ``scan`` kernel, the vendored torchlpc's.
@@ -184,7 +178,7 @@ def _recur2_applies(A: Tensor, x: Tensor) -> bool:
 
 
 def _recur2(A: Tensor, zi: Tensor, x: Tensor) -> Tensor:
-    return torch.ops.philtorch.recur2(_lpv_matrices(A).contiguous(), zi, x.contiguous())
+    return torch.ops.philtorch.recur2(to_lpv(A).contiguous(), zi, x.contiguous())
 
 
 def _triton_applies(A: Tensor, x: Tensor) -> bool:
@@ -348,7 +342,7 @@ class Recurrence(torch.autograd.Function):
 
 # Compiled code runs the kernels' ops directly (see recurrence), so the
 # Triton op carries the same gradients; the native ops' are registered in
-# philtorch/__init__.py.
+# philtorch/_ops.py.
 def _recur_triton_setup_context(ctx, inputs, output):
     A, zi, _ = inputs
     ctx.save_for_backward(A, zi, output)

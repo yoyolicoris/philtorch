@@ -4,11 +4,11 @@ Run from the repository root on a CUDA machine:
 
     pixi run python benchmarks/benchmark_recur.py
 
-Times h[t] = A[t] h[t - 1] + x[t] with philtorch._recur.recurrence and with
-philtorch.lti / philtorch.lpv's state_space_recursion at unroll_factor=32,
-the block-unrolled PyTorch recursion and the fastest path today where no
-kernel exists, forward alone and forward plus backward, after a warm-up call
-that compiles the kernels.
+Times h[t] = A[t] h[t - 1] + x[t] with philtorch._recur.recurrence, which
+state_space_recursion runs with unroll_factor=1, and with philtorch.lti /
+philtorch.lpv's state_space_recursion at unroll_factor=32, the block-unrolled
+PyTorch recursion, forward alone and forward plus backward, after a warm-up
+call that compiles the kernels.
 """
 
 import time

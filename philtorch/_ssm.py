@@ -36,6 +36,16 @@ def from_lpv(A: Tensor) -> Tensor:
     return A[None] if A.dim() == 3 else A
 
 
+def to_lti(A: Tensor) -> Tensor:
+    """(1 or B, 1, M, M) matrices as time-invariant ones, (M, M) or (B, M, M)."""
+    return A[0, 0] if A.size(0) == 1 else A[:, 0]
+
+
+def to_lpv(A: Tensor) -> Tensor:
+    """(1 or B, T, M, M) matrices as time-varying ones, (T, M, M) or (B, T, M, M)."""
+    return A[0] if A.size(0) == 1 else A
+
+
 def _first_state(x: Tensor, M: int) -> Tensor:
     """A 2-D input (B, T) feeding the first of M states, as (B, T, M)."""
     return F.pad(x.unsqueeze(-1), (0, M - 1)) if x.dim() == 2 else x
@@ -293,12 +303,9 @@ def recursion(
         return _kernels(A, zi, x, out_idx=out_idx)
     if unroll_factor >= x.size(1):
         return _loop(A, zi, x, out_idx=out_idx)
-    Ba, Ta = A.shape[:2]
-    if Ta == 1:
-        A = A[0, 0] if Ba == 1 else A[:, 0]
-        return _unrolled_time_invariant(A, zi, x, unroll_factor, out_idx)
-    A = A[0] if Ba == 1 else A
-    return _unrolled_time_varying(A, zi, x, unroll_factor, out_idx)
+    if A.size(1) == 1:
+        return _unrolled_time_invariant(to_lti(A), zi, x, unroll_factor, out_idx)
+    return _unrolled_time_varying(to_lpv(A), zi, x, unroll_factor, out_idx)
 
 
 def states(
@@ -334,18 +341,9 @@ def states(
 
 
 def _scalar_loop(a: Tensor, init: Tensor, x: Tensor) -> Tensor:
-    """The scalar recursion by a loop over time steps."""
-    Ta = a.size(1)
-    results = []
-    h = init
-    for n, xn in enumerate(x.unbind(1)):
-        h = torch.addcmul(xn, h, a[:, n if Ta > 1 else 0])
-        results.append(h)
-    return torch.stack(results, dim=1)
-
-
-def _last_axis_loop(a: Tensor, init: Tensor, x: Tensor) -> Tensor:
-    """The scalar recursion along the last axis, a, init and x broadcasting."""
+    """The scalar recursion along the last axis, by a loop over its steps; a, init
+    and x broadcast, and a time-invariant a is expanded over the steps."""
+    a = a.expand(*a.shape[:-1], x.size(-1))
     results = []
     h = init
     for an, xn in zip(a.unbind(dim=-1), x.unbind(dim=-1), strict=True):
@@ -439,7 +437,7 @@ def _scalar_unrolled_time_varying(a: Tensor, init: Tensor, x: Tensor, block_size
     )
 
     # The blocks' steps after the first, along their last axis.
-    output = _last_axis_loop(unrolled_a[..., :-1], initials[:, :-1], unrolled_x[..., :-1])
+    output = _scalar_loop(unrolled_a[..., :-1], initials[:, :-1], unrolled_x[..., :-1])
 
     # concat the first M - 1 outputs with the last one
     output = torch.cat([output, initials[:, 1:, None]], dim=2).flatten(1, 2)

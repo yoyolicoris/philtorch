@@ -263,8 +263,8 @@ def test_lti_recur_mps_grad_equiv(
 
 
 @pytest.mark.parametrize("order", [2, 3])
-def test_recurN_extension_matches_fallback(order: int):
-    """Test direct recurN low/general orders against the independent fallback."""
+def test_recurN_extension_matches_unrolled(order: int):
+    """Test direct recurN low/general orders against the block-unrolled recursion."""
     batch_size = 2
     N = 37
 
@@ -289,8 +289,8 @@ def test_recurN_extension_matches_fallback(order: int):
         ),
     ],
 )
-def test_recur2_extension_matches_fallback(device):
-    """Test that the recur2 extension matches the independent fallback."""
+def test_recur2_extension_matches_unrolled(device):
+    """Test that the recur2 extension matches the block-unrolled recursion."""
     batch_size = 2
     N = 17
     order = 2
@@ -313,7 +313,7 @@ def test_recur2_extension_matches_fallback(device):
 
 
 @pytest.mark.cuda
-def test_lpv_pararnn_order3_matches_fallback():
+def test_lpv_pararnn_order3_matches_unrolled():
     """Test the CUDA floating order-3 ParaRNN selector boundary."""
     batch_size = 2
     N = 17
