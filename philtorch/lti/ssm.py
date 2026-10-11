@@ -8,7 +8,6 @@ import torch.nn.functional as F
 from torch import Tensor
 from torch.autograd import Function
 
-from .. import HELION_LOADED
 from ..mat import find_eigenvectors, matrix_power_accumulate
 from .recur import LTIRecurrence, linear_recurrence
 
@@ -31,25 +30,11 @@ def extension_backend_indicator(x: Tensor, M: int) -> bool:
     return M <= 2 or x.is_cpu
 
 
-def helion_backend_indicator(x: Tensor) -> bool:
-    """Return whether the Helion kernels can run on this input.
-
-    Args:
-        x (Tensor): the input, whose device and dtype are checked.
-
-    Returns:
-        bool: ``True`` when Helion is loaded and :attr:`x` is a real tensor on
-        a CUDA device.
-    """
-    return HELION_LOADED and x.is_cuda and not x.is_complex()
-
-
 class LTIMatrixRecurrence(Function):
     r"""Autograd function for the matrix recurrence of :func:`_ext_ss_recur`.
 
     The forward pass runs the native ``lti_recur2`` kernel for
-    :math:`M = 2`, the Helion kernel on CUDA when it is available, and the
-    ``lti_recurN`` kernel otherwise. The backward pass runs the recurrence
+    :math:`M = 2` and the ``lti_recurN`` kernel otherwise. The backward pass runs the recurrence
     backward in time with :math:`A^H`, and the JVP runs it forward on the
     tangents, so both reverse- and forward-mode differentiation work.
     """
@@ -58,10 +43,6 @@ class LTIMatrixRecurrence(Function):
     def forward(A: Tensor, zi: Tensor, x: Tensor) -> Tensor:
         if x.size(-1) == 2:
             return torch.ops.philtorch.lti_recur2(A, zi, x)
-        elif helion_backend_indicator(x):
-            from .. import hl_lti_recurN
-
-            return hl_lti_recurN(A, zi, x)
         return torch.ops.philtorch.lti_recurN(A, zi, x)
 
     @staticmethod

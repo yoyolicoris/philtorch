@@ -9,7 +9,6 @@ from philtorch.estimation import hmm_filter, hmm_smoother, hmm_viterbi
 
 # The HMM scans run Triton kernels, so the tests that run them need CUDA; the
 # references, validation and import tests run anywhere.
-requires_cuda = pytest.mark.skipif(not torch.cuda.is_available(), reason="CUDA not available")
 
 
 def _model(batch_size, N, K, *, time_varying=True, seed=0, dtype=torch.float64, device="cuda"):
@@ -88,7 +87,7 @@ def test_sequential_reference_matches_brute_force(time_varying, N):
     torch.testing.assert_close(path, best_path)
 
 
-@requires_cuda
+@pytest.mark.cuda
 def test_hmm_posteriors_are_the_gradient_of_the_log_likelihood():
     log_emit, log_trans, log_init = _model(2, 7, 4)
     log_emit.requires_grad_()
@@ -111,7 +110,7 @@ def _transitions(log_trans, kind):
     return log_trans[0] if kind == "time" else log_trans
 
 
-@requires_cuda
+@pytest.mark.cuda
 @pytest.mark.parametrize("trans", ["shared", "time", "signal_constant", "signal"])
 @pytest.mark.parametrize("K", [3, 17])
 def test_hmm_derivatives_to_second_order(trans, K):
@@ -135,7 +134,7 @@ def test_hmm_derivatives_to_second_order(trans, K):
     assert torch.autograd.gradgradcheck(outputs, inputs)
 
 
-@requires_cuda
+@pytest.mark.cuda
 @pytest.mark.parametrize("trans", ["shared", "time", "signal_constant", "signal"])
 @pytest.mark.parametrize(("N", "K"), [(1, 3), (66, 5), (300, 17), (1000, 2), (66, 33)])
 def test_hmm_gradients_match_sequential(trans, N, K):
@@ -169,7 +168,7 @@ def test_hmm_gradients_match_sequential(trans, N, K):
         torch.testing.assert_close(a, e)
 
 
-@requires_cuda
+@pytest.mark.cuda
 @pytest.mark.parametrize("trans", ["shared", "time"])
 def test_hmm_second_order_matches_sequential(trans):
     """A Hessian-vector product against the sequential recursions, with K = 33
@@ -221,7 +220,7 @@ def test_estimation_imports_without_triton(tmp_path):
     assert result.returncode == 0, result.stderr
 
 
-@requires_cuda
+@pytest.mark.cuda
 def test_hmm_chain_takes_an_expanded_gradient():
     # The gradient of a sum reaches the chain with every stride 0; the
     # kernels need each step's K entries contiguous.
@@ -235,7 +234,7 @@ def test_hmm_chain_takes_an_expanded_gradient():
     torch.testing.assert_close(grad, expected)
 
 
-@requires_cuda
+@pytest.mark.cuda
 def test_hmm_reads_an_ambiguous_3d_log_trans_per_step():
     # With B = N - 1, a (B, K, K) tensor is also (N - 1, K, K); like
     # kalman_filter, the HMM functions take it per step.
@@ -252,7 +251,7 @@ def test_hmm_needs_cuda():
         hmm_filter(*_model(1, 3, 2, device="cpu"))
 
 
-@requires_cuda
+@pytest.mark.cuda
 def test_hmm_needs_its_inputs_on_one_device():
     log_emit, log_trans, log_init = _model(1, 3, 2)
     with pytest.raises(ValueError, match="on CUDA GPUs only; got a tensor on cpu"):
@@ -262,7 +261,7 @@ def test_hmm_needs_its_inputs_on_one_device():
             hmm_filter(log_emit, log_trans.to("cuda:1"), log_init)
 
 
-@requires_cuda
+@pytest.mark.cuda
 def test_hmm_needs_triton(tmp_path):
     # Outside the checkout, as in test_estimation_imports_without_triton.
     code = (
@@ -275,7 +274,7 @@ def test_hmm_needs_triton(tmp_path):
     assert "hmm_viterbi runs Triton kernels, but Triton is not installed" in run.stderr
 
 
-@requires_cuda
+@pytest.mark.cuda
 def test_hmm_matches_sequential_in_float32():
     args = _model(3, 1000, 8, dtype=torch.float32)
     ll, filtered, posteriors, score, path = _sequential(*args)
@@ -290,7 +289,7 @@ def test_hmm_matches_sequential_in_float32():
     assert (actual_path == path).float().mean() > 0.999
 
 
-@requires_cuda
+@pytest.mark.cuda
 def test_hmm_gradients_with_unreachable_states():
     # A left-to-right model that starts in state 0 and stays or advances:
     # most entries of the prior and the transitions are -inf.
@@ -312,7 +311,7 @@ def test_hmm_gradients_with_unreachable_states():
     assert torch.isfinite(grad_post).all()
 
 
-@requires_cuda
+@pytest.mark.cuda
 def test_hmm_impossible_emissions():
     # Each state can't emit some observations: -inf emissions must give no
     # NaN in the messages or their gradients. The reference takes -1e4
@@ -335,7 +334,7 @@ def test_hmm_impossible_emissions():
     torch.testing.assert_close(grad, expected_grad)
 
 
-@requires_cuda
+@pytest.mark.cuda
 @pytest.mark.parametrize("K", [1, 2, 5, 16, 17, 32, 40, 64])
 @pytest.mark.parametrize(
     ("N", "time_varying"), [(1, True), (64, True), (65, False), (66, True), (300, False)]
@@ -357,7 +356,7 @@ def test_hmm_matches_sequential(K, N, time_varying):
     torch.testing.assert_close(actual_path, path)
 
 
-@requires_cuda
+@pytest.mark.cuda
 def test_hmm_two_levels_of_chunks():
     # 5000 steps are 79 chunks of 64, whose own chain takes a second level.
     args = _model(2, 5000, 5, time_varying=False)
@@ -371,7 +370,7 @@ def test_hmm_two_levels_of_chunks():
     torch.testing.assert_close(actual_path, path)
 
 
-@requires_cuda
+@pytest.mark.cuda
 @pytest.mark.parametrize("trans", ["shared", "time"])
 def test_hmm_empty_sequence(trans):
     # No steps: zero log-likelihoods and scores that still take gradients,
@@ -391,7 +390,7 @@ def test_hmm_empty_sequence(trans):
         assert grad.shape == t.shape and grad.eq(0).all()
 
 
-@requires_cuda
+@pytest.mark.cuda
 @pytest.mark.parametrize("N", [2, 7, 200])
 def test_hmm_viterbi_path_is_optimal_under_ties(N):
     # Two states that must alternate, with nothing to tell them apart: the
@@ -408,7 +407,7 @@ def test_hmm_viterbi_path_is_optimal_under_ties(N):
     torch.testing.assert_close(score, log_init[path[:, 0]])
 
 
-@requires_cuda
+@pytest.mark.cuda
 def test_hmm_viterbi_gradient_under_ties():
     # With uniform probabilities every path ties: the score's gradient is
     # that of the decoded one, so each step's sums to 1.

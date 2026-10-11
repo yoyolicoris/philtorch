@@ -2,8 +2,9 @@
 
 Used by .github/workflows/build-cuda-wheels.yml. The wheel is installed with
 --no-deps next to the official PyTorch build it was compiled against, so the
-exact CI artifact is what gets tested, and then the CUDA-parametrized tests
-from tests/ run against the installed package::
+exact CI artifact is what gets tested, and then the tests from tests/ marked
+``cuda`` run against the installed package, with coverage. Their report is
+written to coverage.xml, for the workflow to upload::
 
     SMOKE_PYTHON=3.13 SMOKE_TORCH=2.14.1 \\
     SMOKE_TORCH_INDEX_URL=https://download.pytorch.org/whl/cu132 SMOKE_GPU=T4 \\
@@ -31,6 +32,7 @@ GPU = os.environ.get("SMOKE_GPU", "T4")
 # These check repository tooling (scripts/, setup.py, build_support.py) rather
 # than the installed package. CPU CI runs them.
 TOOLING_TESTS = (
+    "test_ci_paths.py",
     "test_cuda_wheel_version.py",
     "test_generate_simple_index.py",
     "test_setup_force_cuda.py",
@@ -72,22 +74,17 @@ image = (
     # torch.compile's Triton backend compiles small C launchers at runtime.
     .apt_install("build-essential")
     .pip_install(f"torch=={TORCH}", index_url=TORCH_INDEX_URL)
-    # helion is the "extra" dependency in pyproject.toml. Its kernels only run
-    # on CUDA, so without it here no CI job would run their tests.
-    .pip_install("pytest", "numpy", "scipy", "helion>=1.0.0,<2")
-    # Run the Helion kernels with their default configs. Autotuning them on
-    # every run took about 10 minutes, and the tests check results, not speed.
-    .env({"HELION_AUTOTUNE_EFFORT": "none"})
+    .pip_install("pytest", "pytest-cov", "numpy", "scipy")
 )
 app = modal.App("philtorch-cuda-smoke-test", image=image)
 
 
 @app.function(gpu=GPU, timeout=45 * 60)
-def run_tests(wheel_name: str, wheel: bytes, version: str, tests: dict[str, bytes]) -> None:
+def run_tests(wheel_name: str, wheel: bytes, version: str, files: dict[str, bytes]) -> bytes:
     import subprocess
 
     work = Path("/tmp/smoke")
-    for name, content in tests.items():
+    for name, content in files.items():
         path = work / name
         path.parent.mkdir(parents=True, exist_ok=True)
         path.write_bytes(content)
@@ -100,9 +97,11 @@ def run_tests(wheel_name: str, wheel: bytes, version: str, tests: dict[str, byte
     run("nvidia-smi")
     run(sys.executable, "-m", "pip", "install", "--no-deps", str(work / wheel_name))
     run(sys.executable, "-c", PRECHECK, version)
-    pytest_args = ["tests", "-k", "cuda", "-p", "no:cacheprovider", "-ra"]
+    pytest_args = ["tests", "-m", "cuda", "-p", "no:cacheprovider", "-ra"]
+    pytest_args += ["--cov-branch", "--cov-report=xml"]
     pytest_args += [f"--ignore=tests/{name}" for name in TOOLING_TESTS]
     run(sys.executable, "-m", "pytest", *pytest_args)
+    return (work / "coverage.xml").read_bytes()
 
 
 @app.local_entrypoint()
@@ -110,8 +109,10 @@ def main(wheel: str):
     wheel_path = Path(wheel)
     # Wheel names are {name}-{version}-{tags}.whl, and versions hold no "-".
     version = wheel_path.name.split("-")[1]
-    tests = {
+    # The tests, and pyproject.toml for their pytest and coverage settings.
+    files = {
         str(path.relative_to(REPO_ROOT)): path.read_bytes()
-        for path in sorted((REPO_ROOT / "tests").glob("*.py"))
+        for path in [*sorted((REPO_ROOT / "tests").glob("*.py")), REPO_ROOT / "pyproject.toml"]
     }
-    run_tests.remote(wheel_path.name, wheel_path.read_bytes(), version, tests)
+    coverage = run_tests.remote(wheel_path.name, wheel_path.read_bytes(), version, files)
+    Path("coverage.xml").write_bytes(coverage)

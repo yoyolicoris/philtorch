@@ -6,7 +6,7 @@ Provides specialized code review guidance for the PhilTorch repository. It enfor
 **When to Use:**
 - Reviewing pull requests and new code contributions.
 - Auditing custom `torch.autograd.Function` implementations.
-- Checking C++/CUDA kernel extensions (including Helion kernels) for filtering and matrix recursions.
+- Checking C++/CUDA kernel extensions (including Triton kernels) for filtering and matrix recursions.
 - Verifying fallback PyTorch implementations (associative scans).
 
 ## Core Review Principles
@@ -24,7 +24,7 @@ Provides specialized code review guidance for the PhilTorch repository. It enfor
 - **Fallback Mechanisms:** Check that pure PyTorch fallbacks (e.g., using `unroll_factor` and associative scans) are logically correct when C++ extensions are not compiled.
 
 ### 2. C++ / CUDA & Dependencies
-- **Kernel Safety:** Check for out-of-bounds memory accesses in CUDA/Helion kernels, particularly at sequence boundaries during parallel associative scans.
+- **Kernel Safety:** Check for out-of-bounds memory accesses in CUDA/Triton kernels, particularly at sequence boundaries during parallel associative scans.
 - **Synchronization:** Ensure appropriate thread synchronization (`__syncthreads()`) is used to avoid race conditions in custom extensions.
 - **Environment & Build:** Verify that dependency updates in `pixi.toml` and CMake/C++ build configurations do not break PyTorch >= 2.13 compatibility or GPU-accelerated environments.
 

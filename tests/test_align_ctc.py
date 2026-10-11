@@ -6,7 +6,6 @@ from philtorch.align import ctc_loss, forced_align
 
 # ctc_loss runs Triton kernels, so the tests that run it need CUDA; the
 # validation tests run anywhere.
-requires_cuda = pytest.mark.skipif(not torch.cuda.is_available(), reason="CUDA not available")
 
 
 def _problem(N, T, C, S, *, blank=0, seed=0, dtype=torch.float64, device="cuda"):
@@ -29,7 +28,7 @@ def _losses_and_grads(fn, logits, *args, **kwargs):
     return loss, grad
 
 
-@requires_cuda
+@pytest.mark.cuda
 @pytest.mark.parametrize("blank", [0, 5])
 @pytest.mark.parametrize(
     "T, frames, labels",
@@ -54,7 +53,7 @@ def test_ctc_matches_pytorch(blank, T, frames, labels):
     assert grad[~possible].eq(0).all()
 
 
-@requires_cuda
+@pytest.mark.cuda
 @pytest.mark.parametrize("reduction", ["none", "mean", "sum"])
 @pytest.mark.parametrize("zero_infinity", [False, True])
 def test_ctc_reductions(reduction, zero_infinity):
@@ -69,7 +68,7 @@ def test_ctc_reductions(reduction, zero_infinity):
         torch.testing.assert_close(grad, expected_grad)
 
 
-@requires_cuda
+@pytest.mark.cuda
 def test_ctc_target_formats():
     # Concatenated targets with lengths as tuples, and one unbatched sequence.
     logits, targets = _problem(3, 20, 5, 6)
@@ -83,7 +82,7 @@ def test_ctc_target_formats():
     torch.testing.assert_close(unbatched, padded[2])
 
 
-@requires_cuda
+@pytest.mark.cuda
 def test_ctc_gradient_is_the_occupancy():
     # With respect to the log-probabilities, the gradient is minus each
     # frame's expected occupancy of each class, which sums to 1 per frame.
@@ -95,7 +94,7 @@ def test_ctc_gradient_is_the_occupancy():
     torch.testing.assert_close(grad.sum(-1), -torch.ones(3, 20, dtype=grad.dtype, device="cuda"))
 
 
-@requires_cuda
+@pytest.mark.cuda
 def test_ctc_second_derivatives():
     logits, targets = _problem(2, 7, 4, 3)
     targets[0, 2] = targets[0, 1]
@@ -108,7 +107,7 @@ def test_ctc_second_derivatives():
     assert torch.autograd.gradgradcheck(loss, (log_probs,), nondet_tol=1e-12)
 
 
-@requires_cuda
+@pytest.mark.cuda
 def test_ctc_float32():
     logits, targets = _problem(4, 500, 30, 60, dtype=torch.float32)
     args = (targets, (500,) * 4, (60,) * 4)
@@ -169,7 +168,7 @@ def _viterbi(log_probs, target, blank):
     return [states[s] for s in reversed(path)], best[T - 1, end]
 
 
-@requires_cuda
+@pytest.mark.cuda
 @pytest.mark.parametrize("blank", [0, 5])
 def test_forced_align_matches_viterbi(blank):
     logits, targets = _problem(4, 12, 6, 4, blank=blank)

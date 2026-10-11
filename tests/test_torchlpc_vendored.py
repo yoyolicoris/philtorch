@@ -25,7 +25,7 @@ _DEVICES = [
     "cpu",
     pytest.param(
         "cuda",
-        marks=pytest.mark.skipif(not torch.cuda.is_available(), reason="CUDA not available"),
+        marks=pytest.mark.cuda,
     ),
 ]
 _REQUIRES_GRAD_CASES = [
@@ -141,7 +141,7 @@ def test_scan_recurrence(
     assert gradgradcheck(ScanRecurrence.apply, (x, A, zi))
 
 
-@pytest.mark.skipif(not torch.cuda.is_available(), reason="CUDA not available")
+@pytest.mark.cuda
 def test_allpole_float64_vs_32_cuda():
     batch_size = 4
     samples = 32

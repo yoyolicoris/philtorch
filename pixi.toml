@@ -32,6 +32,7 @@ TRITON_PTXAS_BLACKWELL_PATH = "$CONDA_PREFIX/bin/ptxas"
 setuptools_scm = ">=8, <9"
 philtorch = { path = ".", editable = true }
 kazane = ">=1.0.4, <2"
+# For prototyping and tuning kernels; the package never imports it.
 helion = ">=1.0.0, <2"
 
 

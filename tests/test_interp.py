@@ -14,7 +14,7 @@ from philtorch.lti.interp import cspline, cubic_spline
         "cpu",
         pytest.param(
             "cuda",
-            marks=pytest.mark.skipif(not torch.cuda.is_available(), reason="CUDA not available"),
+            marks=pytest.mark.cuda,
         ),
     ],
 )
@@ -50,7 +50,7 @@ def test_cubic_spline(n, m, device, pfe, scipy_padding):
         "cpu",
         pytest.param(
             "cuda",
-            marks=pytest.mark.skipif(not torch.cuda.is_available(), reason="CUDA not available"),
+            marks=pytest.mark.cuda,
         ),
     ],
 )

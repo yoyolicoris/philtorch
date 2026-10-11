@@ -43,6 +43,26 @@ on:
       - "MANIFEST.in"
       - "philtorch/csrc/**"
       - "third_party/**"
+      # The Triton kernels, named _*_kernels.py, the recurrence operator that
+      # launches them, and every test module the GPU job runs (-m cuda), which
+      # tests/test_ci_paths.py checks.
+      - "philtorch/**/_*_kernels.py"
+      - "philtorch/_recur.py"
+      - "tests/conftest.py"
+      - "tests/test_align_ctc.py"
+      - "tests/test_align_dtw.py"
+      - "tests/test_docstrings.py"
+      - "tests/test_estimation_hmm.py"
+      - "tests/test_estimation_kalman.py"
+      - "tests/test_grad.py"
+      - "tests/test_interp.py"
+      - "tests/test_lpv_ssm.py"
+      - "tests/test_nl.py"
+      - "tests/test_pt2_comp.py"
+      - "tests/test_pt2_vendored_compile.py"
+      - "tests/test_recur.py"
+      - "tests/test_recur_ext.py"
+      - "tests/test_torchlpc_vendored.py"
   pull_request:
     branches: ["dev"]
     # Same list as push.
@@ -57,6 +77,26 @@ on:
       - "MANIFEST.in"
       - "philtorch/csrc/**"
       - "third_party/**"
+      # The Triton kernels, named _*_kernels.py, the recurrence operator that
+      # launches them, and every test module the GPU job runs (-m cuda), which
+      # tests/test_ci_paths.py checks.
+      - "philtorch/**/_*_kernels.py"
+      - "philtorch/_recur.py"
+      - "tests/conftest.py"
+      - "tests/test_align_ctc.py"
+      - "tests/test_align_dtw.py"
+      - "tests/test_docstrings.py"
+      - "tests/test_estimation_hmm.py"
+      - "tests/test_estimation_kalman.py"
+      - "tests/test_grad.py"
+      - "tests/test_interp.py"
+      - "tests/test_lpv_ssm.py"
+      - "tests/test_nl.py"
+      - "tests/test_pt2_comp.py"
+      - "tests/test_pt2_vendored_compile.py"
+      - "tests/test_recur.py"
+      - "tests/test_recur_ext.py"
+      - "tests/test_torchlpc_vendored.py"
   release:
     types: [published]
   workflow_dispatch:
@@ -310,6 +350,15 @@ jobs:
           done
           echo "::error::Modal still rate-limited app creation after 5 attempts"
           exit 1
+
+      - name: Upload coverage reports to Codecov
+        # The Triton kernels' launch code runs only here; Codecov merges this
+        # report with the CPU tests' for the same commit.
+        uses: codecov/codecov-action@v5
+        with:
+          token: ${{ secrets.CODECOV_TOKEN }}
+          files: coverage.xml
+          flags: gpu
 
   publish:
     # Attaches every wheel to the release; deploy-cuda-index.yml then lists

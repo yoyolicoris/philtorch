@@ -24,7 +24,7 @@ that the kernel builds on the fly, and a linear chain's derivative is again
 one. So :class:`_LogChain` and :class:`_LinearChain` are differentiable to
 any order in reverse mode; they have no forward-mode rules. The gradients
 of shared transition matrices sum the weighted terms over the batch and
-time with :func:`._contract.weighted_contract`.
+time with :func:`._contract_kernels.weighted_contract`.
 """
 
 import torch
@@ -97,7 +97,7 @@ def _trans_grad(log_trans: Tensor, alpha: Tensor, beta: Tensor, fi: Tensor, fj: 
     that it is shared over, or (2, ...) for a stacked pair of chains, each
     half of the batch summed into its own matrices.
     """
-    from ._contract import weighted_contract
+    from ._contract_kernels import weighted_contract
 
     if log_trans.dim() == 5:
         halves = zip(log_trans, *(t.chunk(2) for t in (alpha, beta, fi, fj)), strict=True)
@@ -257,7 +257,7 @@ class _Viterbi(torch.autograd.Function):
 
     @staticmethod
     def forward(log_emit, log_trans, log_init):
-        from .._trace import trace
+        from .._trace_kernels import trace
 
         B, N, K = log_emit.shape
         # Each state's best predecessor per step, as time slices of (B, N, K):

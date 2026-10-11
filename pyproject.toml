@@ -50,7 +50,6 @@ classifiers = [
 
 [project.optional-dependencies]
 dev = ["pytest >= 6.0", "scipy", "numpy", "pytest-cov"]
-extra = ["helion>=1.0.0,<2"]
 
 [tool.pytest.ini_options]
 testpaths = ["tests"]
@@ -81,6 +80,12 @@ relative_files = true
 # ./philtorch source dir that a bare `--cov=philtorch` would resolve to and
 # report as 0% since the wheel's copy is what actually executes.
 source_pkgs = ["philtorch"]
+
+[tool.coverage.report]
+# coverage.py can't trace @triton.jit functions, which compile to GPU code, so
+# they are left out of the report rather than listed as missed. The GPU CI
+# runs them.
+exclude_also = ["@triton\\.jit"]
 
 [tool.coverage.paths]
 # CI tests the pre-built wheel (installed into site-packages) instead of an

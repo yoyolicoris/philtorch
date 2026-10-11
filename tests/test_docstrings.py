@@ -39,12 +39,11 @@ MODULES = [
 CUDA_MODULES = [
     importlib.import_module(name) for name in ("philtorch.align.ctc", "philtorch.align.dtw")
 ]
-requires_cuda = pytest.mark.skipif(not torch.cuda.is_available(), reason="CUDA not available")
 
 
 @pytest.mark.parametrize(
     "module",
-    MODULES + [pytest.param(module, marks=requires_cuda) for module in CUDA_MODULES],
+    MODULES + [pytest.param(module, marks=pytest.mark.cuda) for module in CUDA_MODULES],
     ids=lambda module: module.__name__,
 )
 def test_docstring_examples(module):

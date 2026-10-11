@@ -59,8 +59,8 @@ at::Tensor lti_recur_cpu_impl(const at::Tensor &a,
     if (a.dim() == 1 && a.numel() == n_batches)
     {
 
-        AT_DISPATCH_FLOATING_AND_COMPLEX_TYPES_AND2(
-            at::kHalf, at::kBFloat16, x.scalar_type(), "host_lti_batch_linear_recurrence", [&]
+        AT_DISPATCH_FLOATING_AND_COMPLEX_TYPES_AND3(
+            at::kLong, at::kHalf, at::kBFloat16, x.scalar_type(), "host_lti_batch_linear_recurrence", [&]
             { host_lti_batch_linear_recurrence<scalar_t>(
                   n_batches, n_steps,
                   a_contiguous.const_data_ptr<scalar_t>(),
@@ -68,8 +68,8 @@ at::Tensor lti_recur_cpu_impl(const at::Tensor &a,
     }
     else
     {
-        AT_DISPATCH_FLOATING_AND_COMPLEX_TYPES_AND2(
-            at::kHalf, at::kBFloat16, x.scalar_type(), "host_lti_shared_linear_recurrence", [&]
+        AT_DISPATCH_FLOATING_AND_COMPLEX_TYPES_AND3(
+            at::kLong, at::kHalf, at::kBFloat16, x.scalar_type(), "host_lti_shared_linear_recurrence", [&]
             { host_lti_shared_linear_recurrence<scalar_t>(
                   n_batches, n_steps,
                   a_contiguous.item<scalar_t>(),

@@ -48,7 +48,7 @@ def _torchlpc_devices() -> list[object]:
     if torch.cuda.is_available() and all(
         _has_dispatch_kernel(op, "CUDA") for op in _TORCHLPC_CUDA_OPS
     ):
-        devices.append("cuda")
+        devices.append(pytest.param("cuda", marks=pytest.mark.cuda))
     return devices
 
 
@@ -150,8 +150,10 @@ def _state_space_cases() -> list[object]:
     # M == 1 routes to the vendored LPC op; M == 2 and 3 exercise the compiled
     # matrix-recurrence route on CPU (CUDA M == 2 and 3 use ParaRNN, tested below).
     cases = [pytest.param("cpu", M, marks=_SKIP_WITHOUT_CPU_INDUCTOR) for M in (1, 2, 3)]
-    if "cuda" in _torchlpc_devices():
-        cases.append(("cuda", 1))
+    if torch.cuda.is_available() and all(
+        _has_dispatch_kernel(op, "CUDA") for op in _TORCHLPC_CUDA_OPS
+    ):
+        cases.append(pytest.param("cuda", 1, marks=pytest.mark.cuda))
     return cases
 
 
@@ -169,6 +171,7 @@ def test_state_space_recursion_compile_forward_and_backward(
     _assert_compiled_forward_and_backward(state_space_recursion, (A, zi, x))
 
 
+@pytest.mark.cuda
 @pytest.mark.skipif(not _pararnn_available(), reason="CUDA ParaRNN kernels unavailable")
 @pytest.mark.parametrize("state_size", [2, 3])
 @pytest.mark.parametrize("share_A", [True, False])

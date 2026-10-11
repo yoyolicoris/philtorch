@@ -32,7 +32,7 @@ runs from the last time back over each M[t]'s transpose: a chain's
 derivative, a linear chain backwards, runs here too.
 
 A max-plus chain can also record each message's maximizing previous state,
-and :func:`philtorch._trace.trace` follows such backpointers in the same two
+and :func:`philtorch._trace_kernels.trace` follows such backpointers in the same two
 levels: Viterbi decoding's traceback, in parallel.
 
 Up to ``_REGISTER_STATES`` states, or twice that for a linear chain, a
