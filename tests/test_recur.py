@@ -237,6 +237,7 @@ DISPATCH = [
 INTEGER_DISPATCH = [
     (True, 1, torch.int64, "cpu", 1, "_lti_recur"),
     (True, 2, torch.int64, "cpu", 1, "_lti_recurN"),
+    (False, 1, torch.int64, "cpu", 1, "_recurN"),
     (False, 2, torch.int64, "cpu", 1, "_recurN"),
     *(
         pytest.param(*case, marks=pytest.mark.cuda)
