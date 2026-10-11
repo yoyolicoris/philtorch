@@ -134,6 +134,32 @@ def test_recurrence_derivatives_of_short_sequences(device, sharing, T):
 
 
 @pytest.mark.parametrize("device", DEVICES)
+@pytest.mark.parametrize("sharing", SHARING)
+@pytest.mark.parametrize("vmap_A", [False, True])
+@pytest.mark.parametrize("M", [1, 3])
+def test_recurrence_vmap(device, sharing, vmap_A, M):
+    # The vmapped dimension joins the batch: the same states, and gradients,
+    # as one call per index, whether A is vmapped too or shared over it.
+    problems = [list(_problem(2, 40, M, sharing, device=device, seed=v)) for v in range(3)]
+    A, zi, x = (torch.stack(t) for t in zip(*problems))
+    if not vmap_A:
+        A = A[0]
+    in_dims = (0 if vmap_A else None, 0, 0)
+    A_of = (lambda v: A[v]) if vmap_A else (lambda v: A)
+    expected = torch.stack([recurrence(A_of(v), zi[v], x[v]) for v in range(3)])
+    torch.testing.assert_close(torch.func.vmap(recurrence, in_dims)(A, zi, x), expected)
+
+    def loss(A, zi, x):
+        return recurrence(A, zi, x).abs().square().sum()
+
+    grads = torch.func.vmap(torch.func.grad(loss, argnums=(1, 2)), in_dims)(A, zi, x)
+    for v in range(3):
+        expected = torch.func.grad(loss, argnums=(1, 2))(A_of(v), zi[v], x[v])
+        for g, e in zip(grads, expected):
+            torch.testing.assert_close(g[v], e)
+
+
+@pytest.mark.parametrize("device", DEVICES)
 @pytest.mark.parametrize("sharing", ["one", "per_item"])
 @pytest.mark.parametrize("dtype", [torch.float64, torch.complex128])
 def test_recurrence_gradients_of_long_sequences(device, sharing, dtype):

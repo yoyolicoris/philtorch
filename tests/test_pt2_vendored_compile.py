@@ -9,7 +9,6 @@ from torch import Tensor
 
 from philtorch._ops import _pararnn_backward, _pararnn_fake
 from philtorch._torchlpc import lpc as vendored_lpc
-from philtorch._torchlpc import scan as vendored_scan
 from philtorch.lpv import allpole, lfilter, linear_recurrence, state_space_recursion
 
 _WINDOWS_INDUCTOR_UNAVAILABLE = sys.platform == "win32" and shutil.which("cl") is None
@@ -240,14 +239,6 @@ def test_pararnn_fake_checks_shapes_on_cpu(block_size: int) -> None:
 
 def test_compile_dispatch_helpers_call_raw_operators(monkeypatch) -> None:
     monkeypatch.setattr(torch.compiler, "is_compiling", lambda: True)
-
-    impulse = torch.linspace(-0.8, 0.9, 16).reshape(2, 8)
-    decay = torch.linspace(0.05, 0.45, 16).reshape(2, 8)
-    init = torch.tensor([-0.2, 0.3])
-    torch.testing.assert_close(
-        vendored_scan(impulse, decay, init),
-        torch.ops.philtorch.scan(impulse, decay, init),
-    )
 
     x = torch.linspace(-0.7, 0.8, 16).reshape(2, 8)
     A = torch.linspace(-0.03, 0.03, 48).reshape(2, 8, 3)

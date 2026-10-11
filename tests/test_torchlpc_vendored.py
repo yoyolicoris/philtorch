@@ -2,7 +2,7 @@
 
 These tests are adapted from DiffAPF/torchlpc (MIT License, Copyright (c) 2023
 Chin-Yun Yu), which is vendored into philtorch._C. They cover only the ops
-redefined in philtorch's shim (AllPole / ScanRecurrence), since those are what
+redefined in philtorch's shim (AllPole), since that is what
 philtorch owns and may revise in the future.
 
 Original sources, in https://github.com/DiffAPF/torchlpc:
@@ -19,7 +19,7 @@ import torch.nn.functional as F
 from torch.autograd.gradcheck import gradcheck, gradgradcheck
 from torch.func import jacfwd
 
-from philtorch._torchlpc import AllPole, ScanRecurrence
+from philtorch._torchlpc import AllPole
 
 _DEVICES = [
     "cpu",
@@ -107,40 +107,6 @@ def test_allpole(
     assert gradgradcheck(AllPole.apply, (x, A, zi))
 
 
-@pytest.mark.parametrize(
-    ("x_requires_grad", "a_requires_grad", "zi_requires_grad"),
-    _REQUIRES_GRAD_CASES,
-)
-@pytest.mark.parametrize("cmplx", [True, False])
-@pytest.mark.parametrize("device", _DEVICES)
-def test_scan_recurrence(
-    x_requires_grad: bool,
-    a_requires_grad: bool,
-    zi_requires_grad: bool,
-    cmplx: bool,
-    device: str,
-):
-    batch_size = 2
-    samples = 123
-    dtype = torch.complex128 if cmplx else torch.double
-    x = torch.randn(batch_size, samples, dtype=dtype, device=device)
-    if cmplx:
-        A = torch.rand(batch_size, samples, dtype=torch.double, device=device).sqrt() * torch.exp(
-            1j * torch.rand(batch_size, samples, dtype=torch.double, device=device) * 2 * torch.pi
-        )
-    else:
-        A = torch.rand(batch_size, samples, dtype=dtype, device=device) * 2 - 1
-    zi = torch.randn(batch_size, dtype=dtype, device=device)
-
-    A.requires_grad = a_requires_grad
-    x.requires_grad = x_requires_grad
-    zi.requires_grad = zi_requires_grad
-
-    # ScanRecurrence takes (impulse, decay, init), i.e. (x, A, zi).
-    assert gradcheck(ScanRecurrence.apply, (x, A, zi), check_forward_ad=True)
-    assert gradgradcheck(ScanRecurrence.apply, (x, A, zi))
-
-
 @pytest.mark.cuda
 def test_allpole_float64_vs_32_cuda():
     batch_size = 4
@@ -177,32 +143,6 @@ def test_allpole_vmap(device: str):
 
     def func(x, A, zi):
         return F.mse_loss(AllPole.apply(x, A[:, None, :].expand(-1, samples, -1), zi), y)
-
-    jacs = jacfwd(func, argnums=tuple(range(len(args))))(*args)
-
-    loss = func(*args)
-    loss.backward()
-    for jac, arg in zip(jacs, args):
-        assert torch.allclose(jac, arg.grad)
-
-
-@pytest.mark.parametrize("device", _DEVICES)
-def test_scan_recurrence_vmap(device: str):
-    batch_size = 3
-    samples = 255
-    x = torch.randn(batch_size, samples, dtype=torch.double, device=device)
-    A = torch.rand(batch_size, samples, dtype=torch.double, device=device) * 2 - 1
-    zi = torch.randn(batch_size, dtype=torch.double, device=device)
-    y = torch.randn(batch_size, samples, dtype=torch.double, device=device)
-
-    A.requires_grad = True
-    x.requires_grad = True
-    zi.requires_grad = True
-
-    args = (x, A, zi)
-
-    def func(x, A, zi):
-        return F.mse_loss(ScanRecurrence.apply(x, A, zi), y)
 
     jacs = jacfwd(func, argnums=tuple(range(len(args))))(*args)
 

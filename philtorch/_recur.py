@@ -302,7 +302,8 @@ class Recurrence(torch.autograd.Function):
 
     The gradients come from :func:`_gradients`, and the tangent is the same
     recurrence forward on the tangents' inputs. Both call this function
-    again, so they are differentiable in turn.
+    again, so they are differentiable in turn. Under :func:`torch.func.vmap`,
+    the vmapped dimension joins the batch.
     """
 
     @staticmethod
@@ -319,6 +320,25 @@ class Recurrence(torch.autograd.Function):
     def backward(ctx, grad):
         A, zi, h = ctx.saved_tensors
         return _gradients(Recurrence.apply, A, zi, h, grad, *ctx.needs_input_grad[:2])
+
+    @staticmethod
+    def vmap(info, in_dims, A, zi, x):
+        # The kernels take no vmapped dimension: fold it into the batch, (V, B)
+        # to V * B. A shared over both stays shared; otherwise each of the V * B
+        # sequences gets its own matrices.
+        V = info.batch_size
+        A_dim, zi_dim, x_dim = in_dims
+
+        def front(t, dim):
+            return t.expand(V, *t.shape) if dim is None else t.movedim(dim, 0)
+
+        zi, x = front(zi, zi_dim), front(x, x_dim)
+        B = x.size(1)
+        if A_dim is not None or A.size(0) > 1:
+            A = front(A, A_dim)
+            A = A.expand(V, B, *A.shape[2:]).reshape(V * B, *A.shape[2:])
+        h = Recurrence.apply(A, zi.reshape(V * B, -1), x.reshape(V * B, *x.shape[2:]))
+        return h.reshape(V, B, *h.shape[1:]), 0
 
     @staticmethod
     def jvp(ctx, dA, dzi, dx):

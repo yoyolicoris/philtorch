@@ -247,3 +247,24 @@ def test_state_space_recursion_rejects_bad_shapes(module):
         module.state_space_recursion(A, zi[:1], x)
     with pytest.raises(ValueError, match="Last dimension of zi"):
         module.state_space_recursion(A, zi[:, :-1], x)
+
+
+@pytest.mark.parametrize("module", [lti, lpv], ids=["lti", "lpv"])
+def test_recursions_vmap(module):
+    # vmap through the public recursions, which run the operator: the same as
+    # one call per index.
+    batches = [_recursion_inputs(module, torch.float64) for _ in range(3)]
+    gen = torch.Generator().manual_seed(1)
+    for inputs in batches:
+        inputs[2].copy_(torch.randn(inputs[2].shape, generator=gen, dtype=torch.float64))
+        inputs[0].mul_(0.3)
+    A, zi, x = (torch.stack(t) for t in zip(*batches))
+    expected = torch.stack([module.state_space_recursion(*inputs) for inputs in batches])
+    torch.testing.assert_close(torch.func.vmap(module.state_space_recursion)(A, zi, x), expected)
+    # The scalar coefficients: lti's per index (), lpv's (N).
+    a = A[..., 0, 0]
+    expected = torch.stack(
+        [module.linear_recurrence(a[v], zi[v, :, 0], x[v, ..., 0]) for v in range(3)]
+    )
+    actual = torch.func.vmap(module.linear_recurrence)(a, zi[..., 0], x[..., 0])
+    torch.testing.assert_close(actual, expected)
