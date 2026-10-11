@@ -17,15 +17,17 @@ Pixi defines the environment (`pixi.toml`); the default environment installs phi
 
 ```bash
 ./scripts/run-limited pixi reinstall philtorch   # rebuild after changing philtorch/csrc/*
-./scripts/run-limited pixi run pytest            # full suite
+./scripts/run-limited pixi run pytest            # full suite, left to CI
 
-pixi run pytest tests/test_lti_lfilter.py                                 # one file
 pixi run pytest tests/test_lti_lfilter.py::test_time_invariant_filter     # one test
+pixi run pytest tests/test_recur.py -k "integers or dispatch"             # tests by name
 
 pixi run ruff check .            # lint, as CI does (Ruff pinned in pixi.toml)
 pixi run ruff format --check .   # format check; format only files you changed
 pixi run docs                    # Sphinx with -W: warnings, unresolved references included, are errors
 ```
+
+Locally, run only the tests that exercise the change, selected by name: node IDs or `-k` expressions, not whole files. Find them by searching the tests for the changed function, op or kernel, and state which tests you ran and why they cover the change. The full suite runs on CI; run it locally only when the maintainer asks.
 
 Benchmarks live in `benchmarks/` and run as `pixi run python benchmarks/<name>.py`.
 
