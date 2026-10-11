@@ -2,6 +2,15 @@
 
 Guidance for coding agents working in this repository. It is the one shared source of instructions: Claude Code, GitHub Copilot, Antigravity and Muse Code all read it. Keep tool-specific notes in that tool's own file, which only adds to this one: `CLAUDE.md` (Claude Code), `.github/copilot-instructions.md` and `.github/instructions/` (Copilot), `GEMINI.md` (Antigravity).
 
+## Before starting a task
+
+Agree on the task with the maintainer before carrying it out. Where the request leaves its details, scope or changes open, ask: don't assume the maintainer sees it the way you do, and don't settle it yourself by building on a guess. Questions are welcome; a question costs less than work done on the wrong reading. Ask in particular before:
+
+- widening or narrowing the scope, or adding work that wasn't asked for;
+- changing behaviour users see, such as the dtypes, devices or shapes a function takes;
+- renaming, moving or deleting files or public names;
+- choosing between designs with real trade-offs: give the options and a recommendation, and let the maintainer decide.
+
 ## Commands
 
 Pixi defines the environment (`pixi.toml`); the default environment installs philtorch editable, with its compiled extension. On Linux, wrap builds and full test runs in the resource limiter (defaults: 3 CPUs, 12 GiB, two native build jobs; override with `PHILTORCH_CPU_QUOTA`, `PHILTORCH_MEMORY_MAX`, `MAX_JOBS`, `OMP_NUM_THREADS`):
