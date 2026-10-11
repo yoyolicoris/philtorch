@@ -34,7 +34,8 @@ def bench(fn, budget=1.0):
             fn()
         torch.cuda.synchronize()
         return f"{1e3 * (time.perf_counter() - start) / n:9.2f}"
-    except (torch.OutOfMemoryError, RuntimeError, NotImplementedError) as e:
+    # Out of memory and no kernel are RuntimeErrors too.
+    except RuntimeError as e:
         return f"{type(e).__name__[:9]:>9}"
 
 

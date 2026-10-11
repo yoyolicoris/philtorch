@@ -120,12 +120,17 @@ def _store_matrix(ptr, offset, rows, cols, M, re, im, COMPLEX: tl.constexpr):
 
 
 @triton.jit
-def _load_tile(ptr, rows, cols, BM: tl.constexpr, COMPLEX: tl.constexpr):
-    """Entries (rows, cols) of a padded BM x BM scratch matrix, its imaginary part after."""
+def _load_tile(ptr, rows, cols, M, BM: tl.constexpr, COMPLEX: tl.constexpr):
+    """Entries (rows, cols) of a padded BM x BM scratch matrix, its imaginary part after.
+
+    Rows from M on are never written, and read as zeros: whatever memory they
+    hold, even NaN, would otherwise reach the products.
+    """
     offset = rows * BM + cols
-    re = tl.load(ptr + offset)
+    mask = rows < M
+    re = tl.load(ptr + offset, mask=mask, other=0.0)
     if COMPLEX:
-        return re, tl.load(ptr + BM * BM + offset)
+        return re, tl.load(ptr + BM * BM + offset, mask=mask, other=0.0)
     return re, re
 
 
@@ -160,28 +165,28 @@ def _power_kernel(
 @triton.jit
 def _scan_kernel(
     a_ptr, x_ptr, zi_ptr, power_ptr, out_ptr, offset_ptr, map_ptr, state_ptr, flag_ptr,
-    counter_ptr, scratch_ptr, N, C, chunk, stride_ab, stride_at, stride_pb, M: tl.constexpr,
+    counter_ptr, scratch_ptr, T, C, chunk, stride_ab, stride_at, stride_pb, M: tl.constexpr,
     SCAN: tl.constexpr, VARYING: tl.constexpr, SCRATCH: tl.constexpr, COMPLEX: tl.constexpr,
     BM: tl.constexpr,
 ):  # fmt: skip
     """The steps of one chunk of ``chunk`` steps of one batch item; see the module docstring.
 
-    Without ``SCAN``, the sequences fit in one chunk, which runs its steps alone.
-    With ``SCRATCH``, a time-varying chunk's P alternates between two scratch
-    buffers, computed a row at a time. A chunk's flag
-    is 1 once its map (o, and P for time-varying A) is published, and 2 once
-    its end state is.
+    Without ``SCAN``, the sequences fit in one chunk, which runs its steps
+    alone. With ``SCRATCH``, a time-varying chunk's P alternates between two
+    scratch buffers, computed a row at a time. A chunk's flag is 1 once its
+    map (o, and P for time-varying A) is published, and 2 once its end state
+    is.
     """
     tile = tl.atomic_add(counter_ptr, 1).to(tl.int64)
     b = tile // C
     c = tile % C
-    steps = tl.minimum(chunk, N - c * chunk)
+    steps = tl.minimum(chunk, T - c * chunk)
     ACC: tl.constexpr = state_ptr.dtype.element_ty
     base = b * stride_ab
     states = tl.arange(0, BM)
     rows = states[:, None]
     cols = states[None, :]
-    x_base = b * N * M
+    x_base = b * T * M
     first = c * chunk
     index = b * C + c
     if not VARYING:
@@ -222,7 +227,7 @@ def _scan_kernel(
                     current = scratch + ((s - 1) % 2) * PLANE
                     following = scratch + (s % 2) * PLANE
                     for row in range(0, M):
-                        ar, ai = _load_tile(current, row, states, BM, COMPLEX)
+                        ar, ai = _load_tile(current, row, states, M, BM, COMPLEX)
                         qr, qi = _times(ar, ai, mr, mi, COMPLEX)
                         _store_tile(following, row, states, BM, qr, qi, COMPLEX)
                     tl.debug_barrier()
@@ -256,7 +261,7 @@ def _scan_kernel(
                 ar, ai = _vector(offset_ptr, (b * C + i) * M, states, M, ACC, COMPLEX)
                 if SCRATCH:
                     their = scratch_ptr + (b * C + i) * 2 * PLANE + PLANE
-                    qr, qi = _load_tile(their, rows, cols, BM, COMPLEX)
+                    qr, qi = _load_tile(their, rows, cols, M, BM, COMPLEX)
                 elif VARYING:
                     qr, qi = _matrix(
                         map_ptr, (b * C + i) * M * M, 0, 0, M, rows, cols, ACC, False, COMPLEX
@@ -271,7 +276,7 @@ def _scan_kernel(
         if not last:
             # 3. The chunk's end state.
             if SCRATCH:
-                own_r, own_i = _load_tile(scratch + PLANE, rows, cols, BM, COMPLEX)
+                own_r, own_i = _load_tile(scratch + PLANE, rows, cols, M, BM, COMPLEX)
                 er, ei = _times(yr, yi, own_r, own_i, COMPLEX)
             else:
                 er, ei = _times(yr, yi, pr, pi, COMPLEX)
