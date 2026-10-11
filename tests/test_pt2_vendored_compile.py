@@ -7,7 +7,7 @@ import pytest
 import torch
 from torch import Tensor
 
-from philtorch import _pararnn_backward, _pararnn_fake
+from philtorch._ops import _pararnn_backward, _pararnn_fake
 from philtorch._torchlpc import lpc as vendored_lpc
 from philtorch._torchlpc import scan as vendored_scan
 from philtorch.lpv import allpole, lfilter, linear_recurrence, state_space_recursion

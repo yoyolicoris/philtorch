@@ -1,6 +1,8 @@
 import pytest
 import torch
 
+import philtorch  # noqa: F401  (registers its ops)
+
 _REQUIRES_GRAD_CASES = [
     (True, False, False),
     (False, True, False),
@@ -305,3 +307,43 @@ def test_lti_recur_pt2_compatibility(
     zi.requires_grad = zi_requires_grad
 
     torch.library.opcheck(torch.ops.philtorch.lti_recur, (a, zi, x))
+
+
+def _op_inputs(op, shared, dtype):
+    """Stable inputs to a native recurrence op, in its own layout."""
+    gen = torch.Generator().manual_seed(0)
+    B, T = 2, 7
+
+    def randn(*shape, scale=1.0):
+        return (torch.randn(shape, generator=gen, dtype=torch.float64) * scale).to(dtype)
+
+    if op == "scan":
+        return randn(B, T), randn(B, T, scale=0.3), randn(B)
+    if op == "lti_recur":
+        return randn(*(() if shared else (B,)), scale=0.3), randn(B), randn(B, T)
+    M = 2 if op.endswith("2") else 3
+    lead = {
+        "recur2": (T,) if shared else (B, T),
+        "recurN": (T,) if shared else (B, T),
+        "lti_recur2": () if shared else (B,),
+        "lti_recurN": () if shared else (B,),
+    }[op]
+    return randn(*lead, M, M, scale=0.3 / M), randn(B, M), randn(B, T, M)
+
+
+_RECURRENCE_OPS = ["recur2", "recurN", "lti_recur2", "lti_recurN", "lti_recur", "scan"]
+
+
+@pytest.mark.parametrize("op", _RECURRENCE_OPS)
+@pytest.mark.parametrize("shared", [True, False])
+@pytest.mark.parametrize("dtype", [torch.float64, torch.complex128])
+def test_registered_gradients(op, shared, dtype):
+    # The ops' registered backwards, which compiled code differentiates, map
+    # each op's layout to philtorch._recur's gradients: check them, and their
+    # own derivatives, against finite differences.
+    if op == "scan" and shared:
+        pytest.skip("scan has no shared layout")
+    fn = getattr(torch.ops.philtorch, op)
+    inputs = tuple(t.requires_grad_() for t in _op_inputs(op, shared, dtype))
+    assert torch.autograd.gradcheck(fn, inputs)
+    assert torch.autograd.gradgradcheck(fn, inputs)
