@@ -192,3 +192,28 @@ def test_opcheck(op, device, shared, dtype, grads):
     for i in wanted:
         inputs[i].requires_grad_()
     torch.library.opcheck(getattr(torch.ops.philtorch, op), tuple(inputs))
+
+
+@pytest.mark.parametrize(
+    "op, shared",
+    [
+        pytest.param(
+            op,
+            shared,
+            marks=pytest.mark.xfail(
+                strict=True, reason="the CPU kernel's output copies the input's strides (#80)"
+            ),
+        )
+        if op == "scan"
+        else (op, shared)
+        for op, shared in _LAYOUTS
+    ],
+)
+def test_opcheck_non_contiguous(op, shared):
+    # The kernels return contiguous outputs whatever their inputs' strides, so
+    # the fakes must too, or compiled code with permuted inputs fails.
+    inputs = tuple(
+        t.transpose(0, 1).contiguous().transpose(0, 1) if t.dim() > 1 else t
+        for t in _op_inputs(op, shared, torch.float64)
+    )
+    torch.library.opcheck(getattr(torch.ops.philtorch, op), inputs)

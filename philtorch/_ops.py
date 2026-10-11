@@ -154,6 +154,10 @@ def _pararnn_backward(ctx: Any, grad: torch.Tensor):
     return grad_jac, grad_rhs
 
 
+# The native kernels always return contiguous outputs, so the fakes must too;
+# `empty_like` would copy a permuted input's strides.
+
+
 def _recurrence_fake(order: int | None, time_invariant: bool):
     """The fake of a matrix recurrence op of this order, or any with ``None``.
 
@@ -163,6 +167,8 @@ def _recurrence_fake(order: int | None, time_invariant: bool):
     dims = (2, 3) if time_invariant else (3, 4)
 
     def fake(A, zi, x):
+        torch._check(x.ndim == 3, lambda: "x must be 3D.")
+        torch._check(zi.ndim == 2, lambda: "zi must be 2D.")
         M = x.shape[2]
         if order is not None:
             torch._check(M == order, lambda: f"x must have last dimension of size {order}.")
@@ -180,7 +186,7 @@ def _recurrence_fake(order: int | None, time_invariant: bool):
                 A.shape[0] == x.shape[0],
                 lambda: f"If A is {dims[1]}D, its first dimension must match x's batch size.",
             )
-        return torch.empty_like(x)
+        return x.new_empty(x.shape)
 
     return fake
 
@@ -197,11 +203,9 @@ def _(A, zi, x):
             A.shape[0] == x.shape[0],
             "If A is 1D, its length must match x's batch size.",
         )
-    return torch.empty_like(x)
+    return x.new_empty(x.shape)
 
 
-# The vendored scan, LPC, and ParaRNN kernels always return contiguous outputs,
-# so their fakes must too; `empty_like` would copy a permuted input's strides.
 @torch.library.register_fake("philtorch::scan")
 def _scan_fake(impulse, decay, init):
     torch._check(impulse.ndim == 2, lambda: "impulse must be 2D.")

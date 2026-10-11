@@ -278,7 +278,11 @@ def _gradients(run, A, zi, h, grad, needs_A, needs_zi):
     """
     Ba, Ta = A.shape[:2]
     if grad.size(1) == 0:
-        return torch.zeros_like(A), torch.zeros_like(zi), grad
+        return (
+            torch.zeros_like(A) if needs_A else None,
+            torch.zeros_like(zi) if needs_zi else None,
+            grad,
+        )
     A_H = A.mH
     if Ta > 1:
         # Step s of the reversed recurrence takes A[T - s]^H; the first
