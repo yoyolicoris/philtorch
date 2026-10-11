@@ -127,7 +127,7 @@ def test_recurrence_derivatives(device, sharing, M, dtype):
 @pytest.mark.parametrize("sharing", SHARING)
 @pytest.mark.parametrize("T", [1, 2])
 def test_recurrence_derivatives_of_short_sequences(device, sharing, T):
-    # The adjoints start from the last step and run back over the T - 1 before.
+    # One- and two-step sequences, whose second derivatives reach empty ones.
     A, zi, x = _problem(2, T, 3, sharing, torch.complex128, device)
     inputs = tuple(t.requires_grad_() for t in (A, zi, x))
     assert torch.autograd.gradcheck(recurrence, inputs, check_forward_ad=True)
@@ -147,9 +147,19 @@ def test_recurrence_cuda_matches_cpu_gradients():
 
 
 @pytest.mark.parametrize("device", DEVICES)
-def test_recurrence_empty(device):
-    A, zi, x = _problem(2, 5, 3, "both", device=device)
-    assert recurrence(A[:, :0], zi, x[:, :0]).shape == (2, 0, 3)
+@pytest.mark.parametrize("compiled", [False, True])
+def test_recurrence_empty(device, compiled):
+    # No steps: no states, and zero gradients, compiled or not.
+    A, zi, x = _problem(2, 5, 3, "one", device=device)
+    inputs = [t.requires_grad_() for t in (A, zi, x[:, :0])]
+    run = recurrence
+    if compiled:
+        torch._dynamo.reset()
+        run = torch.compile(recurrence, backend="aot_eager", fullgraph=True)
+    h = run(*inputs)
+    assert h.shape == (2, 0, 3)
+    for grad in torch.autograd.grad(h.sum(), inputs):
+        assert not grad.any()
 
 
 @requires_cuda
@@ -208,12 +218,14 @@ def test_recur_triton_custom_op(sharing):
     torch.library.opcheck(recur_triton, tuple(t.requires_grad_() for t in (A, zi, x)))
 
 
+@pytest.mark.parametrize("per_item", [False, True])
 @pytest.mark.parametrize("time_invariant, M, dtype, device, B, kernel", DISPATCH)
-def test_recurrence_compiles(time_invariant, M, dtype, device, B, kernel):
+def test_recurrence_compiles(time_invariant, M, dtype, device, B, kernel, per_item):
     # Compiled, recurrence runs each kernel's op whole, in one graph, and its
-    # registered gradients match eager's.
-    sharing = "one" if time_invariant else "per_step"
-    A, zi, x = _problem(B, 40, M, sharing, dtype, device)
+    # registered gradients match eager's, with A shared over the batch or not.
+    sharing = {(True, False): "one", (True, True): "per_item", (False, False): "per_step",
+               (False, True): "both"}[time_invariant, per_item]  # fmt: skip
+    A, zi, x = _problem(max(B, 3), 40, M, sharing, dtype, device)
     inputs = [t.requires_grad_() for t in (A, zi, x)]
 
     def loss(A, zi, x):

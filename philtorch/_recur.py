@@ -10,8 +10,9 @@ with A of shape (B or 1, T or 1, M, M): shared over the batch, or over time
 whatever kernel runs: the gradient is the same recurrence backward in time
 over A[t]^H, and the tangent the same recurrence forward, so both are
 differentiable again, to any order. Dynamo can't trace an autograd.Function
-with a jvp, so compiled code calls the kernels' ops directly, which carry the
-same gradients, registered: one graph, without forward mode.
+with a jvp, so compiled code calls the kernels' ops directly instead. They
+have gradients registered, so it compiles to one graph, with reverse mode but
+no forward mode.
 
 The forward pass runs the first kernel of ``_KERNELS`` that takes the input:
 
@@ -181,7 +182,10 @@ _KERNELS = (
 def _forward(A: Tensor, zi: Tensor, x: Tensor) -> Tensor:
     """The recurrence by the first kernel of _KERNELS that takes the input."""
     if x.size(0) == 0 or x.size(1) == 0:
-        return torch.empty_like(x)
+        # Built from empty slices of every input, rather than as a new tensor,
+        # so that compiled code, which runs no Recurrence, keeps them in the
+        # graph and gives them zero gradients.
+        return x + zi[:, :0].sum(-1)[:, None, None] + A[..., :0].sum()
     for applies, run in _KERNELS:
         if applies(A, x):
             return run(A, zi, x)
@@ -234,7 +238,7 @@ def _sum_outer(lam: Tensor, h_prev_conj: Tensor, Ba: int, Ta: int) -> Tensor:
 def _previous(zi: Tensor, h: Tensor) -> Tensor:
     """The states each step starts from, h[t - 1]: zi, then h but its last.
 
-    Conjugate views in come out conjugated in memory, as the copy goes.
+    The concatenation copies, so conjugate views come out resolved.
     """
     return torch.cat([zi.unsqueeze(1), h[:, :-1]], 1)
 
@@ -267,7 +271,7 @@ def _gradients(run, A, zi, h, grad, needs_A, needs_zi):
 class Recurrence(torch.autograd.Function):
     """h[t] = A[t] h[t - 1] + x[t], differentiable to any order in both modes, in eager.
 
-    The gradients are :func:`_gradients`', and the tangent is the same
+    The gradients come from :func:`_gradients`, and the tangent is the same
     recurrence forward on the tangents' inputs. Both call this function
     again, so they are differentiable in turn.
     """
