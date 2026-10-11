@@ -345,7 +345,13 @@ def _power(A: Tensor, n: int, acc: torch.dtype) -> Tensor:
 
 
 def fits(x: Tensor, M: int) -> bool:
-    """Whether the kernels take state size M in x's dtype."""
+    """Whether the kernels take x's dtype and M.
+
+    Integers are left out: accumulated in float32, int64 states would lose
+    precision past 2^24, silently.
+    """
+    if not (x.is_floating_point() or x.is_complex()):
+        return False
     return _padded_states(M) * (2 if x.is_complex() else 1) <= MAX_STATES
 
 

@@ -43,13 +43,26 @@ on:
       - "MANIFEST.in"
       - "philtorch/csrc/**"
       - "third_party/**"
-      # The Triton kernels, named _*_kernels.py, and the tests the GPU job runs.
+      # The Triton kernels, named _*_kernels.py, the recurrence operator that
+      # launches them, and every test module the GPU job runs (-m cuda), which
+      # tests/test_ci_paths.py checks.
       - "philtorch/**/_*_kernels.py"
+      - "philtorch/_recur.py"
       - "tests/conftest.py"
-      - "tests/test_recur.py"
-      - "tests/test_estimation_hmm.py"
-      - "tests/test_align_dtw.py"
       - "tests/test_align_ctc.py"
+      - "tests/test_align_dtw.py"
+      - "tests/test_docstrings.py"
+      - "tests/test_estimation_hmm.py"
+      - "tests/test_estimation_kalman.py"
+      - "tests/test_grad.py"
+      - "tests/test_interp.py"
+      - "tests/test_lpv_ssm.py"
+      - "tests/test_nl.py"
+      - "tests/test_pt2_comp.py"
+      - "tests/test_pt2_vendored_compile.py"
+      - "tests/test_recur.py"
+      - "tests/test_recur_ext.py"
+      - "tests/test_torchlpc_vendored.py"
   pull_request:
     branches: ["dev"]
     # Same list as push.
@@ -64,13 +77,26 @@ on:
       - "MANIFEST.in"
       - "philtorch/csrc/**"
       - "third_party/**"
-      # The Triton kernels, named _*_kernels.py, and the tests the GPU job runs.
+      # The Triton kernels, named _*_kernels.py, the recurrence operator that
+      # launches them, and every test module the GPU job runs (-m cuda), which
+      # tests/test_ci_paths.py checks.
       - "philtorch/**/_*_kernels.py"
+      - "philtorch/_recur.py"
       - "tests/conftest.py"
-      - "tests/test_recur.py"
-      - "tests/test_estimation_hmm.py"
-      - "tests/test_align_dtw.py"
       - "tests/test_align_ctc.py"
+      - "tests/test_align_dtw.py"
+      - "tests/test_docstrings.py"
+      - "tests/test_estimation_hmm.py"
+      - "tests/test_estimation_kalman.py"
+      - "tests/test_grad.py"
+      - "tests/test_interp.py"
+      - "tests/test_lpv_ssm.py"
+      - "tests/test_nl.py"
+      - "tests/test_pt2_comp.py"
+      - "tests/test_pt2_vendored_compile.py"
+      - "tests/test_recur.py"
+      - "tests/test_recur_ext.py"
+      - "tests/test_torchlpc_vendored.py"
   release:
     types: [published]
   workflow_dispatch:

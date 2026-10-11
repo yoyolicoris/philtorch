@@ -198,6 +198,7 @@ def test_triton_state_limits():
 
     assert applies(128) and not applies(129)
     assert applies(64, torch.complex64) and not applies(65, torch.complex64)
+    assert not applies(4, torch.int32) and not applies(4, torch.bool)
     assert not applies(4, device="cpu")
 
 
@@ -250,22 +251,23 @@ def test_recur_triton_custom_op(sharing):
 @pytest.mark.parametrize("time_invariant, M, dtype, device, B, kernel", DISPATCH)
 def test_recurrence_compiles(time_invariant, M, dtype, device, B, kernel, per_item):
     # Compiled, recurrence runs each kernel's op whole, in one graph, and its
-    # registered gradients match eager's, with A shared over the batch or not.
+    # states and registered gradients match eager's, with A shared over the
+    # batch or not.
     sharing = {(True, False): "one", (True, True): "per_item", (False, False): "per_step",
                (False, True): "both"}[time_invariant, per_item]  # fmt: skip
     A, zi, x = _problem(max(B, 3), 40, M, sharing, dtype, device)
     inputs = [t.requires_grad_() for t in (A, zi, x)]
 
-    def loss(A, zi, x):
-        return recurrence(A, zi, x).abs().square().sum()
-
     torch._dynamo.reset()
-    compiled = torch.compile(loss, backend="aot_eager", fullgraph=True)
-    expected = torch.autograd.grad(loss(*inputs), inputs)
-    actual = torch.autograd.grad(compiled(*inputs), inputs)
+    compiled = torch.compile(recurrence, backend="aot_eager", fullgraph=True)
+    expected_h, actual_h = recurrence(*inputs), compiled(*inputs)
     low = dtype in (torch.float16, torch.bfloat16)
+    tolerance = {"rtol": 1e-2, "atol": 1e-2} if low else {}
+    torch.testing.assert_close(actual_h, expected_h, **tolerance)
+    expected = torch.autograd.grad(expected_h.abs().square().sum(), inputs)
+    actual = torch.autograd.grad(actual_h.abs().square().sum(), inputs)
     for a, e in zip(actual, expected):
-        torch.testing.assert_close(a, e, rtol=1e-2 if low else None, atol=1e-2 if low else None)
+        torch.testing.assert_close(a, e, **tolerance)
 
 
 def test_recurrence_rejects_bad_shapes():
@@ -280,6 +282,35 @@ def test_recurrence_rejects_bad_shapes():
         recurrence(A, zi[:1], x)
     with pytest.raises(ValueError, match="share a dtype and a device"):
         recurrence(A.float(), zi, x)
+
+
+@pytest.mark.parametrize(
+    "device",
+    ["cpu", pytest.param("cuda", marks=pytest.mark.cuda)],
+)
+def test_recurrence_in_integers(device):
+    # The Fibonacci numbers, exact past 2^53, through the native kernels'
+    # int64; time-invariant M = 2 is lti_recur2's on CUDA.
+    A = torch.tensor([[[[1, 1], [1, 0]]]], device=device)
+    zi = torch.tensor([[1, 0]], device=device)
+    x = torch.zeros(1, 90, 2, dtype=torch.long, device=device)
+    h = recurrence(A, zi, x)
+    fib = [1, 1]
+    while len(fib) < 91:
+        fib.append(fib[-1] + fib[-2])
+    assert h.dtype == torch.long
+    assert h[0, :, 0].tolist() == fib[1:]
+
+
+@pytest.mark.cuda
+def test_recurrence_in_integers_past_the_native_kernels():
+    # The Triton kernels accumulate in floating point, so they take no
+    # integers: CUDA has no kernel for int64 with M = 3.
+    A = torch.eye(3, dtype=torch.long, device="cuda")[None, None]
+    zi = torch.zeros(1, 3, dtype=torch.long, device="cuda")
+    x = torch.ones(1, 5, 3, dtype=torch.long, device="cuda")
+    with pytest.raises(NotImplementedError, match="floating-point and complex dtypes"):
+        recurrence(A, zi, x)
 
 
 def test_recurrence_raises_where_no_kernel_applies():

@@ -32,6 +32,7 @@ GPU = os.environ.get("SMOKE_GPU", "T4")
 # These check repository tooling (scripts/, setup.py, build_support.py) rather
 # than the installed package. CPU CI runs them.
 TOOLING_TESTS = (
+    "test_ci_paths.py",
     "test_cuda_wheel_version.py",
     "test_generate_simple_index.py",
     "test_setup_force_cuda.py",

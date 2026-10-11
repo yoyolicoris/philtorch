@@ -194,6 +194,8 @@ def _forward(A: Tensor, zi: Tensor, x: Tensor) -> Tensor:
     if x.is_cuda:
         if _recur_kernels is None:
             reason = ": Triton is not installed"
+        elif not (x.is_floating_point() or x.is_complex()):
+            reason = "; the Triton kernels take floating-point and complex dtypes"
         else:
             most = _recur_kernels.MAX_STATES
             reason = f"; the Triton kernels take M up to {most} ({most // 2} complex)"
