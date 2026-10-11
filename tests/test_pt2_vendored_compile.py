@@ -11,7 +11,6 @@ from philtorch import _pararnn_backward, _pararnn_fake
 from philtorch._torchlpc import lpc as vendored_lpc
 from philtorch._torchlpc import scan as vendored_scan
 from philtorch.lpv import allpole, lfilter, linear_recurrence, state_space_recursion
-from philtorch.lpv.ssm import MatrixRecurrence, _matrix_recurrence
 
 _WINDOWS_INDUCTOR_UNAVAILABLE = sys.platform == "win32" and shutil.which("cl") is None
 _SKIP_WITHOUT_CPU_INDUCTOR = pytest.mark.skipif(
@@ -211,12 +210,12 @@ def test_pararnn_registered_backward_formula_on_cpu(state_size: int) -> None:
         saved_tensors=(jac.detach(), rhs.detach(), output.detach()),
         needs_input_grad=(True, True),
     )
-    actual = _pararnn_backward(_serial_pararnn)(ctx, grad_output)
+    actual = _pararnn_backward(ctx, grad_output)
     torch.testing.assert_close(actual, expected)
 
     for needs_input_grad in ((True, False), (False, True), (False, False)):
         ctx.needs_input_grad = needs_input_grad
-        actual = _pararnn_backward(_serial_pararnn)(ctx, grad_output)
+        actual = _pararnn_backward(ctx, grad_output)
         for needed, grad, reference in zip(needs_input_grad, actual, expected):
             if needed:
                 torch.testing.assert_close(grad, reference)
@@ -254,11 +253,3 @@ def test_compile_dispatch_helpers_call_raw_operators(monkeypatch) -> None:
     A = torch.linspace(-0.03, 0.03, 48).reshape(2, 8, 3)
     zi = torch.linspace(-0.2, 0.3, 6).reshape(2, 3)
     torch.testing.assert_close(vendored_lpc(x, A, zi), torch.ops.philtorch.lpc(x, A, zi))
-
-    matrix_x = torch.linspace(-0.6, 0.7, 32).reshape(2, 8, 2)
-    matrix_A = torch.linspace(-0.03, 0.03, 64).reshape(2, 8, 2, 2)
-    matrix_zi = torch.linspace(-0.2, 0.3, 4).reshape(2, 2)
-    torch.testing.assert_close(
-        _matrix_recurrence(matrix_A, matrix_zi, matrix_x),
-        MatrixRecurrence.forward(matrix_A, matrix_zi, matrix_x),
-    )

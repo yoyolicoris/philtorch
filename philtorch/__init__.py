@@ -24,120 +24,56 @@ check_torch_build(__version__, torch.__version__, torch.version.cuda, installed_
 
 from . import _C  # noqa: E402, F401
 
-
-def _recurN_backward(f):
-    def closure(
-        ctx: Any, grad_y: torch.Tensor
-    ) -> tuple[torch.Tensor | None, torch.Tensor | None, torch.Tensor | None]:
-        A, zi, y = ctx.saved_tensors
-        grad_x = grad_A = grad_zi = None
-
-        AmT = A.mT.conj_physical()
-        AmT_rolled = torch.roll(AmT, shifts=-1, dims=-3)
-
-        runner = f if A.shape[-1] != 2 else torch.ops.philtorch.recur2
-
-        flipped_grad_x = runner(
-            AmT_rolled.flip(-3),
-            torch.zeros_like(zi),
-            grad_y.flip(1),
-        )
-
-        if ctx.needs_input_grad[1]:
-            grad_zi = (AmT[..., 0, :, :] @ flipped_grad_x[:, -1, :, None]).squeeze(-1)
-
-        if ctx.needs_input_grad[2]:
-            grad_x = flipped_grad_x.flip(1)
-
-        if ctx.needs_input_grad[0]:
-            valid_y = y[:, :-1]
-            padded_y = torch.cat([zi.unsqueeze(1), valid_y], dim=1)
-
-            if A.dim() == 3:
-                grad_A = flipped_grad_x.flip(1).permute(
-                    1, 2, 0
-                ) @ padded_y.conj_physical().transpose(0, 1)
-            else:
-                grad_A = padded_y.conj_physical().unsqueeze(-2) * flipped_grad_x.flip(1).unsqueeze(
-                    -1
-                )
-
-        return grad_A, grad_zi, grad_x
-
-    return closure
+# The native recurrences' registered gradients, which compiled code uses: there
+# philtorch._recur calls the ops directly. Each maps its layout to that
+# module's, (B or 1, T or 1, M, M) matrices, whose _gradients defines them once.
 
 
-def _lti_recurN_backward(f):
-    def closure(
-        ctx: Any, grad_y: torch.Tensor
-    ) -> tuple[torch.Tensor | None, torch.Tensor | None, torch.Tensor | None]:
-        A, zi, y = ctx.saved_tensors
-        grad_x = grad_A = grad_zi = None
+def _recurrence_gradients(A, zi, h, grad, needs_A, needs_zi):
+    # Imported here, so that importing philtorch doesn't load Triton.
+    from ._recur import _forward, _gradients
 
-        AmT = A.mT.conj_physical()
-
-        runner = (
-            # torch.ops.philtorch.lti_recurN
-            f if A.shape[-1] != 2 else torch.ops.philtorch.lti_recur2
-        )
-
-        flipped_grad_x = runner(AmT, torch.zeros_like(zi), grad_y.flip(1))
-
-        if ctx.needs_input_grad[1]:
-            grad_zi = (AmT @ flipped_grad_x[:, -1, :, None]).squeeze(-1)
-
-        if ctx.needs_input_grad[2]:
-            grad_x = flipped_grad_x.flip(1)
-
-        if ctx.needs_input_grad[0]:
-            valid_y = y[:, :-1]
-            padded_y = torch.cat([zi.unsqueeze(1), valid_y], dim=1)
-            if A.dim() == 2:
-                grad_A = flipped_grad_x.flip(1).flatten(0, 1).T @ padded_y.conj_physical().flatten(
-                    0, 1
-                )
-            else:
-                grad_A = flipped_grad_x.flip(1).mT @ padded_y.conj_physical()
-
-        return grad_A, grad_zi, grad_x
-
-    return closure
+    return _gradients(_forward, A, zi, h, grad, needs_A, needs_zi)
 
 
-def _lti_recur_backward(
-    ctx: Any, grad_out: torch.Tensor
-) -> tuple[torch.Tensor | None, torch.Tensor | None, torch.Tensor | None]:
-    a, init, out = ctx.saved_tensors
-    grad_a = grad_x = grad_init = None
-
-    bp_init = grad_out[:, -1]
-    flipped_grad_x = torch.cat(
-        [
-            bp_init.unsqueeze(1),
-            torch.ops.philtorch.lti_recur(
-                a.conj_physical(),
-                bp_init,
-                grad_out[:, :-1].flip(1),
-            ),
-        ],
-        dim=1,
+def _recurN_backward(ctx: Any, grad: torch.Tensor):
+    """recur2's and recurN's: A of shape (T, M, M), shared, or (B, T, M, M)."""
+    A, zi, y = ctx.saved_tensors
+    shared = A.dim() == 3
+    grad_A, grad_zi, grad_x = _recurrence_gradients(
+        A[None] if shared else A, zi, y, grad, *ctx.needs_input_grad[:2]
     )
+    if grad_A is not None and shared:
+        grad_A = grad_A[0]
+    return grad_A, grad_zi, grad_x
 
-    if ctx.needs_input_grad[1]:
-        grad_init = flipped_grad_x[:, -1] * a.conj_physical()
 
-    if ctx.needs_input_grad[2]:
-        grad_x = flipped_grad_x.flip(1)
+def _lti_recurN_backward(ctx: Any, grad: torch.Tensor):
+    """lti_recur2's and lti_recurN's: A of shape (M, M), shared, or (B, M, M)."""
+    A, zi, y = ctx.saved_tensors
+    grad_A, grad_zi, grad_x = _recurrence_gradients(
+        A[None, None] if A.dim() == 2 else A[:, None], zi, y, grad, *ctx.needs_input_grad[:2]
+    )
+    if grad_A is not None:
+        grad_A = grad_A.reshape(A.shape)
+    return grad_A, grad_zi, grad_x
 
-    if ctx.needs_input_grad[0]:
-        valid_out = out[:, :-1]
-        padded_out = torch.cat([init.unsqueeze(1), valid_out], dim=1)
-        if a.dim() == 1:
-            grad_a = torch.linalg.vecdot(padded_out, flipped_grad_x.flip(1))
-        else:
-            grad_a = padded_out.flatten().conj() @ flipped_grad_x.flip(1).flatten()
 
-    return grad_a, grad_init, grad_x
+def _lti_recur_backward(ctx: Any, grad: torch.Tensor):
+    """lti_recur's: the scalar recurrence, a of shape (), (1,) or (B,), zi (B,), x (B, T)."""
+    a, zi, y = ctx.saved_tensors
+    grad_a, grad_zi, grad_x = _recurrence_gradients(
+        a.reshape(-1, 1, 1, 1),
+        zi[:, None],
+        y[..., None],
+        grad[..., None],
+        *ctx.needs_input_grad[:2],
+    )
+    if grad_a is not None:
+        grad_a = grad_a.reshape(a.shape)
+    if grad_zi is not None:
+        grad_zi = grad_zi[:, 0]
+    return grad_a, grad_zi, grad_x[..., 0]
 
 
 def _setup_context(ctx: Any, inputs: list[Any], output: Any) -> Any:
@@ -327,33 +263,21 @@ def _pararnn_setup_context(ctx, inputs, output):
     ctx.save_for_backward(jac, rhs, output)
 
 
-def _pararnn_backward(runner):
-    def closure(ctx, grad_output):
-        jac, rhs, output = ctx.saved_tensors
-        A = -jac[:, 1:]
-        zi = rhs[:, 0]
-        y = output[:, 1:]
-        grad_y = grad_output[:, 1:]
-
-        AmT = A.mT.conj_physical()
-        AmT_rolled = torch.roll(AmT, shifts=-1, dims=-3)
-        reverse_A = AmT_rolled.flip(-3)
-        reverse_jac = F.pad(-reverse_A, (0, 0, 0, 0, 1, 0))
-        reverse_rhs = torch.cat([torch.zeros_like(zi).unsqueeze(1), grad_y.flip(1)], dim=1)
-        flipped_grad_x = runner(reverse_jac, reverse_rhs)[:, 1:]
-        grad_x = flipped_grad_x.flip(1)
-
-        grad_jac = grad_rhs = None
-        if ctx.needs_input_grad[0]:
-            padded_y = torch.cat([zi.unsqueeze(1), y[:, :-1]], dim=1)
-            grad_A = padded_y.conj_physical().unsqueeze(-2) * grad_x.unsqueeze(-1)
-            grad_jac = torch.cat([torch.zeros_like(jac[:, :1]), -grad_A], dim=1)
-        if ctx.needs_input_grad[1]:
-            grad_zi = (AmT[..., 0, :, :] @ flipped_grad_x[:, -1, :, None]).squeeze(-1)
-            grad_rhs = torch.cat([(grad_output[:, 0] + grad_zi).unsqueeze(1), grad_x], dim=1)
-        return grad_jac, grad_rhs
-
-    return closure
+def _pararnn_backward(ctx: Any, grad: torch.Tensor):
+    """ParaRNN's, whose solution h[t] = -jac[t] h[t - 1] + rhs[t] starts from
+    h[0] = rhs[0]: A is -jac[1:], zi rhs[0] and x rhs[1:]; jac[0] is unused."""
+    jac, rhs, output = ctx.saved_tensors
+    needs_jac, needs_rhs = ctx.needs_input_grad
+    grad_A, grad_zi, grad_x = _recurrence_gradients(
+        -jac[:, 1:], rhs[:, 0], output[:, 1:], grad[:, 1:], needs_jac, needs_rhs
+    )
+    grad_jac = grad_rhs = None
+    if needs_jac:
+        grad_jac = torch.cat([torch.zeros_like(jac[:, :1]), -grad_A], 1)
+    if needs_rhs:
+        # h[0] is rhs[0] itself, and zi of the steps after.
+        grad_rhs = torch.cat([(grad[:, 0] + grad_zi).unsqueeze(1), grad_x], 1)
+    return grad_jac, grad_rhs
 
 
 def _pararnn_fake(block_size):
@@ -393,7 +317,7 @@ if hasattr(  # pragma: no cover - CUDA-only schema
 
     torch.library.register_autograd(
         "parallel_reduce_cuda::parallel_reduce_block_diag_2x2_cuda",
-        _pararnn_backward(torch.ops.parallel_reduce_cuda.parallel_reduce_block_diag_2x2_cuda),
+        _pararnn_backward,
         setup_context=_pararnn_setup_context,
     )
 
@@ -408,29 +332,29 @@ if hasattr(  # pragma: no cover - CUDA-only schema
 
     torch.library.register_autograd(
         "parallel_reduce_cuda::parallel_reduce_block_diag_3x3_cuda",
-        _pararnn_backward(torch.ops.parallel_reduce_cuda.parallel_reduce_block_diag_3x3_cuda),
+        _pararnn_backward,
         setup_context=_pararnn_setup_context,
     )
 
 
 torch.library.register_autograd(
     "philtorch::recur2",
-    _recurN_backward(torch.ops.philtorch.recur2),
+    _recurN_backward,
     setup_context=_setup_context,
 )
 torch.library.register_autograd(
     "philtorch::recurN",
-    _recurN_backward(torch.ops.philtorch.recurN),
+    _recurN_backward,
     setup_context=_setup_context,
 )
 torch.library.register_autograd(
     "philtorch::lti_recur2",
-    _lti_recurN_backward(torch.ops.philtorch.lti_recur2),
+    _lti_recurN_backward,
     setup_context=_setup_context,
 )
 torch.library.register_autograd(
     "philtorch::lti_recurN",
-    _lti_recurN_backward(torch.ops.philtorch.lti_recurN),
+    _lti_recurN_backward,
     setup_context=_setup_context,
 )
 torch.library.register_autograd(
