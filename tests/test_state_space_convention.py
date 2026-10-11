@@ -112,17 +112,20 @@ def test_lpv_state_space(signals):
     assert torch.allclose(zf, states[:, -1])
 
 
-@pytest.mark.parametrize("unroll_factor", [1, 4, N])
+# 4 leaves a partial last block of the unrolled recursions, 5 none.
+@pytest.mark.parametrize("unroll_factor", [1, 4, 5, N])
 def test_lpv_state_space_recursion_returns_the_next_states(signals, unroll_factor):
     s = signals
     _, states = _simulate(s["A"], s["B"], s["C"], s["D"], s["u"], s["zi"])
-    h = lpv.state_space_recursion(
-        s["A"], s["zi"], s["B"] * s["u"][..., None], unroll_factor=unroll_factor
-    )
+    Bu = s["B"] * s["u"][..., None]
+    h = lpv.state_space_recursion(s["A"], s["zi"], Bu, unroll_factor=unroll_factor)
     assert torch.allclose(h, states)
+    h1 = lpv.state_space_recursion(s["A"], s["zi"], Bu, unroll_factor=unroll_factor, out_idx=1)
+    assert torch.allclose(h1, states[..., 1])
 
 
-@pytest.mark.parametrize("unroll_factor", [1, 4, N])
+# 4 leaves a partial last block of the unrolled recursions, 5 none.
+@pytest.mark.parametrize("unroll_factor", [1, 4, 5, N])
 def test_lpv_linear_recurrence_returns_the_next_states(signals, unroll_factor):
     s = signals
     a = s["a"][..., 0]
@@ -169,7 +172,8 @@ def test_lpv_fir_and_allpole(signals, transpose):
 # the state the recursions return and the final state still can.
 
 
-def test_lti_state_space(signals):
+@pytest.mark.parametrize("unroll_factor", [1, 4, 5, N])
+def test_lti_state_space(signals, unroll_factor):
     s = signals
     A, B, C, D = s["A"][:, 0], s["B"][:, 0], s["C"][:, 0], s["D"][:, 0]
 
@@ -180,11 +184,15 @@ def test_lti_state_space(signals):
     y, zf = lti.state_space(A, s["u"], B=B, C=C, D=D, zi=s["zi"])
     assert torch.allclose(y, y_ref)
     assert torch.allclose(zf, states[:, -1])
-    h = lti.state_space_recursion(A, s["zi"], B.unsqueeze(1) * s["u"][..., None])
+    Bu = B.unsqueeze(1) * s["u"][..., None]
+    h = lti.state_space_recursion(A, s["zi"], Bu, unroll_factor=unroll_factor)
     assert torch.allclose(h, states)
+    h1 = lti.state_space_recursion(A, s["zi"], Bu, unroll_factor=unroll_factor, out_idx=1)
+    assert torch.allclose(h1, states[..., 1])
 
 
-@pytest.mark.parametrize("unroll_factor", [1, 4, N])
+# 4 leaves a partial last block of the unrolled recursions, 5 none.
+@pytest.mark.parametrize("unroll_factor", [1, 4, 5, N])
 def test_lti_linear_recurrence_returns_the_next_states(signals, unroll_factor):
     s = signals
     a = s["a"][:, 0, 0]
@@ -260,6 +268,45 @@ def test_state_space_recursion_rejects_bad_shapes(module):
         module.state_space_recursion(A, zi[:1], x)
     with pytest.raises(ValueError, match="Last dimension of zi"):
         module.state_space_recursion(A, zi[:, :-1], x)
+    with pytest.raises(ValueError, match="zi must be 2D"):
+        module.state_space_recursion(A, zi[0], x)
+    with pytest.raises(ValueError, match="State matrix A must be"):
+        module.state_space_recursion(A[..., 0], zi, x)
+    with pytest.raises(ValueError, match="Last dimension of A must match"):
+        module.state_space_recursion(A, zi, x[..., :-1])
+    # A per signal, of the wrong batch size.
+    with pytest.raises(ValueError, match="Batch size of A"):
+        module.state_space_recursion(A.expand(BATCH + 1, *A.shape), zi, x)
+    if module is lpv:
+        with pytest.raises(ValueError, match="same time dimension"):
+            module.state_space_recursion(A[:-1], zi, x)
+    with pytest.raises(ValueError, match="Unroll factor"):
+        module.state_space_recursion(A, zi, x, unroll_factor=0)
+
+
+@pytest.mark.parametrize("module", [lti, lpv], ids=["lti", "lpv"])
+def test_linear_recurrence_rejects_bad_shapes(module):
+    x = torch.randn(BATCH, N, dtype=torch.float64)
+    a = torch.rand(BATCH if module is lti else N, dtype=torch.float64)
+    init = torch.randn(BATCH, dtype=torch.float64)
+    with pytest.raises(ValueError, match="State matrix a must be 1D"):
+        module.linear_recurrence(a[:-1] if module is lpv else a.repeat(2), init, x, unroll_factor=3)
+    with pytest.raises(ValueError, match="Initial state init must be 1D"):
+        module.linear_recurrence(a, init.repeat(2), x, unroll_factor=3)
+    with pytest.raises(ValueError, match="Unroll factor"):
+        module.linear_recurrence(a, init, x, unroll_factor=0)
+
+
+def test_lti_linear_recurrence_takes_a_scalar_init():
+    # A 0-D init, shared by the batch, through the unrolled recursion too.
+    x = torch.randn(BATCH, N, dtype=torch.float64)
+    a = torch.rand(BATCH, dtype=torch.float64)
+    init = torch.tensor(0.5, dtype=torch.float64)
+    expected = lti.linear_recurrence(a, init.expand(BATCH), x)
+    for unroll_factor in (1, 3):
+        assert torch.allclose(
+            lti.linear_recurrence(a, init, x, unroll_factor=unroll_factor), expected
+        )
 
 
 @pytest.mark.parametrize("module", [lti, lpv], ids=["lti", "lpv"])

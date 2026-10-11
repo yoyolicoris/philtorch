@@ -119,7 +119,7 @@ def test_recurrence_derivatives(device, sharing, M, dtype):
     A, zi, x = _problem(2, 70, M, sharing, dtype, device)
     inputs = tuple(t.requires_grad_() for t in (A, zi, x))
     assert torch.autograd.gradcheck(recurrence, inputs, check_forward_ad=True, fast_mode=True)
-    assert torch.autograd.gradgradcheck(recurrence, inputs, fast_mode=True)
+    assert torch.autograd.gradgradcheck(recurrence, inputs, fast_mode=True, check_fwd_over_rev=True)
 
 
 @pytest.mark.parametrize("device", DEVICES)
@@ -162,10 +162,12 @@ def test_recurrence_vmap(device, sharing, vmap_A, M):
 @pytest.mark.parametrize("device", DEVICES)
 @pytest.mark.parametrize("sharing", ["one", "per_item"])
 @pytest.mark.parametrize("dtype", [torch.float64, torch.complex128])
-def test_recurrence_gradients_of_long_sequences(device, sharing, dtype):
+@pytest.mark.parametrize("T", [1300, 1536])
+def test_recurrence_gradients_of_long_sequences(device, sharing, dtype, T):
     # The gradient of A shared over time sums over more steps than one block
-    # of _CONTRACT_BLOCK: blocks, the last padded with zeros, then their sum.
-    A, zi, x = _problem(2, 1300, 3, sharing, dtype, device)
+    # of _CONTRACT_BLOCK: blocks, the last padded with zeros unless 2 * 1536
+    # fills them, then their sum.
+    A, zi, x = _problem(2, T, 3, sharing, dtype, device)
     inputs = [t.requires_grad_() for t in (A, zi, x)]
     g = torch.randn_like(x)
     actual = torch.autograd.grad(recurrence(*inputs), inputs, g)
@@ -200,6 +202,24 @@ def test_recurrence_empty(device, compiled):
     assert h.shape == (2, 0, 3)
     for grad in torch.autograd.grad(h.sum(), inputs):
         assert not grad.any()
+    if not compiled:
+        # Forward mode too: no steps, no tangent.
+        tangents = tuple(torch.ones_like(t) for t in inputs)
+        _, tangent = torch.func.jvp(recurrence, tuple(t.detach() for t in inputs), tangents)
+        assert tangent.shape == (2, 0, 3)
+
+
+@pytest.mark.parametrize("device", DEVICES)
+def test_recurrence_tangent_of_the_initial_state_alone(device):
+    # A tangent on zi only: the tangent recurrence runs from it with no input.
+    A, zi, x = _problem(2, 30, 3, "both", device=device)
+    # Only zi dual, so A's and x's tangents reach the jvp as None.
+    import torch.autograd.forward_ad as fwAD
+
+    dzi = torch.randn_like(zi)
+    with fwAD.dual_level():
+        tangent = fwAD.unpack_dual(recurrence(A, fwAD.make_dual(zi, dzi), x)).tangent
+    torch.testing.assert_close(tangent, recurrence(A, dzi, torch.zeros_like(x)))
 
 
 @pytest.mark.cuda

@@ -315,9 +315,15 @@ class Recurrence(torch.autograd.Function):
         A, zi, _ = inputs
         ctx.save_for_backward(A, zi, output)
         ctx.save_for_forward(A, zi, output)
+        # Inputs without a tangent reach the jvp as None, not zeros, so that it
+        # skips their terms, such as dA[t] h[t - 1] over every step; so does
+        # an output without a gradient reach backward.
+        ctx.set_materialize_grads(False)
 
     @staticmethod
     def backward(ctx, grad):
+        if grad is None:  # no gradient reached h; see setup_context
+            return None, None, None
         A, zi, h = ctx.saved_tensors
         return _gradients(Recurrence.apply, A, zi, h, grad, *ctx.needs_input_grad[:2])
 
