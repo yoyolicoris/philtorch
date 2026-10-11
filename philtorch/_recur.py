@@ -9,7 +9,9 @@ with A of shape (B or 1, T or 1, M, M): shared over the batch, or over time
 (time-invariant), or both. :class:`Recurrence` defines its derivatives once,
 whatever kernel runs: the gradient is the same recurrence backward in time
 over A[t]^H, and the tangent the same recurrence forward, so both are
-differentiable again, to any order.
+differentiable again, to any order. Dynamo can't trace an autograd.Function
+with a jvp, so compiled code calls the kernels' ops directly, which carry the
+same gradients, registered: one graph, without forward mode.
 
 The forward pass runs the first kernel of ``_KERNELS`` that takes the input:
 
@@ -237,12 +239,37 @@ def _previous(zi: Tensor, h: Tensor) -> Tensor:
     return torch.cat([zi.unsqueeze(1), h[:, :-1]], 1)
 
 
-class Recurrence(torch.autograd.Function):
-    """h[t] = A[t] h[t - 1] + x[t], differentiable to any order in both modes.
+def _gradients(run, A, zi, h, grad, needs_A, needs_zi):
+    """The gradients of A, zi and x from h's, ``grad``; ``run`` runs the recurrence.
 
     With g the gradient of h, the adjoints lam[t] = g[t] + A[t + 1]^H lam[t + 1]
     are the same recurrence backward in time, so x's gradient is lam, zi's
     A[0]^H lam[0], and A[t]'s lam[t] h[t - 1]^H, summed over what shares it.
+    """
+    Ba, Ta = A.shape[:2]
+    if grad.size(1) == 0:
+        return torch.zeros_like(A), torch.zeros_like(zi), grad
+    A_H = A.mH
+    if Ta > 1:
+        # Step s of the reversed recurrence takes A[T - s]^H; the first
+        # step's matrix multiplies a zero state, so A[0]^H will do. One
+        # gather reverses them, already contiguous.
+        A_H = A_H.index_select(1, torch.arange(Ta, 0, -1, device=A.device) % Ta)
+    lam = run(A_H, torch.zeros_like(zi), grad.flip(1)).flip(1)
+    grad_A = grad_zi = None
+    if needs_A:
+        grad_A = _sum_outer(lam, _previous(zi.conj(), h.conj()), Ba, Ta)
+    if needs_zi:
+        grad_zi = (A[:, 0].mH @ lam[:, 0].unsqueeze(-1)).squeeze(-1)
+    return grad_A, grad_zi, lam
+
+
+class Recurrence(torch.autograd.Function):
+    """h[t] = A[t] h[t - 1] + x[t], differentiable to any order in both modes, in eager.
+
+    The gradients are :func:`_gradients`', and the tangent is the same
+    recurrence forward on the tangents' inputs. Both call this function
+    again, so they are differentiable in turn.
     """
 
     @staticmethod
@@ -258,22 +285,7 @@ class Recurrence(torch.autograd.Function):
     @staticmethod
     def backward(ctx, grad):
         A, zi, h = ctx.saved_tensors
-        Ba, Ta = A.shape[:2]
-        if grad.size(1) == 0:
-            return torch.zeros_like(A), torch.zeros_like(zi), grad
-        A_H = A.mH
-        if Ta > 1:
-            # Step s of the reversed recurrence takes A[T - s]^H; the first
-            # step's matrix multiplies a zero state, so A[0]^H will do. One
-            # gather reverses them, already contiguous.
-            A_H = A_H.index_select(1, torch.arange(Ta, 0, -1, device=A.device) % Ta)
-        lam = Recurrence.apply(A_H, torch.zeros_like(zi), grad.flip(1)).flip(1)
-        grad_A = grad_zi = None
-        if ctx.needs_input_grad[0]:
-            grad_A = _sum_outer(lam, _previous(zi.conj(), h.conj()), Ba, Ta)
-        if ctx.needs_input_grad[1]:
-            grad_zi = (A[:, 0].mH @ lam[:, 0].unsqueeze(-1)).squeeze(-1)
-        return grad_A, grad_zi, lam
+        return _gradients(Recurrence.apply, A, zi, h, grad, *ctx.needs_input_grad[:2])
 
     @staticmethod
     def jvp(ctx, dA, dzi, dx):
@@ -293,6 +305,22 @@ class Recurrence(torch.autograd.Function):
         if tangent is None:
             tangent = torch.zeros_like(h)
         return Recurrence.apply(A, dzi if dzi is not None else torch.zeros_like(zi), tangent)
+
+
+# Compiled code runs the kernels' ops directly (see recurrence), so the
+# Triton op carries the same gradients; the native ops' are registered in
+# philtorch/__init__.py.
+def _recur_triton_setup_context(ctx, inputs, output):
+    A, zi, _ = inputs
+    ctx.save_for_backward(A, zi, output)
+
+
+def _recur_triton_backward(ctx, grad):
+    A, zi, h = ctx.saved_tensors
+    return _gradients(_forward, A, zi, h, grad, *ctx.needs_input_grad[:2])
+
+
+recur_triton.register_autograd(_recur_triton_backward, setup_context=_recur_triton_setup_context)
 
 
 def recurrence(A: Tensor, zi: Tensor, x: Tensor) -> Tensor:
@@ -332,4 +360,9 @@ def recurrence(A: Tensor, zi: Tensor, x: Tensor) -> Tensor:
             "A, zi and x must share a dtype and a device, got "
             f"{[(t.dtype, str(t.device)) for t in (A, zi, x)]}"
         )
+    if torch.compiler.is_compiling():
+        # Dynamo can't trace an autograd.Function with a jvp: compiled code
+        # runs the kernels' ops, which carry their own gradients, without
+        # forward mode.
+        return _forward(A, zi, x)
     return Recurrence.apply(A, zi, x)

@@ -170,30 +170,31 @@ def _kernel(time_invariant, M, dtype, device, B=1):
     return next(run for applies, run in _recur._KERNELS if applies(A, x))
 
 
-@pytest.mark.parametrize(
-    "time_invariant, M, dtype, device, B, kernel",
-    [
-        (True, 1, torch.float64, "cpu", 1, "_lti_recur"),
-        (True, 3, torch.float64, "cpu", 1, "_lti_recurN"),
-        (False, 1, torch.float64, "cpu", 1, "_recurN"),
-        *(
-            pytest.param(*case, marks=requires_cuda)
-            for case in [
-                (True, 1, torch.float16, "cuda", 1, "_lti_recur"),
-                (True, 2, torch.complex64, "cuda", 1, "_lti_recur2"),
-                (True, 3, torch.float32, "cuda", 1, "recur_triton"),
-                (False, 1, torch.complex64, "cuda", 1, "_scan"),
-                (False, 1, torch.float16, "cuda", 1, "recur_triton"),
-                (False, 2, torch.float32, "cuda", 1, "_pararnn"),
-                (False, 3, torch.float64, "cuda", 1, "_pararnn"),
-                (False, 2, torch.float32, "cuda", 65536, "_recur2"),
-                (False, 2, torch.float16, "cuda", 1, "_recur2"),
-                (False, 2, torch.complex64, "cuda", 1, "recur_triton"),
-                (False, 3, torch.float16, "cuda", 1, "recur_triton"),
-            ]
-        ),
-    ],
-)
+# Inputs of each kind the dispatch tells apart, and the kernel each reaches.
+DISPATCH = [
+    (True, 1, torch.float64, "cpu", 1, "_lti_recur"),
+    (True, 3, torch.float64, "cpu", 1, "_lti_recurN"),
+    (False, 1, torch.float64, "cpu", 1, "_recurN"),
+    *(
+        pytest.param(*case, marks=requires_cuda)
+        for case in [
+            (True, 1, torch.float16, "cuda", 1, "_lti_recur"),
+            (True, 2, torch.complex64, "cuda", 1, "_lti_recur2"),
+            (True, 3, torch.float32, "cuda", 1, "recur_triton"),
+            (False, 1, torch.complex64, "cuda", 1, "_scan"),
+            (False, 1, torch.float16, "cuda", 1, "recur_triton"),
+            (False, 2, torch.float32, "cuda", 1, "_pararnn"),
+            (False, 3, torch.float64, "cuda", 1, "_pararnn"),
+            (False, 2, torch.float32, "cuda", 65536, "_recur2"),
+            (False, 2, torch.float16, "cuda", 1, "_recur2"),
+            (False, 2, torch.complex64, "cuda", 1, "recur_triton"),
+            (False, 3, torch.float16, "cuda", 1, "recur_triton"),
+        ]
+    ),
+]
+
+
+@pytest.mark.parametrize("time_invariant, M, dtype, device, B, kernel", DISPATCH)
 def test_dispatch(time_invariant, M, dtype, device, B, kernel):
     assert _kernel(time_invariant, M, dtype, device, B) is getattr(_recur, kernel)
 
@@ -201,9 +202,30 @@ def test_dispatch(time_invariant, M, dtype, device, B, kernel):
 @requires_cuda
 @pytest.mark.parametrize("sharing", SHARING)
 def test_recur_triton_custom_op(sharing):
-    # The fake implementation and the op's registration, for torch.compile.
+    # The fake implementation and the op's gradients, for torch.compile.
     A, zi, x = _problem(2, 70, 3, sharing, torch.float32, "cuda")
     torch.library.opcheck(recur_triton, (A, zi, x))
+    torch.library.opcheck(recur_triton, tuple(t.requires_grad_() for t in (A, zi, x)))
+
+
+@pytest.mark.parametrize("time_invariant, M, dtype, device, B, kernel", DISPATCH)
+def test_recurrence_compiles(time_invariant, M, dtype, device, B, kernel):
+    # Compiled, recurrence runs each kernel's op whole, in one graph, and its
+    # registered gradients match eager's.
+    sharing = "one" if time_invariant else "per_step"
+    A, zi, x = _problem(B, 40, M, sharing, dtype, device)
+    inputs = [t.requires_grad_() for t in (A, zi, x)]
+
+    def loss(A, zi, x):
+        return recurrence(A, zi, x).abs().square().sum()
+
+    torch._dynamo.reset()
+    compiled = torch.compile(loss, backend="aot_eager", fullgraph=True)
+    expected = torch.autograd.grad(loss(*inputs), inputs)
+    actual = torch.autograd.grad(compiled(*inputs), inputs)
+    low = dtype in (torch.float16, torch.bfloat16)
+    for a, e in zip(actual, expected):
+        torch.testing.assert_close(a, e, rtol=1e-2 if low else None, atol=1e-2 if low else None)
 
 
 def test_recurrence_rejects_bad_shapes():
