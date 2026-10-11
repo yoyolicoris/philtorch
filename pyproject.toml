@@ -50,7 +50,6 @@ classifiers = [
 
 [project.optional-dependencies]
 dev = ["pytest >= 6.0", "scipy", "numpy", "pytest-cov"]
-extra = ["helion>=1.0.0,<2"]
 
 [tool.pytest.ini_options]
 testpaths = ["tests"]

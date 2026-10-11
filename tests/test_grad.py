@@ -2,7 +2,6 @@ import pytest
 import torch
 from torch.autograd.gradcheck import gradcheck, gradgradcheck
 
-from philtorch import HELION_LOADED
 from philtorch.lpv.ssm import MatrixRecurrence
 from philtorch.lti.recur import LTIRecurrence
 from philtorch.lti.ssm import LTIMatrixRecurrence
@@ -52,15 +51,6 @@ _REQUIRES_GRAD_CASES = (
             marks=pytest.mark.skipif(
                 not torch.cuda.is_available(),
                 reason="CUDA not available",
-            ),
-        ),
-        pytest.param(
-            False,
-            4,
-            "cuda",
-            marks=pytest.mark.skipif(
-                not HELION_LOADED or not torch.cuda.is_available(),
-                reason="CUDA or Helion not available",
             ),
         ),
     ],

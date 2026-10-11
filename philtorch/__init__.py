@@ -5,7 +5,6 @@ parameter-varying) filters in :mod:`philtorch.lpv`, state estimation in
 :mod:`philtorch.estimation`, and sequence alignment in :mod:`philtorch.align`.
 """
 
-import warnings
 from pathlib import Path
 from typing import Any
 
@@ -24,22 +23,6 @@ except ImportError:
 check_torch_build(__version__, torch.__version__, torch.version.cuda, installed_torch_requirement())
 
 from . import _C  # noqa: E402, F401
-
-try:
-    from ._helion import (
-        lpv_recursion_loop,
-        lpv_shared_A_recursion_loop,
-        lti_recursion_loop,
-        lti_shared_A_recursion_loop,
-    )
-except ImportError:
-    HELION_LOADED = False
-    warnings.warn(
-        "Helion kernels not loaded. Please ensure Helion is installed "
-        "and compatible with your PyTorch version."
-    )
-else:
-    HELION_LOADED = True
 
 
 def _recurN_backward(f):
@@ -453,61 +436,3 @@ torch.library.register_autograd(
 torch.library.register_autograd(
     "philtorch::lti_recur", _lti_recur_backward, setup_context=_setup_context
 )
-
-
-if HELION_LOADED:
-
-    @torch.library.custom_op("philtorch::hl_lti_recurN", mutates_args=())
-    def hl_lti_recurN(A: torch.Tensor, zi: torch.Tensor, x: torch.Tensor) -> torch.Tensor:
-        if A.ndim == 2:
-            return lti_shared_A_recursion_loop(A, zi, x)
-        return lti_recursion_loop(A, zi, x)
-
-    @torch.library.custom_op("philtorch::hl_recurN", mutates_args=())
-    def hl_recurN(A: torch.Tensor, zi: torch.Tensor, x: torch.Tensor) -> torch.Tensor:
-        if A.ndim == 3:
-            return lpv_shared_A_recursion_loop(A, zi, x)
-        return lpv_recursion_loop(A, zi, x)
-
-    @hl_lti_recurN.register_fake
-    def _(A, zi, x):
-        torch._check(A.shape[-1] == A.shape[-2] == x.shape[2], "A must be square.")
-        torch._check(A.ndim in (2, 3), "A must be 2D or 3D.")
-        torch._check(zi.shape[1] == x.shape[2], "zi must have last dimension of size 2.")
-        torch._check(x.shape[0] == zi.shape[0], "x and zi must have the same batch size.")
-        if A.ndim == 3:
-            torch._check(
-                A.shape[0] == x.shape[0],
-                "If A is 3D, its first dimension must match x's batch size.",
-            )
-        # return torch.empty_like(x)
-        return x.new_empty(x.shape[0], x.shape[1] + 1, x.shape[2])[:, 1:]
-
-    @hl_recurN.register_fake
-    def _(A, zi, x):
-        torch._check(A.shape[-1] == A.shape[-2] == x.shape[2], "A must be square.")
-        torch._check(A.ndim in (3, 4), "A must be 3D or 4D.")
-        torch._check(zi.shape[1] == x.shape[2], "zi must have last dimension of size 2.")
-        torch._check(
-            x.shape[1] == A.shape[-3],
-            "x's second dimension must match A's last-3 dimension.",
-        )
-        torch._check(x.shape[0] == zi.shape[0], "x and zi must have the same batch size.")
-        if A.ndim == 4:
-            torch._check(
-                A.shape[0] == x.shape[0],
-                "If A is 4D, its first dimension must match x's batch size.",
-            )
-        # return torch.empty_like(x)
-        return x.new_empty(x.shape[0], x.shape[1] + 1, x.shape[2])[:, 1:]
-
-    torch.library.register_autograd(
-        "philtorch::hl_lti_recurN",
-        _lti_recurN_backward(hl_lti_recurN),
-        setup_context=_setup_context,
-    )
-    torch.library.register_autograd(
-        "philtorch::hl_recurN",
-        _recurN_backward(hl_recurN),
-        setup_context=_setup_context,
-    )

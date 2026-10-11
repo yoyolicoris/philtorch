@@ -8,7 +8,6 @@ from torch import Tensor
 from torch.autograd import Function
 
 from .._torchlpc import lpc
-from ..lti.ssm import helion_backend_indicator
 from ..mat import matrices_cumdot
 
 
@@ -66,10 +65,9 @@ class MatrixRecurrence(Function):
     r"""Autograd function for the matrix recurrence of :func:`_ext_ss_recur`.
 
     The forward pass runs the ParaRNN kernels where they apply, the native
-    ``recur2`` kernel for :math:`M = 2`, the Helion kernel on CUDA when it
-    is available, and the ``recurN`` kernel otherwise. The backward pass
-    runs the recurrence backward in time with :math:`A[n]^H`, and the JVP
-    runs it forward on the tangents.
+    ``recur2`` kernel for :math:`M = 2`, and the ``recurN`` kernel
+    otherwise. The backward pass runs the recurrence backward in time with
+    :math:`A[n]^H`, and the JVP runs it forward on the tangents.
     """
 
     @staticmethod
@@ -86,10 +84,6 @@ class MatrixRecurrence(Function):
             )(jac, rhs)[:, 1:]
         elif x.size(-1) == 2:
             return torch.ops.philtorch.recur2(A, zi, x)
-        elif helion_backend_indicator(x):
-            from .. import hl_recurN
-
-            return hl_recurN(A, zi, x)
         return torch.ops.philtorch.recurN(A, zi, x)
 
     @staticmethod
