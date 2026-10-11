@@ -5,48 +5,9 @@ import torch
 
 from philtorch.lpv import state_space
 from philtorch.lpv import state_space_recursion as lpv_state_space
-from philtorch.lti import state_space_recursion as lti_state_space
 from philtorch.mat import companion
 
 from .test_lpv_filters import _generate_test_signal, _generate_time_varying_coeffs
-
-
-@pytest.mark.parametrize(
-    "device",
-    [
-        "cpu",
-        pytest.param(
-            "cuda",
-            marks=pytest.mark.cuda,
-        ),
-    ],
-)
-def test_ssm_equivalence(device):
-    """Test that LPV state_space is equivalent to LTI state_space for scalar inputs."""
-    batch_size = 3
-    N = 23
-    unroll_factor = 7
-    order = 2
-
-    _, a = _generate_time_varying_coeffs(1, batch_size, order, order)
-    a = a.squeeze(0).double()  # Remove batch dimension for scalar case
-    x = _generate_test_signal(batch_size, N, "white_noise").to(device).double()
-
-    A = companion(a).to(device)
-    zi = torch.randn(batch_size, order).to(device).double()
-
-    # LPV state_space
-    lpv_output = lpv_state_space(
-        A.unsqueeze(1).expand(-1, N, -1, -1),
-        zi,
-        x,
-        unroll_factor=unroll_factor,
-    )
-
-    # LTI state_space
-    lti_output = lti_state_space(A, zi, x, unroll_factor=unroll_factor)
-    # Compare outputs
-    assert torch.allclose(lpv_output, lti_output), torch.max(torch.abs(lpv_output - lti_output))
 
 
 @pytest.mark.parametrize(

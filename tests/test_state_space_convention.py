@@ -184,7 +184,8 @@ def test_lti_state_space(signals):
     assert torch.allclose(h, states)
 
 
-def test_lti_linear_recurrence_returns_the_next_states(signals):
+@pytest.mark.parametrize("unroll_factor", [1, 4, N])
+def test_lti_linear_recurrence_returns_the_next_states(signals, unroll_factor):
     s = signals
     a = s["a"][:, 0, 0]
     _, states = _simulate(
@@ -195,7 +196,19 @@ def test_lti_linear_recurrence_returns_the_next_states(signals):
         s["u"],
         s["zi"][:, :1],
     )
-    assert torch.allclose(lti.linear_recurrence(a, s["zi"][:, 0], s["u"]), states[..., 0])
+    h = lti.linear_recurrence(a, s["zi"][:, 0], s["u"], unroll_factor=unroll_factor)
+    assert torch.allclose(h, states[..., 0])
+
+
+def test_lpv_linear_recurrence_broadcasts_a_and_init():
+    # a shared over the batch, (N), and a scalar init, as one per signal.
+    x = torch.randn(2, 7, dtype=torch.double)
+    a = torch.rand(7, dtype=torch.double)
+    init = torch.tensor(0.5, dtype=torch.double)
+    expected = lpv.linear_recurrence(a.expand_as(x), init.expand(x.size(0)), x)
+    for unroll_factor in (1, 3):
+        actual = lpv.linear_recurrence(a, init, x, unroll_factor=unroll_factor)
+        assert torch.allclose(actual, expected)
 
 
 def _recursion_inputs(module, dtype):

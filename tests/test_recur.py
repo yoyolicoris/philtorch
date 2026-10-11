@@ -228,10 +228,12 @@ def test_triton_state_limits():
     assert not applies(4, device="cpu")
 
 
-def _kernel(time_invariant, M, dtype, device, B=1):
+def _kernel(time_invariant, M, dtype, device, B=1, T=2):
     """The launch _forward picks for A and x of these properties."""
-    A = torch.zeros(1, 1 if time_invariant else 2, M, M, dtype=dtype, device=device)
-    x = torch.zeros(B, 2, M, dtype=dtype, device=device)
+    A = torch.zeros(1, 1, M, M, dtype=dtype, device=device).expand(
+        1, 1 if time_invariant else T, M, M
+    )
+    x = torch.zeros(B, T, M, dtype=dtype, device=device)
     return next(run for applies, run in _recur._KERNELS if applies(A, x))
 
 
@@ -281,6 +283,18 @@ INTEGER_DISPATCH = [
 @pytest.mark.parametrize("time_invariant, M, dtype, device, B, kernel", DISPATCH + INTEGER_DISPATCH)
 def test_dispatch(time_invariant, M, dtype, device, B, kernel):
     assert _kernel(time_invariant, M, dtype, device, B) is getattr(_recur, kernel)
+
+
+@pytest.mark.cuda
+@pytest.mark.parametrize(
+    "M, B, T, kernel",
+    [(3, 65536, 2, "recur_triton"), (2, 1, 2**21, "_recur2"), (3, 1, 2**21, "recur_triton")],
+    ids=["batch-3x3", "length-2x2", "length-3x3"],
+)
+def test_dispatch_past_pararnn_limits(M, B, T, kernel):
+    # ParaRNN takes at most 65535 batch items and 2^21 - 1 steps in float32;
+    # past them, the next kernel that takes the input runs.
+    assert _kernel(False, M, torch.float32, "cuda", B, T) is getattr(_recur, kernel)
 
 
 @pytest.mark.cuda

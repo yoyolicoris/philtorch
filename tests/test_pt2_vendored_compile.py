@@ -237,7 +237,7 @@ def test_pararnn_fake_checks_shapes_on_cpu(block_size: int) -> None:
         fake(jac, torch.zeros(2, 9, block_size + 1))
 
 
-def test_compile_dispatch_helpers_call_raw_operators(monkeypatch) -> None:
+def test_compiled_lpc_calls_the_raw_operator(monkeypatch) -> None:
     monkeypatch.setattr(torch.compiler, "is_compiling", lambda: True)
 
     x = torch.linspace(-0.7, 0.8, 16).reshape(2, 8)

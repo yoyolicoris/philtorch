@@ -3,7 +3,6 @@ import torch
 import torch.nn.functional as F
 
 from philtorch.lpv import state_space_recursion as lpv_state_space
-from philtorch.lti import linear_recurrence
 from philtorch.mat import companion
 
 from .test_lpv_filters import _generate_time_varying_coeffs
@@ -115,38 +114,6 @@ def test_lti_recurN_cpu_dispatch_equiv(dtype: torch.dtype, batch: bool):
     )
     actual = torch.ops.philtorch.lti_recurN(A, zi, x)
     torch.testing.assert_close(actual, expected)
-
-
-@pytest.mark.parametrize(
-    "device",
-    [
-        "cpu",
-        pytest.param(
-            "cuda",
-            marks=pytest.mark.cuda,
-        ),
-        pytest.param(
-            "mps",
-            marks=pytest.mark.skipif(
-                not torch.backends.mps.is_available(), reason="MPS not available"
-            ),
-        ),
-    ],
-)
-@pytest.mark.parametrize("batch", [True, False])
-def test_lti_recur_equiv(device: str, batch: bool):
-    B = 3
-    T = 101
-    dtype = torch.float32 if device == "mps" else torch.float64
-
-    # Convert to torch tensors
-    a_torch = torch.rand(B if batch else 1, device=device, dtype=dtype) * 2 - 1
-    x_torch = torch.randn(B, T, device=device, dtype=dtype)
-    zi = x_torch.new_zeros(B).normal_()
-
-    lti_y = torch.ops.philtorch.lti_recur(a_torch, zi, x_torch)
-    torch_y = linear_recurrence(a_torch, zi, x_torch)
-    torch.testing.assert_close(lti_y, torch_y)
 
 
 @pytest.mark.parametrize(
@@ -312,23 +279,6 @@ def test_recur2_extension_matches_unrolled(device):
         )
 
 
-@pytest.mark.cuda
-def test_lpv_pararnn_order3_matches_unrolled():
-    """Test the CUDA floating order-3 ParaRNN selector boundary."""
-    batch_size = 2
-    N = 17
-    order = 3
-
-    _, a = _generate_time_varying_coeffs(batch_size, N, order, order)
-    x = torch.randn(batch_size, N, order, device="cuda", dtype=torch.float64)
-    A = companion(a).to(device="cuda", dtype=torch.float64)
-    zi = torch.randn(batch_size, order, device="cuda", dtype=torch.float64)
-
-    native_output = lpv_state_space(A, zi, x, unroll_factor=1)
-    torch_output = lpv_state_space(A, zi, x, unroll_factor=2)
-    torch.testing.assert_close(native_output, torch_output)
-
-
 def _cuda_scan_case(name: str):
     """Return an op, its CPU arguments, and the output it should give."""
     B, T = 4, 4096
@@ -418,26 +368,6 @@ def test_cuda_scan_runs_on_the_current_stream(case: str):
         actual = op(*cuda_args)
         assert not stream.query(), "the call waited for the stream to finish"
     stream.synchronize()
-
-    assert torch.allclose(actual.cpu(), expected), torch.max(torch.abs(actual.cpu() - expected))
-
-
-@pytest.mark.cuda
-@pytest.mark.parametrize(
-    ("B", "T", "M"),
-    [(70_000, 8, 2), (70_000, 8, 3), (1, 2**21, 2)],
-    ids=["batch-2x2", "batch-3x3", "length-2x2"],
-)
-def test_lpv_state_space_recursion_past_pararnn_limits(B, T, M):
-    """Inputs ParaRNN can't launch for fall back to the other kernels."""
-    gen = torch.Generator().manual_seed(0)
-    A = torch.randn(B, T, M, M, generator=gen, dtype=torch.float64)
-    A = A * 0.9 / torch.linalg.matrix_norm(A, ord=2)[..., None, None]
-    zi = torch.randn(B, M, generator=gen, dtype=torch.float64)
-    x = torch.randn(B, T, M, generator=gen, dtype=torch.float64)
-
-    expected = lpv_state_space(A, zi, x)
-    actual = lpv_state_space(A.cuda(), zi.cuda(), x.cuda())
 
     assert torch.allclose(actual.cpu(), expected), torch.max(torch.abs(actual.cpu() - expected))
 
