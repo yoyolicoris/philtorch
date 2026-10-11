@@ -7,7 +7,7 @@ from torch import Tensor
 
 from .. import _ssm
 from ..mat import find_eigenvectors
-from .recur import LTIRecurrence, linear_recurrence
+from .recur import linear_recurrence
 
 
 def state_space_recursion(
@@ -534,11 +534,7 @@ def diag_state_space(
     else:
         assert False, f"Input signal x must be 2D or 3D, got {x.shape}"
 
-    recur_runner = (
-        LTIRecurrence.apply
-        if unroll_factor == 1
-        else partial(linear_recurrence, unroll_factor=unroll_factor)
-    )
+    recur_runner = partial(linear_recurrence, unroll_factor=unroll_factor)
 
     Vinvh = recur_runner(
         L.broadcast_to((batch_size, M)).flatten(0, 1),

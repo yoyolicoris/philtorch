@@ -309,3 +309,156 @@ def states(
         return torch.cat([zi[:, None, out_idx], h[:, :-1, out_idx]], dim=1), zf
     h = run(out_idx=out_idx)
     return torch.cat([zi[:, None, out_idx], h[:, :-1]], dim=1), None
+
+
+# The scalar recursion, h[n + 1] = a[n] h[n] + x[n], of lti and lpv's
+# linear_recurrence: a of shape (1 or B, 1 or N), the scalar case of A's
+# layout, init of shape (1 or B) and x of shape (B, N).
+
+
+def _scalar_loop(a: Tensor, init: Tensor, x: Tensor) -> Tensor:
+    """The scalar recursion by a loop over time steps."""
+    Ta = a.size(1)
+    results = []
+    h = init
+    for n, xn in enumerate(x.unbind(1)):
+        h = torch.addcmul(xn, h, a[:, n if Ta > 1 else 0])
+        results.append(h)
+    return torch.stack(results, dim=1)
+
+
+def _last_axis_loop(a: Tensor, init: Tensor, x: Tensor) -> Tensor:
+    """The scalar recursion along the last axis, a, init and x broadcasting."""
+    results = []
+    h = init
+    for an, xn in zip(a.unbind(dim=-1), x.unbind(dim=-1), strict=True):
+        h = torch.addcmul(xn, h, an)
+        results.append(h)
+    return torch.stack(results, dim=-1)
+
+
+def _scalar_kernels(a: Tensor, init: Tensor, x: Tensor) -> Tensor:
+    """The scalar recursion by :func:`philtorch._recur.recurrence`'s kernels, or by
+    the loop where none takes the input."""
+    from ._recur import recurrence
+
+    init = init.broadcast_to(x.size(0))
+    try:
+        return recurrence(a[..., None, None], init[:, None], x[..., None])[..., 0]
+    except NotImplementedError:
+        return _scalar_loop(a, init, x)
+
+
+def _scalar_unrolled_time_invariant(a: Tensor, init: Tensor, x: Tensor, block_size: int) -> Tensor:
+    """The block-unrolled scalar recursion for a of shape (1) or (B)."""
+    batch_size, N = x.size(0), x.size(1)
+    remainder = N % block_size
+    if remainder != 0:
+        x = F.pad(x, (0, block_size - remainder))
+        N = x.size(1)  # Update T after padding
+
+    unrolled_x = x.unflatten(1, (-1, block_size))
+
+    a_powers = torch.cumprod(
+        (a.expand(block_size) if a.numel() == 1 else a.unsqueeze(1).expand(-1, block_size)),
+        dim=-1,
+    )
+    a_powered = a_powers[..., -1]
+    a_powers_plus_I = F.pad(a_powers[..., :-1].flip(-1), (0, 1), value=1.0)
+
+    z = (
+        unrolled_x @ a_powers_plus_I
+        if a_powers_plus_I.dim() == 1
+        else torch.linalg.vecdot(unrolled_x.conj(), a_powers_plus_I.unsqueeze(1))
+    )
+
+    initials = torch.cat(
+        [
+            init.unsqueeze(1).broadcast_to(batch_size, 1),
+            scalar_recursion(a_powered.reshape(-1, 1), init, z, unroll_factor=block_size),
+        ],
+        dim=1,
+    )
+
+    # prepare the augmented matrix and input for all the remaining steps
+    aug_x = torch.cat([initials[:, :-1, None], unrolled_x[..., :-1]], dim=2)
+    aug_A = (
+        F.pad(a_powers_plus_I, (0, block_size - 2), value=0.0).unfold(-1, block_size, 1).flip(-2)
+    )
+
+    output = aug_x @ aug_A.mT
+
+    # concat the first M - 1 outputs with the last one
+    output = torch.cat([output, initials[:, 1:, None]], dim=2).flatten(1, 2)
+    if remainder != 0:
+        # if we padded the input, we need to remove the padding from the output
+        output = output[:, : -(block_size - remainder)]
+    return output
+
+
+def _scalar_unrolled_time_varying(a: Tensor, init: Tensor, x: Tensor, block_size: int) -> Tensor:
+    """The block-unrolled scalar recursion for a of shape (N) or (B, N)."""
+    batch_size, N = x.size(0), x.size(1)
+    remainder = N % block_size
+    if remainder != 0:
+        x = F.pad(x, (0, block_size - remainder))
+        a = F.pad(a, (0, block_size - remainder))
+        N = x.size(1)  # Update N after padding
+
+    unrolled_x = x.unflatten(1, (-1, block_size))
+    unrolled_a = a.unflatten(-1, (-1, block_size))
+
+    a_powers = torch.cumprod(unrolled_a[..., 1:].flip(-1), dim=-1).flip(-1)
+    a_powered = a_powers[..., 0] * unrolled_a[..., 0]
+    a_powers_plus_I = F.pad(a_powers, (0, 1), value=1.0)
+
+    z = torch.linalg.vecdot(unrolled_x.conj(), a_powers_plus_I)
+
+    initials = torch.cat(
+        [
+            init.unsqueeze(1).broadcast_to(batch_size, 1),
+            scalar_recursion(
+                a_powered[None] if a_powered.dim() == 1 else a_powered,
+                init,
+                z,
+                unroll_factor=block_size,
+            ),
+        ],
+        dim=1,
+    )
+
+    # The blocks' steps after the first, along their last axis.
+    output = _last_axis_loop(unrolled_a[..., :-1], initials[:, :-1], unrolled_x[..., :-1])
+
+    # concat the first M - 1 outputs with the last one
+    output = torch.cat([output, initials[:, 1:, None]], dim=2).flatten(1, 2)
+    if remainder != 0:
+        # if we padded the input, we need to remove the padding from the output
+        output = output[:, : -(block_size - remainder)]
+    return output
+
+
+def scalar_recursion(a: Tensor, init: Tensor, x: Tensor, *, unroll_factor: int = 1) -> Tensor:
+    """h[1], ..., h[N] of h[n + 1] = a[n] h[n] + x[n], h[0] = init.
+
+    Args:
+        a: (1 or B, 1 or N).
+        init: (1 or B).
+        x: (B, N).
+        unroll_factor: the algorithm, as for :func:`recursion`.
+
+    Returns:
+        (B, N).
+
+    Raises:
+        ValueError: if ``unroll_factor`` is less than 1.
+    """
+    if unroll_factor < 1:
+        raise ValueError("Unroll factor must be >= 1")
+    if unroll_factor == 1:
+        return _scalar_kernels(a, init, x)
+    if unroll_factor >= x.size(1):
+        return _scalar_loop(a, init, x)
+    if a.size(1) == 1:
+        return _scalar_unrolled_time_invariant(a[:, 0], init, x, unroll_factor)
+    return _scalar_unrolled_time_varying(a[0] if a.size(0) == 1 else a, init, x, unroll_factor)
