@@ -30,10 +30,10 @@ def state_space_recursion(
 
     With ``unroll_factor=1``, this runs a kernel chosen by device, dtype and
     :math:`M`: native ones on CPU and CUDA, and a Triton scan on CUDA for the
-    rest. Where no kernel takes the input, such as on MPS, it runs a loop
-    over time steps. On any device, an :attr:`unroll_factor` greater than 1
-    and less than :math:`N` runs a block-unrolled PyTorch recursion instead,
-    and one of :math:`N` or more runs a plain PyTorch loop.
+    rest, and raises where none takes the input, such as on MPS. On any
+    device, an :attr:`unroll_factor` greater than 1 and less than :math:`N`
+    runs a block-unrolled PyTorch recursion instead, and one of :math:`N` or
+    more runs the sequential PyTorch loop, on any dtype.
 
     Args:
         A (Tensor): state matrices :math:`A[n]`, of shape :math:`(N, M, M)` to
@@ -54,6 +54,9 @@ def state_space_recursion(
     Raises:
         ValueError: if the shapes do not match, or :attr:`unroll_factor` is
             less than 1.
+        NotImplementedError: with ``unroll_factor=1``, if no kernel takes the
+            input; an :attr:`unroll_factor` greater than 1 runs PyTorch ops,
+            on any device.
 
     Note:
         These are the states after each input, :math:`\mathbf{h}[1]` to

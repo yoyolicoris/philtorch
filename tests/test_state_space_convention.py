@@ -208,12 +208,31 @@ def _recursion_inputs(module, dtype):
 
 
 @pytest.mark.parametrize("module", [lti, lpv], ids=["lti", "lpv"])
-def test_state_space_recursion_falls_back_to_the_loop(module):
-    # No kernel takes int32, so the recurrence runs the loop over time: the
-    # same states as the kernels' int64.
+def test_state_space_recursion_without_a_kernel(module):
+    # No kernel takes int32: unroll_factor=1 raises and says what to do, and
+    # unroll_factor > 1 runs PyTorch ops: the block-unrolled recursion and the
+    # sequential loop give the same states as the kernels' int64.
+    with pytest.raises(NotImplementedError, match="pass unroll_factor > 1"):
+        module.state_space_recursion(*_recursion_inputs(module, torch.int32))
     expected = module.state_space_recursion(*_recursion_inputs(module, torch.int64))
-    actual = module.state_space_recursion(*_recursion_inputs(module, torch.int32))
-    assert actual.dtype == torch.int32
+    for unroll_factor in (3, N):
+        actual = module.state_space_recursion(
+            *_recursion_inputs(module, torch.int32), unroll_factor=unroll_factor
+        )
+        assert actual.dtype == torch.int32
+        assert torch.equal(actual.long(), expected)
+
+
+@pytest.mark.parametrize("module", [lti, lpv], ids=["lti", "lpv"])
+def test_linear_recurrence_without_a_kernel(module):
+    A, zi, x = _recursion_inputs(module, torch.int32)
+    a = A[0, 0] if module is lti else A[:, 0, 0]
+    with pytest.raises(NotImplementedError, match="pass unroll_factor > 1"):
+        module.linear_recurrence(a, zi[:, 0], x[..., 0])
+    # The sequential loop takes any dtype. (The scalar block-unrolled recursion
+    # doesn't take integers: torch.cumprod and torch.linalg.vecdot don't.)
+    expected = module.linear_recurrence(a.long(), zi[:, 0].long(), x[..., 0].long())
+    actual = module.linear_recurrence(a, zi[:, 0], x[..., 0], unroll_factor=N)
     assert torch.equal(actual.long(), expected)
 
 

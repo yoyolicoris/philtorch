@@ -23,7 +23,7 @@ def linear_recurrence(a: Tensor, init: Tensor, x: Tensor, *, unroll_factor: int 
             :math:`(1)` or :math:`(B)`.
         x (Tensor): input sequences, of shape :math:`(B, N)`.
         unroll_factor (int, optional): ``1`` runs a kernel chosen by device
-            and dtype, or a loop where none takes the input. A
+            and dtype, and raises where none takes the input. A
             value greater than 1 and less than :math:`N` runs a block-unrolled
             PyTorch recursion with blocks of this length, and :math:`N` or more
             runs a plain PyTorch loop; see the README for guidance.
@@ -36,6 +36,9 @@ def linear_recurrence(a: Tensor, init: Tensor, x: Tensor, *, unroll_factor: int 
         ValueError: if :attr:`unroll_factor` is less than 1.
         ValueError or RuntimeError: if :attr:`a` or :attr:`init` does not
             match :attr:`x`; which one depends on :attr:`unroll_factor`.
+        NotImplementedError: with ``unroll_factor=1``, if no kernel takes the
+            input; an :attr:`unroll_factor` greater than 1 runs PyTorch ops,
+            on any device.
 
     Example::
 

@@ -240,14 +240,14 @@ With the default `unroll_factor=1`, the state-space paths (`lfilter`, `state_spa
 | --- | :---: | :---: | :---: | :---: | :---: | :---: | :---: |
 | CPU | ✓ | ✓ | ✓ | ✓ | ✓ | ✓ | ✓ |
 | CUDA (source builds) | ✓ | ✓ | ✓¹ | ✓ | ✓ | ✓ | ✓¹ |
-| MPS | ✓² | loop | loop | loop | loop | loop | loop |
+| MPS | ✓² | ✗ | ✗ | ✗ | ✗ | ✗ | ✗ |
 
-✓ native or Triton kernel · loop: PyTorch recurrence loop, where no kernel takes the input.
-¹ Triton, up to M = 128 (64 for complex dtypes); larger M runs the loop. ² float32 only.
+✓ native or Triton kernel · ✗ raises `NotImplementedError`, since no kernel takes the input; pass `unroll_factor > 1` to run PyTorch ops instead, or use CPU.
+¹ Triton, up to M = 128 (64 for complex dtypes); larger M raises. ² float32 only.
 
-The kernels take floating-point and complex dtypes, and int64, exactly; other dtypes run the loop.
+The kernels take floating-point and complex dtypes, and int64, exactly; other dtypes raise.
 
-Setting `1 < unroll_factor < sequence length` switches to a block-unrolled PyTorch recursion, which computes blocks in parallel with matrix multiplications ([background](https://iamycy.github.io/posts/2025/06/28/unroll-ssm/)); larger values fall back to a plain PyTorch loop.
+Setting `1 < unroll_factor < sequence length` switches to a block-unrolled PyTorch recursion, which computes blocks in parallel with matrix multiplications ([background](https://iamycy.github.io/posts/2025/06/28/unroll-ssm/)); larger values run the sequential PyTorch loop. Both run on any device, and the loop on any dtype.
 It is slower than the native kernels but much faster than a naive loop.
 Good starting points are 8 on CPU and 16–32 on CUDA, but benchmark your own batch size, sequence length, state size, dtype, and device, for example with `torch.utils.benchmark`.
 Native kernels are fastest for first- and second-order filters, so prefer cascades or parallel banks of such sections, especially on CUDA.

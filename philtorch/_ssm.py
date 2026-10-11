@@ -1,4 +1,4 @@
-"""The state-space recursion that :mod:`philtorch.lti` and :mod:`philtorch.lpv` share.
+"""The state-space recursion of :mod:`philtorch.lti` and :mod:`philtorch.lpv`.
 
 :func:`recursion` computes h[n + 1] = A[n] h[n] + x[n] from h[0] = zi and
 returns h[1], ..., h[N], with A of shape (B or 1, T or 1, M, M) as
@@ -9,7 +9,8 @@ the inputs' mapping, B x, and the outputs', C h + D x.
 
 ``unroll_factor`` picks the algorithm:
 
-* 1: the operator's kernels, or a loop over time where none takes the input;
+* 1: the operator's kernels, raising NotImplementedError where none takes
+  the input;
 * N or more: the loop;
 * in between: a block-unrolled recursion in PyTorch ops. Time-invariant A
   composes its powers once; time-varying A composes cumulative products per
@@ -58,16 +59,30 @@ def _loop(A: Tensor, zi: Tensor, x: Tensor, out_idx: int | None = None) -> Tenso
     return torch.stack(results, dim=1)
 
 
-def _kernels(A: Tensor, zi: Tensor, x: Tensor, out_idx: int | None = None) -> Tensor:
-    """The recursion by :func:`philtorch._recur.recurrence`'s kernels, or by the
-    loop where none takes the input; see :func:`recursion`."""
+# Appended to the operator's error where no kernel takes the input.
+_NO_KERNEL_HINT = (
+    "; pass unroll_factor > 1 to run PyTorch ops instead, on any device: a "
+    "block-unrolled recursion, or the sequential loop, which takes any dtype, from "
+    "the sequence length on"
+)
+
+
+def _recurrence(A: Tensor, zi: Tensor, x: Tensor) -> Tensor:
+    """:func:`philtorch._recur.recurrence`, its error for want of a kernel saying
+    how to run PyTorch ops instead."""
     # Imported here, so that importing philtorch doesn't load Triton.
     from ._recur import recurrence
 
     try:
-        h = recurrence(A, zi, _first_state(x, A.size(-1)))
-    except NotImplementedError:
-        return _loop(A, zi, x, out_idx=out_idx)
+        return recurrence(A, zi, x)
+    except NotImplementedError as error:
+        raise NotImplementedError(f"{error}{_NO_KERNEL_HINT}") from error
+
+
+def _kernels(A: Tensor, zi: Tensor, x: Tensor, out_idx: int | None = None) -> Tensor:
+    """The recursion by :func:`philtorch._recur.recurrence`'s kernels; see
+    :func:`recursion`."""
+    h = _recurrence(A, zi, _first_state(x, A.size(-1)))
     return h if out_idx is None else h[..., out_idx]
 
 
@@ -269,6 +284,8 @@ def recursion(
 
     Raises:
         ValueError: if ``unroll_factor`` is less than 1.
+        NotImplementedError: with ``unroll_factor=1``, if no kernel takes the
+            input.
     """
     if unroll_factor < 1:
         raise ValueError("Unroll factor must be >= 1")
@@ -338,15 +355,9 @@ def _last_axis_loop(a: Tensor, init: Tensor, x: Tensor) -> Tensor:
 
 
 def _scalar_kernels(a: Tensor, init: Tensor, x: Tensor) -> Tensor:
-    """The scalar recursion by :func:`philtorch._recur.recurrence`'s kernels, or by
-    the loop where none takes the input."""
-    from ._recur import recurrence
-
+    """The scalar recursion by :func:`philtorch._recur.recurrence`'s kernels."""
     init = init.broadcast_to(x.size(0))
-    try:
-        return recurrence(a[..., None, None], init[:, None], x[..., None])[..., 0]
-    except NotImplementedError:
-        return _scalar_loop(a, init, x)
+    return _recurrence(a[..., None, None], init[:, None], x[..., None])[..., 0]
 
 
 def _scalar_unrolled_time_invariant(a: Tensor, init: Tensor, x: Tensor, block_size: int) -> Tensor:
@@ -452,6 +463,8 @@ def scalar_recursion(a: Tensor, init: Tensor, x: Tensor, *, unroll_factor: int =
 
     Raises:
         ValueError: if ``unroll_factor`` is less than 1.
+        NotImplementedError: with ``unroll_factor=1``, if no kernel takes the
+            input.
     """
     if unroll_factor < 1:
         raise ValueError("Unroll factor must be >= 1")
