@@ -347,18 +347,11 @@ def _torchlpc_lfilter(
     """Run :func:`lfilter` with the ``"torchlpc"`` backend."""
     _, T = x.shape
 
+    # lfilter checked that b and a are 2-D or 3-D.
     if b.dim() == 2:
         b = b.unsqueeze(0)
-    elif b.dim() == 3:
-        pass
-    else:
-        raise ValueError("Numerator coefficients b must be 2D or 3D.")
     if a.dim() == 2:
         a = a.unsqueeze(0)
-    elif a.dim() == 3:
-        pass
-    else:
-        raise ValueError("Denominator coefficients a must be 2D or 3D.")
 
     if not (b.shape[1] == a.shape[1] == T):
         raise ValueError("The number of time steps in b and a must match the input signal x.")
