@@ -116,13 +116,12 @@ def _dtw_dp_calls():
     return _recorded_calls(_dtw_kernels, "dtw_dp", lambda: dtw(cost, gamma=0.1).sum().backward())
 
 
-def _dtw_dp_backward_calls():
-    from philtorch.align import _dtw_kernels, dtw
+def _dtw_dp_backward_calls(loss, shape):
+    # loss's first-order backward, through dtw_dp's.
+    from philtorch.align import _dtw_kernels
 
-    cost = torch.rand(2, 5, 6, device="cuda", requires_grad=True)
-    return _recorded_calls(
-        _dtw_kernels, "dtw_dp_backward", lambda: dtw(cost, gamma=0.1).sum().backward()
-    )
+    x = torch.rand(shape, device="cuda", requires_grad=True)
+    return _recorded_calls(_dtw_kernels, "dtw_dp_backward", lambda: loss(x).backward())
 
 
 def _dtw_accumulate_calls():
@@ -157,7 +156,16 @@ def _weighted_contract_calls():
     "op, calls",
     [
         pytest.param("dtw_dp", _dtw_dp_calls, id="dtw_dp"),
-        pytest.param("dtw_dp_backward", _dtw_dp_backward_calls, id="dtw_dp_backward"),
+        pytest.param(
+            "dtw_dp_backward",
+            lambda: _dtw_dp_backward_calls(_dtw(0.1), (2, 5, 6)),
+            id="dtw_dp_backward-weighted",
+        ),
+        pytest.param(
+            "dtw_dp_backward",
+            lambda: _dtw_dp_backward_calls(_ctc_loss, (2, 7, 4)),
+            id="dtw_dp_backward-ctc",
+        ),
         pytest.param("dtw_accumulate", _dtw_accumulate_calls, id="dtw_accumulate"),
         pytest.param("weighted_contract", _weighted_contract_calls, id="weighted_contract"),
     ],
@@ -213,6 +221,29 @@ def test_compiled_alignment_gradients(loss, shape, fullgraph):
     (expected,) = torch.autograd.grad(loss(x), x)
     (actual,) = torch.autograd.grad(torch.compile(loss, fullgraph=fullgraph)(x), x)
     torch.testing.assert_close(actual, expected)
+
+
+@pytest.mark.cuda
+@pytest.mark.parametrize(
+    "steps, diag_weight", [("symmetric", 1.0), ("symmetric", 2.0), ("orthogonal", 1.0)]
+)
+def test_dtw_dp_backward_registered_gradients(steps, diag_weight):
+    # dtw_dp_backward's registered backward, which defines dtw_dp's second and
+    # higher derivatives, against finite differences of the fused kernel, with
+    # D, cost and grad independent; and its own derivatives.
+    from philtorch.align._dtw_kernels import dtw_dp_backward
+
+    gen = torch.Generator("cuda").manual_seed(0)
+    cost = torch.rand(2, 4, 5, device="cuda", dtype=torch.float64, generator=gen)
+    D = torch.ops.philtorch.dtw_dp(cost, None, True, steps, diag_weight)
+    grad = torch.rand(D.shape, device="cuda", dtype=torch.float64, generator=gen)
+    inputs = tuple(t.requires_grad_() for t in (D, cost, grad))
+
+    def fn(D, cost, grad):
+        return dtw_dp_backward(D, cost, None, grad, True, steps, diag_weight)
+
+    assert torch.autograd.gradcheck(fn, inputs)
+    assert torch.autograd.gradgradcheck(fn, inputs)
 
 
 # The ops with a CUDA kernel too; recurN and lti_recurN run on CPU only.

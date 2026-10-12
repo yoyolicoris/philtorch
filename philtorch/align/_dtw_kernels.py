@@ -683,7 +683,8 @@ def dtw_dp_backward(
     # shares are better computed over the whole GPU first.
     B, _, L = D.shape
     backward = _dtw_backward_parallel if B <= 4 and L > 4096 else _dtw_backward
-    return backward(D, cost.contiguous(), skip, grad, soft, steps, diag_weight)
+    skip = None if skip is None else skip.contiguous()
+    return backward(D.contiguous(), cost.contiguous(), skip, grad, soft, steps, diag_weight)
 
 
 @dtw_dp_backward.register_fake
