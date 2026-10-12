@@ -178,11 +178,15 @@ def test_alignment_and_hmm_ops_opcheck(op, calls):
     torch.library.opcheck(getattr(torch.ops.philtorch, op), recorded[0])
 
 
-def _ctc_loss(log_probs):
+def _ctc_loss(log_probs, lengths=((7, 6), (3, 2))):
     from philtorch.align import ctc_loss
 
     targets = torch.tensor([[1, 2, 2], [3, 1, 0]], device="cuda")
-    return ctc_loss(log_probs.log_softmax(-1), targets, (7, 6), (3, 2), reduction="sum")
+    return ctc_loss(log_probs.log_softmax(-1), targets, *lengths, reduction="sum")
+
+
+def _ctc_loss_tensor_lengths(log_probs):
+    return _ctc_loss(log_probs, (torch.tensor([7, 6]), torch.tensor([3, 2])))
 
 
 def _soft_dtw_divergence(x):
@@ -204,22 +208,22 @@ def _dtw(gamma):
 
 @pytest.mark.cuda
 @pytest.mark.parametrize(
-    "loss, shape, fullgraph",
+    "loss, shape",
     [
-        pytest.param(_dtw(0.0), (2, 6, 5), True, id="dtw"),
-        pytest.param(_dtw(0.1), (2, 6, 5), True, id="soft_dtw"),
-        pytest.param(_soft_dtw_divergence, (2, 7, 3), True, id="soft_dtw_divergence"),
-        # ctc_loss checks its lengths' values, which breaks the graph.
-        pytest.param(_ctc_loss, (2, 7, 4), False, id="ctc_loss"),
+        pytest.param(_dtw(0.0), (2, 6, 5), id="dtw"),
+        pytest.param(_dtw(0.1), (2, 6, 5), id="soft_dtw"),
+        pytest.param(_soft_dtw_divergence, (2, 7, 3), id="soft_dtw_divergence"),
+        pytest.param(_ctc_loss, (2, 7, 4), id="ctc_loss"),
+        pytest.param(_ctc_loss_tensor_lengths, (2, 7, 4), id="ctc_loss-tensor_lengths"),
     ],
 )
-def test_compiled_alignment_gradients(loss, shape, fullgraph):
+def test_compiled_alignment_gradients(loss, shape):
     # Compiled code differentiates dtw_dp through its registered backward,
-    # the fused kernels as one op: the same gradients as eager.
+    # the fused kernels as one op: the same gradients as eager, in one graph.
     x = torch.randn(shape, device="cuda", generator=torch.Generator("cuda").manual_seed(0))
     x.requires_grad_()
     (expected,) = torch.autograd.grad(loss(x), x)
-    (actual,) = torch.autograd.grad(torch.compile(loss, fullgraph=fullgraph)(x), x)
+    (actual,) = torch.autograd.grad(torch.compile(loss, fullgraph=True)(x), x)
     torch.testing.assert_close(actual, expected)
 
 

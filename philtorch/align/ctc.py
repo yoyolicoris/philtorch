@@ -1,6 +1,7 @@
 """Connectionist temporal classification (CTC) as soft-DTW."""
 
 import math
+import numbers
 from collections.abc import Sequence
 from typing import Literal
 
@@ -77,7 +78,8 @@ def ctc_loss(
             the other arguments' shapes do not match it, if a length is
             negative or past its sequence (or the concatenated targets'
             lengths do not sum to theirs), or if :attr:`reduction` is
-            unknown.
+            unknown. Lengths given as tensors are checked only in eager mode:
+            their values would break a :func:`torch.compile` graph.
         RuntimeError: if Triton is not installed.
 
     Example::
@@ -185,6 +187,17 @@ def forced_align(
     return (path[0], scores[0]) if unbatched else (path, scores)
 
 
+def _lengths(lengths: Tensor | Sequence[int] | int) -> tuple[Tensor, list[int] | None]:
+    """Lengths as a 1-D long tensor, and as a list of ints if they were given as
+    ints."""
+    if isinstance(lengths, Tensor):
+        return lengths.long().reshape(-1), None
+    if isinstance(lengths, numbers.Integral):
+        lengths = (lengths,)
+    values = [int(n) for n in lengths]  # a sequence, or a NumPy array
+    return torch.tensor(values, dtype=torch.long), values
+
+
 def _prepare(name, log_probs, targets, input_lengths, target_lengths, blank):
     """The arguments as (N, T, C) log-probabilities, the (N, 2S + 1) states and the
     kernels' skip mask, (N) lengths, and whether there was a batch."""
@@ -192,8 +205,8 @@ def _prepare(name, log_probs, targets, input_lengths, target_lengths, blank):
         raise ValueError(f"log_probs must be (N, T, C) or (T, C), got {tuple(log_probs.shape)}")
     unbatched = log_probs.dim() == 2
     device = log_probs.device
-    frames = torch.as_tensor(input_lengths, dtype=torch.long).reshape(-1)
-    labels = torch.as_tensor(target_lengths, dtype=torch.long).reshape(-1)
+    frames, frame_values = _lengths(input_lengths)
+    labels, label_values = _lengths(target_lengths)
     if unbatched:
         log_probs, targets = log_probs[None], targets.reshape(1, -1)
     N, T, _ = log_probs.shape
@@ -201,22 +214,47 @@ def _prepare(name, log_probs, targets, input_lengths, target_lengths, blank):
         raise ValueError(f"input_lengths and target_lengths must have {N} entries")
     if targets.dim() not in (1, 2) or (targets.dim() == 2 and targets.size(0) != N):
         raise ValueError(f"targets must be of shape ({N}, S) or 1-D, got {tuple(targets.shape)}")
-    if bool(((frames < 0) | (frames > T)).any()):
+    # Lengths given as ints are checked in Python, which torch.compile reads as
+    # constants; as tensors, only in eager mode, as their values would break the
+    # graph.
+    compiling = torch.compiler.is_compiling()
+    if frame_values is not None:
+        bad_frames = any(not 0 <= f <= T for f in frame_values)
+    else:
+        bad_frames = not compiling and bool(((frames < 0) | (frames > T)).any())
+    if bad_frames:
         raise ValueError(f"input_lengths must be within 0 to {T}")
-    if targets.dim() == 2 and bool(((labels < 0) | (labels > targets.size(1))).any()):
-        raise ValueError(f"target_lengths must be within 0 to {targets.size(1)}")
-    if targets.dim() == 1 and ((labels < 0).any() or labels.sum() != targets.numel()):
-        raise ValueError(
-            f"target_lengths must be non-negative and sum to the {targets.numel()} "
-            "concatenated targets"
-        )
+    if targets.dim() == 2:
+        S = targets.size(1)
+        if label_values is not None:
+            bad_labels = any(not 0 <= n <= S for n in label_values)
+        else:
+            bad_labels = not compiling and bool(((labels < 0) | (labels > S)).any())
+        if bad_labels:
+            raise ValueError(f"target_lengths must be within 0 to {S}")
+    else:
+        if label_values is not None:
+            bad_labels = min(label_values, default=0) < 0 or sum(label_values) != targets.numel()
+        else:
+            bad_labels = not compiling and bool(
+                (labels < 0).any() or labels.sum() != targets.numel()
+            )
+        if bad_labels:
+            raise ValueError(
+                f"target_lengths must be non-negative and sum to the {targets.numel()} "
+                "concatenated targets"
+            )
     check_cuda_triton(name, log_probs)
 
     frames, labels = frames.to(device), labels.to(device)
     targets = targets.to(device, torch.long)
     if targets.dim() == 1:
         # Concatenated targets: each one's labels, in order, into a padded row.
-        padded = targets.new_zeros(N, int(labels.max()) if N else 0)
+        if label_values is not None:
+            width = max(label_values, default=0)
+        else:
+            width = int(labels.max()) if N else 0
+        padded = targets.new_zeros(N, width)
         padded[torch.arange(padded.size(1), device=device) < labels[:, None]] = targets
         targets = padded
     # The states: the labels with a blank before, between and after them. A
