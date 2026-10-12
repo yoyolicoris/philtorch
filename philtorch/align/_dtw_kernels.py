@@ -412,9 +412,11 @@ def _backtrack_kernel(
         i = next_i
 
 
+@torch.library.custom_op("philtorch::dtw_backtrack", mutates_args=())
 def backtrack(D: Tensor, cost: Tensor, ends: Tensor, steps: str, diag_weight: float) -> Tensor:
     """Each pair's optimal path on the kernels' grid, from its end cell ``ends`` (B, 2)
     to (0, 0), as (row, column) pairs (B, R + L - 1, 2) in order, -1 past the path."""
+    D = D.contiguous()
     B, R, L = D.shape
     P = R + L - 1
     walk = ends.new_full((B, P, 2), -1)
@@ -433,6 +435,12 @@ def backtrack(D: Tensor, cost: Tensor, ends: Tensor, steps: str, diag_weight: fl
     t = torch.arange(P, device=D.device)
     path = walk.gather(1, (count - 1 - t).clamp(min=0)[..., None].expand(-1, -1, 2))
     return torch.where((t < count)[..., None], path, -1)
+
+
+@backtrack.register_fake
+def _(D, cost, ends, steps, diag_weight):
+    B, R, L = D.shape
+    return ends.new_empty(B, R + L - 1, 2)
 
 
 def _num_warps(L: int, backward: bool = False, diag: bool = False) -> int:
@@ -637,10 +645,12 @@ def _forward(cost, skip, soft, steps, diag_weight):
     return D
 
 
+@torch.library.custom_op("philtorch::ctc_viterbi", mutates_args=())
 def ctc_viterbi(cost: Tensor, skip: Tensor) -> tuple[Tensor, Tensor]:
     """The hard ctc forward pass over cost (B, R, L): D, and each cell's best step back,
     int8, 0 to stay in its row, 1 to advance from the row above, 2 to skip from two
     rows above, the first best under ties as the hard shares choose."""
+    skip = skip.contiguous()
     D = _forward(cost, skip, False, "ctc", 1.0)
     B, R, L = D.shape
     # From D afterwards, over all cells at once: recorded in the forward pass,
@@ -652,6 +662,13 @@ def ctc_viterbi(cost: Tensor, skip: Tensor) -> tuple[Tensor, Tensor]:
         _STEPS["ctc"], BLOCK=_SHARES_BLOCK, num_warps=4,
     )  # fmt: skip
     return D, steps_back
+
+
+@ctc_viterbi.register_fake
+def _(cost, skip):
+    return _empty(cost), torch.empty_like(
+        cost, dtype=torch.int8, memory_format=torch.contiguous_format
+    )
 
 
 @dtw_dp.register_fake
