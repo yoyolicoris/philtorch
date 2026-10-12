@@ -30,7 +30,7 @@ def find_eigenvectors(A: Tensor, eigenvalues: Tensor) -> Tensor:
         complex eigenvectors.
 
     Raises:
-        AssertionError: if :attr:`A` is not square or the number of
+        ValueError: if :attr:`A` is not square or the number of
             eigenvalues does not match its size.
         torch.linalg.LinAlgError: if an eigenvector's first component is zero,
             or an eigenvalue has more than one independent eigenvector.
@@ -43,10 +43,14 @@ def find_eigenvectors(A: Tensor, eigenvalues: Tensor) -> Tensor:
         tensor([[ 1.0000,  0.7071],
                 [ 0.0000, -0.7071]])
     """
-    assert A.dim() >= 2, "Matrix A must be at least 2D."
-    assert eigenvalues.dim() >= 1, "Eigenvalues must be at least 1D."
-    assert A.size(-2) == A.size(-1), "Matrix A must be square."
-    assert A.size(-1) == eigenvalues.size(-1), "Eigenvalues must match the size of A."
+    if A.dim() < 2:
+        raise ValueError("Matrix A must be at least 2D.")
+    if eigenvalues.dim() < 1:
+        raise ValueError("Eigenvalues must be at least 1D.")
+    if A.size(-2) != A.size(-1):
+        raise ValueError("Matrix A must be square.")
+    if A.size(-1) != eigenvalues.size(-1):
+        raise ValueError("Eigenvalues must match the size of A.")
 
     n = A.size(-1)
     eye = torch.eye(n, device=A.device, dtype=A.dtype)
@@ -92,6 +96,9 @@ def companion(a: Tensor) -> Tensor:
         Tensor: the companion matrices, of shape :math:`(*, M, M)`, with the
         dtype and device of :attr:`a`.
 
+    Raises:
+        ValueError: if :attr:`a` is 0-D.
+
     Example::
 
         >>> from philtorch.mat import companion
@@ -99,7 +106,8 @@ def companion(a: Tensor) -> Tensor:
         tensor([[0.2500, 0.1250],
                 [1.0000, 0.0000]])
     """
-    assert a.dim() >= 1, "All-pole coefficients must be at least 1D."
+    if a.dim() < 1:
+        raise ValueError("All-pole coefficients must be at least 1D.")
     M = a.size(-1)
     c = torch.cat([-a, a.new_zeros(a.shape[:-1] + (M * (M - 1),))], dim=-1).unflatten(-1, (M, M))
     # c = A + torch.diag(a.new_ones(M - 1), diagonal=-1)
@@ -172,7 +180,7 @@ def matrix_power_accumulate(A: Tensor, n: int) -> Tensor:
         dtype and device are those of :attr:`A`.
 
     Raises:
-        AssertionError: if :attr:`A` is not a batch of square matrices.
+        ValueError: if :attr:`A` is not a batch of square matrices.
 
     Example::
 
@@ -181,8 +189,10 @@ def matrix_power_accumulate(A: Tensor, n: int) -> Tensor:
         >>> matrix_power_accumulate(A, 3)[:, 0, 1]
         tensor([1., 2., 3.])
     """
-    assert A.dim() >= 2, "Input matrix A must have at least 2 dimensions."
-    assert A.size(-2) == A.size(-1), "Input matrix A must be square."
+    if A.dim() < 2:
+        raise ValueError("Input matrix A must have at least 2 dimensions.")
+    if A.size(-2) != A.size(-1):
+        raise ValueError("Input matrix A must be square.")
 
     if n == 0:
         return (
@@ -237,7 +247,7 @@ def matrices_cumdot(A: Tensor) -> Tensor:
         :math:`(*, M, N, N)`, with the dtype and device of :attr:`A`.
 
     Raises:
-        AssertionError: if :attr:`A` is not a batch of square-matrix sequences.
+        ValueError: if :attr:`A` is not a batch of square-matrix sequences.
 
     Example::
 
@@ -247,8 +257,10 @@ def matrices_cumdot(A: Tensor) -> Tensor:
         >>> torch.allclose(P[3], A[0] @ A[1] @ A[2] @ A[3])
         True
     """
-    assert A.dim() >= 3, "Input tensor A must have at least 3 dimensions."
-    assert A.size(-2) == A.size(-1), "Input tensor A must have square matrices."
+    if A.dim() < 3:
+        raise ValueError("Input tensor A must have at least 3 dimensions.")
+    if A.size(-2) != A.size(-1):
+        raise ValueError("Input tensor A must have square matrices.")
 
     M = A.size(-3)
     if M == 1:

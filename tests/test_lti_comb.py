@@ -51,7 +51,7 @@ def test_delay_one_returns_final_state():
 
 
 def test_delay_zero_raises():
-    with pytest.raises(AssertionError, match="at least 1"):
+    with pytest.raises(ValueError, match="at least 1"):
         comb_filter(torch.tensor(0.4), 0, torch.randn(2, 10))
 
 

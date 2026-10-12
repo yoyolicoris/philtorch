@@ -29,6 +29,7 @@ def polydiv(u: Tensor, v: Tensor) -> tuple[Tensor, Tensor]:
         remainder, of shape :math:`(*, N)`.
 
     Raises:
+        ValueError: if :attr:`u` or :attr:`v` is 0-D.
         RuntimeError: if :math:`N > M`, or if :attr:`u` has an integer dtype.
 
     Note:
@@ -44,7 +45,8 @@ def polydiv(u: Tensor, v: Tensor) -> tuple[Tensor, Tensor]:
         >>> polydiv(u, v)
         (tensor([ 1., -2., -2.]), tensor([2.]))
     """
-    assert u.ndim >= 1 and v.ndim >= 1
+    if u.ndim < 1 or v.ndim < 1:
+        raise ValueError(f"u and v must be at least 1D, got {tuple(u.shape)} and {tuple(v.shape)}")
 
     # w has the common type
     m = u.size(-1) - 1

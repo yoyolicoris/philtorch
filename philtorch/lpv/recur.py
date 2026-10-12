@@ -33,7 +33,9 @@ def linear_recurrence(a: Tensor, init: Tensor, x: Tensor, *, unroll_factor: int 
         Tensor: :math:`h[1], \dots, h[N]`, of shape :math:`(B, N)`.
 
     Raises:
-        ValueError: if :attr:`unroll_factor` is less than 1.
+        ValueError: if :attr:`unroll_factor` is less than 1, or, with
+            ``unroll_factor > 1``, if :attr:`x` is not 2-D, :attr:`a` is not
+            1-D or 2-D, or :attr:`init` is not 0-D or 1-D.
         ValueError or RuntimeError: if :attr:`a` or :attr:`init` does not
             match :attr:`x`; which one depends on :attr:`unroll_factor`.
         NotImplementedError: with ``unroll_factor=1``, if no kernel takes the
@@ -52,8 +54,10 @@ def linear_recurrence(a: Tensor, init: Tensor, x: Tensor, *, unroll_factor: int 
     if unroll_factor == 1:
         return _ssm.scalar_recursion(a.broadcast_to(x.shape), init.broadcast_to(x.shape[0]), x)
 
-    assert x.dim() == 2, f"Input x must be 2D, got {x.shape}"
-    assert a.dim() in (1, 2), f"State matrix a must be 1D or 2D, got {a.shape}"
+    if x.dim() != 2:
+        raise ValueError(f"Input x must be 2D, got {x.shape}")
+    if a.dim() not in (1, 2):
+        raise ValueError(f"State matrix a must be 1D or 2D, got {a.shape}")
     if a.dim() == 1 and a.size(0) != x.size(1):
         raise ValueError(
             f"State matrix a must be 1D with the same length as x, "
@@ -62,10 +66,11 @@ def linear_recurrence(a: Tensor, init: Tensor, x: Tensor, *, unroll_factor: int 
 
     batch_size = x.size(0)
 
-    assert init.dim() in (
+    if init.dim() not in (
         0,
         1,
-    ), f"Initial state init must be 1D or 0D, got {init.shape}"
+    ):
+        raise ValueError(f"Initial state init must be 1D or 0D, got {init.shape}")
     if init.dim() == 1 and init.size(0) > 1 and init.size(0) != batch_size:
         raise ValueError(
             f"Initial state init must be 1D with the same batch size as x, "

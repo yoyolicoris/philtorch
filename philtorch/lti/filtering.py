@@ -40,7 +40,7 @@ def comb_filter(a: Tensor, delay: int, x: Tensor, zi: Tensor | None = None, **kw
         :math:`D` outputs newest first, of shape :math:`(B, D)`.
 
     Raises:
-        AssertionError: if :attr:`delay` is less than 1, :attr:`a` has the
+        ValueError: if :attr:`delay` is less than 1, :attr:`a` has the
             wrong shape, or :attr:`x` is not 2-D.
 
     Example::
@@ -50,11 +50,15 @@ def comb_filter(a: Tensor, delay: int, x: Tensor, zi: Tensor | None = None, **kw
         >>> comb_filter(torch.tensor(-0.5), 2, x)
         tensor([[1.0000, 0.0000, 0.5000, 0.0000, 0.2500, 0.0000]])
     """
-    assert a.dim() <= 1, "Denominator coefficients a must be at most 1D."
-    assert x.dim() == 2, "Input signal x must be 2D."
-    assert delay >= 1, "Delay must be at least 1."
+    if a.dim() > 1:
+        raise ValueError("Denominator coefficients a must be at most 1D.")
+    if x.dim() != 2:
+        raise ValueError("Input signal x must be 2D.")
+    if delay < 1:
+        raise ValueError("Delay must be at least 1.")
     if a.dim() == 1:
-        assert a.size(0) == x.size(0), "The first dimension of a must match the batch size of x."
+        if a.size(0) != x.size(0):
+            raise ValueError("The first dimension of a must match the batch size of x.")
 
     remainder = x.size(1) % delay
     if remainder != 0:
@@ -113,6 +117,9 @@ def lfiltic(b: Tensor, a: Tensor, y: Tensor, x: Tensor | None = None) -> Tensor:
     Returns:
         Tensor: the initial state, of shape :math:`(*, \max(M_a, M_b))`.
 
+    Raises:
+        ValueError: if :attr:`b` or :attr:`a` is 0-D.
+
     Note:
         Unlike :func:`scipy.signal.lfiltic`, :attr:`a` omits the leading
         :math:`a_0 = 1`.
@@ -130,8 +137,10 @@ def lfiltic(b: Tensor, a: Tensor, y: Tensor, x: Tensor | None = None) -> Tensor:
         >>> torch.allclose(y_rest, y[2:])
         True
     """
-    assert b.dim() >= 1, "Numerator coefficients b must be at least 1D."
-    assert a.dim() >= 1, "Denominator coefficients a must be at least 1D."
+    if b.dim() < 1:
+        raise ValueError("Numerator coefficients b must be at least 1D.")
+    if a.dim() < 1:
+        raise ValueError("Denominator coefficients a must be at least 1D.")
 
     n = a.size(-1)
     m = b.size(-1) - 1
@@ -182,7 +191,8 @@ def lfilter_zi(a: Tensor, b: Tensor | None = None, transpose: bool = True) -> Te
         otherwise.
 
     Raises:
-        ValueError: if ``transpose=True`` and :attr:`b` is ``None``.
+        ValueError: if :attr:`a` is 0-D, or, with ``transpose=True``, if
+            :attr:`b` is ``None`` or 0-D.
 
     Note:
         The arguments are ``(a, b)``, the reverse of SciPy's ``(b, a)``, and
@@ -196,7 +206,8 @@ def lfilter_zi(a: Tensor, b: Tensor | None = None, transpose: bool = True) -> Te
         >>> y
         tensor([1., 1., 1., 1.])
     """
-    assert a.dim() >= 1, "Denominator coefficients a must be at least 1D."
+    if a.dim() < 1:
+        raise ValueError("Denominator coefficients a must be at least 1D.")
 
     if not transpose:
         n = a.size(-1) + 1
@@ -204,7 +215,8 @@ def lfilter_zi(a: Tensor, b: Tensor | None = None, transpose: bool = True) -> Te
         B = a.new_zeros(n - 1)
         B[0] = 1.0
     elif b is not None:
-        assert b.dim() >= 1, "Numerator coefficients b must be at least 1D."
+        if b.dim() < 1:
+            raise ValueError("Numerator coefficients b must be at least 1D.")
         n = max(b.size(-1), a.size(-1) + 1)
         if b.size(-1) < n:
             b = F.pad(b, (0, n - b.size(-1)), value=0.0)
@@ -258,7 +270,7 @@ def fir(
         convention, of shape :math:`(B, M)`.
 
     Raises:
-        AssertionError: if :attr:`b`, :attr:`x` or :attr:`zi` is not 2-D or
+        ValueError: if :attr:`b`, :attr:`x` or :attr:`zi` is not 2-D or
             their shapes do not match.
 
     Note:
@@ -271,16 +283,22 @@ def fir(
         >>> fir(torch.tensor([[1.0, 1.0]]), torch.tensor([[1.0, 2.0, 3.0]]))
         tensor([[1., 3., 5.]])
     """
-    assert b.dim() == 2, "Numerator coefficients b must be 2D."
-    assert x.dim() == 2, "Input signal x must be 2D."
+    if b.dim() != 2:
+        raise ValueError("Numerator coefficients b must be 2D.")
+    if x.dim() != 2:
+        raise ValueError("Input signal x must be 2D.")
     B, N = x.shape
-    assert b.shape[0] == B, "The first dimension of b must match the batch size of x."
+    if b.shape[0] != B:
+        raise ValueError("The first dimension of b must match the batch size of x.")
     M = b.size(1) - 1
 
     if zi is not None:
-        assert zi.dim() == 2, "Initial conditions zi must be 2D."
-        assert zi.size(0) == B, "The first dimension of zi must match the batch size."
-        assert zi.size(1) == M, "The second dimension of zi must match the filter order."
+        if zi.dim() != 2:
+            raise ValueError("Initial conditions zi must be 2D.")
+        if zi.size(0) != B:
+            raise ValueError("The first dimension of zi must match the batch size.")
+        if zi.size(1) != M:
+            raise ValueError("The second dimension of zi must match the filter order.")
 
     if transpose:
         y = F.conv_transpose1d(
@@ -381,8 +399,9 @@ def lfilter(
 
     Raises:
         ValueError: if :attr:`form` or :attr:`backend` is unknown,
-            :attr:`x` has more than 2 dimensions, or :attr:`zi` is given to
-            a form or backend that does not take it.
+            :attr:`b` or :attr:`a` is not 1-D or 2-D, :attr:`x` has more
+            than 2 dimensions, or :attr:`zi` is given to a form or backend
+            that does not take it.
 
     Note:
         Unlike :func:`scipy.signal.lfilter`, :attr:`a` omits the leading
@@ -406,8 +425,10 @@ def lfilter(
     elif x.dim() > 2:
         raise ValueError("Input signal x must be 1D or 2D.")
 
-    assert b.dim() in (1, 2), "Numerator coefficients b must be 1D or 2D."
-    assert a.dim() in (1, 2), "Denominator coefficients a must be 1D or 2D."
+    if b.dim() not in (1, 2):
+        raise ValueError("Numerator coefficients b must be 1D or 2D.")
+    if a.dim() not in (1, 2):
+        raise ValueError("Denominator coefficients a must be 1D or 2D.")
 
     match backend:
         case "ssm":
@@ -626,8 +647,9 @@ def filtfilt(
         Tensor: the filtered signals, of the shape of :attr:`x`.
 
     Raises:
-        AssertionError: if :attr:`x` is not longer than the padding.
-        ValueError: if :attr:`form` is not ``"df2"`` or ``"tdf2"``.
+        ValueError: if :attr:`method` is not ``"pad"`` or ``"gust"``,
+            :attr:`x` is not longer than the padding, or :attr:`form` is not
+            ``"df2"`` or ``"tdf2"``.
         NotImplementedError: if :attr:`method` is ``"gust"``.
 
     Note:
@@ -644,7 +666,8 @@ def filtfilt(
         >>> torch.allclose(y, y.flip(0))
         True
     """
-    assert method in ("pad", "gust"), "Method must be either 'pad' or 'gust'."
+    if method not in ("pad", "gust"):
+        raise ValueError("Method must be either 'pad' or 'gust'.")
 
     if method == "gust":
         raise NotImplementedError("Gustafsson's method is not implemented yet.")
@@ -660,9 +683,10 @@ def filtfilt(
     else:
         edge = padlen
 
-    assert x.size(-1) > edge, (
-        f"Input signal length {x.size(-1)} must be greater than pad length {edge}."
-    )
+    if x.size(-1) <= edge:
+        raise ValueError(
+            f"Input signal length {x.size(-1)} must be greater than pad length {edge}."
+        )
 
     if edge > 0 and padmode is not None:
         ext = F.pad(

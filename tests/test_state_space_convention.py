@@ -328,3 +328,87 @@ def test_recursions_vmap(module):
     )
     actual = torch.func.vmap(module.linear_recurrence)(a, zi[..., 0], x[..., 0])
     torch.testing.assert_close(actual, expected)
+
+
+@pytest.mark.parametrize("module", [lti, lpv], ids=["lti", "lpv"])
+@pytest.mark.parametrize("unroll_factor", [1, 3, 100])
+@pytest.mark.parametrize(("batch", "steps"), [(2, 0), (0, 8), (0, 0)])
+def test_recursions_take_empty_inputs(module, unroll_factor, batch, steps):
+    # No steps or no signals: an empty result, by every algorithm. LPV's A is
+    # per signal, which takes its block-unrolled recursion's batch path.
+    # Their gradients exist, all zero, as for any other length.
+    A = torch.eye(M, dtype=torch.float64) * 0.5
+    if module is lpv:
+        A = A.expand(batch, steps, M, M).clone()
+    zi = torch.ones(batch, M, dtype=torch.float64)
+    x = torch.ones(batch, steps, M, dtype=torch.float64)
+    inputs = [t.requires_grad_() for t in (A, zi, x)]
+    h = module.state_space_recursion(*inputs, unroll_factor=unroll_factor)
+    assert h.shape == (batch, steps, M)
+    for grad, t in zip(torch.autograd.grad(h.sum(), inputs), inputs, strict=True):
+        torch.testing.assert_close(grad, torch.zeros_like(t))
+    a = torch.tensor(0.5, dtype=torch.float64)
+    if module is lpv:
+        a = a.expand(batch, steps).clone()
+    inputs = [t.detach().requires_grad_() for t in (a, zi[:, 0], x[..., 0])]
+    h = module.linear_recurrence(*inputs, unroll_factor=unroll_factor)
+    assert h.shape == (batch, steps)
+    for grad, t in zip(torch.autograd.grad(h.sum(), inputs), inputs, strict=True):
+        torch.testing.assert_close(grad, torch.zeros_like(t))
+
+
+@pytest.mark.parametrize(("batch", "steps"), [(2, 0), (0, 8)])
+def test_state_spaces_take_empty_inputs(batch, steps):
+    # The outputs of no steps or no signals, and the initial state as the final.
+    A = torch.tensor([[0.5, 0.2, 0.0], [0.0, -0.3, 0.1], [0.0, 0.0, 0.2]], dtype=torch.float64)
+    zi = torch.ones(batch, M, dtype=torch.float64)
+    x = torch.ones(batch, steps, dtype=torch.float64)
+    results = [
+        lti.state_space(A, x, zi=zi),
+        lti.diag_state_space(x, A=A, zi=zi),
+        lpv.state_space(A.expand(steps, M, M), x, zi=zi),
+    ]
+    for y, zf in results:
+        assert y.shape == (batch, steps, M)
+        torch.testing.assert_close(zf, zi.to(zf.dtype))
+    assert lti.state_space(A, x).shape == (batch, steps, M)
+    assert lti.state_space(A, x, out_idx=1).shape == (batch, steps)
+    assert lti.diag_state_space(x, A=A, out_idx=1).shape == (batch, steps)
+
+    b, a = torch.tensor([1.0, 0.5], dtype=torch.float64), torch.tensor([0.3], dtype=torch.float64)
+    zi = torch.ones(batch, 1, dtype=torch.float64)
+    y, zf = lti.lfilter(b, a, x, zi=zi)
+    assert y.shape == (batch, steps)
+    torch.testing.assert_close(zf, zi)
+    for backend in ("ssm", "torchlpc"):
+        y, zf = lpv.lfilter(
+            b.expand(batch, steps, 2), a.expand(batch, steps, 1), x, zi=zi, backend=backend
+        )
+        assert y.shape == (batch, steps)
+        torch.testing.assert_close(zf, zi)
+
+    # lpv.fir's outputs: zero gradients, and zi's dtype among those promoted.
+    inputs = [t.requires_grad_() for t in (b.expand(batch, steps, 2).clone(), x.clone())]
+    (grad_b, grad_x) = torch.autograd.grad(lpv.fir(*inputs).sum(), inputs)
+    torch.testing.assert_close(grad_b, torch.zeros_like(inputs[0]))
+    torch.testing.assert_close(grad_x, torch.zeros_like(inputs[1]))
+    y, _ = lpv.fir(inputs[0].detach(), x, zi=zi.to(torch.complex128))
+    assert y.dtype == torch.complex128
+
+
+@pytest.mark.parametrize("module", [lti, lpv], ids=["lti", "lpv"])
+def test_state_space_rejects_D_with_other_outputs(module):
+    # Four outputs from D, one from out_idx or a vector C.
+    A = torch.eye(M, dtype=torch.float64) * 0.5
+    if module is lpv:
+        A = A.expand(N, M, M)
+    x = torch.ones(BATCH, N, M, dtype=torch.float64)
+    D = torch.ones(4, M, dtype=torch.float64)
+    message = r"D x, of shape \(2, 10, 4\), has different outputs from C h, .* \(2, 10\)"
+    with pytest.raises(ValueError, match=message):
+        module.state_space(A, x, D=D, out_idx=0)
+    with pytest.raises(ValueError, match=message):
+        module.state_space(A, x, C=torch.ones(M, dtype=torch.float64), D=D)
+    # One output row is not one scalar output either.
+    with pytest.raises(ValueError, match=r"of shape \(2, 10, 1\)"):
+        module.state_space(A, x, C=torch.ones(M, dtype=torch.float64), D=D[:1])

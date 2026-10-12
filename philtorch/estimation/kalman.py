@@ -67,9 +67,11 @@ def _parse(
     y: Tensor, A: Tensor, C: Tensor, Q: Tensor, R: Tensor, m0: Tensor, P0: Tensor
 ) -> tuple[Tensor, ...]:
     """Validate the model: A and Q of its N - 1 transitions, C and R of its N measurements."""
-    assert y.dim() == 3, f"Measurements y must be 3D (batch, time, features), got {y.shape}"
+    if y.dim() != 3:
+        raise ValueError(f"Measurements y must be 3D (batch, time, features), got {y.shape}")
     batch_size, N, P = y.shape
-    assert A.dim() >= 2 and A.size(-1) == A.size(-2), f"A must be square, got {A.shape}"
+    if not (A.dim() >= 2 and A.size(-1) == A.size(-2)):
+        raise ValueError(f"A must be square, got {A.shape}")
     M = A.size(-1)
     transitions = max(N - 1, 0)
 
@@ -383,8 +385,8 @@ def kalman_filter(
         log-likelihood, of shape :math:`(B)`.
 
     Raises:
-        ValueError: if a coefficient has an unsupported shape.
-        AssertionError: if :attr:`y` is not 3-D or :attr:`A` is not square.
+        ValueError: if :attr:`y` is not 3-D, :attr:`A` is not square, or a
+            coefficient has an unsupported shape.
         RuntimeError: on PyTorch older than 2.11.
 
     Example::
@@ -474,8 +476,8 @@ def kalman_smoother(
         :math:`(B)`.
 
     Raises:
-        ValueError: if a coefficient has an unsupported shape.
-        AssertionError: if :attr:`y` is not 3-D or :attr:`A` is not square.
+        ValueError: if :attr:`y` is not 3-D, :attr:`A` is not square, or a
+            coefficient has an unsupported shape.
         RuntimeError: on PyTorch older than 2.11.
 
     Example::

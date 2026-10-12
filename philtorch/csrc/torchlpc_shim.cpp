@@ -98,7 +98,8 @@ at::Tensor scan_cpu_wrapper_vendored(const at::Tensor &input, const at::Tensor &
     TORCH_CHECK(input.is_floating_point() || input.is_complex(), "Input must be floating point or complex");
     TORCH_CHECK(initials.scalar_type() == input.scalar_type(), "Initials must have the same scalar type as input");
     TORCH_CHECK(weights.scalar_type() == input.scalar_type(), "Weights must have the same scalar type as input");
-    auto output = at::empty_like(input);
+    // Contiguous whatever the input's strides: the kernel writes it in order.
+    auto output = at::empty(input.sizes(), input.options());
     AT_DISPATCH_FLOATING_AND_COMPLEX_TYPES(
         input.scalar_type(), "scan_cpu",
         [&]

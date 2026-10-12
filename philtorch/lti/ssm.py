@@ -165,8 +165,10 @@ def state_space(
         :math:`(B, M)`.
 
     Raises:
-        ValueError: if both :attr:`C` and :attr:`out_idx` are given, or
-            :attr:`B`, :attr:`C` or :attr:`D` has an unsupported shape.
+        ValueError: if both :attr:`C` and :attr:`out_idx` are given, if
+            :attr:`B`, :attr:`C` or :attr:`D` has an unsupported shape, if
+            :attr:`D` gives a different number of outputs from :attr:`C`,
+            :attr:`out_idx` or the states, or if the other shapes do not match.
 
     Note:
         This computes the same as :func:`scipy.signal.dlsim` with
@@ -181,17 +183,21 @@ def state_space(
         >>> state_space(A, x, C=torch.tensor([1.0, 0.0]))
         tensor([[0., 1., 1., 2., 3., 5., 8.]])
     """
-    assert x.dim() in (
+    if x.dim() not in (
         2,
         3,
-    ), f"Input signal must be 2D or 3D (batch, time, [features]), got {x.shape}"
+    ):
+        raise ValueError(f"Input signal must be 2D or 3D (batch, time, [features]), got {x.shape}")
 
-    assert A.dim() in (2, 3), f"State matrix A must be 2D or 3D, got {A.shape}"
-    assert A.size(-2) == A.size(-1), f"State matrix A must be square, got {A.shape}"
+    if A.dim() not in (2, 3):
+        raise ValueError(f"State matrix A must be 2D or 3D, got {A.shape}")
+    if A.size(-2) != A.size(-1):
+        raise ValueError(f"State matrix A must be square, got {A.shape}")
     if A.dim() == 3:
-        assert x.size(0) == A.size(0), (
-            f"Batch size of A must match batch size of x, got A: {A.size(0)}, x: {x.size(0)}"
-        )
+        if x.size(0) != A.size(0):
+            raise ValueError(
+                f"Batch size of A must match batch size of x, got A: {A.size(0)}, x: {x.size(0)}"
+            )
 
     if not (C is None or out_idx is None):
         raise ValueError("C and out_idx cannot be used together. Use either C or out_idx.")
@@ -321,11 +327,7 @@ def _ssm_C_D(h, x, C, D, batch_size, M):
     else:
         Ch = h
 
-    if Dx is not None:
-        y = Ch + Dx
-    else:
-        y = Ch
-    return y
+    return _ssm.outputs(Ch, Dx)
 
 
 def diag_state_space(
@@ -389,9 +391,10 @@ def diag_state_space(
         otherwise the outputs are complex.
 
     Raises:
-        AssertionError: if neither :attr:`L` nor :attr:`A` is given, or the
-            shapes do not match.
-        ValueError: if both :attr:`C` and :attr:`out_idx` are given.
+        ValueError: if neither :attr:`L` nor :attr:`A` is given, if both
+            :attr:`C` and :attr:`out_idx` are given, if :attr:`D` gives a
+            different number of outputs from :attr:`C`, :attr:`out_idx` or the
+            states, or if the shapes do not match.
 
     Example::
 
@@ -403,23 +406,29 @@ def diag_state_space(
         >>> torch.allclose(y, state_space(A, x, C=C), atol=1e-6)
         True
     """
-    assert x.dim() in (
+    if x.dim() not in (
         2,
         3,
-    ), f"Input signal must be 2D or 3D (batch, time, [features]), got {x.shape}"
+    ):
+        raise ValueError(f"Input signal must be 2D or 3D (batch, time, [features]), got {x.shape}")
     if not (C is None or out_idx is None):
         raise ValueError("C and out_idx cannot be used together. Use either C or out_idx.")
 
     batch_size = x.size(0)
 
     if L is None:
-        assert A is not None, "Either L or A must be provided"
-        assert A.dim() in (2, 3), f"State matrix A must be 2D or 3D, got {A.shape}"
-        assert A.size(-2) == A.size(-1), f"State matrix A must be square, got {A.shape}"
+        if A is None:
+            raise ValueError("Either L or A must be provided")
+        if A.dim() not in (2, 3):
+            raise ValueError(f"State matrix A must be 2D or 3D, got {A.shape}")
+        if A.size(-2) != A.size(-1):
+            raise ValueError(f"State matrix A must be square, got {A.shape}")
         if A.dim() == 3:
-            assert x.size(0) == A.size(0), (
-                f"Batch size of A must match batch size of x, got A: {A.size(0)}, x: {x.size(0)}"
-            )
+            if x.size(0) != A.size(0):
+                raise ValueError(
+                    f"Batch size of A must match batch size of x, "
+                    f"got A: {A.size(0)}, x: {x.size(0)}"
+                )
         L = torch.linalg.eigvals(A)
         V = Vinv = None
         M = A.size(-1)
@@ -428,43 +437,49 @@ def diag_state_space(
             case (_,):
                 M = L.size(0)
                 if V is not None:
-                    assert V.dim() == 2, f"P must be 2D, got {V.shape}"
-                    assert V.size(0) == V.size(1) == M, (
-                        f"P must be square with size {M}, got {V.shape}"
-                    )
+                    if V.dim() != 2:
+                        raise ValueError(f"V must be 2D, got {V.shape}")
+                    if not (V.size(0) == V.size(1) == M):
+                        raise ValueError(f"V must be square with size {M}, got {V.shape}")
                 if Vinv is not None:
-                    assert Vinv.dim() == 2, f"Vinv must be 2D, got {Vinv.shape}"
-                    assert Vinv.size(0) == Vinv.size(1) == M, (
-                        f"Vinv must be square with size {M}, got {Vinv.shape}"
-                    )
+                    if Vinv.dim() != 2:
+                        raise ValueError(f"Vinv must be 2D, got {Vinv.shape}")
+                    if not (Vinv.size(0) == Vinv.size(1) == M):
+                        raise ValueError(f"Vinv must be square with size {M}, got {Vinv.shape}")
 
                 if A is not None:
-                    assert A.dim() == 2, f"A must be 2D, got {A.shape}"
-                    assert A.size(0) == A.size(1) == M, (
-                        f"A must be square with size {M}, got {A.shape}"
-                    )
+                    if A.dim() != 2:
+                        raise ValueError(f"A must be 2D, got {A.shape}")
+                    if not (A.size(0) == A.size(1) == M):
+                        raise ValueError(f"A must be square with size {M}, got {A.shape}")
 
             case (L_batch, _) if L_batch == batch_size:
                 M = L.size(1)
-                assert not (V is None and Vinv is None), (
-                    "P and Vinv cannot both be None when L is a batch of vectors"
-                )
+                if V is None and Vinv is None:
+                    raise ValueError("V and Vinv cannot both be None when L is a batch of vectors")
                 if V is not None:
-                    assert V.dim() == 3, f"P must be 3D, got {V.shape}"
-                    assert V.size(0) == batch_size and V.size(1) == V.size(2) == M, (
-                        f"P must be a batch of square matrices with size {M}, got {V.shape}"
-                    )
+                    if V.dim() != 3:
+                        raise ValueError(f"V must be 3D, got {V.shape}")
+                    if not (V.size(0) == batch_size and V.size(1) == V.size(2) == M):
+                        raise ValueError(
+                            f"V must be a batch of square matrices with size {M}, got {V.shape}"
+                        )
                 if Vinv is not None:
-                    assert Vinv.dim() == 3, f"Vinv must be 3D, got {Vinv.shape}"
-                    assert Vinv.size(0) == batch_size and Vinv.size(1) == Vinv.size(2) == M, (
-                        f"Vinv must be a batch of square matrices with size {M}, got {Vinv.shape}"
-                    )
+                    if Vinv.dim() != 3:
+                        raise ValueError(f"Vinv must be 3D, got {Vinv.shape}")
+                    if not (Vinv.size(0) == batch_size and Vinv.size(1) == Vinv.size(2) == M):
+                        raise ValueError(
+                            f"Vinv must be a batch of square matrices with size {M}, "
+                            f"got {Vinv.shape}"
+                        )
 
                 if A is not None:
-                    assert A.dim() == 3, f"A must be 3D, got {A.shape}"
-                    assert A.size(0) == batch_size and A.size(1) == A.size(2) == M, (
-                        f"A must be a batch of square matrices with size {M}, got {A.shape}"
-                    )
+                    if A.dim() != 3:
+                        raise ValueError(f"A must be 3D, got {A.shape}")
+                    if not (A.size(0) == batch_size and A.size(1) == A.size(2) == M):
+                        raise ValueError(
+                            f"A must be a batch of square matrices with size {M}, got {A.shape}"
+                        )
 
             case _:
                 raise ValueError(f"L must be a vector or a batch of vectors, got {L.shape}")
@@ -484,8 +499,6 @@ def diag_state_space(
             pass
         case _:
             raise ValueError("Only one of V, Vinv, or A can be provided at a time.")
-    assert Vinv is not None, "Vinv must be provided or computed from A or V"
-    assert V is not None, "V must be provided or computed from A or Vinv"
 
     return_zf = True
     if zi is None:
@@ -503,13 +516,11 @@ def diag_state_space(
         if B is not None and not B.is_complex():
             B = B + 0j
 
-    match Vinv.dim():
-        case 2:
-            Vinvzi = zi @ Vinv.T
-        case 3:
-            Vinvzi = torch.linalg.vecdot(Vinv.conj(), zi.unsqueeze(1))
-        case _:
-            assert False, f"Vinv must be 2D or 3D, got {Vinv.shape}"
+    # Vinv is 2-D or 3-D: as given and checked, or as computed.
+    if Vinv.dim() == 2:
+        Vinvzi = zi @ Vinv.T
+    else:
+        Vinvzi = torch.linalg.vecdot(Vinv.conj(), zi.unsqueeze(1))
 
     if B is not None:
         # Same dispatch as _ssm_B, but Vinv is folded into B before touching x.
@@ -533,10 +544,8 @@ def diag_state_space(
         VinvBx = x.unsqueeze(-1) * Vinv[:, 0]
     elif x.dim() == 2 and Vinv.dim() == 3:
         VinvBx = x.unsqueeze(-1) * Vinv[:, None, :, 0]
-    elif x.dim() == 3:
+    else:  # x is 3-D, as checked
         VinvBx = x @ Vinv.mT
-    else:
-        assert False, f"Input signal x must be 2D or 3D, got {x.shape}"
 
     recur_runner = partial(linear_recurrence, unroll_factor=unroll_factor)
 
@@ -545,6 +554,8 @@ def diag_state_space(
         Vinvzi.flatten(),
         VinvBx.mT.flatten(0, 1),
     ).unflatten(0, (batch_size, M))
+    # h[0], ..., h[N - 1], and h[N] with zi: none and zi itself when N = 0.
+    N = Vinvh.size(-1)
     if not return_zf and out_idx is not None:
         h = torch.cat(
             [
@@ -552,11 +563,11 @@ def diag_state_space(
                 (V[..., out_idx, None, :] @ Vinvh[..., :-1]).squeeze(-2),
             ],
             dim=1,
-        )
+        )[:, :N]
         zf = None
     else:
         h = (V @ Vinvh).mT
-        zf = h[:, -1, :] if return_zf else None
+        zf = (h[:, -1, :] if N else zi) if return_zf else None
         h = torch.cat(
             (
                 [zi.unsqueeze(1), h[:, :-1]]
@@ -564,7 +575,7 @@ def diag_state_space(
                 else [zi[:, None, out_idx], h[:, :-1, out_idx]]
             ),
             dim=1,
-        )
+        )[:, :N]
 
     if C is not None and not C.is_complex():
         h = h.real

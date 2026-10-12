@@ -394,7 +394,7 @@ def test_delay_state_space_rejects_non_integer_numpy_delays(delays, message):
     ],
 )
 def test_delay_state_space_validates_signal_and_feedback_matrix(A, x, message):
-    with pytest.raises(AssertionError, match=message):
+    with pytest.raises(ValueError, match=message):
         delay_state_space(A, x, (2, 3))
 
 
@@ -406,7 +406,7 @@ def test_delay_state_space_rejects_C_with_out_idx():
 @pytest.mark.parametrize(
     ("x", "B", "error", "message"),
     [
-        (torch.zeros(2, 4, 3), None, AssertionError, "number of delays when B is None"),
+        (torch.zeros(2, 4, 3), None, ValueError, "number of delays when B is None"),
         (torch.zeros(2, 4, 1), torch.zeros(2), ValueError, "Input matrix B"),
         (torch.zeros(2, 4, 1), torch.zeros(2, 2), ValueError, "Input matrix B"),
         (torch.zeros(2, 4), torch.zeros(4), ValueError, "Input matrix B"),
@@ -434,9 +434,9 @@ def test_delay_state_space_validates_output_matrices():
         (torch.zeros(2, 2), ValueError, "one state"),
         ((torch.zeros(2, 2),), ValueError, "one state"),
         ((torch.zeros(2, 2), [0.0, 0.0, 0.0]), TypeError, r"zi\[1\] must be a Tensor"),
-        ((torch.zeros(2, 2), torch.zeros(1, 2, 3)), AssertionError, "1D or 2D"),
-        ((torch.zeros(2, 2), torch.zeros(2, 4)), AssertionError, "match delay"),
-        ((torch.zeros(2, 2), torch.zeros(3, 3)), AssertionError, "Batch size of zi"),
+        ((torch.zeros(2, 2), torch.zeros(1, 2, 3)), ValueError, "1D or 2D"),
+        ((torch.zeros(2, 2), torch.zeros(2, 4)), ValueError, "match delay"),
+        ((torch.zeros(2, 2), torch.zeros(3, 3)), ValueError, "Batch size of zi"),
     ],
 )
 def test_delay_state_space_validates_initial_states(zi, error, message):

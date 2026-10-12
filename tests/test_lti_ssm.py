@@ -274,7 +274,8 @@ def test_ssm_D_layouts(x_shape, D_shape, equation, dtype):
     x = torch.randn(x_shape, dtype=dtype)
     D = torch.randn(D_shape, dtype=dtype)
     expected = torch.einsum(equation, x, D)
-    y = _ssm_C_D(torch.zeros((), dtype=dtype), x, None, D, x_shape[0], _M)
+    # Zero states with D's outputs, C h = h without C.
+    y = _ssm_C_D(torch.zeros_like(expected), x, None, D, x_shape[0], _M)
     torch.testing.assert_close(y, expected)
 
 

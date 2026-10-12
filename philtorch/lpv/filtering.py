@@ -48,7 +48,7 @@ def fir(
         convention, of shape :math:`(B, M)`.
 
     Raises:
-        AssertionError: if the shapes do not match.
+        ValueError: if the shapes do not match.
 
     Example::
 
@@ -60,23 +60,34 @@ def fir(
         >>> fir(b, x)  # y[n] = b_0[n] x[n] + b_1[n - 1] x[n - 1]
         tensor([[1., 3., 5.]])
     """
-    assert b.dim() == 3, "Numerator coefficients b must be 3D."
-    assert x.dim() == 2, "Input signal x must be 2D."
+    if b.dim() != 3:
+        raise ValueError("Numerator coefficients b must be 3D.")
+    if x.dim() != 2:
+        raise ValueError("Input signal x must be 2D.")
 
     B, T = x.shape
-    assert b.shape[:2] == x.shape, "The first two dimensions of b must match the shape of x."
+    if b.shape[:2] != x.shape:
+        raise ValueError("The first two dimensions of b must match the shape of x.")
 
     if zi is None:
         return_zf = False
         zi = x.new_zeros((B, b.size(2) - 1))
     else:
-        assert zi.dim() == 2, "Initial conditions zi must be 2D."
-        assert zi.size(0) == B, "The first dimension of zi must match the batch size."
-        assert zi.size(1) == b.size(2) - 1, (
-            "The second dimension of zi must match the filter order."
-        )
+        if zi.dim() != 2:
+            raise ValueError("Initial conditions zi must be 2D.")
+        if zi.size(0) != B:
+            raise ValueError("The first dimension of zi must match the batch size.")
+        if zi.size(1) != b.size(2) - 1:
+            raise ValueError("The second dimension of zi must match the filter order.")
 
         return_zf = True
+
+    if T == 0:
+        # No input: no outputs, and the state the filter started in. The
+        # outputs come from the inputs' empty slices, so that they take their
+        # promoted dtype and carry their gradients, all zero.
+        y = x + b[..., 0] + zi[:, :0]
+        return (y, zi) if return_zf else y
 
     if b.size(2) == 1:
         # A one-tap filter is a gain and keeps no state, so its final state
@@ -145,7 +156,7 @@ def allpole(
         convention, of shape :math:`(B, M)`.
 
     Raises:
-        AssertionError: if the shapes do not match.
+        ValueError: if the shapes do not match.
 
     Example::
 
@@ -154,21 +165,27 @@ def allpole(
         >>> allpole(a, torch.tensor([[1.0, 0.0, 0.0, 0.0]]))
         tensor([[1.0000, 0.5000, 0.2500, 0.1250]])
     """
-    assert a.dim() == 3, "Denominator coefficients a must be 3D."
-    assert x.dim() == 2, "Input signal x must be 2D."
+    if a.dim() != 3:
+        raise ValueError("Denominator coefficients a must be 3D.")
+    if x.dim() != 2:
+        raise ValueError("Input signal x must be 2D.")
     B, T = x.shape
-    assert a.shape[:2] == x.shape, "The first two dimensions of a must match the shape of x."
+    if a.shape[:2] != x.shape:
+        raise ValueError("The first two dimensions of a must match the shape of x.")
 
     if zi is None:
         return_zf = False
         zi = x.new_zeros((B, a.size(2)))
     else:
-        assert zi.dim() == 2, "Initial conditions zi must be 2D."
-        assert zi.size(0) == B, "The first dimension of zi must match the batch size."
-        assert zi.size(1) == a.size(2), (
-            f"The second dimension of zi must match the filter order, "
-            f"but got {zi.size(1)} instead of {a.size(2)}"
-        )
+        if zi.dim() != 2:
+            raise ValueError("Initial conditions zi must be 2D.")
+        if zi.size(0) != B:
+            raise ValueError("The first dimension of zi must match the batch size.")
+        if zi.size(1) != a.size(2):
+            raise ValueError(
+                f"The second dimension of zi must match the filter order, "
+                f"but got {zi.size(1)} instead of {a.size(2)}"
+            )
 
         return_zf = True
 
@@ -261,10 +278,9 @@ def lfilter(
 
     Raises:
         ValueError: if :attr:`x` has more than 2 dimensions, :attr:`form` or
-            :attr:`backend` is unknown, or :attr:`zi` is given with ``"df1"``
-            or ``"tdf1"``.
+            :attr:`backend` is unknown, :attr:`zi` is given with ``"df1"``
+            or ``"tdf1"``, or the other shapes do not match.
         NotImplementedError: for ``form="tdf2"`` with ``backend="torchlpc"``.
-        AssertionError: if the shapes do not match.
 
     Note:
         Unlike :func:`philtorch.lti.lfilter`, :attr:`b` and :attr:`a` always
@@ -290,8 +306,10 @@ def lfilter(
     elif x.dim() > 2:
         raise ValueError("Input signal x must be 1D or 2D.")
 
-    assert b.dim() in (2, 3), "Numerator coefficients b must be 2D or 3D."
-    assert a.dim() in (2, 3), "Denominator coefficients a must be 2D or 3D."
+    if b.dim() not in (2, 3):
+        raise ValueError("Numerator coefficients b must be 2D or 3D.")
+    if a.dim() not in (2, 3):
+        raise ValueError("Denominator coefficients a must be 2D or 3D.")
 
     if form is None:
         form = "df2" if backend == "torchlpc" else "tdf2"
@@ -330,22 +348,14 @@ def _torchlpc_lfilter(
     """Run :func:`lfilter` with the ``"torchlpc"`` backend."""
     _, T = x.shape
 
+    # lfilter checked that b and a are 2-D or 3-D.
     if b.dim() == 2:
         b = b.unsqueeze(0)
-    elif b.dim() == 3:
-        pass
-    else:
-        raise ValueError("Numerator coefficients b must be 2D or 3D.")
     if a.dim() == 2:
         a = a.unsqueeze(0)
-    elif a.dim() == 3:
-        pass
-    else:
-        raise ValueError("Denominator coefficients a must be 2D or 3D.")
 
-    assert b.shape[1] == a.shape[1] == T, (
-        "The number of time steps in b and a must match the input signal x."
-    )
+    if not (b.shape[1] == a.shape[1] == T):
+        raise ValueError("The number of time steps in b and a must match the input signal x.")
 
     order = max(a.shape[2], b.shape[2] - 1)
 
@@ -355,10 +365,12 @@ def _torchlpc_lfilter(
     if zi is None:
         zi = x.new_zeros((B, order))
     elif zi.dim() == 1:
-        assert zi.shape[0] == order, "Initial conditions zi must match filter order."
+        if zi.shape[0] != order:
+            raise ValueError("Initial conditions zi must match filter order.")
         zi = zi.unsqueeze(0).expand(B, -1)
     elif zi.dim() == 2:
-        assert zi.shape[1] == order, "Initial conditions zi must match filter order."
+        if zi.shape[1] != order:
+            raise ValueError("Initial conditions zi must match filter order.")
         B = max(B, zi.size(0))
         zi = zi.expand(B, -1)
     else:
