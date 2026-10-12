@@ -70,14 +70,16 @@ def test_ctc_reductions(reduction, zero_infinity):
 
 @pytest.mark.cuda
 def test_ctc_target_formats():
-    # Concatenated targets with lengths as tuples, and one unbatched sequence.
+    # Concatenated targets with lengths as tuples and as tensors, and one
+    # unbatched sequence.
     logits, targets = _problem(3, 20, 5, 6)
     frames, labels = (20, 18, 15), (6, 0, 4)
     concatenated = torch.cat([targets[n, :s] for n, s in enumerate(labels)])
     padded = ctc_loss(logits.log_softmax(-1), targets, frames, labels, reduction="none")
-    torch.testing.assert_close(
-        ctc_loss(logits.log_softmax(-1), concatenated, frames, labels, reduction="none"), padded
-    )
+    for lengths in ((frames, labels), (torch.tensor(frames), torch.tensor(labels))):
+        torch.testing.assert_close(
+            ctc_loss(logits.log_softmax(-1), concatenated, *lengths, reduction="none"), padded
+        )
     unbatched = ctc_loss(logits[2].log_softmax(-1), targets[2, :4], 15, 4, reduction="none")
     torch.testing.assert_close(unbatched, padded[2])
 
