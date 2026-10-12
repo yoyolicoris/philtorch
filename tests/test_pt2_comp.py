@@ -267,22 +267,29 @@ def test_compiled_alignment_gradients(loss, shape):
 
 @pytest.mark.cuda
 @pytest.mark.parametrize(
-    "steps, diag_weight", [("symmetric", 1.0), ("symmetric", 2.0), ("orthogonal", 1.0)]
+    "soft, steps, diag_weight",
+    [
+        (True, "symmetric", 1.0),
+        (True, "symmetric", 2.0),
+        (True, "orthogonal", 1.0),
+        (False, "symmetric", 2.0),
+    ],
 )
-def test_dtw_dp_backward_registered_gradients(steps, diag_weight):
+def test_dtw_dp_backward_registered_gradients(soft, steps, diag_weight):
     # dtw_dp_backward's registered backward, which defines dtw_dp's second and
     # higher derivatives, against finite differences of the fused kernel, with
-    # D, cost and grad independent; and its own derivatives.
+    # D, cost and grad independent; and its own derivatives. DTW's hard shares
+    # make its gradient piecewise constant in D and the cost.
     from philtorch.align._dtw_kernels import dtw_dp_backward
 
     gen = torch.Generator("cuda").manual_seed(0)
     cost = torch.rand(2, 4, 5, device="cuda", dtype=torch.float64, generator=gen)
-    D = torch.ops.philtorch.dtw_dp(cost, None, True, steps, diag_weight)
+    D = torch.ops.philtorch.dtw_dp(cost, None, soft, steps, diag_weight)
     grad = torch.rand(D.shape, device="cuda", dtype=torch.float64, generator=gen)
     inputs = tuple(t.requires_grad_() for t in (D, cost, grad))
 
     def fn(D, cost, grad):
-        return dtw_dp_backward(D, cost, None, grad, True, steps, diag_weight)
+        return dtw_dp_backward(D, cost, None, grad, soft, steps, diag_weight)
 
     assert torch.autograd.gradcheck(fn, inputs)
     assert torch.autograd.gradgradcheck(fn, inputs)
