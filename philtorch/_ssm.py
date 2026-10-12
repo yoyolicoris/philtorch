@@ -344,8 +344,8 @@ def outputs(Ch: Tensor, Dx: Tensor | None) -> Tensor:
     """state_space's outputs, C h + D x, each (B, N) for one output or (B, N, P) for P.
 
     Raises:
-        ValueError: if C h, or the states or the one with ``out_idx``, and D x
-            give different numbers of outputs.
+        ValueError: if D x gives a different number of outputs from C h, the
+            states, or the state ``out_idx`` picks.
     """
     if Dx is None:
         return Ch

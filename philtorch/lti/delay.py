@@ -110,11 +110,12 @@ def delay_state_space(
         :attr:`zi`, a tuple holding one final queue per delay line.
 
     Raises:
-        ValueError: if a delay or :attr:`block_size` is invalid, :attr:`zi`
-            does not hold one queue per delay line, or both :attr:`C` and
-            :attr:`out_idx` are given.
+        ValueError: if a delay or :attr:`block_size` is invalid, if
+            :attr:`zi` does not hold one queue per delay line, if both
+            :attr:`C` and :attr:`out_idx` are given, if :attr:`D` gives a
+            different number of outputs from :attr:`C`, :attr:`out_idx` or
+            the states, or if the other shapes do not match.
         TypeError: if a queue in :attr:`zi` is not a tensor.
-        ValueError: if the shapes do not match.
 
     Example::
 

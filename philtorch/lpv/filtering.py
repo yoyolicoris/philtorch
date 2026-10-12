@@ -276,10 +276,9 @@ def lfilter(
 
     Raises:
         ValueError: if :attr:`x` has more than 2 dimensions, :attr:`form` or
-            :attr:`backend` is unknown, or :attr:`zi` is given with ``"df1"``
-            or ``"tdf1"``.
+            :attr:`backend` is unknown, :attr:`zi` is given with ``"df1"``
+            or ``"tdf1"``, or the other shapes do not match.
         NotImplementedError: for ``form="tdf2"`` with ``backend="torchlpc"``.
-        ValueError: if the shapes do not match.
 
     Note:
         Unlike :func:`philtorch.lti.lfilter`, :attr:`b` and :attr:`a` always

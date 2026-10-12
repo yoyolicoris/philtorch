@@ -385,8 +385,8 @@ def kalman_filter(
         log-likelihood, of shape :math:`(B)`.
 
     Raises:
-        ValueError: if a coefficient has an unsupported shape.
-        ValueError: if :attr:`y` is not 3-D or :attr:`A` is not square.
+        ValueError: if :attr:`y` is not 3-D, :attr:`A` is not square, or a
+            coefficient has an unsupported shape.
         RuntimeError: on PyTorch older than 2.11.
 
     Example::
@@ -476,8 +476,8 @@ def kalman_smoother(
         :math:`(B)`.
 
     Raises:
-        ValueError: if a coefficient has an unsupported shape.
-        ValueError: if :attr:`y` is not 3-D or :attr:`A` is not square.
+        ValueError: if :attr:`y` is not 3-D, :attr:`A` is not square, or a
+            coefficient has an unsupported shape.
         RuntimeError: on PyTorch older than 2.11.
 
     Example::
