@@ -43,7 +43,7 @@ Benchmarks live in `benchmarks/` and run as `pixi run python benchmarks/<name>.p
   - `philtorch/_trace_kernels.py` is the chunked parallel traceback shared by `hmm_viterbi` and `forced_align`.
   - CTC reuses the DTW kernels: it is soft-DTW over a third step set, `"ctc"`.
   - The module docstring of `align/_dtw_kernels.py` explains the row-scan design.
-- Triton kernels live in modules named `_*_kernels.py`: the CUDA workflow's path filter picks them out by that name, so a new kernel module must follow it. The filter also lists `_recur.py`, `_ops.py` and every test module with `cuda`-marked tests; `tests/test_ci_paths.py` fails when one is missing.
+- Triton kernels live in modules named `_*_kernels.py`: the CUDA workflow's path filter picks them out by that name, so a new kernel module must follow it. The filter also lists `_recur.py`, `_ops.py`, the CUDA-only modules `align/*.py` and `estimation/hmm.py`, and exactly the test modules with `cuda`-marked tests; `tests/test_ci_paths.py` fails when one is missing or another is listed. Keep CUDA cases out of mostly-CPU modules: any change to a listed module runs the CUDA build.
 - Kernels are prototyped and tuned in Helion, a development tool the package never imports, and shipped as Triton with their configurations fixed: there is no autotuning at runtime. The algorithms in `estimation/` and `align/` ship only parallel implementations; sequential recursions belong in tests, as references.
 - `philtorch/prototype/` holds unreleased research code.
 
@@ -60,13 +60,13 @@ Benchmarks live in `benchmarks/` and run as `pixi run python benchmarks/<name>.p
   - math in reStructuredText;
   - `Raises:` lists the errors bad input triggers; argument errors are `ValueError`s, not asserts.
 - **New public functions** need an entry on their page in `docs/api/*.rst`.
-- **Docstring examples:** if a module's docstrings have examples, add the module to `tests/test_docstrings.py`: `MODULES`, or `CUDA_MODULES` for Triton code (checked only on CUDA machines). Load it with `importlib.import_module` when a function of the same name shadows it, as `philtorch.align.dtw` does.
+- **Docstring examples:** if a module's docstrings have examples, add the module to `MODULES` in `tests/test_docstrings.py`, or, for Triton code, to `CUDA_MODULES` in `tests/test_docstrings_cuda.py` (checked only on CUDA machines). Load it with `importlib.import_module` when a function of the same name shadows it, as `philtorch.align.dtw` does.
 
 ## Tests and CI
 
 - When changing an op's registered backward or fake, test compiled code with `TORCHINDUCTOR_FX_GRAPH_CACHE=0 TORCHINDUCTOR_AUTOGRAD_CACHE=0`: the on-disk compile caches are keyed before tracing, so they can replay the old backward.
 - pytest runs with `--import-mode=importlib`, so the tests import the installed philtorch, with its compiled extension, rather than the source tree. A test that runs a subprocess should pass `cwd=tmp_path`, or the subprocess imports the checkout.
-- Mark tests that need a CUDA device with `pytest.mark.cuda`, on the test or on its `"cuda"` parameter. `tests/conftest.py` skips them where no CUDA device is available, as on the CPU CI runners, and the CUDA workflow (`build-cuda-wheels.yml`) runs exactly them, `-m cuda`, on a Modal GPU, uploading their coverage to Codecov with the `gpu` flag, which `codecov.yml` carries forward to commits that don't run it. Coverage leaves out `@triton.jit` functions, which it can't trace, and `tests/conftest.py` runs autograd's backward passes on the calling thread, since coverage can't trace the thread autograd starts for CUDA.
+- Mark tests that need a CUDA device with `pytest.mark.cuda`, on the test or on its `"cuda"` parameter. `tests/conftest.py` skips them where no CUDA device is available, as on the CPU CI runners, and the CUDA workflow (`build-cuda-wheels.yml`) runs exactly them, `-m cuda`, collecting only the modules that have them, on a Modal GPU, uploading their coverage to Codecov with the `gpu` flag, which `codecov.yml` carries forward to commits that don't run it. Coverage leaves out `@triton.jit` functions, which it can't trace, and `tests/conftest.py` runs autograd's backward passes on the calling thread, since coverage can't trace the thread autograd starts for CUDA.
 
 ## Branches and releases
 

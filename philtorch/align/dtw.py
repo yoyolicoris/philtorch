@@ -61,8 +61,8 @@ def dtw(
     sequence with frame :math:`m` of another, the accumulated costs
 
     .. math::
-        D[n, m] = c[n, m] + \min_\gamma\big(D[n - 1, m],\ D[n, m - 1],\
-        D[n - 1, m - 1] + (w - 1)\, c[n, m]\big),
+        D[n, m] = \min_\gamma\big(D[n - 1, m] + c[n, m],\
+        D[n, m - 1] + c[n, m],\ D[n - 1, m - 1] + w\, c[n, m]\big),
 
     with :math:`D[0, 0] = c[0, 0]`, give the distance :math:`D[N - 1, M - 1]`:
     the cost of the cheapest monotonic path from the first pair of frames to
@@ -106,15 +106,18 @@ def dtw(
             only, so that every path has :math:`N + M - 1` cells. Default:
             ``"symmetric"``.
         diagonal_weight (float): :math:`w`, the weight of a diagonal step's
-            cost in the symmetric steps. 1 favors diagonal paths, which add
-            fewer costs; 2 (the "symmetric2" pattern of Sakoe and Chiba) makes
-            a diagonal step cost as much as a horizontal and a vertical one.
-            Default: 1.
+            cost in the symmetric steps. 1 favors diagonal paths, which sum
+            fewer costs; 2, Sakoe and Chiba's symmetric form ("symmetric2" in
+            Giorgino's dtw package), weighs each step's cost by how far it
+            advances, :math:`\Delta n + \Delta m`, so that every path has the
+            same total weight and diagonal steps are not favored. Default: 1.
         lengths (tuple of Tensor, optional): each pair's lengths
             :math:`(N_b, M_b)`, two integer tensors of shape :math:`(B)`, for
             batches of sequences padded to :math:`N` and :math:`M`; the
             distance is then :math:`D[N_b - 1, M_b - 1]`. Padding costs don't
-            affect it. Default: the full lengths.
+            affect it. With the asymmetric steps, their values size the
+            computation, which breaks a :func:`torch.compile` graph. Default:
+            the full lengths.
         band (float, optional): a Sakoe-Chiba band: only cells within this
             many cells of the straight line from :math:`(0, 0)` to
             :math:`(N_b - 1, M_b - 1)`, measured along the longer sequence,
@@ -132,7 +135,9 @@ def dtw(
             2^{18}`, if :attr:`step_pattern` is unknown, if
             :attr:`diagonal_weight` is not 1 with steps that have no weighted
             diagonal, or if :attr:`lengths` are not of shape :math:`(B)`
-            within :math:`1 \le N_b \le N` and :math:`1 \le M_b \le M`.
+            within :math:`1 \le N_b \le N` and :math:`1 \le M_b \le M`;
+            the lengths' values are checked only in eager mode, as they would
+            break a :func:`torch.compile` graph.
         RuntimeError: if Triton is not installed.
 
     Example::
@@ -175,7 +180,10 @@ def _validate(
         n_len, m_len = lengths
         if n_len.shape != (B,) or m_len.shape != (B,):
             raise ValueError(f"lengths must be two tensors of shape ({B},)")
-        if bool((n_len < 1).any() | (n_len > N).any() | (m_len < 1).any() | (m_len > M).any()):
+        # In eager mode only: the values would break a torch.compile graph.
+        if not torch.compiler.is_compiling() and bool(
+            (n_len < 1).any() | (n_len > N).any() | (m_len < 1).any() | (m_len > M).any()
+        ):
             raise ValueError(f"lengths must be within 1 to {N} and 1 to {M}")
     check_cuda_triton(name, cost)
 
@@ -206,7 +214,12 @@ def _dtw(cost, gamma, step_pattern, diagonal_weight, lengths, band):
     sheared = step_pattern == "asymmetric"
     if sheared:
         no_path = n_len < m_len
-        width = int((n_len - m_len).max()) + 1 if B else 1
+        # From the shapes without lengths; from the lengths' values otherwise,
+        # which breaks a torch.compile graph.
+        if lengths is None:
+            width = N - M + 1
+        else:
+            width = int((n_len - m_len).max()) + 1 if B else 1
         if width <= 0:
             # No pair has a path; stay in the graph, with zero gradients.
             return torch.where(no_path, float("inf"), cost[:, 0, 0]), None

@@ -252,6 +252,25 @@ class _LinearChain(torch.autograd.Function):
         return h[:, start], grad_trans, grad_emit, grad_inj, grad_p, grad_q, None
 
 
+@torch.library.custom_op("philtorch::hmm_viterbi_chain", mutates_args=())
+def _viterbi_chain(log_emit: Tensor, log_trans: Tensor, log_init: Tensor) -> tuple[Tensor, Tensor]:
+    """The max-plus chain of :func:`_run_chain` over all steps but the last, as one
+    op, which torch.compile calls without tracing its kernels: the best score of a
+    path to each state, without its emission, (B, N, K), and each state's best
+    predecessor per step, (B, N, K) int32, zero at step 0."""
+    B, N, K = log_emit.shape
+    # Time slices of (B, N, K): the kernels need the messages' batch stride.
+    pointers = log_emit.new_zeros(B, N, K, dtype=torch.int32)
+    predicted = _run_chain("max", log_init, log_trans, log_emit[:, :-1], argmax=pointers[:, 1:])
+    return predicted, pointers
+
+
+@_viterbi_chain.register_fake
+def _(log_emit, log_trans, log_init):
+    B, N, K = log_emit.shape
+    return log_init.new_empty(B, N, K), log_emit.new_empty(B, N, K, dtype=torch.int32)
+
+
 class _Viterbi(torch.autograd.Function):
     """The Viterbi score and path; the score's gradient is the path's indicator."""
 
@@ -259,15 +278,10 @@ class _Viterbi(torch.autograd.Function):
     def forward(log_emit, log_trans, log_init):
         from .._trace_kernels import trace
 
-        B, N, K = log_emit.shape
-        # Each state's best predecessor per step, as time slices of (B, N, K):
-        # the kernels need the messages' batch stride.
-        pointers = log_emit.new_empty(B, N, K, dtype=torch.int32)[:, 1:]
-        # The best score of a path to each state, without its emission.
-        predicted = _run_chain("max", log_init, log_trans, log_emit[:, :-1], argmax=pointers)
+        predicted, pointers = _viterbi_chain(log_emit, log_trans, log_init)
         score, last = (predicted[:, -1] + log_emit[:, -1]).max(dim=-1)
         # Follow the pointers back from the best last state.
-        path = trace(last.int(), pointers, reverse=True)
+        path = trace(last.int(), pointers[:, 1:], reverse=True)
         return score, torch.cat([path, last.int().unsqueeze(1)], dim=1).long()
 
     @staticmethod

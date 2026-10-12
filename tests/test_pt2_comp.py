@@ -1,3 +1,4 @@
+import importlib
 from unittest import mock
 
 import pytest
@@ -116,6 +117,14 @@ def _dtw_dp_calls():
     return _recorded_calls(_dtw_kernels, "dtw_dp", lambda: dtw(cost, gamma=0.1).sum().backward())
 
 
+def _dtw_dp_backward_calls(loss, shape):
+    # loss's first-order backward, through dtw_dp's.
+    from philtorch.align import _dtw_kernels
+
+    x = torch.rand(shape, device="cuda", requires_grad=True)
+    return _recorded_calls(_dtw_kernels, "dtw_dp_backward", lambda: loss(x).backward())
+
+
 def _dtw_accumulate_calls():
     # Only the gradient's own gradient builds on the accumulation op.
     from philtorch.align import _dtw_kernels, dtw
@@ -127,6 +136,35 @@ def _dtw_accumulate_calls():
         grad.sum().backward()
 
     return _recorded_calls(_dtw_kernels, "accumulate", second_order)
+
+
+def _ctc_viterbi_calls():
+    from philtorch.align import _dtw_kernels, forced_align
+
+    log_probs = torch.randn(2, 7, 4, device="cuda").log_softmax(-1)
+    targets = torch.tensor([[1, 2, 2], [3, 1, 0]], device="cuda")
+    return _recorded_calls(
+        _dtw_kernels, "ctc_viterbi", lambda: forced_align(log_probs, targets, (7, 6), (3, 2))
+    )
+
+
+def _dtw_backtrack_calls():
+    from philtorch.align import _dtw_kernels, dtw_path
+
+    cost = torch.rand(2, 9, 6, device="cuda")
+    return _recorded_calls(_dtw_kernels, "backtrack", lambda: dtw_path(cost))
+
+
+def _hmm_viterbi_chain_calls():
+    from philtorch.estimation import hmm_viterbi
+
+    hmm = importlib.import_module("philtorch.estimation.hmm")
+    log_emit = torch.randn(2, 6, 3, device="cuda").log_softmax(-1)
+    log_trans = torch.randn(3, 3, device="cuda").log_softmax(-1)
+    log_init = torch.randn(3, device="cuda").log_softmax(-1)
+    return _recorded_calls(
+        hmm, "_viterbi_chain", lambda: hmm_viterbi(log_emit, log_trans, log_init)
+    )
 
 
 def _weighted_contract_calls():
@@ -147,16 +185,21 @@ def _weighted_contract_calls():
 @pytest.mark.parametrize(
     "op, calls",
     [
+        pytest.param("dtw_dp", _dtw_dp_calls, id="dtw_dp"),
         pytest.param(
-            "dtw_dp",
-            _dtw_dp_calls,
-            id="dtw_dp",
-            marks=pytest.mark.xfail(
-                strict=True,
-                reason="its first-order backward launches Triton kernels directly (#79)",
-            ),
+            "dtw_dp_backward",
+            lambda: _dtw_dp_backward_calls(_dtw(0.1, diagonal_weight=2.0), (2, 5, 6)),
+            id="dtw_dp_backward-weighted",
+        ),
+        pytest.param(
+            "dtw_dp_backward",
+            lambda: _dtw_dp_backward_calls(_ctc_loss, (2, 7, 4)),
+            id="dtw_dp_backward-ctc",
         ),
         pytest.param("dtw_accumulate", _dtw_accumulate_calls, id="dtw_accumulate"),
+        pytest.param("ctc_viterbi", _ctc_viterbi_calls, id="ctc_viterbi"),
+        pytest.param("dtw_backtrack", _dtw_backtrack_calls, id="dtw_backtrack"),
+        pytest.param("hmm_viterbi_chain", _hmm_viterbi_chain_calls, id="hmm_viterbi_chain"),
         pytest.param("weighted_contract", _weighted_contract_calls, id="weighted_contract"),
     ],
 )
@@ -166,6 +209,128 @@ def test_alignment_and_hmm_ops_opcheck(op, calls):
     recorded = calls()
     assert recorded, f"{op} was not called"
     torch.library.opcheck(getattr(torch.ops.philtorch, op), recorded[0])
+
+
+def _ctc_loss(log_probs, lengths=((7, 6), (3, 2))):
+    from philtorch.align import ctc_loss
+
+    targets = torch.tensor([[1, 2, 2], [3, 1, 0]], device="cuda")
+    return ctc_loss(log_probs.log_softmax(-1), targets, *lengths, reduction="sum")
+
+
+def _ctc_loss_tensor_lengths(log_probs):
+    return _ctc_loss(log_probs, (torch.tensor([7, 6]), torch.tensor([3, 2])))
+
+
+def _soft_dtw_divergence(x):
+    from philtorch.align import soft_dtw_divergence
+
+    y = x.flip(1)[:, :5]
+    costs = [torch.cdist(a, b).square() for a, b in ((x, y), (x, x), (y, y))]
+    return soft_dtw_divergence(*costs, 0.1).sum()
+
+
+def _dtw(gamma, **options):
+    def loss(cost):
+        from philtorch.align import dtw
+
+        return dtw(cost, gamma, **options).sum()
+
+    return loss
+
+
+_LENGTHS = (torch.tensor([6, 4]), torch.tensor([5, 3]))
+
+
+@pytest.mark.cuda
+@pytest.mark.parametrize(
+    "loss, shape",
+    [
+        pytest.param(_dtw(0.0, diagonal_weight=2.0), (2, 6, 5), id="dtw"),
+        pytest.param(_dtw(0.1, diagonal_weight=2.0), (2, 6, 5), id="soft_dtw"),
+        pytest.param(_dtw(0.1, lengths=_LENGTHS), (2, 6, 5), id="soft_dtw-lengths"),
+        pytest.param(_dtw(0.1, step_pattern="asymmetric"), (2, 6, 5), id="soft_dtw-asymmetric"),
+        pytest.param(_soft_dtw_divergence, (2, 7, 3), id="soft_dtw_divergence"),
+        pytest.param(_ctc_loss, (2, 7, 4), id="ctc_loss"),
+        pytest.param(_ctc_loss_tensor_lengths, (2, 7, 4), id="ctc_loss-tensor_lengths"),
+    ],
+)
+def test_compiled_alignment_gradients(loss, shape):
+    # Compiled code differentiates dtw_dp through its registered backward,
+    # the fused kernels as one op: the same gradients as eager, in one graph.
+    x = torch.randn(shape, device="cuda", generator=torch.Generator("cuda").manual_seed(0))
+    x.requires_grad_()
+    (expected,) = torch.autograd.grad(loss(x), x)
+    (actual,) = torch.autograd.grad(torch.compile(loss, fullgraph=True)(x), x)
+    torch.testing.assert_close(actual, expected)
+
+
+@pytest.mark.cuda
+@pytest.mark.parametrize(
+    "soft, steps, diag_weight",
+    [
+        (True, "symmetric", 1.0),
+        (True, "symmetric", 2.0),
+        (True, "orthogonal", 1.0),
+        (False, "symmetric", 2.0),
+    ],
+)
+def test_dtw_dp_backward_registered_gradients(soft, steps, diag_weight):
+    # dtw_dp_backward's registered backward, which defines dtw_dp's second and
+    # higher derivatives, against finite differences of the fused kernel, with
+    # D, cost and grad independent; and its own derivatives. DTW's hard shares
+    # make its gradient piecewise constant in D and the cost.
+    from philtorch.align._dtw_kernels import dtw_dp_backward
+
+    gen = torch.Generator("cuda").manual_seed(0)
+    cost = torch.rand(2, 4, 5, device="cuda", dtype=torch.float64, generator=gen)
+    D = torch.ops.philtorch.dtw_dp(cost, None, soft, steps, diag_weight)
+    grad = torch.rand(D.shape, device="cuda", dtype=torch.float64, generator=gen)
+    inputs = tuple(t.requires_grad_() for t in (D, cost, grad))
+
+    def fn(D, cost, grad):
+        return dtw_dp_backward(D, cost, None, grad, soft, steps, diag_weight)
+
+    assert torch.autograd.gradcheck(fn, inputs)
+    assert torch.autograd.gradgradcheck(fn, inputs)
+
+
+def _dtw_path(cost):
+    from philtorch.align import dtw_path
+
+    return dtw_path(cost, lengths=_LENGTHS)
+
+
+def _forced_align(log_probs):
+    from philtorch.align import forced_align
+
+    targets = torch.tensor([[1, 2, 2], [3, 1, 0]], device="cuda")
+    return forced_align(log_probs.log_softmax(-1), targets, (7, 6), (3, 2))
+
+
+def _hmm_viterbi(x):
+    from philtorch.estimation import hmm_viterbi
+
+    # The transitions and initial probabilities from x too, (7, 4) frames each.
+    log_trans, log_init = x[0, :4].log_softmax(-1), x[1, 0].log_softmax(-1)
+    return hmm_viterbi(x.log_softmax(-1), log_trans, log_init)
+
+
+@pytest.mark.cuda
+@pytest.mark.parametrize(
+    "fn, shape",
+    [
+        pytest.param(_dtw_path, (2, 6, 5), id="dtw_path"),
+        pytest.param(_forced_align, (2, 7, 4), id="forced_align"),
+        pytest.param(_hmm_viterbi, (2, 7, 4), id="hmm_viterbi"),
+    ],
+)
+def test_compiled_alignment_paths(fn, shape):
+    # The paths' kernels run as ops, which compiled code calls without tracing
+    # them: the same paths as eager, and their scores, in one graph.
+    x = torch.randn(shape, device="cuda", generator=torch.Generator("cuda").manual_seed(0))
+    for actual, expected in zip(torch.compile(fn, fullgraph=True)(x), fn(x), strict=True):
+        torch.testing.assert_close(actual, expected)
 
 
 # The ops with a CUDA kernel too; recurN and lti_recurN run on CPU only.

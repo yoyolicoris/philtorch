@@ -45,20 +45,21 @@ on:
       - "third_party/**"
       # The Triton kernels, named _*_kernels.py, the recurrence operator that
       # launches them, the native ops' registered backwards (ParaRNN's run
-      # only on CUDA), and every test module the GPU job runs (-m cuda), which
+      # only on CUDA), the alignment and HMM modules, which run only on CUDA,
+      # and every test module the GPU job runs (-m cuda), which
       # tests/test_ci_paths.py checks.
       - "philtorch/**/_*_kernels.py"
       - "philtorch/_recur.py"
       - "philtorch/_ops.py"
+      - "philtorch/align/*.py"
+      - "philtorch/estimation/hmm.py"
       - "tests/conftest.py"
       - "tests/test_align_ctc.py"
       - "tests/test_align_dtw.py"
-      - "tests/test_docstrings.py"
+      - "tests/test_docstrings_cuda.py"
       - "tests/test_estimation_hmm.py"
       - "tests/test_estimation_kalman.py"
       - "tests/test_interp.py"
-      - "tests/test_lpv_ssm.py"
-      - "tests/test_nl.py"
       - "tests/test_pt2_comp.py"
       - "tests/test_pt2_vendored_compile.py"
       - "tests/test_recur.py"
@@ -80,20 +81,21 @@ on:
       - "third_party/**"
       # The Triton kernels, named _*_kernels.py, the recurrence operator that
       # launches them, the native ops' registered backwards (ParaRNN's run
-      # only on CUDA), and every test module the GPU job runs (-m cuda), which
+      # only on CUDA), the alignment and HMM modules, which run only on CUDA,
+      # and every test module the GPU job runs (-m cuda), which
       # tests/test_ci_paths.py checks.
       - "philtorch/**/_*_kernels.py"
       - "philtorch/_recur.py"
       - "philtorch/_ops.py"
+      - "philtorch/align/*.py"
+      - "philtorch/estimation/hmm.py"
       - "tests/conftest.py"
       - "tests/test_align_ctc.py"
       - "tests/test_align_dtw.py"
-      - "tests/test_docstrings.py"
+      - "tests/test_docstrings_cuda.py"
       - "tests/test_estimation_hmm.py"
       - "tests/test_estimation_kalman.py"
       - "tests/test_interp.py"
-      - "tests/test_lpv_ssm.py"
-      - "tests/test_nl.py"
       - "tests/test_pt2_comp.py"
       - "tests/test_pt2_vendored_compile.py"
       - "tests/test_recur.py"
