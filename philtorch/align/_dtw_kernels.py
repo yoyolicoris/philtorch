@@ -27,19 +27,14 @@ step weights of the arguments, which is e(s) itself when w = 1. The shares
 are recomputed from the stored D and the cost, not taken from the scan's own
 minima, which can differ from the stored D in the last bit.
 
-Two implementations of that gradient:
-
-* for first derivatives, :func:`_dtw_backward`, which computes the shares as
-  it scans each row from the right, or for a few long rows
-  :func:`_dtw_backward_parallel`, which computes them over all cells first
-  and then accumulates;
-* :func:`accumulate`, the linear accumulation over the grid in either
-  direction, and PyTorch ops, which autograd differentiates again, for
-  higher derivatives. accumulate's backward is itself in the other
-  direction.
-
-dtw_dp's backward takes the second when gradients of the gradient are
-requested (``create_graph=True``) and the first otherwise.
+dtw_dp's backward is one op, :func:`dtw_dp_backward`, in eager and compiled
+code alike: :func:`_dtw_backward`, which computes the shares as it scans each
+row from the right, or for a few long rows :func:`_dtw_backward_parallel`,
+which computes them over all cells first and then accumulates. Neither
+stores the shares. Its own backward, for higher derivatives, rebuilds the
+same gradient from :func:`shares`, PyTorch ops, and :func:`accumulate`, the
+linear accumulation over the grid in either direction, whose backward is
+itself in the other direction, and differentiates that.
 
 Two kernels do all of it. ``_dag_kernel`` is the row-by-row recursion in
 either semiring, min-plus (or soft-min-plus) for the forward pass and
@@ -671,21 +666,61 @@ def _dtw_dp_setup(ctx, inputs, output):
 
 def _dtw_dp_backward(ctx, grad_D):
     cost, skip, D = ctx.saved_tensors
-    soft, steps, diag_weight = ctx.options
-    if not torch.is_grad_enabled():
-        # The fused kernel runs one program per pair; for a few long rows, the
-        # shares are better computed over the whole GPU first.
-        B, _, L = D.shape
-        backward = _dtw_backward_parallel if B <= 4 and L > 4096 else _dtw_backward
-        e = backward(D, cost.contiguous(), skip, grad_D, soft, steps, diag_weight)
-        return e, None, None, None, None
-    # Gradients of this gradient are wanted: build it from ops that autograd
-    # differentiates.
-    w_up, w_left, w_diag, w_skip = shares(D, cost, skip, soft, steps, diag_weight)
-    e = accumulate(w_up, w_left, w_diag, w_skip, grad_D, True)
-    if diag_weight != 1.0:
-        e = _weigh(e, w_up, w_left, w_diag, diag_weight)
-    return e, None, None, None, None
+    return dtw_dp_backward(D, cost, skip, grad_D, *ctx.options), None, None, None, None
 
 
 dtw_dp.register_autograd(_dtw_dp_backward, setup_context=_dtw_dp_setup)
+
+
+@torch.library.custom_op("philtorch::dtw_dp_backward", mutates_args=())
+def dtw_dp_backward(
+    D: Tensor, cost: Tensor, skip: Tensor | None, grad: Tensor, soft: bool, steps: str,
+    diag_weight: float,
+) -> Tensor:  # fmt: skip
+    """The gradient of cost from ``grad``, D's, through :func:`dtw_dp`, by the
+    fused kernels; see the module docstring."""
+    # The fused kernel runs one program per pair; for a few long rows, the
+    # shares are better computed over the whole GPU first.
+    B, _, L = D.shape
+    backward = _dtw_backward_parallel if B <= 4 and L > 4096 else _dtw_backward
+    return backward(D, cost.contiguous(), skip, grad, soft, steps, diag_weight)
+
+
+@dtw_dp_backward.register_fake
+def _(D, cost, skip, grad, soft, steps, diag_weight):
+    return _empty(D)
+
+
+def _decomposed_backward(D, cost, skip, grad, soft, steps, diag_weight):
+    """:func:`dtw_dp_backward` from ops that autograd differentiates."""
+    w_up, w_left, w_diag, w_skip = shares(D, cost, skip, soft, steps, diag_weight)
+    e = accumulate(w_up, w_left, w_diag, w_skip, grad, True)
+    return _weigh(e, w_up, w_left, w_diag, diag_weight) if diag_weight != 1.0 else e
+
+
+def _dtw_dp_backward_setup(ctx, inputs, output):
+    D, cost, skip, grad, *ctx.options = inputs
+    ctx.save_for_backward(D, cost, skip, grad)
+
+
+def _dtw_dp_backward_backward(ctx, grad_e):
+    # The vector-Jacobian product of the decomposed gradient. It is taken
+    # with respect to views of D, cost and grad, so that each gradient counts
+    # only the paths through its own input, not cost's through D, while
+    # staying connected to the inputs: its ops are differentiable, so
+    # gradients exist to any order. (torch.func.vjp would take them as
+    # independent too, but custom ops such as accumulate don't support it.)
+    create_graph = torch.is_grad_enabled()
+    with torch.enable_grad():
+        inputs = [
+            t.view_as(t) if t.requires_grad else t.detach().requires_grad_()
+            for t in ctx.saved_tensors[:2] + ctx.saved_tensors[3:]
+        ]
+        e = _decomposed_backward(*inputs[:2], ctx.saved_tensors[2], inputs[2], *ctx.options)
+        grad_D, grad_cost, grad_grad = torch.autograd.grad(
+            e, inputs, grad_e, create_graph=create_graph, allow_unused=True
+        )
+    return grad_D, grad_cost, None, grad_grad, None, None, None
+
+
+dtw_dp_backward.register_autograd(_dtw_dp_backward_backward, setup_context=_dtw_dp_backward_setup)
