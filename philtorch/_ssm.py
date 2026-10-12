@@ -72,8 +72,8 @@ def _loop(A: Tensor, zi: Tensor, x: Tensor, out_idx: int | None = None) -> Tenso
 # Appended to the operator's error where no kernel takes the input.
 _NO_KERNEL_HINT = (
     "; pass unroll_factor > 1 to run PyTorch ops instead, on any device: a "
-    "block-unrolled recursion, or the sequential loop, which takes any dtype, from "
-    "the sequence length on"
+    "block-unrolled recursion, or, from the sequence length on, the sequential loop, "
+    "in the dtypes PyTorch's matrix products take there (on CUDA, no integers)"
 )
 
 

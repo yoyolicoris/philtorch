@@ -152,9 +152,9 @@ def test_recurrence_vmap(device, sharing, vmap_A, M):
     def loss(A, zi, x):
         return recurrence(A, zi, x).abs().square().sum()
 
-    grads = torch.func.vmap(torch.func.grad(loss, argnums=(1, 2)), in_dims)(A, zi, x)
+    grads = torch.func.vmap(torch.func.grad(loss, argnums=(0, 1, 2)), in_dims)(A, zi, x)
     for v in range(3):
-        expected = torch.func.grad(loss, argnums=(1, 2))(A_of(v), zi[v], x[v])
+        expected = torch.func.grad(loss, argnums=(0, 1, 2))(A_of(v), zi[v], x[v])
         for g, e in zip(grads, expected):
             torch.testing.assert_close(g[v], e)
 

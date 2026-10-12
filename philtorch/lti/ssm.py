@@ -35,7 +35,9 @@ def state_space_recursion(
     the rest, and raises where none takes the input, such as :math:`M \ge 2`
     on MPS. On any device, an :attr:`unroll_factor` greater than 1 and less
     than :math:`N` runs a block-unrolled PyTorch recursion instead, and one
-    of :math:`N` or more runs the sequential PyTorch loop, on any dtype.
+    of :math:`N` or more runs the sequential PyTorch loop. Both take the
+    dtypes PyTorch's matrix products take on the device: integers on CPU,
+    but not on CUDA.
 
     Args:
         A (Tensor): state matrices, of shape :math:`(M, M)` or

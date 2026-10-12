@@ -247,7 +247,7 @@ With the default `unroll_factor=1`, the state-space paths (`lfilter`, `state_spa
 
 The kernels take floating-point and complex dtypes, and int64, exactly; other dtypes raise.
 
-Setting `1 < unroll_factor < sequence length` switches to a block-unrolled PyTorch recursion, which computes blocks in parallel with matrix multiplications ([background](https://iamycy.github.io/posts/2025/06/28/unroll-ssm/)); larger values run the sequential PyTorch loop. Both run on any device, and the loop on any dtype.
+Setting `1 < unroll_factor < sequence length` switches to a block-unrolled PyTorch recursion, which computes blocks in parallel with matrix multiplications ([background](https://iamycy.github.io/posts/2025/06/28/unroll-ssm/)); larger values run the sequential PyTorch loop. Both run on any device, in the dtypes PyTorch's matrix products take there: integers on CPU, but not on CUDA.
 It is slower than the native kernels but much faster than a naive loop.
 Good starting points are 8 on CPU and 16–32 on CUDA, but benchmark your own batch size, sequence length, state size, dtype, and device, for example with `torch.utils.benchmark`.
 Native kernels are fastest for first- and second-order filters, so prefer cascades or parallel banks of such sections, especially on CUDA.
