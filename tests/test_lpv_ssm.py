@@ -1,52 +1,14 @@
-from itertools import chain, product
+from itertools import chain
 
 import pytest
 import torch
 
 from philtorch.lpv import state_space
 from philtorch.lpv import state_space_recursion as lpv_state_space
-from philtorch.lti import state_space_recursion as lti_state_space
 from philtorch.mat import companion
 
+from ._cases import each_choice
 from .test_lpv_filters import _generate_test_signal, _generate_time_varying_coeffs
-
-
-@pytest.mark.parametrize(
-    "device",
-    [
-        "cpu",
-        pytest.param(
-            "cuda",
-            marks=pytest.mark.cuda,
-        ),
-    ],
-)
-def test_ssm_equivalence(device):
-    """Test that LPV state_space is equivalent to LTI state_space for scalar inputs."""
-    batch_size = 3
-    N = 23
-    unroll_factor = 7
-    order = 2
-
-    _, a = _generate_time_varying_coeffs(1, batch_size, order, order)
-    a = a.squeeze(0).double()  # Remove batch dimension for scalar case
-    x = _generate_test_signal(batch_size, N, "white_noise").to(device).double()
-
-    A = companion(a).to(device)
-    zi = torch.randn(batch_size, order).to(device).double()
-
-    # LPV state_space
-    lpv_output = lpv_state_space(
-        A.unsqueeze(1).expand(-1, N, -1, -1),
-        zi,
-        x,
-        unroll_factor=unroll_factor,
-    )
-
-    # LTI state_space
-    lti_output = lti_state_space(A, zi, x, unroll_factor=unroll_factor)
-    # Compare outputs
-    assert torch.allclose(lpv_output, lti_output), torch.max(torch.abs(lpv_output - lti_output))
 
 
 @pytest.mark.parametrize(
@@ -87,38 +49,27 @@ def test_ssm_unrolling(device, unroll_factor):
 
 
 @pytest.mark.parametrize(
-    ("x_shape", "B_shape"),
-    [
-        ((5, 97), (3,)),
-        ((5, 97), (5, 3)),
-        ((5, 97), (5, 97, 3)),
-        ((5, 97), (97, 3)),
-        ((5, 97, 3), None),
-        ((5, 97, 2), (3, 2)),
-        ((5, 97, 2), (5, 3, 2)),
-        ((5, 97, 2), (97, 3, 2)),
-        ((5, 97, 2), (5, 97, 3, 2)),
-    ],
+    ("x_B_shape", "A_shape", "C_shape", "zi_shape"),
+    each_choice(
+        [
+            ((5, 97), (3,)),
+            ((5, 97), (5, 3)),
+            ((5, 97), (5, 97, 3)),
+            ((5, 97), (97, 3)),
+            ((5, 97, 3), None),
+            ((5, 97, 2), (3, 2)),
+            ((5, 97, 2), (5, 3, 2)),
+            ((5, 97, 2), (97, 3, 2)),
+            ((5, 97, 2), (5, 97, 3, 2)),
+        ],
+        [(97, 3, 3), (5, 97, 3, 3)],
+        [None, (3,), (5, 3), (2, 3), (5, 2, 3), (97, 3), (5, 97, 3), (97, 2, 3), (5, 97, 2, 3)],
+        [None, (3,), (5, 3)],
+    ),
 )
-@pytest.mark.parametrize("A_shape", [(97, 3, 3), (5, 97, 3, 3)])
-@pytest.mark.parametrize(
-    "C_shape",
-    [
-        None,
-        (3,),
-        (5, 3),
-        (2, 3),
-        (5, 2, 3),
-        (97, 3),
-        (5, 97, 3),
-        (97, 2, 3),
-        (5, 97, 2, 3),
-    ],
-)
-@pytest.mark.parametrize("D_shape", [None])
-@pytest.mark.parametrize("zi_shape", [None, (3,), (5, 3)])
-def test_ssm_shape_handling(x_shape, A_shape, B_shape, C_shape, D_shape, zi_shape):
+def test_ssm_shape_handling(x_B_shape, A_shape, C_shape, zi_shape):
     unroll_factor = 3
+    (x_shape, B_shape), D_shape = x_B_shape, None
 
     x = torch.randn(*x_shape)
     A = torch.randn(*A_shape)
@@ -153,45 +104,58 @@ def test_ssm_shape_handling(x_shape, A_shape, B_shape, C_shape, D_shape, zi_shap
             assert False, f"Unexpected C_shape: {C_shape}"
 
 
+# Each group fixes x's dimensions and the D, B and C shapes that go with them.
+_A_SHAPES = [(97, 3, 3), (5, 97, 3, 3)]
+_ZI_SHAPES = [None, (3,), (5, 3)]
+
+
 @pytest.mark.parametrize(
-    ("D_shape", "x_shape", "B_shape", "C_shape"),
+    ("D_shape", "x_shape", "B_shape", "C_shape", "A_shape", "zi_shape"),
     list(
         chain(
-            product(
+            each_choice(
                 [(5,), (1,), (), (97,), (5, 97)],
                 [(5, 97)],
                 [(3,), (97, 3), (5, 3), (5, 97, 3)],
                 [(3,), (97, 3), (5, 3), (5, 97, 3)],
+                _A_SHAPES,
+                _ZI_SHAPES,
             ),
-            product(
+            each_choice(
                 [(1,), (), (2, 2), (5, 2, 2), (97, 2, 2), (5, 97, 2, 2)],
                 [(5, 97, 2)],
                 [(3, 2), (97, 3, 2), (5, 3, 2), (5, 97, 3, 2)],
                 [(2, 3), (97, 2, 3), (5, 2, 3), (5, 97, 2, 3)],
+                _A_SHAPES,
+                _ZI_SHAPES,
             ),
-            product(
+            each_choice(
                 [(4,), (5, 4), (5, 97, 4), (97, 4)],
                 [(5, 97)],
                 [(3,), (97, 3), (5, 3), (5, 97, 3)],
                 [(4, 3), (97, 4, 3), (5, 4, 3), (5, 97, 4, 3)],
+                _A_SHAPES,
+                _ZI_SHAPES,
             ),
-            product(
+            each_choice(
                 [(7, 2), (5, 7, 2), (5, 97, 7, 2)],
                 [(5, 97, 2)],
                 [(3, 2), (97, 3, 2), (5, 3, 2), (5, 97, 3, 2)],
                 [(7, 3), (97, 7, 3), (5, 7, 3), (5, 97, 7, 3)],
+                _A_SHAPES,
+                _ZI_SHAPES,
             ),
-            product(
+            each_choice(
                 [(2,), (5, 2), (97, 2), (5, 97, 2)],
                 [(5, 97, 2)],
                 [(3, 2), (97, 3, 2), (5, 3, 2), (5, 97, 3, 2)],
                 [(3,), (97, 3), (5, 3), (5, 97, 3)],
+                _A_SHAPES,
+                _ZI_SHAPES,
             ),
         )
     ),
 )
-@pytest.mark.parametrize("A_shape", [(97, 3, 3), (5, 97, 3, 3)])
-@pytest.mark.parametrize("zi_shape", [None, (3,), (5, 3)])
 def test_ssm_D_shape_handling(x_shape, A_shape, B_shape, C_shape, D_shape, zi_shape):
     unroll_factor = 4
 

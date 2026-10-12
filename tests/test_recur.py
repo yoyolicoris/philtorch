@@ -119,7 +119,7 @@ def test_recurrence_derivatives(device, sharing, M, dtype):
     A, zi, x = _problem(2, 70, M, sharing, dtype, device)
     inputs = tuple(t.requires_grad_() for t in (A, zi, x))
     assert torch.autograd.gradcheck(recurrence, inputs, check_forward_ad=True, fast_mode=True)
-    assert torch.autograd.gradgradcheck(recurrence, inputs, fast_mode=True)
+    assert torch.autograd.gradgradcheck(recurrence, inputs, fast_mode=True, check_fwd_over_rev=True)
 
 
 @pytest.mark.parametrize("device", DEVICES)
@@ -134,12 +134,40 @@ def test_recurrence_derivatives_of_short_sequences(device, sharing, T):
 
 
 @pytest.mark.parametrize("device", DEVICES)
+@pytest.mark.parametrize("sharing", SHARING)
+@pytest.mark.parametrize("vmap_A", [False, True])
+@pytest.mark.parametrize("M", [1, 3])
+def test_recurrence_vmap(device, sharing, vmap_A, M):
+    # The vmapped dimension joins the batch: the same states, and gradients,
+    # as one call per index, whether A is vmapped too or shared over it.
+    problems = [list(_problem(2, 40, M, sharing, device=device, seed=v)) for v in range(3)]
+    A, zi, x = (torch.stack(t) for t in zip(*problems))
+    if not vmap_A:
+        A = A[0]
+    in_dims = (0 if vmap_A else None, 0, 0)
+    A_of = (lambda v: A[v]) if vmap_A else (lambda v: A)
+    expected = torch.stack([recurrence(A_of(v), zi[v], x[v]) for v in range(3)])
+    torch.testing.assert_close(torch.func.vmap(recurrence, in_dims)(A, zi, x), expected)
+
+    def loss(A, zi, x):
+        return recurrence(A, zi, x).abs().square().sum()
+
+    grads = torch.func.vmap(torch.func.grad(loss, argnums=(0, 1, 2)), in_dims)(A, zi, x)
+    for v in range(3):
+        expected = torch.func.grad(loss, argnums=(0, 1, 2))(A_of(v), zi[v], x[v])
+        for g, e in zip(grads, expected):
+            torch.testing.assert_close(g[v], e)
+
+
+@pytest.mark.parametrize("device", DEVICES)
 @pytest.mark.parametrize("sharing", ["one", "per_item"])
 @pytest.mark.parametrize("dtype", [torch.float64, torch.complex128])
-def test_recurrence_gradients_of_long_sequences(device, sharing, dtype):
+@pytest.mark.parametrize("T", [1300, 1536])
+def test_recurrence_gradients_of_long_sequences(device, sharing, dtype, T):
     # The gradient of A shared over time sums over more steps than one block
-    # of _CONTRACT_BLOCK: blocks, the last padded with zeros, then their sum.
-    A, zi, x = _problem(2, 1300, 3, sharing, dtype, device)
+    # of _CONTRACT_BLOCK: blocks, the last padded with zeros unless 2 * 1536
+    # fills them, then their sum.
+    A, zi, x = _problem(2, T, 3, sharing, dtype, device)
     inputs = [t.requires_grad_() for t in (A, zi, x)]
     g = torch.randn_like(x)
     actual = torch.autograd.grad(recurrence(*inputs), inputs, g)
@@ -174,6 +202,24 @@ def test_recurrence_empty(device, compiled):
     assert h.shape == (2, 0, 3)
     for grad in torch.autograd.grad(h.sum(), inputs):
         assert not grad.any()
+    if not compiled:
+        # Forward mode too: no steps, no tangent.
+        tangents = tuple(torch.ones_like(t) for t in inputs)
+        _, tangent = torch.func.jvp(recurrence, tuple(t.detach() for t in inputs), tangents)
+        assert tangent.shape == (2, 0, 3)
+
+
+@pytest.mark.parametrize("device", DEVICES)
+def test_recurrence_tangent_of_the_initial_state_alone(device):
+    # A tangent on zi only: the tangent recurrence runs from it with no input.
+    A, zi, x = _problem(2, 30, 3, "both", device=device)
+    # Only zi dual, so A's and x's tangents reach the jvp as None.
+    import torch.autograd.forward_ad as fwAD
+
+    dzi = torch.randn_like(zi)
+    with fwAD.dual_level():
+        tangent = fwAD.unpack_dual(recurrence(A, fwAD.make_dual(zi, dzi), x)).tangent
+    torch.testing.assert_close(tangent, recurrence(A, dzi, torch.zeros_like(x)))
 
 
 @pytest.mark.cuda
@@ -202,10 +248,12 @@ def test_triton_state_limits():
     assert not applies(4, device="cpu")
 
 
-def _kernel(time_invariant, M, dtype, device, B=1):
+def _kernel(time_invariant, M, dtype, device, B=1, T=2):
     """The launch _forward picks for A and x of these properties."""
-    A = torch.zeros(1, 1 if time_invariant else 2, M, M, dtype=dtype, device=device)
-    x = torch.zeros(B, 2, M, dtype=dtype, device=device)
+    A = torch.zeros(1, 1, M, M, dtype=dtype, device=device).expand(
+        1, 1 if time_invariant else T, M, M
+    )
+    x = torch.zeros(B, T, M, dtype=dtype, device=device)
     return next(run for applies, run in _recur._KERNELS if applies(A, x))
 
 
@@ -213,7 +261,7 @@ def _kernel(time_invariant, M, dtype, device, B=1):
 DISPATCH = [
     (True, 1, torch.float64, "cpu", 1, "_lti_recur"),
     (True, 3, torch.float64, "cpu", 1, "_lti_recurN"),
-    (False, 1, torch.float64, "cpu", 1, "_recurN"),
+    (False, 1, torch.float64, "cpu", 1, "_scan"),
     *(
         pytest.param(*case, marks=pytest.mark.cuda)
         for case in [
@@ -255,6 +303,18 @@ INTEGER_DISPATCH = [
 @pytest.mark.parametrize("time_invariant, M, dtype, device, B, kernel", DISPATCH + INTEGER_DISPATCH)
 def test_dispatch(time_invariant, M, dtype, device, B, kernel):
     assert _kernel(time_invariant, M, dtype, device, B) is getattr(_recur, kernel)
+
+
+@pytest.mark.cuda
+@pytest.mark.parametrize(
+    "M, B, T, kernel",
+    [(3, 65536, 2, "recur_triton"), (2, 1, 2**21, "_recur2"), (3, 1, 2**21, "recur_triton")],
+    ids=["batch-3x3", "length-2x2", "length-3x3"],
+)
+def test_dispatch_past_pararnn_limits(M, B, T, kernel):
+    # ParaRNN takes at most 65535 batch items and 2^21 - 1 steps in float32;
+    # past them, the next kernel that takes the input runs.
+    assert _kernel(False, M, torch.float32, "cuda", B, T) is getattr(_recur, kernel)
 
 
 @pytest.mark.cuda

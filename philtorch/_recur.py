@@ -17,7 +17,7 @@ no forward mode.
 The forward pass runs the first kernel of ``_KERNELS`` that takes the input:
 
 * CPU: the C++ kernels, ``lti_recur`` (M = 1) and ``lti_recurN`` for
-  time-invariant A, ``recurN`` otherwise;
+  time-invariant A, ``scan`` (M = 1) and ``recurN`` otherwise;
 * CUDA: CUB scans for M <= 2 (``lti_recur``, ``lti_recur2``, ``scan``, and
   ``recur2`` for real time-varying M = 2), the ParaRNN kernels for real
   time-varying M = 2 and 3 within their limits, and the Triton kernels of
@@ -32,6 +32,8 @@ raises: there is no fallback to PyTorch ops.
 import torch
 import torch.nn.functional as F
 from torch import Tensor
+
+from ._ssm import to_lpv, to_lti
 
 try:
     from . import _recur_kernels
@@ -65,14 +67,6 @@ def _floating_or_int64(x: Tensor) -> bool:
     return x.is_floating_point() or x.is_complex() or x.dtype == torch.int64
 
 
-def _lti_matrices(A: Tensor) -> Tensor:
-    return A[0, 0] if A.size(0) == 1 else A[:, 0]
-
-
-def _lpv_matrices(A: Tensor) -> Tensor:
-    return A[0] if A.size(0) == 1 else A
-
-
 def _lti_recur_applies(A: Tensor, x: Tensor) -> bool:
     device = x.device.type
     return (
@@ -88,7 +82,7 @@ def _lti_recur_applies(A: Tensor, x: Tensor) -> bool:
 
 
 def _lti_recur(A: Tensor, zi: Tensor, x: Tensor) -> Tensor:
-    A = _lti_matrices(A)[..., 0, 0]
+    A = to_lti(A)[..., 0, 0]
     return torch.ops.philtorch.lti_recur(A, zi[:, 0], x[..., 0]).unsqueeze(-1)
 
 
@@ -97,7 +91,7 @@ def _lti_recurN_applies(A: Tensor, x: Tensor) -> bool:
 
 
 def _lti_recurN(A: Tensor, zi: Tensor, x: Tensor) -> Tensor:
-    return torch.ops.philtorch.lti_recurN(_lti_matrices(A).contiguous(), zi, x.contiguous())
+    return torch.ops.philtorch.lti_recurN(to_lti(A).contiguous(), zi, x.contiguous())
 
 
 def _recurN_applies(A: Tensor, x: Tensor) -> bool:
@@ -105,7 +99,7 @@ def _recurN_applies(A: Tensor, x: Tensor) -> bool:
 
 
 def _recurN(A: Tensor, zi: Tensor, x: Tensor) -> Tensor:
-    return torch.ops.philtorch.recurN(_lpv_matrices(A).contiguous(), zi, x.contiguous())
+    return torch.ops.philtorch.recurN(to_lpv(A).contiguous(), zi, x.contiguous())
 
 
 def _lti_recur2_applies(A: Tensor, x: Tensor) -> bool:
@@ -113,7 +107,7 @@ def _lti_recur2_applies(A: Tensor, x: Tensor) -> bool:
 
 
 def _lti_recur2(A: Tensor, zi: Tensor, x: Tensor) -> Tensor:
-    return torch.ops.philtorch.lti_recur2(_lti_matrices(A).contiguous(), zi, x.contiguous())
+    return torch.ops.philtorch.lti_recur2(to_lti(A).contiguous(), zi, x.contiguous())
 
 
 # The dtypes of the ``scan`` kernel, the vendored torchlpc's.
@@ -121,7 +115,13 @@ _SCAN_DTYPES = (torch.float32, torch.float64, torch.complex64, torch.complex128)
 
 
 def _scan_applies(A: Tensor, x: Tensor) -> bool:
-    return x.is_cuda and not _time_invariant(A) and x.size(-1) == 1 and x.dtype in _SCAN_DTYPES
+    # On CPU too: 3-7 times faster than recurN at M = 1.
+    return (
+        x.device.type in ("cpu", "cuda")
+        and not _time_invariant(A)
+        and x.size(-1) == 1
+        and x.dtype in _SCAN_DTYPES
+    )
 
 
 def _scan(A: Tensor, zi: Tensor, x: Tensor) -> Tensor:
@@ -178,7 +178,7 @@ def _recur2_applies(A: Tensor, x: Tensor) -> bool:
 
 
 def _recur2(A: Tensor, zi: Tensor, x: Tensor) -> Tensor:
-    return torch.ops.philtorch.recur2(_lpv_matrices(A).contiguous(), zi, x.contiguous())
+    return torch.ops.philtorch.recur2(to_lpv(A).contiguous(), zi, x.contiguous())
 
 
 def _triton_applies(A: Tensor, x: Tensor) -> bool:
@@ -188,9 +188,9 @@ def _triton_applies(A: Tensor, x: Tensor) -> bool:
 _KERNELS = (
     (_lti_recur_applies, _lti_recur),
     (_lti_recurN_applies, _lti_recurN),
+    (_scan_applies, _scan),
     (_recurN_applies, _recurN),
     (_lti_recur2_applies, _lti_recur2),
-    (_scan_applies, _scan),
     (_pararnn_applies, _pararnn),
     (_recur2_applies, _recur2),
     (_triton_applies, recur_triton),
@@ -246,6 +246,12 @@ def _sum_outer(lam: Tensor, h_prev_conj: Tensor, Ba: int, Ta: int) -> Tensor:
     """sum of lam[b, t] h_prev[b, t]^H over the batch items and steps that share A[b, t],
     from h_prev's conjugate."""
     h = h_prev_conj
+    if lam.size(-1) == 1:
+        # Scalar states: the outer products are products, summed elementwise.
+        # As matmuls of 1 x 1 matrices, they cost more to dispatch than to run.
+        products = (lam * h).unsqueeze(-1)
+        shared = [dim for dim, size in ((0, Ba), (1, Ta)) if size == 1]
+        return products.sum(shared, keepdim=True) if shared else products
     if Ba == 1 and Ta == 1:
         return _contract(lam.flatten(0, 1)[None], h.flatten(0, 1)[None])[None]
     if Ta == 1:
@@ -272,7 +278,11 @@ def _gradients(run, A, zi, h, grad, needs_A, needs_zi):
     """
     Ba, Ta = A.shape[:2]
     if grad.size(1) == 0:
-        return torch.zeros_like(A), torch.zeros_like(zi), grad
+        return (
+            torch.zeros_like(A) if needs_A else None,
+            torch.zeros_like(zi) if needs_zi else None,
+            grad,
+        )
     A_H = A.mH
     if Ta > 1:
         # Step s of the reversed recurrence takes A[T - s]^H; the first
@@ -284,7 +294,10 @@ def _gradients(run, A, zi, h, grad, needs_A, needs_zi):
     if needs_A:
         grad_A = _sum_outer(lam, _previous(zi.conj(), h.conj()), Ba, Ta)
     if needs_zi:
-        grad_zi = (A[:, 0].mH @ lam[:, 0].unsqueeze(-1)).squeeze(-1)
+        # A[0]^H lam[0], summed elementwise: as a batched matmul of small
+        # matrices, PyTorch routes it through a Triton kernel whose launch
+        # costs more than the product.
+        grad_zi = (A[:, 0].conj() * lam[:, 0].unsqueeze(-1)).sum(-2)
     return grad_A, grad_zi, lam
 
 
@@ -293,7 +306,8 @@ class Recurrence(torch.autograd.Function):
 
     The gradients come from :func:`_gradients`, and the tangent is the same
     recurrence forward on the tangents' inputs. Both call this function
-    again, so they are differentiable in turn.
+    again, so they are differentiable in turn. Under :func:`torch.func.vmap`,
+    the vmapped dimension joins the batch.
     """
 
     @staticmethod
@@ -305,11 +319,36 @@ class Recurrence(torch.autograd.Function):
         A, zi, _ = inputs
         ctx.save_for_backward(A, zi, output)
         ctx.save_for_forward(A, zi, output)
+        # Inputs without a tangent reach the jvp as None, not zeros, so that it
+        # skips their terms, such as dA[t] h[t - 1] over every step; so does
+        # an output without a gradient reach backward.
+        ctx.set_materialize_grads(False)
 
     @staticmethod
     def backward(ctx, grad):
+        if grad is None:  # no gradient reached h; see setup_context
+            return None, None, None
         A, zi, h = ctx.saved_tensors
         return _gradients(Recurrence.apply, A, zi, h, grad, *ctx.needs_input_grad[:2])
+
+    @staticmethod
+    def vmap(info, in_dims, A, zi, x):
+        # The kernels take no vmapped dimension: fold it into the batch, (V, B)
+        # to V * B. A shared over both stays shared; otherwise each of the V * B
+        # sequences gets its own matrices.
+        V = info.batch_size
+        A_dim, zi_dim, x_dim = in_dims
+
+        def front(t, dim):
+            return t.expand(V, *t.shape) if dim is None else t.movedim(dim, 0)
+
+        zi, x = front(zi, zi_dim), front(x, x_dim)
+        B = x.size(1)
+        if A_dim is not None or A.size(0) > 1:
+            A = front(A, A_dim)
+            A = A.expand(V, B, *A.shape[2:]).reshape(V * B, *A.shape[2:])
+        h = Recurrence.apply(A, zi.reshape(V * B, -1), x.reshape(V * B, *x.shape[2:]))
+        return h.reshape(V, B, *h.shape[1:]), 0
 
     @staticmethod
     def jvp(ctx, dA, dzi, dx):
@@ -333,7 +372,7 @@ class Recurrence(torch.autograd.Function):
 
 # Compiled code runs the kernels' ops directly (see recurrence), so the
 # Triton op carries the same gradients; the native ops' are registered in
-# philtorch/__init__.py.
+# philtorch/_ops.py.
 def _recur_triton_setup_context(ctx, inputs, output):
     A, zi, _ = inputs
     ctx.save_for_backward(A, zi, output)

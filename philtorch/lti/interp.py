@@ -4,14 +4,14 @@ import torch
 import torch.nn.functional as F
 from torch import Tensor
 
-from .recur import LTIRecurrence
+from .recur import linear_recurrence
 
 
 def _first_order_filt(
     x: Tensor, a: Tensor, zi: Tensor, b: Tensor | None = None, **kwargs
 ) -> Tensor:
     xb = x if b is None else x * b
-    return LTIRecurrence.apply(a.broadcast_to(x.shape[0]), zi.broadcast_to(x.shape[0]), xb)
+    return linear_recurrence(a, zi, xb)
 
 
 def _cubic_coeff(x: Tensor, parallel_form: bool, scipy_padding: bool, **kwargs) -> Tensor:

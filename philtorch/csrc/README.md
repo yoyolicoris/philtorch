@@ -17,7 +17,7 @@ MPS dispatch uses one three-stage hierarchical SIMD implementation that replays 
 | --- | --- |
 | [`host_recur2.cpp`](host_recur2.cpp) | Defines the `philtorch::lti_recur` dispatcher schema. |
 | [`lti_recur_mps_replay.mm`](lti_recur_mps_replay.mm) | Objective-C++ host code and the embedded Metal Shading Language source. |
-| [`../__init__.py`](../__init__.py) | Registers fake implementations and autograd for `philtorch::lti_recur`. |
+| [`../_ops.py`](../_ops.py) | Registers fake implementations and autograd for `philtorch::lti_recur`. |
 | [`../../tests/test_recur_ext.py`](../../tests/test_recur_ext.py) | Checks CPU/MPS parity, boundary lengths, long scans, and gradients. |
 | [`../../benchmarks/benchmark_mps_lti_recur.py`](../../benchmarks/benchmark_mps_lti_recur.py) | Reproduces CPU/MPS runtime and working-memory results. |
 
@@ -211,7 +211,7 @@ The MPS registration at the end of `lti_recur_mps_replay.mm` maps
 philtorch::lti_recur -> lti_recur_mps_impl
 ```
 
-The public `philtorch::lti_recur` schema has a custom autograd formula in `philtorch/__init__.py`.
+The public `philtorch::lti_recur` schema has a custom autograd formula in `philtorch/_ops.py`.
 Its backward pass expresses reverse recurrence using the same dispatcher operation, so MPS forward and backward both reach the replay implementation.
 
 ## Why tile replay

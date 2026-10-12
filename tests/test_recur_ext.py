@@ -1,13 +1,8 @@
-from unittest.mock import Mock
-
 import pytest
 import torch
 import torch.nn.functional as F
 
-import philtorch.lpv.ssm as lpv_ssm
-import philtorch.lti.ssm as lti_ssm
 from philtorch.lpv import state_space_recursion as lpv_state_space
-from philtorch.lti import linear_recurrence
 from philtorch.mat import companion
 
 from .test_lpv_filters import _generate_time_varying_coeffs
@@ -22,65 +17,6 @@ _REQUIRES_GRAD_CASES = [
     (False, True, True),
     (True, True, True),
 ]
-
-
-@pytest.fixture(params=[lti_ssm, lpv_ssm], ids=["lti", "lpv"])
-def ssm_case(request):
-    module = request.param
-    x = torch.linspace(-1.0, 1.0, 14).reshape(2, 7)
-    if module is lti_ssm:
-        A = torch.tensor([[0.25]])
-        return module, A, A, torch.zeros(2, 1), x
-
-    state_space_A = torch.tensor([[0.25, 0.1], [-0.1, 0.2]]).expand(7, -1, -1)
-    recursion_A = state_space_A.expand(2, -1, -1, -1)
-    return module, recursion_A, state_space_A, torch.zeros(2, 2), x
-
-
-@pytest.mark.parametrize("scenario", ["native_and_unrolled", "default_native"])
-def test_state_space_native_routing(ssm_case, scenario, monkeypatch):
-    module, recursion_A, state_space_A, zi, x = ssm_case
-    native_runner = Mock(wraps=module._ext_ss_recur)
-    monkeypatch.setattr(module, "_ext_ss_recur", native_runner)
-
-    if scenario == "native_and_unrolled":
-        native_output = module.state_space_recursion(recursion_A, zi, x, unroll_factor=1)
-        native_runner.assert_called_once()
-
-        native_runner.reset_mock()
-        unrolled_output = module.state_space_recursion(recursion_A, zi, x, unroll_factor=2)
-        native_runner.assert_not_called()
-        assert torch.allclose(native_output, unrolled_output)
-    else:
-        module.state_space(A=state_space_A, x=x)
-
-        native_runner.assert_called_once()
-
-
-def test_lpv_recurN_default_native_routing(monkeypatch):
-    A = torch.eye(3).expand(7, -1, -1)
-    x = torch.linspace(-1.0, 1.0, 14).reshape(2, 7)
-    native_runner = Mock(wraps=lpv_ssm._ext_ss_recur)
-    monkeypatch.setattr(lpv_ssm, "_ext_ss_recur", native_runner)
-
-    lpv_ssm.state_space(A=A, x=x)
-
-    native_runner.assert_called_once()
-
-
-@pytest.mark.parametrize("module", [lti_ssm, lpv_ssm], ids=["lti", "lpv"])
-def test_state_space_unsupported_fallback(module, monkeypatch):
-    x = torch.empty(2, 7, device="meta")
-    A = torch.eye(3, device="meta")
-    if module is lpv_ssm:
-        A = A.expand(7, -1, -1)
-    loop_runner = Mock(wraps=module._recursion_loop)
-    monkeypatch.setattr(module, "_recursion_loop", loop_runner)
-
-    assert not module.extension_backend_indicator(x, 3)
-    module.state_space(A=A, x=x)
-
-    loop_runner.assert_called_once()
 
 
 @pytest.mark.parametrize(
@@ -178,38 +114,6 @@ def test_lti_recurN_cpu_dispatch_equiv(dtype: torch.dtype, batch: bool):
     )
     actual = torch.ops.philtorch.lti_recurN(A, zi, x)
     torch.testing.assert_close(actual, expected)
-
-
-@pytest.mark.parametrize(
-    "device",
-    [
-        "cpu",
-        pytest.param(
-            "cuda",
-            marks=pytest.mark.cuda,
-        ),
-        pytest.param(
-            "mps",
-            marks=pytest.mark.skipif(
-                not torch.backends.mps.is_available(), reason="MPS not available"
-            ),
-        ),
-    ],
-)
-@pytest.mark.parametrize("batch", [True, False])
-def test_lti_recur_equiv(device: str, batch: bool):
-    B = 3
-    T = 101
-    dtype = torch.float32 if device == "mps" else torch.float64
-
-    # Convert to torch tensors
-    a_torch = torch.rand(B if batch else 1, device=device, dtype=dtype) * 2 - 1
-    x_torch = torch.randn(B, T, device=device, dtype=dtype)
-    zi = x_torch.new_zeros(B).normal_()
-
-    lti_y = torch.ops.philtorch.lti_recur(a_torch, zi, x_torch)
-    torch_y = linear_recurrence(a_torch, zi, x_torch)
-    torch.testing.assert_close(lti_y, torch_y)
 
 
 @pytest.mark.parametrize(
@@ -326,8 +230,8 @@ def test_lti_recur_mps_grad_equiv(
 
 
 @pytest.mark.parametrize("order", [2, 3])
-def test_recurN_extension_matches_fallback(order: int):
-    """Test direct recurN low/general orders against the independent fallback."""
+def test_recurN_extension_matches_unrolled(order: int):
+    """Test direct recurN low/general orders against the block-unrolled recursion."""
     batch_size = 2
     N = 37
 
@@ -352,8 +256,8 @@ def test_recurN_extension_matches_fallback(order: int):
         ),
     ],
 )
-def test_recur2_extension_matches_fallback(device):
-    """Test that the recur2 extension matches the independent fallback."""
+def test_recur2_extension_matches_unrolled(device):
+    """Test that the recur2 extension matches the block-unrolled recursion."""
     batch_size = 2
     N = 17
     order = 2
@@ -373,23 +277,6 @@ def test_recur2_extension_matches_fallback(device):
         assert torch.allclose(native_output, torch_output), torch.max(
             torch.abs(native_output - torch_output)
         )
-
-
-@pytest.mark.cuda
-def test_lpv_pararnn_order3_matches_fallback():
-    """Test the CUDA floating order-3 ParaRNN selector boundary."""
-    batch_size = 2
-    N = 17
-    order = 3
-
-    _, a = _generate_time_varying_coeffs(batch_size, N, order, order)
-    x = torch.randn(batch_size, N, order, device="cuda", dtype=torch.float64)
-    A = companion(a).to(device="cuda", dtype=torch.float64)
-    zi = torch.randn(batch_size, order, device="cuda", dtype=torch.float64)
-
-    native_output = lpv_state_space(A, zi, x, unroll_factor=1)
-    torch_output = lpv_state_space(A, zi, x, unroll_factor=2)
-    torch.testing.assert_close(native_output, torch_output)
 
 
 def _cuda_scan_case(name: str):
@@ -481,49 +368,6 @@ def test_cuda_scan_runs_on_the_current_stream(case: str):
         actual = op(*cuda_args)
         assert not stream.query(), "the call waited for the stream to finish"
     stream.synchronize()
-
-    assert torch.allclose(actual.cpu(), expected), torch.max(torch.abs(actual.cpu() - expected))
-
-
-@pytest.mark.cuda
-@pytest.mark.parametrize(
-    ("M", "dtype", "max_steps"),
-    [
-        (2, torch.float64, 2**21),
-        (2, torch.float32, 2**21),
-        (3, torch.float64, 2**20),
-        (3, torch.float32, 2**21),
-    ],
-)
-def test_pararnn_applicable_within_launch_limits(M, dtype, max_steps):
-    """ParaRNN is used only within the batch and length its launches allow."""
-
-    def x(B, T):
-        return torch.zeros((), device="cuda", dtype=dtype).expand(B, T, M)
-
-    # T steps plus the initial state.
-    assert lpv_ssm._pararnn_applicable(x(1, max_steps - 1), M)
-    assert not lpv_ssm._pararnn_applicable(x(1, max_steps), M)
-    assert lpv_ssm._pararnn_applicable(x(65535, 4), M)
-    assert not lpv_ssm._pararnn_applicable(x(65536, 4), M)
-
-
-@pytest.mark.cuda
-@pytest.mark.parametrize(
-    ("B", "T", "M"),
-    [(70_000, 8, 2), (70_000, 8, 3), (1, 2**21, 2)],
-    ids=["batch-2x2", "batch-3x3", "length-2x2"],
-)
-def test_lpv_state_space_recursion_past_pararnn_limits(B, T, M):
-    """Inputs ParaRNN can't launch for fall back to the other kernels."""
-    gen = torch.Generator().manual_seed(0)
-    A = torch.randn(B, T, M, M, generator=gen, dtype=torch.float64)
-    A = A * 0.9 / torch.linalg.matrix_norm(A, ord=2)[..., None, None]
-    zi = torch.randn(B, M, generator=gen, dtype=torch.float64)
-    x = torch.randn(B, T, M, generator=gen, dtype=torch.float64)
-
-    expected = lpv_state_space(A, zi, x)
-    actual = lpv_state_space(A.cuda(), zi.cuda(), x.cuda())
 
     assert torch.allclose(actual.cpu(), expected), torch.max(torch.abs(actual.cpu() - expected))
 

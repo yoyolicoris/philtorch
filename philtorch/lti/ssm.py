@@ -1,171 +1,13 @@
 """State-space models with time-invariant coefficients."""
 
 from functools import partial
-from typing import Any
 
 import torch
-import torch.nn.functional as F
 from torch import Tensor
-from torch.autograd import Function
 
-from ..mat import find_eigenvectors, matrix_power_accumulate
-from .recur import LTIRecurrence, linear_recurrence
-
-
-def extension_backend_indicator(x: Tensor, M: int) -> bool:
-    r"""Return whether to dispatch this input to the native extension.
-
-    This is a dispatch heuristic, not a check that a kernel exists: it
-    assumes kernels for :math:`M \le 2` on every device. Some are still
-    missing for a device or dtype, such as :math:`M = 2` on MPS, and calling
-    one raises an error; the README lists them.
-
-    Args:
-        x (Tensor): the input, whose device is checked.
-        M (int): the state size.
-
-    Returns:
-        bool: ``True`` on CPU, or when :math:`M \le 2`.
-    """
-    return M <= 2 or x.is_cpu
-
-
-class LTIMatrixRecurrence(Function):
-    r"""Autograd function for the matrix recurrence of :func:`_ext_ss_recur`.
-
-    The forward pass runs the native ``lti_recur2`` kernel for
-    :math:`M = 2` and the ``lti_recurN`` kernel otherwise. The backward pass runs the recurrence
-    backward in time with :math:`A^H`, and the JVP runs it forward on the
-    tangents, so both reverse- and forward-mode differentiation work.
-    """
-
-    @staticmethod
-    def forward(A: Tensor, zi: Tensor, x: Tensor) -> Tensor:
-        if x.size(-1) == 2:
-            return torch.ops.philtorch.lti_recur2(A, zi, x)
-        return torch.ops.philtorch.lti_recurN(A, zi, x)
-
-    @staticmethod
-    def setup_context(ctx: Any, inputs: list[Any], output: Any) -> Any:
-        A, zi, _ = inputs
-        y = output
-        ctx.save_for_backward(A, zi, y)
-        ctx.save_for_forward(A, zi, y)
-
-    @staticmethod
-    def backward(
-        ctx: Any, grad_y: torch.Tensor
-    ) -> tuple[torch.Tensor | None, torch.Tensor | None, torch.Tensor | None]:
-        A, zi, y = ctx.saved_tensors
-        grad_x = grad_A = grad_zi = None
-
-        AmT = A.mT.conj_physical()
-
-        flipped_grad_x = LTIMatrixRecurrence.apply(AmT, torch.zeros_like(zi), grad_y.flip(1))
-
-        if ctx.needs_input_grad[1]:
-            grad_zi = (AmT @ flipped_grad_x[:, -1, :, None]).squeeze(-1)
-
-        if ctx.needs_input_grad[2]:
-            grad_x = flipped_grad_x.flip(1)
-
-        if ctx.needs_input_grad[0]:
-            valid_y = y[:, :-1]
-            padded_y = torch.cat([zi.unsqueeze(1), valid_y], dim=1)
-            if A.dim() == 2:
-                grad_A = flipped_grad_x.flip(1).flatten(0, 1).T @ padded_y.conj_physical().flatten(
-                    0, 1
-                )
-            else:
-                grad_A = flipped_grad_x.flip(1).mT @ padded_y.conj_physical()
-
-        return grad_A, grad_zi, grad_x
-
-    @staticmethod
-    def jvp(
-        ctx: Any, grad_A: torch.Tensor, grad_zi: torch.Tensor, grad_x: torch.Tensor
-    ) -> torch.Tensor:
-        A, zi, y = ctx.saved_tensors
-
-        fwd_zi = grad_zi if grad_zi is not None else torch.zeros_like(zi)
-        fwd_x = grad_x if grad_x is not None else torch.zeros_like(y)
-
-        if grad_A is not None:
-            padded_y = torch.cat([zi.unsqueeze(1), y[:, :-1]], dim=1)
-            fwd_A = (
-                (grad_A if grad_A.dim() == 2 else grad_A.unsqueeze(-3)) @ padded_y.unsqueeze(-1)
-            ).squeeze(-1)
-            fwd_x = fwd_x + fwd_A
-
-        return LTIMatrixRecurrence.apply(A, fwd_zi, fwd_x)
-
-
-def _recursion_loop(
-    A: Tensor,
-    zi: Tensor,
-    x: Tensor,
-    out_idx: int | None = None,
-) -> Tensor:
-    """Run :math:`h[n + 1] = A h[n] + x[n]` with a loop over time steps.
-
-    Args:
-        A (Tensor): state matrices, of shape :math:`(M, M)` or
-            :math:`(B, M, M)`.
-        zi (Tensor): the initial state, of shape :math:`(B, M)`.
-        x (Tensor): inputs, of shape :math:`(B, N, M)`, or :math:`(B, N)` to
-            feed the first state only.
-        out_idx (int, optional): return only this state. Default: ``None``.
-
-    Returns:
-        Tensor: the states, of shape :math:`(B, N, M)`, or :math:`(B, N)`
-        with :attr:`out_idx`.
-    """
-    results = []
-    AT = A.mT
-    if x.dim() == 2:
-        M = A.size(-1)
-        x = torch.cat([x.unsqueeze(-1), x.new_zeros(*x.shape, M - 1)], dim=-1)  # (batch, time, M)
-    if A.dim() == 2:
-        h = zi
-        for xn in x.unbind(1):
-            h = torch.addmm(xn, h, AT)
-            results.append(h if out_idx is None else h[:, out_idx])
-        output = torch.stack(results, dim=1)
-    else:
-        h = zi.unsqueeze(1)
-        for xn in x.unbind(1):
-            h = torch.baddbmm(xn.unsqueeze(1), h, AT)
-            results.append(h if out_idx is None else h[:, :, out_idx])
-        output = torch.cat(results, dim=1)
-
-    return output
-
-
-def _ext_ss_recur(A: Tensor, zi: Tensor, x: Tensor, *, out_idx: int | None = None, **_) -> Tensor:
-    """Run :math:`h[n + 1] = A h[n] + x[n]` with the native kernels.
-
-    Takes the same arguments and returns the same as :func:`_recursion_loop`.
-    """
-    if x.dim() == 2 and A.size(-1) == 1:
-        y = LTIRecurrence.apply(A[..., 0, 0], zi.squeeze(-1), x).unsqueeze(-1)
-    elif A.size(-1) == 1:
-        y = LTIRecurrence.apply(A[..., 0, 0], zi.squeeze(-1), x.squeeze(-1)).unsqueeze(-1)
-    else:
-        x = (
-            torch.cat([x.unsqueeze(-1), x.new_zeros(*x.shape, A.size(-1) - 1)], dim=-1)
-            if x.dim() == 2
-            else x
-        )
-        y = LTIMatrixRecurrence.apply(A, zi, x)
-    if out_idx is not None and y.dim() == 3:
-        y = y[:, :, out_idx]
-    return y
-
-
-def _select_recursion_runner(x: Tensor, M: int, unroll_factor: int):
-    if unroll_factor == 1 and extension_backend_indicator(x, M):
-        return _ext_ss_recur
-    return _recursion_loop
+from .. import _ssm
+from ..mat import find_eigenvectors
+from .recur import linear_recurrence
 
 
 def state_space_recursion(
@@ -188,13 +30,14 @@ def state_space_recursion(
     :math:`\mathbf{h}[1], \dots, \mathbf{h}[N]`. A 2-D input feeds the
     first state only: :math:`\mathbf{x}[n] = x[n] \mathbf{e}_1`.
 
-    With ``unroll_factor=1``, this calls the native extension on CPU, and on
-    other devices when :math:`M \le 2`, and otherwise runs a loop over time
-    steps. On other devices the extension may lack a kernel for the device or
-    dtype, such as :math:`M = 2` on MPS, which raises an error; the README
-    lists them. On any device, an :attr:`unroll_factor` greater than 1 and
-    less than :math:`N` runs a block-unrolled PyTorch recursion instead, and
-    one of :math:`N` or more runs a plain PyTorch loop.
+    With ``unroll_factor=1``, this runs a kernel chosen by device, dtype and
+    :math:`M`: native ones on CPU, CUDA and MPS, and a Triton scan on CUDA for
+    the rest, and raises where none takes the input, such as :math:`M \ge 2`
+    on MPS. On any device, an :attr:`unroll_factor` greater than 1 and less
+    than :math:`N` runs a block-unrolled PyTorch recursion instead, and one
+    of :math:`N` or more runs the sequential PyTorch loop. Both take the
+    dtypes PyTorch's matrix products take on the device: integers on CPU,
+    but not on CUDA.
 
     Args:
         A (Tensor): state matrices, of shape :math:`(M, M)` or
@@ -202,11 +45,10 @@ def state_space_recursion(
         zi (Tensor): the initial state :math:`\mathbf{h}[0]`, of shape
             :math:`(B, M)`.
         x (Tensor): inputs, of shape :math:`(B, N, M)` or :math:`(B, N)`.
-        unroll_factor (int, optional): ``1`` for the dispatch described
-            above: the native extension on CPU, or for :math:`M \le 2` on other
-            devices, and a loop otherwise. A value less than :math:`N` is the
-            block length of the unrolled recursion, and :math:`N` or more
-            runs a plain loop. Default: ``1``.
+        unroll_factor (int, optional): ``1`` for the kernels described
+            above. A value less than :math:`N` is the block length of the
+            unrolled recursion, and :math:`N` or more runs a plain loop.
+            Default: ``1``.
         out_idx (int, optional): return only this state. Default: ``None``.
 
     Returns:
@@ -214,8 +56,11 @@ def state_space_recursion(
         shape :math:`(B, N, M)`, or :math:`(B, N)` with :attr:`out_idx`.
 
     Raises:
-        AssertionError: if the shapes do not match.
-        ValueError: if :attr:`unroll_factor` is less than 1.
+        ValueError: if the shapes do not match, or :attr:`unroll_factor` is
+            less than 1.
+        NotImplementedError: with ``unroll_factor=1``, if no kernel takes the
+            input; an :attr:`unroll_factor` greater than 1 runs PyTorch ops,
+            on any device.
 
     Note:
         These are the states after each input, :math:`\mathbf{h}[1]` to
@@ -231,153 +76,37 @@ def state_space_recursion(
         >>> state_space_recursion(A, torch.zeros(1, 2), x, out_idx=0)
         tensor([[1., 1., 2., 3., 5.]])
     """
-    assert x.dim() in (
-        2,
-        3,
-    ), f"Input signal must be 2D or 3D (batch, time, [features]), got {x.shape}"
-    assert A.dim() in (2, 3), f"State matrix A must be 2D or 3D, got {A.shape}"
-    assert A.size(-2) == A.size(-1), f"State matrix A must be square, got {A.shape}"
-    if A.dim() == 3:
-        assert x.size(0) == A.size(0), (
+    if x.dim() not in (2, 3):
+        raise ValueError(f"Input signal must be 2D or 3D (batch, time, [features]), got {x.shape}")
+    if A.dim() not in (2, 3):
+        raise ValueError(f"State matrix A must be 2D or 3D, got {A.shape}")
+    if A.size(-2) != A.size(-1):
+        raise ValueError(f"State matrix A must be square, got {A.shape}")
+    if A.dim() == 3 and x.size(0) != A.size(0):
+        raise ValueError(
             f"Batch size of A must match batch size of x, got A: {A.size(0)}, x: {x.size(0)}"
         )
-
-    if x.dim() == 3:
-        assert A.size(-1) == x.size(-1), (
+    if x.dim() == 3 and A.size(-1) != x.size(-1):
+        raise ValueError(
             f"Last dimension of A must match last dimension of x, "
             f"got A: {A.size(-1)}, x: {x.size(-1)}"
         )
 
-    batch_size, N = x.size(0), x.size(1)
+    batch_size = x.size(0)
     M = A.size(-1)
 
-    assert zi.dim() == 2, f"Initial conditions zi must be 2D, got {zi.shape}"
-    assert zi.size(0) == batch_size, (
-        f"Batch size of zi must match batch size of x, got zi: {zi.size(0)}, x: {batch_size}"
-    )
-    assert zi.size(1) == M, (
-        f"Last dimension of zi must match last dimension of A, got zi: {zi.size(1)}, A: {M}"
-    )
+    if zi.dim() != 2:
+        raise ValueError(f"Initial conditions zi must be 2D, got {zi.shape}")
+    if zi.size(0) != batch_size:
+        raise ValueError(
+            f"Batch size of zi must match batch size of x, got zi: {zi.size(0)}, x: {batch_size}"
+        )
+    if zi.size(1) != M:
+        raise ValueError(
+            f"Last dimension of zi must match last dimension of A, got zi: {zi.size(1)}, A: {M}"
+        )
 
-    if unroll_factor < 1:
-        raise ValueError("Unroll factor must be >= 1")
-    else:
-        block_size = unroll_factor
-
-    runner = _select_recursion_runner(x, M, block_size)
-
-    # boundary condition
-    if block_size == 1 or block_size >= N:
-        return runner(A, zi, x, out_idx=out_idx)
-
-    remainder = N % block_size
-    if remainder != 0:
-        x = F.pad(x, (0, 0) * (x.dim() - 2) + (0, block_size - remainder))
-        N = x.size(1)  # Update T after padding
-
-    unrolled_x = x.unflatten(1, (-1, block_size)).flatten(2, -1)
-
-    A_powers = matrix_power_accumulate(A, block_size)
-    A_powered = A_powers[..., -1, :, :]
-    A_powers_plus_I = torch.cat(
-        [
-            A_powers[..., :-1, :, :].flip(-3),
-            torch.eye(M, device=A.device, dtype=A.dtype).broadcast_to(A.shape).unsqueeze(-3),
-        ],
-        dim=-3,
-    )
-
-    mat1 = (
-        A_powers_plus_I.transpose(-2, -1).flatten(-3, -2)
-        if x.dim() == 3
-        else A_powers_plus_I[..., 0]  # assume x -> x * [1, 0, 0, ...] in the 2D case
-    )
-    z = unrolled_x @ mat1
-
-    initials = torch.cat(
-        [
-            zi.unsqueeze(1),
-            state_space_recursion(A_powered, zi, z, unroll_factor=unroll_factor),
-        ],
-        dim=1,
-    )
-
-    # prepare the augmented matrix and input for all the remaining steps
-    aug_x = torch.cat([initials[:, :-1], unrolled_x[..., : -(1 if x.dim() == 2 else M)]], dim=2)
-
-    if out_idx is None:
-        mat2 = A_powers[..., :-1, :, :].flatten(-3, -2)
-        if x.dim() == 3:
-            mat3 = (
-                torch.cat(
-                    [
-                        A_powers_plus_I[..., 1:, :, :],
-                        A_powers_plus_I.new_zeros(
-                            A_powers_plus_I.shape[:-3] + (block_size - 2, M, M)
-                        ),
-                    ],
-                    dim=-3,
-                )
-                .unfold(-3, block_size - 1, 1)
-                .transpose(-2, -1)
-                .flip(-4)
-                .flatten(-4, -3)
-                .flatten(-2, -1)
-            )
-        else:
-            mat3 = (
-                torch.cat(
-                    [
-                        A_powers_plus_I[..., 1:, :, 0],
-                        A_powers_plus_I.new_zeros(A_powers_plus_I.shape[:-3] + (block_size - 2, M)),
-                    ],
-                    dim=-2,
-                )
-                .unfold(-2, block_size - 1, 1)
-                .flip(-3)
-                .flatten(-3, -2)
-            )
-    else:
-        mat2 = A_powers[..., :-1, out_idx, :]
-        if x.dim() == 3:
-            mat3 = (
-                torch.cat(
-                    [
-                        A_powers_plus_I[..., 1:, out_idx, :],
-                        A_powers_plus_I.new_zeros(A_powers_plus_I.shape[:-3] + (block_size - 2, M)),
-                    ],
-                    dim=-2,
-                )
-                .unfold(-2, block_size - 1, 1)
-                .transpose(-2, -1)
-                .flip(-3)
-                .flatten(-2, -1)
-            )
-        else:
-            mat3 = (
-                torch.cat(
-                    [
-                        A_powers_plus_I[..., 1:, out_idx, 0],
-                        A_powers_plus_I.new_zeros(A_powers_plus_I.shape[:-3] + (block_size - 2,)),
-                    ],
-                    dim=-1,
-                )
-                .unfold(-1, block_size - 1, 1)
-                .flip(-2)
-            )
-
-    aug_A = torch.cat([mat2.mT, mat3.mT], dim=-2)
-    output = aug_x @ aug_A
-
-    # concat the first M - 1 outputs with the last one
-    if out_idx is None:
-        output = torch.cat([output, initials[:, 1:, :]], dim=2).unflatten(2, (-1, M)).flatten(1, 2)
-    else:
-        output = torch.cat([output, initials[:, 1:, out_idx, None]], dim=2).flatten(1, 2)
-    if remainder != 0:
-        # if we padded the input, we need to remove the padding from the output
-        output = output[:, : -(block_size - remainder)]
-    return output
+    return _ssm.recursion(_ssm.from_lti(A), zi, x, unroll_factor=unroll_factor, out_idx=out_idx)
 
 
 def state_space(
@@ -479,18 +208,12 @@ def state_space(
 
     Bx = _ssm_B(B, x, batch_size, M)
 
-    if return_zf or out_idx is None:
-        h = state_space_recursion(A, zi, Bx, unroll_factor=unroll_factor, out_idx=None)
-        zf = h[:, -1, :] if return_zf else None
-        h = (
-            torch.cat([zi.unsqueeze(1), h[:, :-1]], dim=1)
-            if out_idx is None
-            else torch.cat([zi[:, None, out_idx], h[:, :-1, out_idx]], dim=1)
-        )
-    else:
-        zf = None
-        h = state_space_recursion(A, zi, Bx, unroll_factor=unroll_factor, out_idx=out_idx)
-        h = torch.cat([zi[:, None, out_idx], h[:, :-1]], dim=1)
+    h, zf = _ssm.states(
+        partial(state_space_recursion, A, zi, Bx, unroll_factor=unroll_factor),
+        zi,
+        out_idx=out_idx,
+        final_state=return_zf,
+    )
 
     y = _ssm_C_D(h, x, C, D, batch_size, M)
 
@@ -815,11 +538,7 @@ def diag_state_space(
     else:
         assert False, f"Input signal x must be 2D or 3D, got {x.shape}"
 
-    recur_runner = (
-        LTIRecurrence.apply
-        if unroll_factor == 1
-        else partial(linear_recurrence, unroll_factor=unroll_factor)
-    )
+    recur_runner = partial(linear_recurrence, unroll_factor=unroll_factor)
 
     Vinvh = recur_runner(
         L.broadcast_to((batch_size, M)).flatten(0, 1),
