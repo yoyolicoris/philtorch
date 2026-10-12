@@ -61,8 +61,8 @@ def dtw(
     sequence with frame :math:`m` of another, the accumulated costs
 
     .. math::
-        D[n, m] = c[n, m] + \min_\gamma\big(D[n - 1, m],\ D[n, m - 1],\
-        D[n - 1, m - 1] + (w - 1)\, c[n, m]\big),
+        D[n, m] = \min_\gamma\big(D[n - 1, m] + c[n, m],\
+        D[n, m - 1] + c[n, m],\ D[n - 1, m - 1] + w\, c[n, m]\big),
 
     with :math:`D[0, 0] = c[0, 0]`, give the distance :math:`D[N - 1, M - 1]`:
     the cost of the cheapest monotonic path from the first pair of frames to
@@ -106,10 +106,11 @@ def dtw(
             only, so that every path has :math:`N + M - 1` cells. Default:
             ``"symmetric"``.
         diagonal_weight (float): :math:`w`, the weight of a diagonal step's
-            cost in the symmetric steps. 1 favors diagonal paths, which add
-            fewer costs; 2 (the "symmetric2" pattern of Sakoe and Chiba) makes
-            a diagonal step cost as much as a horizontal and a vertical one.
-            Default: 1.
+            cost in the symmetric steps. 1 favors diagonal paths, which sum
+            fewer costs; 2, Sakoe and Chiba's symmetric form ("symmetric2" in
+            Giorgino's dtw package), weighs each step's cost by how far it
+            advances, :math:`\Delta n + \Delta m`, so that every path has the
+            same total weight and diagonal steps are not favored. Default: 1.
         lengths (tuple of Tensor, optional): each pair's lengths
             :math:`(N_b, M_b)`, two integer tensors of shape :math:`(B)`, for
             batches of sequences padded to :math:`N` and :math:`M`; the
