@@ -34,8 +34,9 @@ def linear_recurrence(a: Tensor, init: Tensor, x: Tensor, *, unroll_factor: int 
 
     Raises:
         ValueError: if :attr:`unroll_factor` is less than 1, or, with
-            ``unroll_factor > 1``, :attr:`a` or :attr:`init` has a batch size
-            other than 1 or that of :attr:`x`.
+            ``unroll_factor > 1``, if :attr:`x` is not 2-D, :attr:`a` or
+            :attr:`init` is not 0-D or 1-D, or either has a batch size other
+            than 1 or that of :attr:`x`.
         RuntimeError: with ``unroll_factor=1``, for the same batch-size
             mismatch.
         NotImplementedError: with ``unroll_factor=1``, if no kernel takes the

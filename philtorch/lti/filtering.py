@@ -647,8 +647,9 @@ def filtfilt(
         Tensor: the filtered signals, of the shape of :attr:`x`.
 
     Raises:
-        ValueError: if :attr:`x` is not longer than the padding, or
-            :attr:`form` is not ``"df2"`` or ``"tdf2"``.
+        ValueError: if :attr:`method` is not ``"pad"`` or ``"gust"``,
+            :attr:`x` is not longer than the padding, or :attr:`form` is not
+            ``"df2"`` or ``"tdf2"``.
         NotImplementedError: if :attr:`method` is ``"gust"``.
 
     Note:

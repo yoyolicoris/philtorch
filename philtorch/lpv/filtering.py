@@ -83,8 +83,10 @@ def fir(
         return_zf = True
 
     if T == 0:
-        # No input: no outputs, and the state the filter started in.
-        y = x.new_empty(B, 0, dtype=torch.promote_types(b.dtype, x.dtype))
+        # No input: no outputs, and the state the filter started in. The
+        # outputs come from the inputs' empty slices, so that they take their
+        # promoted dtype and carry their gradients, all zero.
+        y = x + b[..., 0] + zi[:, :0]
         return (y, zi) if return_zf else y
 
     if b.size(2) == 1:

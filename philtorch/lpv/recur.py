@@ -33,7 +33,9 @@ def linear_recurrence(a: Tensor, init: Tensor, x: Tensor, *, unroll_factor: int 
         Tensor: :math:`h[1], \dots, h[N]`, of shape :math:`(B, N)`.
 
     Raises:
-        ValueError: if :attr:`unroll_factor` is less than 1.
+        ValueError: if :attr:`unroll_factor` is less than 1, or, with
+            ``unroll_factor > 1``, if :attr:`x` is not 2-D, :attr:`a` is not
+            1-D or 2-D, or :attr:`init` is not 0-D or 1-D.
         ValueError or RuntimeError: if :attr:`a` or :attr:`init` does not
             match :attr:`x`; which one depends on :attr:`unroll_factor`.
         NotImplementedError: with ``unroll_factor=1``, if no kernel takes the

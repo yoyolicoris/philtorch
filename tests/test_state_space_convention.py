@@ -336,18 +336,25 @@ def test_recursions_vmap(module):
 def test_recursions_take_empty_inputs(module, unroll_factor, batch, steps):
     # No steps or no signals: an empty result, by every algorithm. LPV's A is
     # per signal, which takes its block-unrolled recursion's batch path.
+    # Their gradients exist, all zero, as for any other length.
     A = torch.eye(M, dtype=torch.float64) * 0.5
     if module is lpv:
-        A = A.expand(batch, steps, M, M)
+        A = A.expand(batch, steps, M, M).clone()
     zi = torch.ones(batch, M, dtype=torch.float64)
     x = torch.ones(batch, steps, M, dtype=torch.float64)
-    h = module.state_space_recursion(A, zi, x, unroll_factor=unroll_factor)
+    inputs = [t.requires_grad_() for t in (A, zi, x)]
+    h = module.state_space_recursion(*inputs, unroll_factor=unroll_factor)
     assert h.shape == (batch, steps, M)
+    for grad, t in zip(torch.autograd.grad(h.sum(), inputs), inputs, strict=True):
+        torch.testing.assert_close(grad, torch.zeros_like(t))
     a = torch.tensor(0.5, dtype=torch.float64)
     if module is lpv:
-        a = a.expand(batch, steps)
-    h = module.linear_recurrence(a, zi[:, 0], x[..., 0], unroll_factor=unroll_factor)
+        a = a.expand(batch, steps).clone()
+    inputs = [t.detach().requires_grad_() for t in (a, zi[:, 0], x[..., 0])]
+    h = module.linear_recurrence(*inputs, unroll_factor=unroll_factor)
     assert h.shape == (batch, steps)
+    for grad, t in zip(torch.autograd.grad(h.sum(), inputs), inputs, strict=True):
+        torch.testing.assert_close(grad, torch.zeros_like(t))
 
 
 @pytest.mark.parametrize(("batch", "steps"), [(2, 0), (0, 8)])
@@ -379,6 +386,14 @@ def test_state_spaces_take_empty_inputs(batch, steps):
         )
         assert y.shape == (batch, steps)
         torch.testing.assert_close(zf, zi)
+
+    # lpv.fir's outputs: zero gradients, and zi's dtype among those promoted.
+    inputs = [t.requires_grad_() for t in (b.expand(batch, steps, 2).clone(), x.clone())]
+    (grad_b, grad_x) = torch.autograd.grad(lpv.fir(*inputs).sum(), inputs)
+    torch.testing.assert_close(grad_b, torch.zeros_like(inputs[0]))
+    torch.testing.assert_close(grad_x, torch.zeros_like(inputs[1]))
+    y, _ = lpv.fir(inputs[0].detach(), x, zi=zi.to(torch.complex128))
+    assert y.dtype == torch.complex128
 
 
 @pytest.mark.parametrize("module", [lti, lpv], ids=["lti", "lpv"])

@@ -56,8 +56,9 @@ def _loop(A: Tensor, zi: Tensor, x: Tensor, out_idx: int | None = None) -> Tenso
     Ba, Ta, M, _ = A.shape
     x = _first_state(x, M)
     if x.size(1) == 0:
-        dtype = torch.promote_types(torch.promote_types(A.dtype, zi.dtype), x.dtype)
-        h = x.new_empty(x.shape, dtype=dtype)
+        # From the inputs' empty slices, so that it takes their promoted dtype
+        # and carries their gradients, all zero.
+        h = x + zi[:, None][:, :0] + A[:, :0].sum(-1)
         return h if out_idx is None else h[..., out_idx]
     AT = A.mT
     results = []
@@ -369,8 +370,8 @@ def _scalar_loop(a: Tensor, init: Tensor, x: Tensor) -> Tensor:
     """The scalar recursion along the last axis, by a loop over its steps; a, init
     and x broadcast, and a time-invariant a is expanded over the steps."""
     if x.size(-1) == 0:
-        dtype = torch.promote_types(torch.promote_types(a.dtype, init.dtype), x.dtype)
-        return x.new_empty(x.shape, dtype=dtype)
+        # As in _loop: from the inputs' empty slices.
+        return x + a[..., :0] + init.unsqueeze(-1)[..., :0]
     a = a.expand(*a.shape[:-1], x.size(-1))
     results = []
     h = init
