@@ -404,7 +404,11 @@ def test_state_space_rejects_D_with_other_outputs(module):
         A = A.expand(N, M, M)
     x = torch.ones(BATCH, N, M, dtype=torch.float64)
     D = torch.ones(4, M, dtype=torch.float64)
-    with pytest.raises(ValueError, match="D gives 4 outputs, but C, out_idx or the states give 1"):
+    message = r"D x, of shape \(2, 10, 4\), has different outputs from C h, .* \(2, 10\)"
+    with pytest.raises(ValueError, match=message):
         module.state_space(A, x, D=D, out_idx=0)
-    with pytest.raises(ValueError, match="D gives 4 outputs"):
+    with pytest.raises(ValueError, match=message):
         module.state_space(A, x, C=torch.ones(M, dtype=torch.float64), D=D)
+    # One output row is not one scalar output either.
+    with pytest.raises(ValueError, match=r"of shape \(2, 10, 1\)"):
+        module.state_space(A, x, C=torch.ones(M, dtype=torch.float64), D=D[:1])

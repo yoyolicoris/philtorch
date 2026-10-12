@@ -351,12 +351,9 @@ def outputs(Ch: Tensor, Dx: Tensor | None) -> Tensor:
     if Dx is None:
         return Ch
     if Ch.shape[2:] != Dx.shape[2:]:
-
-        def count(t):
-            return 1 if t.dim() == 2 else t.size(-1)
-
         raise ValueError(
-            f"D gives {count(Dx)} outputs, but C, out_idx or the states give {count(Ch)}"
+            f"D x, of shape {tuple(Dx.shape)}, has different outputs from C h, out_idx's "
+            f"state or the states, of shape {tuple(Ch.shape)}"
         )
     return Ch + Dx
 
