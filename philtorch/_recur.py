@@ -283,13 +283,15 @@ def _gradients(run, A, zi, h, grad, needs_A, needs_zi):
             torch.zeros_like(zi) if needs_zi else None,
             grad,
         )
+    # The adjoints run backward in time from lam[T - 1] = g[T - 1], step s
+    # taking A[T - 1 - s]^H: one gather of A[T - 1], ..., A[1], already
+    # contiguous. (Starting from a zero state instead, with A[0]^H as a dummy,
+    # takes an index modulo T, which Inductor in torch 2.12 miscompiles fused
+    # with the transpose.)
     A_H = A.mH
     if Ta > 1:
-        # Step s of the reversed recurrence takes A[T - s]^H; the first
-        # step's matrix multiplies a zero state, so A[0]^H will do. One
-        # gather reverses them, already contiguous.
-        A_H = A_H.index_select(1, torch.arange(Ta, 0, -1, device=A.device) % Ta)
-    lam = run(A_H, torch.zeros_like(zi), grad.flip(1)).flip(1)
+        A_H = A_H.index_select(1, torch.arange(Ta - 1, 0, -1, device=A.device))
+    lam = torch.cat([run(A_H, grad[:, -1], grad[:, :-1].flip(1)).flip(1), grad[:, -1:]], 1)
     grad_A = grad_zi = None
     if needs_A:
         grad_A = _sum_outer(lam, _previous(zi.conj(), h.conj()), Ba, Ta)
