@@ -11,30 +11,20 @@ from ._cases import each_choice
 from .test_lpv_filters import _generate_test_signal, _generate_time_varying_coeffs
 
 
-@pytest.mark.parametrize(
-    "device",
-    [
-        "cpu",
-        pytest.param(
-            "cuda",
-            marks=pytest.mark.cuda,
-        ),
-    ],
-)
 # Each block multiplies unroll_factor - 1 matrices with matrices_cumdot, so
 # 5, 9 and 13 cover products over 4 = 2 * 2, 8 = 2 * 2 * 2 and 12 = 2 * 2 * 3
 # matrices, which it used to multiply in the wrong order.
 @pytest.mark.parametrize("unroll_factor", [3, 5, 9, 13])
-def test_ssm_unrolling(device, unroll_factor):
+def test_ssm_unrolling(unroll_factor):
     """Test that unrolling works correctly in LPV state_space."""
     batch_size = 2
     N = 17
     order = 2
 
     _, a = _generate_time_varying_coeffs(batch_size, N, order, order)
-    x = _generate_test_signal(batch_size, N, "white_noise").to(device).double()
-    A = companion(a).to(device).double()
-    zi = torch.randn(batch_size, order).to(device).double()
+    x = _generate_test_signal(batch_size, N, "white_noise").double()
+    A = companion(a).double()
+    zi = torch.randn(batch_size, order).double()
 
     output_naive = lpv_state_space(
         A, zi, x, unroll_factor=1

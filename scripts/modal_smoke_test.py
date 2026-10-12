@@ -3,7 +3,8 @@
 Used by .github/workflows/build-cuda-wheels.yml. The wheel is installed with
 --no-deps next to the official PyTorch build it was compiled against, so the
 exact CI artifact is what gets tested, and then the tests from tests/ marked
-``cuda`` run against the installed package, with coverage. Their report is
+``cuda`` run against the installed package, with coverage: pytest collects only
+the modules that have them. Their report is
 written to coverage.xml, for the workflow to upload::
 
     SMOKE_PYTHON=3.13 SMOKE_TORCH=2.14.1 \\
@@ -14,6 +15,7 @@ Modal reads its credentials from MODAL_TOKEN_ID and MODAL_TOKEN_SECRET.
 """
 
 import os
+import re
 import sys
 from pathlib import Path
 
@@ -29,15 +31,9 @@ TORCH = os.environ.get("SMOKE_TORCH", "2.14.1")
 TORCH_INDEX_URL = os.environ.get("SMOKE_TORCH_INDEX_URL", "https://download.pytorch.org/whl/cu132")
 GPU = os.environ.get("SMOKE_GPU", "T4")
 
-# These check repository tooling (scripts/, setup.py, build_support.py) rather
-# than the installed package. CPU CI runs them.
-TOOLING_TESTS = (
-    "test_ci_paths.py",
-    "test_cuda_wheel_version.py",
-    "test_generate_simple_index.py",
-    "test_setup_force_cuda.py",
-    "test_torch_requirement.py",
-)
+# The cuda mark applied, on a test or on a parameter, as tests/test_ci_paths.py
+# reads it: pytest collects only the modules that have it.
+CUDA_MARK = re.compile(r"(@|marks=)pytest\.mark\.cuda\b")
 
 # Every op the CUDA build registers a CUDA kernel for.
 CUDA_OPS = (
@@ -80,7 +76,9 @@ app = modal.App("philtorch-cuda-smoke-test", image=image)
 
 
 @app.function(gpu=GPU, timeout=45 * 60)
-def run_tests(wheel_name: str, wheel: bytes, version: str, files: dict[str, bytes]) -> bytes:
+def run_tests(
+    wheel_name: str, wheel: bytes, version: str, files: dict[str, bytes], modules: list[str]
+) -> bytes:
     import subprocess
 
     work = Path("/tmp/smoke")
@@ -97,9 +95,8 @@ def run_tests(wheel_name: str, wheel: bytes, version: str, files: dict[str, byte
     run("nvidia-smi")
     run(sys.executable, "-m", "pip", "install", "--no-deps", str(work / wheel_name))
     run(sys.executable, "-c", PRECHECK, version)
-    pytest_args = ["tests", "-m", "cuda", "-p", "no:cacheprovider", "-ra"]
+    pytest_args = [*modules, "-m", "cuda", "-p", "no:cacheprovider", "-ra"]
     pytest_args += ["--cov-branch", "--cov-report=xml"]
-    pytest_args += [f"--ignore=tests/{name}" for name in TOOLING_TESTS]
     run(sys.executable, "-m", "pytest", *pytest_args)
     return (work / "coverage.xml").read_bytes()
 
@@ -109,10 +106,17 @@ def main(wheel: str):
     wheel_path = Path(wheel)
     # Wheel names are {name}-{version}-{tags}.whl, and versions hold no "-".
     version = wheel_path.name.split("-")[1]
-    # The tests, and pyproject.toml for their pytest and coverage settings.
+    # The tests, which import helpers from one another, and pyproject.toml for
+    # their pytest and coverage settings.
+    tests = sorted((REPO_ROOT / "tests").glob("*.py"))
     files = {
         str(path.relative_to(REPO_ROOT)): path.read_bytes()
-        for path in [*sorted((REPO_ROOT / "tests").glob("*.py")), REPO_ROOT / "pyproject.toml"]
+        for path in [*tests, REPO_ROOT / "pyproject.toml"]
     }
-    coverage = run_tests.remote(wheel_path.name, wheel_path.read_bytes(), version, files)
+    modules = [
+        str(path.relative_to(REPO_ROOT))
+        for path in tests
+        if path.name.startswith("test_") and CUDA_MARK.search(path.read_text())
+    ]
+    coverage = run_tests.remote(wheel_path.name, wheel_path.read_bytes(), version, files, modules)
     Path("coverage.xml").write_bytes(coverage)

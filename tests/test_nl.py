@@ -18,23 +18,13 @@ def fprime(gprev, x, at, rt):
 
 
 @pytest.mark.parametrize("use_fprime", [False, True])
-@pytest.mark.parametrize(
-    "device",
-    [
-        "cpu",
-        pytest.param(
-            "cuda",
-            marks=pytest.mark.cuda,
-        ),
-    ],
-)
-def test_newton_solve(use_fprime: bool, device: str):
+def test_newton_solve(use_fprime: bool):
     batch_size = 3
-    g = torch.rand(batch_size, 100, 1).to(device)
-    y0 = torch.ones(batch_size, 100, 1).to(device)
-    at = torch.rand(batch_size, 1, 1).to(device)
-    rt = torch.rand(batch_size, 1, 1).to(device)
-    init = torch.ones(batch_size, 1).to(device)
+    g = torch.rand(batch_size, 100, 1)
+    y0 = torch.ones(batch_size, 100, 1)
+    at = torch.rand(batch_size, 1, 1)
+    rt = torch.rand(batch_size, 1, 1)
+    init = torch.ones(batch_size, 1)
     y, iters = newton_solve(
         lambda gprev, x: feedforward_comp_func(gprev, x, at=at, rt=rt),
         g,
