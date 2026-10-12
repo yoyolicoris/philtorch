@@ -191,8 +191,8 @@ def lfilter_zi(a: Tensor, b: Tensor | None = None, transpose: bool = True) -> Te
         otherwise.
 
     Raises:
-        ValueError: if :attr:`a` or :attr:`b` is 0-D, or ``transpose=True``
-            and :attr:`b` is ``None``.
+        ValueError: if :attr:`a` is 0-D, or, with ``transpose=True``, if
+            :attr:`b` is ``None`` or 0-D.
 
     Note:
         The arguments are ``(a, b)``, the reverse of SciPy's ``(b, a)``, and
