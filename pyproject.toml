@@ -48,6 +48,9 @@ classifiers = [
     "Programming Language :: Python :: 3.13",
 ]
 
+[project.urls]
+Documentation = "https://philtorch.readthedocs.io/en/stable/"
+
 [project.optional-dependencies]
 dev = ["pytest >= 6.0", "scipy", "numpy", "pytest-cov"]
 
