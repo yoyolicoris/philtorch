@@ -133,7 +133,9 @@ def dtw(
             2^{18}`, if :attr:`step_pattern` is unknown, if
             :attr:`diagonal_weight` is not 1 with steps that have no weighted
             diagonal, or if :attr:`lengths` are not of shape :math:`(B)`
-            within :math:`1 \le N_b \le N` and :math:`1 \le M_b \le M`.
+            within :math:`1 \le N_b \le N` and :math:`1 \le M_b \le M`;
+            the lengths' values are checked only in eager mode, as they would
+            break a :func:`torch.compile` graph.
         RuntimeError: if Triton is not installed.
 
     Example::
@@ -176,7 +178,10 @@ def _validate(
         n_len, m_len = lengths
         if n_len.shape != (B,) or m_len.shape != (B,):
             raise ValueError(f"lengths must be two tensors of shape ({B},)")
-        if bool((n_len < 1).any() | (n_len > N).any() | (m_len < 1).any() | (m_len > M).any()):
+        # In eager mode only: the values would break a torch.compile graph.
+        if not torch.compiler.is_compiling() and bool(
+            (n_len < 1).any() | (n_len > N).any() | (m_len < 1).any() | (m_len > M).any()
+        ):
             raise ValueError(f"lengths must be within 1 to {N} and 1 to {M}")
     check_cuda_triton(name, cost)
 
@@ -207,7 +212,12 @@ def _dtw(cost, gamma, step_pattern, diagonal_weight, lengths, band):
     sheared = step_pattern == "asymmetric"
     if sheared:
         no_path = n_len < m_len
-        width = int((n_len - m_len).max()) + 1 if B else 1
+        # From the shapes without lengths; from the lengths' values otherwise,
+        # which breaks a torch.compile graph.
+        if lengths is None:
+            width = N - M + 1
+        else:
+            width = int((n_len - m_len).max()) + 1 if B else 1
         if width <= 0:
             # No pair has a path; stay in the graph, with zero gradients.
             return torch.where(no_path, float("inf"), cost[:, 0, 0]), None
