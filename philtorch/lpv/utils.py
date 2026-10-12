@@ -21,8 +21,12 @@ def diag_shift(coef: Tensor, offset: int = 0, discard_end: bool = False) -> Tens
     Returns:
         Tensor: the shifted coefficients, of shape :math:`(*, T, M)` or
         :math:`(*, T + M + \text{offset} - 1, M)`.
+
+    Raises:
+        ValueError: if :attr:`coef` has fewer than 2 dimensions.
     """
-    assert coef.dim() >= 2, "Coefficient tensor must have at least 2 dimensions."
+    if coef.dim() < 2:
+        raise ValueError("Coefficient tensor must have at least 2 dimensions.")
     *_, T, M = coef.shape
 
     padded_coef = F.pad(coef.mT, (offset, M))

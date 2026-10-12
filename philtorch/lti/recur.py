@@ -55,8 +55,10 @@ def linear_recurrence(a: Tensor, init: Tensor, x: Tensor, *, unroll_factor: int 
             a.broadcast_to(batch_size)[:, None], init.broadcast_to(batch_size), x
         )
 
-    assert x.dim() == 2, f"Input x must be 2D, got {x.shape}"
-    assert a.dim() in (0, 1), f"State matrix a must be 1D or 0D, got {a.shape}"
+    if x.dim() != 2:
+        raise ValueError(f"Input x must be 2D, got {x.shape}")
+    if a.dim() not in (0, 1):
+        raise ValueError(f"State matrix a must be 1D or 0D, got {a.shape}")
     if a.dim() == 1 and a.size(0) > 1 and a.size(0) != x.size(0):
         raise ValueError(
             f"State matrix a must be 1D with the same batch size as x, "
@@ -68,10 +70,11 @@ def linear_recurrence(a: Tensor, init: Tensor, x: Tensor, *, unroll_factor: int 
 
     batch_size = x.size(0)
 
-    assert init.dim() in (
+    if init.dim() not in (
         0,
         1,
-    ), f"Initial state init must be 1D or 0D, got {init.shape}"
+    ):
+        raise ValueError(f"Initial state init must be 1D or 0D, got {init.shape}")
     if init.dim() == 1 and init.size(0) > 1 and init.size(0) != batch_size:
         raise ValueError(
             f"Initial state init must be 1D with the same batch size as x, "

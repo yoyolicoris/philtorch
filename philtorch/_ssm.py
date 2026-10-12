@@ -55,6 +55,10 @@ def _loop(A: Tensor, zi: Tensor, x: Tensor, out_idx: int | None = None) -> Tenso
     """The recursion by a loop over time steps; see :func:`recursion`."""
     Ba, Ta, M, _ = A.shape
     x = _first_state(x, M)
+    if x.size(1) == 0:
+        dtype = torch.promote_types(torch.promote_types(A.dtype, zi.dtype), x.dtype)
+        h = x.new_empty(x.shape, dtype=dtype)
+        return h if out_idx is None else h[..., out_idx]
     AT = A.mT
     results = []
     h = zi if Ba == 1 else zi.unsqueeze(1)
@@ -264,7 +268,7 @@ def _unrolled_time_varying(
         initials[:, :-1].flatten(0, 1),
         unrolled_x[:, :, :-1].flatten(0, 1),
         out_idx=out_idx,
-    ).unflatten(0, (batch_size, -1))
+    ).unflatten(0, (batch_size, unrolled_x.size(1)))
 
     # concat the first M - 1 outputs with the last one
     if out_idx is None:
@@ -323,16 +327,37 @@ def states(
 
     Returns:
         h[0], ..., h[N - 1], of shape (B, N, M), or (B, N) with ``out_idx``,
-        and h[N], of shape (B, M), or ``None``.
+        and h[N], of shape (B, M), or ``None``; with N = 0, no states and zi.
     """
     if final_state or out_idx is None:
         h = run(out_idx=None)
-        zf = h[:, -1, :] if final_state else None
+        N = h.size(1)
+        zf = (h[:, -1, :] if N else zi) if final_state else None
         if out_idx is None:
-            return torch.cat([zi.unsqueeze(1), h[:, :-1]], dim=1), zf
-        return torch.cat([zi[:, None, out_idx], h[:, :-1, out_idx]], dim=1), zf
+            return torch.cat([zi.unsqueeze(1), h[:, :-1]], dim=1)[:, :N], zf
+        return torch.cat([zi[:, None, out_idx], h[:, :-1, out_idx]], dim=1)[:, :N], zf
     h = run(out_idx=out_idx)
-    return torch.cat([zi[:, None, out_idx], h[:, :-1]], dim=1), None
+    return torch.cat([zi[:, None, out_idx], h[:, :-1]], dim=1)[:, : h.size(1)], None
+
+
+def outputs(Ch: Tensor, Dx: Tensor | None) -> Tensor:
+    """state_space's outputs, C h + D x, each (B, N) for one output or (B, N, P) for P.
+
+    Raises:
+        ValueError: if C h, or the states or the one with ``out_idx``, and D x
+            give different numbers of outputs.
+    """
+    if Dx is None:
+        return Ch
+    if Ch.shape[2:] != Dx.shape[2:]:
+
+        def count(t):
+            return 1 if t.dim() == 2 else t.size(-1)
+
+        raise ValueError(
+            f"D gives {count(Dx)} outputs, but C, out_idx or the states give {count(Ch)}"
+        )
+    return Ch + Dx
 
 
 # The scalar recursion, h[n + 1] = a[n] h[n] + x[n], of lti and lpv's
@@ -343,6 +368,9 @@ def states(
 def _scalar_loop(a: Tensor, init: Tensor, x: Tensor) -> Tensor:
     """The scalar recursion along the last axis, by a loop over its steps; a, init
     and x broadcast, and a time-invariant a is expanded over the steps."""
+    if x.size(-1) == 0:
+        dtype = torch.promote_types(torch.promote_types(a.dtype, init.dtype), x.dtype)
+        return x.new_empty(x.shape, dtype=dtype)
     a = a.expand(*a.shape[:-1], x.size(-1))
     results = []
     h = init

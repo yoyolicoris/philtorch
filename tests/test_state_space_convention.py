@@ -328,3 +328,68 @@ def test_recursions_vmap(module):
     )
     actual = torch.func.vmap(module.linear_recurrence)(a, zi[..., 0], x[..., 0])
     torch.testing.assert_close(actual, expected)
+
+
+@pytest.mark.parametrize("module", [lti, lpv], ids=["lti", "lpv"])
+@pytest.mark.parametrize("unroll_factor", [1, 3, 100])
+@pytest.mark.parametrize(("batch", "steps"), [(2, 0), (0, 8), (0, 0)])
+def test_recursions_take_empty_inputs(module, unroll_factor, batch, steps):
+    # No steps or no signals: an empty result, by every algorithm. LPV's A is
+    # per signal, which takes its block-unrolled recursion's batch path.
+    A = torch.eye(M, dtype=torch.float64) * 0.5
+    if module is lpv:
+        A = A.expand(batch, steps, M, M)
+    zi = torch.ones(batch, M, dtype=torch.float64)
+    x = torch.ones(batch, steps, M, dtype=torch.float64)
+    h = module.state_space_recursion(A, zi, x, unroll_factor=unroll_factor)
+    assert h.shape == (batch, steps, M)
+    a = torch.tensor(0.5, dtype=torch.float64)
+    if module is lpv:
+        a = a.expand(batch, steps)
+    h = module.linear_recurrence(a, zi[:, 0], x[..., 0], unroll_factor=unroll_factor)
+    assert h.shape == (batch, steps)
+
+
+@pytest.mark.parametrize(("batch", "steps"), [(2, 0), (0, 8)])
+def test_state_spaces_take_empty_inputs(batch, steps):
+    # The outputs of no steps or no signals, and the initial state as the final.
+    A = torch.tensor([[0.5, 0.2, 0.0], [0.0, -0.3, 0.1], [0.0, 0.0, 0.2]], dtype=torch.float64)
+    zi = torch.ones(batch, M, dtype=torch.float64)
+    x = torch.ones(batch, steps, dtype=torch.float64)
+    results = [
+        lti.state_space(A, x, zi=zi),
+        lti.diag_state_space(x, A=A, zi=zi),
+        lpv.state_space(A.expand(steps, M, M), x, zi=zi),
+    ]
+    for y, zf in results:
+        assert y.shape == (batch, steps, M)
+        torch.testing.assert_close(zf, zi.to(zf.dtype))
+    assert lti.state_space(A, x).shape == (batch, steps, M)
+    assert lti.state_space(A, x, out_idx=1).shape == (batch, steps)
+    assert lti.diag_state_space(x, A=A, out_idx=1).shape == (batch, steps)
+
+    b, a = torch.tensor([1.0, 0.5], dtype=torch.float64), torch.tensor([0.3], dtype=torch.float64)
+    zi = torch.ones(batch, 1, dtype=torch.float64)
+    y, zf = lti.lfilter(b, a, x, zi=zi)
+    assert y.shape == (batch, steps)
+    torch.testing.assert_close(zf, zi)
+    for backend in ("ssm", "torchlpc"):
+        y, zf = lpv.lfilter(
+            b.expand(batch, steps, 2), a.expand(batch, steps, 1), x, zi=zi, backend=backend
+        )
+        assert y.shape == (batch, steps)
+        torch.testing.assert_close(zf, zi)
+
+
+@pytest.mark.parametrize("module", [lti, lpv], ids=["lti", "lpv"])
+def test_state_space_rejects_D_with_other_outputs(module):
+    # Four outputs from D, one from out_idx or a vector C.
+    A = torch.eye(M, dtype=torch.float64) * 0.5
+    if module is lpv:
+        A = A.expand(N, M, M)
+    x = torch.ones(BATCH, N, M, dtype=torch.float64)
+    D = torch.ones(4, M, dtype=torch.float64)
+    with pytest.raises(ValueError, match="D gives 4 outputs, but C, out_idx or the states give 1"):
+        module.state_space(A, x, D=D, out_idx=0)
+    with pytest.raises(ValueError, match="D gives 4 outputs"):
+        module.state_space(A, x, C=torch.ones(M, dtype=torch.float64), D=D)

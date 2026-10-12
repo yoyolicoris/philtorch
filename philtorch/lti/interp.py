@@ -128,8 +128,8 @@ def cubic_spline(x: Tensor, m: int, scipy_padding: bool = False, **kwargs) -> Te
         With ``m=1``, :attr:`x` itself.
 
     Raises:
-        AssertionError: if :attr:`m` is not an integer of at least 1.
-        ValueError: if :attr:`x` is not 2-D.
+        ValueError: if :attr:`m` is not an integer of at least 1, or
+            :attr:`x` is not 2-D.
         NotImplementedError: if ``lamb`` is not zero.
 
     Example::
@@ -142,7 +142,8 @@ def cubic_spline(x: Tensor, m: int, scipy_padding: bool = False, **kwargs) -> Te
         >>> torch.allclose(y[:, ::4], x)
         True
     """
-    assert m >= 1 and isinstance(m, int), "Interpolation factor m must be an integer >= 1."
+    if not isinstance(m, int) or m < 1:
+        raise ValueError("Interpolation factor m must be an integer >= 1.")
     if x.dim() != 2:
         raise ValueError(f"Input signal x must be 2D (batch, time), got {x.shape}")
     if m == 1:

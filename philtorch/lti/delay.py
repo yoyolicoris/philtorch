@@ -114,7 +114,7 @@ def delay_state_space(
             does not hold one queue per delay line, or both :attr:`C` and
             :attr:`out_idx` are given.
         TypeError: if a queue in :attr:`zi` is not a tensor.
-        AssertionError: if the shapes do not match.
+        ValueError: if the shapes do not match.
 
     Example::
 
@@ -124,12 +124,15 @@ def delay_state_space(
         >>> delay_state_space(torch.tensor([[0.5]]), x, [3]).squeeze(-1)
         tensor([[0.0000, 0.0000, 0.0000, 1.0000, 0.0000, 0.0000, 0.5000]])
     """
-    assert x.dim() in (
+    if x.dim() not in (
         2,
         3,
-    ), f"Input signal must be 2D or 3D (batch, time, [features]), got {x.shape}"
-    assert A.dim() in (2, 3), f"State matrix A must be 2D or 3D, got {A.shape}"
-    assert A.size(-2) == A.size(-1), f"State matrix A must be square, got {A.shape}"
+    ):
+        raise ValueError(f"Input signal must be 2D or 3D (batch, time, [features]), got {x.shape}")
+    if A.dim() not in (2, 3):
+        raise ValueError(f"State matrix A must be 2D or 3D, got {A.shape}")
+    if A.size(-2) != A.size(-1):
+        raise ValueError(f"State matrix A must be square, got {A.shape}")
     if not (C is None or out_idx is None):
         raise ValueError("C and out_idx cannot be used together. Use either C or out_idx.")
 
@@ -145,13 +148,15 @@ def delay_state_space(
 
     batch_size, samples, *_ = x.shape
     M = len(delays)
-    assert A.size(-1) == M, (
-        f"Last dimension of A must match the number of delays, got A: {A.size(-1)}, delays: {M}"
-    )
-    if A.dim() == 3:
-        assert A.size(0) == batch_size, (
-            f"Batch size of A must match batch size of x, got A: {A.size(0)}, x: {batch_size}"
+    if A.size(-1) != M:
+        raise ValueError(
+            f"Last dimension of A must match the number of delays, got A: {A.size(-1)}, delays: {M}"
         )
+    if A.dim() == 3:
+        if A.size(0) != batch_size:
+            raise ValueError(
+                f"Batch size of A must match batch size of x, got A: {A.size(0)}, x: {batch_size}"
+            )
 
     if block_size is None:
         block_size = min(delays)
@@ -160,10 +165,11 @@ def delay_state_space(
         raise ValueError("block_size must satisfy 1 <= block_size <= min(delays)")
 
     if B is None and x.dim() == 3:
-        assert x.size(-1) == M, (
-            f"Last dimension of x must match the number of delays when B is None, "
-            f"got x: {x.size(-1)}, delays: {M}"
-        )
+        if x.size(-1) != M:
+            raise ValueError(
+                f"Last dimension of x must match the number of delays when B is None, "
+                f"got x: {x.size(-1)}, delays: {M}"
+            )
     Bx = _ssm_B(B, x, batch_size, M)
     if Bx.dim() == 2:
         Bx = torch.cat([Bx.unsqueeze(-1), Bx.new_zeros(batch_size, samples, M - 1)], -1)
@@ -178,20 +184,25 @@ def delay_state_space(
         for index, (state, delay) in enumerate(zip(zi, delays)):
             if not isinstance(state, Tensor):
                 raise TypeError(f"zi[{index}] must be a Tensor")
-            assert state.dim() in (
+            if state.dim() not in (
                 1,
                 2,
-            ), f"Initial delay state zi[{index}] must be 1D or 2D, got {state.shape}"
-            assert state.size(-1) == delay, (
-                f"Last dimension of zi[{index}] must match delay {delay}, got {state.size(-1)}"
-            )
+            ):
+                raise ValueError(
+                    f"Initial delay state zi[{index}] must be 1D or 2D, got {state.shape}"
+                )
+            if state.size(-1) != delay:
+                raise ValueError(
+                    f"Last dimension of zi[{index}] must match delay {delay}, got {state.size(-1)}"
+                )
             if state.dim() == 1:
                 state = state.unsqueeze(0).expand(batch_size, -1)
             else:
-                assert state.size(0) == batch_size, (
-                    f"Batch size of zi[{index}] must match batch size of x, "
-                    f"got zi: {state.size(0)}, x: {batch_size}"
-                )
+                if state.size(0) != batch_size:
+                    raise ValueError(
+                        f"Batch size of zi[{index}] must match batch size of x, "
+                        f"got zi: {state.size(0)}, x: {batch_size}"
+                    )
             expanded_states.append(state)
         initial = tuple(expanded_states)
 
