@@ -115,7 +115,9 @@ def dtw(
             :math:`(N_b, M_b)`, two integer tensors of shape :math:`(B)`, for
             batches of sequences padded to :math:`N` and :math:`M`; the
             distance is then :math:`D[N_b - 1, M_b - 1]`. Padding costs don't
-            affect it. Default: the full lengths.
+            affect it. With the asymmetric steps, their values size the
+            computation, which breaks a :func:`torch.compile` graph. Default:
+            the full lengths.
         band (float, optional): a Sakoe-Chiba band: only cells within this
             many cells of the straight line from :math:`(0, 0)` to
             :math:`(N_b - 1, M_b - 1)`, measured along the longer sequence,

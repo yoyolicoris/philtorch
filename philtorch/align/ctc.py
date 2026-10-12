@@ -60,6 +60,8 @@ def ctc_loss(
             frames, of shape :math:`(N)`, or :math:`()` for one sequence.
         target_lengths (Tensor or tuple of int): each target's number of
             labels, of shape :math:`(N)`, or :math:`()` for one sequence.
+            With concatenated targets, a tensor's values size the padded
+            targets, which breaks a :func:`torch.compile` graph.
         blank (int): the blank class. Default: 0.
         reduction (str): ``"none"`` for the losses, ``"mean"`` for the mean
             over the batch of the losses divided by their target lengths, or

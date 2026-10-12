@@ -45,11 +45,14 @@ on:
       - "third_party/**"
       # The Triton kernels, named _*_kernels.py, the recurrence operator that
       # launches them, the native ops' registered backwards (ParaRNN's run
-      # only on CUDA), and every test module the GPU job runs (-m cuda), which
+      # only on CUDA), the alignment and HMM modules, which run only on CUDA,
+      # and every test module the GPU job runs (-m cuda), which
       # tests/test_ci_paths.py checks.
       - "philtorch/**/_*_kernels.py"
       - "philtorch/_recur.py"
       - "philtorch/_ops.py"
+      - "philtorch/align/*.py"
+      - "philtorch/estimation/hmm.py"
       - "tests/conftest.py"
       - "tests/test_align_ctc.py"
       - "tests/test_align_dtw.py"
@@ -80,11 +83,14 @@ on:
       - "third_party/**"
       # The Triton kernels, named _*_kernels.py, the recurrence operator that
       # launches them, the native ops' registered backwards (ParaRNN's run
-      # only on CUDA), and every test module the GPU job runs (-m cuda), which
+      # only on CUDA), the alignment and HMM modules, which run only on CUDA,
+      # and every test module the GPU job runs (-m cuda), which
       # tests/test_ci_paths.py checks.
       - "philtorch/**/_*_kernels.py"
       - "philtorch/_recur.py"
       - "philtorch/_ops.py"
+      - "philtorch/align/*.py"
+      - "philtorch/estimation/hmm.py"
       - "tests/conftest.py"
       - "tests/test_align_ctc.py"
       - "tests/test_align_dtw.py"
