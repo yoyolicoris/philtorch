@@ -171,7 +171,7 @@ y_zero_phase = filtfilt(b, a, x)
         - `diag_state_space`:
             - State-space models with diagonalisable state matrix.
         - `delay_state_space`:
-            - State-space models whose states are delay lines of arbitrary integer length, such as feedback delay networks.
+            - State-space models whose states are delay lines of arbitrary integer length, such as feedback delay networks, with optional absorption filters on each line.
         - `state_space_recursion`:
             - The core recursion function for state-space models.
         - `linear_recurrence`:
@@ -213,7 +213,7 @@ The supported high-level interfaces are exported from [`philtorch.lti`](philtorc
 | Train a sequence model on unsegmented targets with the CTC loss, or align targets to frames. | `philtorch.align.ctc_loss` or `philtorch.align.forced_align` | **CUDA GPUs only.** The arguments of `torch.nn.functional.ctc_loss`, batch first: `(N, T, C)` log-probabilities, padded or concatenated targets, the same reductions. Faster than `torch.nn.functional.ctc_loss` on long inputs with targets of up to about 60 labels, and differentiable to any order. |
 | Infer or decode the states of a hidden Markov model. | `philtorch.estimation.hmm_filter`, `philtorch.estimation.hmm_smoother`, or `philtorch.estimation.hmm_viterbi` | **CUDA GPUs only.** Log-probabilities in; shared or time-varying transitions. Chunked parallel scans in Triton, differentiable to any order in reverse mode; the work grows as K³, so they suit small state spaces on long sequences. |
 | Evaluate an LTI state-space system through eigendecomposition. | `philtorch.lti.diag_state_space` | Requires a diagonalisable `A`, or explicitly supplied `L`, `V`, and/or `Vinv`; diagonalisation failures propagate. |
-| Evaluate an LTI system whose states are delay lines, such as a feedback delay network. | `philtorch.lti.delay_state_space` | `delays` are positive integers, one per line; `B`, `C`, `D`, and `out_idx` follow `state_space`. `zi` holds one initial queue per line, and `(y, zf)` is returned only when it is given. |
+| Evaluate an LTI system whose states are delay lines, such as a feedback delay network. | `philtorch.lti.delay_state_space` | `delays` are positive integers, one per line; `B`, `C`, `D`, and `out_idx` follow `state_space`. `zi` holds one initial queue per line, and `(y, zf)` is returned only when it is given. `absorption=(b, a)` adds an IIR filter to each line, in `lfilter`'s convention: after the delay by default, or after `A` with `absorption_after_matrix=True`; then `(y, zf, absorption_zf)` is returned when `zi` or `absorption_zi` is given. |
 | Apply an LTI comb filter or cubic-spline interpolation. | `philtorch.lti.comb_filter` or `philtorch.lti.cubic_spline` | These utilities are also part of the public LTI exports. |
 
 ## Comparison with `scipy.signal`

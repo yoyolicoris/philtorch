@@ -1,6 +1,7 @@
 """Polynomial helpers for batched coefficient tensors."""
 
 import torch
+import torch.nn.functional as F
 from torch import Tensor
 
 
@@ -52,12 +53,13 @@ def polydiv(u: Tensor, v: Tensor) -> tuple[Tensor, Tensor]:
     m = u.size(-1) - 1
     n = v.size(-1) - 1
     scale = v[..., 0].reciprocal()
-    r = u.clone()
+    r = u
     q = []
     for k in range(0, m - n + 1):
         d = scale * r[..., k]
         q.append(d)
-        r[..., k : k + n + 1] -= d.unsqueeze(-1) * v
+        # Out of place: the product above saved r[..., k] for its gradient.
+        r = r - F.pad(d.unsqueeze(-1) * v, (k, m - n - k))
 
     r = r[..., m - n + 1 :]
     return torch.stack(q, dim=-1), r
