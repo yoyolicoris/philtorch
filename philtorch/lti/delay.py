@@ -31,33 +31,6 @@ def _as_int(value: Any, message: str) -> int:
         raise ValueError(message) from None
 
 
-def _read_delay_line(
-    initial: Tensor,
-    blocks: list[Tensor | None],
-    block_size: int,
-    delay: int,
-    line: int,
-    start: int,
-    stop: int,
-) -> Tensor:
-    """Read positions ``[start, stop)`` of ``initial ++ s_line``.
-
-    Blocks have shape ``(B, M, length)`` and every block except the last has
-    ``block_size`` samples, so position ``p >= delay`` lives at
-    ``divmod(p - delay, block_size)``.
-    """
-    parts = []
-    if start < delay:
-        parts.append(initial[:, start : min(stop, delay)])
-        start = delay
-    while start < stop:
-        block, offset = divmod(start - delay, block_size)
-        length = min(stop - start, block_size - offset)
-        parts.append(blocks[block][:, line, offset : offset + length])
-        start += length
-    return parts[0] if len(parts) == 1 else torch.cat(parts, dim=-1)
-
-
 def delay_state_space(
     A: Tensor,
     x: Tensor,
@@ -236,8 +209,6 @@ def delay_state_space(
                 f"got x: {x.size(-1)}, delays: {M}"
             )
     Bx = _ssm_B(B, x, batch_size, M)
-    if Bx.dim() == 2:
-        Bx = torch.cat([Bx.unsqueeze(-1), Bx.new_zeros(batch_size, samples, M - 1)], -1)
 
     absorb = absorption is not None
     if absorb:
@@ -345,25 +316,48 @@ def delay_state_space(
             expanded_states.append(state)
         initial = tuple(expanded_states)
 
-    def read(line: int, start: int, stop: int) -> Tensor:
-        return _read_delay_line(initial[line], blocks, block_size, delays[line], line, start, stop)
-
-    blocks: list[Tensor | None] = []
+    # Each line reads the stream initial ++ s at position t - m_i for time t.
+    # The stream is stored in chunks of block_size samples of all lines,
+    # behind a prefix of `prefix` samples (a multiple of block_size) that
+    # holds the initial queues right-aligned, so stream position t sits at
+    # index t + prefix. A block reads a window of the last chunks, at the same
+    # offsets every time.
     history = max(delays)
+    prefix = -(-history // block_size) * block_size
+    queues = torch.stack(
+        [F.pad(state, (prefix - delay, 0)) for state, delay in zip(initial, delays)], -1
+    )
+    chunks: list[Tensor | None] = list(queues.split(block_size, dim=1))
+    skip = (prefix - history) // block_size
+    window = prefix // block_size - skip
+    delay_tensor = torch.tensor(delays, device=x.device)
+    index = (
+        torch.arange(block_size, device=x.device)[:, None]
+        + (prefix - skip * block_size)
+        - delay_tensor
+    ).expand(batch_size, -1, -1)
+
     outputs, pending, pending_start = [], [], 0
-    for start in range(0, samples, block_size):
+    for block, start in enumerate(range(0, samples, block_size)):
         stop = min(start + block_size, samples)
-        r = torch.stack([read(line, start, stop) for line in range(M)], dim=-1)
+        first = block + skip
+        recent = chunks[first : first + window]
+        stream = recent[0] if window == 1 else torch.cat(recent, dim=1)
+        r = stream.gather(1, index[:, : stop - start])
+        if first > 0:
+            # Release chunks no block reads again, so their memory is reused.
+            chunks[first - 1] = None
         if absorb and not absorption_after_matrix:
             r, absorption_state = absorb_block(r, absorption_state)
         feedback = r @ A.mT
         if absorb and absorption_after_matrix:
             feedback, absorption_state = absorb_block(feedback, absorption_state)
-        blocks.append((feedback + Bx[:, start:stop]).mT.contiguous())
-        # Release blocks older than the longest delay so their memory is reused.
-        expired = (start - history) // block_size
-        if expired > 0:
-            blocks[expired - 1] = None
+        if Bx.dim() == 2:
+            # A 2-D Bx enters the first line only.
+            feedback = feedback + F.pad(Bx[:, start:stop, None], (0, M - 1))
+        else:
+            feedback = feedback + Bx[:, start:stop]
+        chunks.append(feedback)
         pending.append(r if out_idx is None else r[..., out_idx])
         # Map delay outputs to y in chunks: per block is slow for short blocks,
         # and all at once materialises a (B, N, M) tensor.
@@ -381,7 +375,10 @@ def delay_state_space(
         y = _ssm_C_D(h, x, C, D, batch_size, M)
 
     if return_zf or return_absorption_zf:
-        zf = tuple(read(line, samples, samples + delays[line]) for line in range(M))
+        first = (samples + prefix - history) // block_size
+        tail = torch.cat(chunks[first:], dim=1)
+        offset = samples + prefix - first * block_size
+        zf = tuple(tail[:, offset - delay : offset, line] for line, delay in enumerate(delays))
         if absorb:
             return y, zf, absorption_state.reshape(batch_size, M, K)
         return y, zf
