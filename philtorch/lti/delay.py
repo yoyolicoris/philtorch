@@ -31,6 +31,92 @@ def _as_int(value: Any, message: str) -> int:
         raise ValueError(message) from None
 
 
+def _initial_queues(
+    zi: Sequence[Tensor] | None, delays: tuple[int, ...], batch_size: int, x: Tensor
+) -> tuple[Tensor, ...]:
+    """Check :attr:`zi` and return one ``(B, m_i)`` initial queue per line."""
+    if zi is None:
+        return tuple(x.new_zeros(batch_size, delay) for delay in delays)
+    if isinstance(zi, Tensor) or len(zi) != len(delays):
+        raise ValueError(f"zi must contain one state for each of the {len(delays)} delays")
+    queues = []
+    for index, (state, delay) in enumerate(zip(zi, delays)):
+        if not isinstance(state, Tensor):
+            raise TypeError(f"zi[{index}] must be a Tensor")
+        if state.dim() not in (1, 2):
+            raise ValueError(f"Initial delay state zi[{index}] must be 1D or 2D, got {state.shape}")
+        if state.size(-1) != delay:
+            raise ValueError(
+                f"Last dimension of zi[{index}] must match delay {delay}, got {state.size(-1)}"
+            )
+        if state.dim() == 2 and state.size(0) != batch_size:
+            raise ValueError(
+                f"Batch size of zi[{index}] must match batch size of x, "
+                f"got zi: {state.size(0)}, x: {batch_size}"
+            )
+        queues.append(state.expand(batch_size, -1))
+    return tuple(queues)
+
+
+def _absorption_filters(
+    absorption: tuple[Tensor, Tensor],
+    absorption_zi: Tensor | None,
+    M: int,
+    batch_size: int,
+    x: Tensor,
+) -> tuple[Tensor | None, Tensor, Tensor, int, Tensor]:
+    """Check the absorption filters and build their transposed direct form II.
+
+    Returns the state-space ``A``, ``B`` and ``D`` of the ``B * M`` filters,
+    as in :func:`lfilter` with ``form="tdf2"``, their order ``K`` (``A`` is
+    ``None`` when it is 0), and their ``(B * M, K)`` initial state.
+    """
+    if not isinstance(absorption, (tuple, list)) or len(absorption) != 2:
+        raise ValueError("absorption must be a pair of tensors (b, a)")
+    named = {"absorption b": absorption[0], "absorption a": absorption[1]}
+    if absorption_zi is not None:
+        named["absorption_zi"] = absorption_zi
+    for name, tensor in named.items():
+        if not isinstance(tensor, Tensor):
+            raise TypeError(f"{name} must be a Tensor")
+        if tensor.dim() not in (2, 3):
+            raise ValueError(f"{name} must be 2D or 3D, got {tensor.shape}")
+        if tensor.size(-2) != M:
+            raise ValueError(
+                f"Second to last dimension of {name} must match the number of delays, "
+                f"got {tensor.size(-2)}, delays: {M}"
+            )
+        if tensor.dim() == 3 and tensor.size(0) != batch_size:
+            raise ValueError(
+                f"Batch size of {name} must match batch size of x, "
+                f"got {tensor.size(0)}, x: {batch_size}"
+            )
+    if absorption[0].size(-1) == 0:
+        raise ValueError("absorption b must have at least one coefficient")
+    if any(t.dtype != x.dtype or t.device != x.device for t in named.values()):
+        got = ", ".join(f"{name}: {t.dtype} on {t.device}" for name, t in named.items())
+        raise ValueError(
+            "absorption b, a and absorption_zi must have the dtype and device of x, "
+            f"got {got}, x: {x.dtype} on {x.device}"
+        )
+
+    b, a = (c.expand(batch_size, M, -1).reshape(batch_size * M, c.size(-1)) for c in absorption)
+    K = max(b.size(-1) - 1, a.size(-1))
+    if absorption_zi is None:
+        state = x.new_zeros(batch_size * M, K)
+    elif absorption_zi.size(-1) != K:
+        raise ValueError(
+            f"Last dimension of absorption_zi must be max(len(a), len(b) - 1) = {K}, "
+            f"got {absorption_zi.size(-1)}"
+        )
+    else:
+        state = absorption_zi.expand(batch_size, M, K).reshape(batch_size * M, K)
+    b = F.pad(b, (0, K + 1 - b.size(-1)))
+    a = F.pad(a, (0, K - a.size(-1)))
+    A = companion(a).mT if K else None
+    return A, b[:, 1:] - b[:, :1] * a, b[:, 0], K, state
+
+
 def delay_state_space(
     A: Tensor,
     x: Tensor,
@@ -160,10 +246,7 @@ def delay_state_space(
         ... ).squeeze(-1)
         tensor([[0.0000, 0.0000, 0.0000, 0.5000, 0.2500, 0.1250, 0.1875]])
     """
-    if x.dim() not in (
-        2,
-        3,
-    ):
+    if x.dim() not in (2, 3):
         raise ValueError(f"Input signal must be 2D or 3D (batch, time, [features]), got {x.shape}")
     if A.dim() not in (2, 3):
         raise ValueError(f"State matrix A must be 2D or 3D, got {A.shape}")
@@ -171,7 +254,8 @@ def delay_state_space(
         raise ValueError(f"State matrix A must be square, got {A.shape}")
     if not (C is None or out_idx is None):
         raise ValueError("C and out_idx cannot be used together. Use either C or out_idx.")
-    if absorption is None:
+    absorb = absorption is not None
+    if not absorb:
         if absorption_zi is not None:
             raise ValueError("absorption_zi needs absorption")
         if absorption_after_matrix:
@@ -179,11 +263,10 @@ def delay_state_space(
         if unroll_factor is not None:
             raise ValueError("unroll_factor needs absorption")
     elif unroll_factor is not None:
-        unroll_factor = _as_int(
-            unroll_factor, f"unroll_factor must be None or at least 1, got {unroll_factor}"
-        )
+        message = f"unroll_factor must be None or at least 1, got {unroll_factor}"
+        unroll_factor = _as_int(unroll_factor, message)
         if unroll_factor < 1:
-            raise ValueError(f"unroll_factor must be None or at least 1, got {unroll_factor}")
+            raise ValueError(message)
 
     # Anything that is not a sequence (int, NumPy scalar, 0-d array/tensor) is
     # a single delay line, so a non-integer scalar gets the ValueError below.
@@ -201,11 +284,10 @@ def delay_state_space(
         raise ValueError(
             f"Last dimension of A must match the number of delays, got A: {A.size(-1)}, delays: {M}"
         )
-    if A.dim() == 3:
-        if A.size(0) != batch_size:
-            raise ValueError(
-                f"Batch size of A must match batch size of x, got A: {A.size(0)}, x: {batch_size}"
-            )
+    if A.dim() == 3 and A.size(0) != batch_size:
+        raise ValueError(
+            f"Batch size of A must match batch size of x, got A: {A.size(0)}, x: {batch_size}"
+        )
 
     if block_size is None:
         block_size = min(delays)
@@ -213,79 +295,18 @@ def delay_state_space(
     if block_size < 1 or block_size > min(delays):
         raise ValueError("block_size must satisfy 1 <= block_size <= min(delays)")
 
-    if B is None and x.dim() == 3:
-        if x.size(-1) != M:
-            raise ValueError(
-                f"Last dimension of x must match the number of delays when B is None, "
-                f"got x: {x.size(-1)}, delays: {M}"
-            )
-    Bx = _ssm_B(B, x, batch_size, M)
-
-    absorb = absorption is not None
-    if absorb:
-        if not isinstance(absorption, (tuple, list)) or len(absorption) != 2:
-            raise ValueError("absorption must be a pair of tensors (b, a)")
-        for name, coefficients in zip(("b", "a"), absorption):
-            if not isinstance(coefficients, Tensor):
-                raise TypeError(f"absorption {name} must be a Tensor")
-            if coefficients.dim() not in (2, 3):
-                raise ValueError(f"absorption {name} must be 2D or 3D, got {coefficients.shape}")
-            if coefficients.size(-2) != M:
-                raise ValueError(
-                    f"Second to last dimension of absorption {name} must match the number "
-                    f"of delays, got {coefficients.size(-2)}, delays: {M}"
-                )
-            if coefficients.dim() == 3 and coefficients.size(0) != batch_size:
-                raise ValueError(
-                    f"Batch size of absorption {name} must match batch size of x, "
-                    f"got {coefficients.size(0)}, x: {batch_size}"
-                )
-        if absorption[0].size(-1) == 0:
-            raise ValueError("absorption b must have at least one coefficient")
-        checked = {"b": absorption[0], "a": absorption[1]}
-        if isinstance(absorption_zi, Tensor):
-            checked["absorption_zi"] = absorption_zi
-        if any(t.dtype != x.dtype or t.device != x.device for t in checked.values()):
-            got = ", ".join(f"{name}: {t.dtype} on {t.device}" for name, t in checked.items())
-            raise ValueError(
-                "absorption b, a and absorption_zi must have the dtype and device of x, "
-                f"got {got}, x: {x.dtype} on {x.device}"
-            )
-        filter_b, filter_a = (
-            c.expand(batch_size, -1, -1) if c.dim() == 2 else c for c in absorption
+    if B is None and x.dim() == 3 and x.size(-1) != M:
+        raise ValueError(
+            f"Last dimension of x must match the number of delays when B is None, "
+            f"got x: {x.size(-1)}, delays: {M}"
         )
-        filter_b = filter_b.reshape(batch_size * M, filter_b.size(-1))
-        filter_a = filter_a.reshape(batch_size * M, filter_a.size(-1))
-        K = max(filter_b.size(-1) - 1, filter_a.size(-1))
-        # The transposed direct form II of lfilter, built once for all blocks.
-        filter_b = F.pad(filter_b, (0, K + 1 - filter_b.size(-1)))
-        filter_a = F.pad(filter_a, (0, K - filter_a.size(-1)))
-        filter_D = filter_b[:, 0]
-        filter_A = companion(filter_a).mT if K else None
-        filter_B = filter_b[:, 1:] - filter_b[:, :1] * filter_a
-        if absorption_zi is None:
-            absorption_state = x.new_zeros(batch_size * M, K)
-        else:
-            if not isinstance(absorption_zi, Tensor):
-                raise TypeError("absorption_zi must be a Tensor")
-            if absorption_zi.dim() not in (2, 3):
-                raise ValueError(f"absorption_zi must be 2D or 3D, got {absorption_zi.shape}")
-            if absorption_zi.size(-2) != M:
-                raise ValueError(
-                    f"Second to last dimension of absorption_zi must match the number of "
-                    f"delays, got {absorption_zi.size(-2)}, delays: {M}"
-                )
-            if absorption_zi.size(-1) != K:
-                raise ValueError(
-                    f"Last dimension of absorption_zi must be max(len(a), len(b) - 1) = {K}, "
-                    f"got {absorption_zi.size(-1)}"
-                )
-            if absorption_zi.dim() == 3 and absorption_zi.size(0) != batch_size:
-                raise ValueError(
-                    f"Batch size of absorption_zi must match batch size of x, "
-                    f"got absorption_zi: {absorption_zi.size(0)}, x: {batch_size}"
-                )
-            absorption_state = absorption_zi.expand(batch_size, -1, -1).reshape(batch_size * M, K)
+    Bx = _ssm_B(B, x, batch_size, M)
+    if absorb:
+        filter_A, filter_B, filter_D, K, absorption_state = _absorption_filters(
+            absorption, absorption_zi, M, batch_size, x
+        )
+    initial = _initial_queues(zi, delays, batch_size, x)
+    return_states = zi is not None or absorption_zi is not None
 
     def absorb_block(signal: Tensor, state: Tensor) -> tuple[Tensor, Tensor]:
         """Filter a (B, L, M) block line by line, from and to a (B * M, K) state."""
@@ -297,6 +318,7 @@ def delay_state_space(
         # unroll_factor=1 would make state_space warn that its meaning changed
         # in 0.8, but this argument is new. A factor of at least the block
         # length runs the same sequential loop.
+        # TODO(#85): pass unroll_factor through once that warning is removed.
         factor = length + 1 if unroll_factor == 1 else unroll_factor
         flat, state = state_space(
             filter_A,
@@ -309,109 +331,63 @@ def delay_state_space(
         )
         return flat.reshape(batch_size, M, length).permute(0, 2, 1), state
 
-    return_zf = zi is not None
-    return_absorption_zf = absorb and (return_zf or absorption_zi is not None)
-    if zi is None:
-        initial = tuple(x.new_zeros(batch_size, delay) for delay in delays)
-    else:
-        if isinstance(zi, Tensor) or len(zi) != M:
-            raise ValueError(f"zi must contain one state for each of the {M} delays")
-        expanded_states = []
-        for index, (state, delay) in enumerate(zip(zi, delays)):
-            if not isinstance(state, Tensor):
-                raise TypeError(f"zi[{index}] must be a Tensor")
-            if state.dim() not in (
-                1,
-                2,
-            ):
-                raise ValueError(
-                    f"Initial delay state zi[{index}] must be 1D or 2D, got {state.shape}"
-                )
-            if state.size(-1) != delay:
-                raise ValueError(
-                    f"Last dimension of zi[{index}] must match delay {delay}, got {state.size(-1)}"
-                )
-            if state.dim() == 1:
-                state = state.unsqueeze(0).expand(batch_size, -1)
-            else:
-                if state.size(0) != batch_size:
-                    raise ValueError(
-                        f"Batch size of zi[{index}] must match batch size of x, "
-                        f"got zi: {state.size(0)}, x: {batch_size}"
-                    )
-            expanded_states.append(state)
-        initial = tuple(expanded_states)
-
-    # Each line reads the stream initial ++ s at position t - m_i for time t.
-    # The stream is stored in chunks of block_size samples of all lines,
-    # behind a prefix of `prefix` samples (a multiple of block_size) that
-    # holds the initial queues right-aligned, so stream position t sits at
-    # index t + prefix. At block `block`, line i reads block_size consecutive
-    # positions from chunk `block` on, at the same offsets every time, in at
-    # most two chunks. Only the `needed` chunks, relative to `block`, are
-    # joined and read.
+    # Line i reads the stream initial ++ s at position t - m_i for time t. The
+    # stream is kept in chunks of block_size samples of all lines, behind a
+    # prefix that holds the initial queues right-aligned. The prefix is the
+    # shortest multiple of block_size covering the longest delay, so the
+    # positions a block reads, relative to its first chunk (chunk `block`), are
+    # the same for every block, and lie in at most two chunks per line.
     history = max(delays)
     prefix = -(-history // block_size) * block_size
-    queues = torch.stack(
-        [F.pad(state, (prefix - delay, 0)) for state, delay in zip(initial, delays)], -1
-    )
-    chunks: list[Tensor | None] = list(queues.split(block_size, dim=1))
-    needed = sorted(
-        {(prefix - delay + k) // block_size for delay in delays for k in (0, block_size - 1)}
+    chunks: list[Tensor | None] = list(
+        torch.stack(
+            [F.pad(queue, (prefix - delay, 0)) for queue, delay in zip(initial, delays)], -1
+        ).split(block_size, dim=1)
     )
     position = (
         torch.arange(block_size, device=x.device)[:, None]
         + prefix
         - torch.tensor(delays, device=x.device)
     )
-    rank = torch.zeros(needed[-1] + 1, dtype=position.dtype, device=x.device)
-    rank[needed] = torch.arange(len(needed), device=x.device)
-    # (block_size, M) positions in the joined chunks.
-    index = rank[position // block_size] * block_size + position % block_size
+    needed = (position // block_size).unique()
+    # (block_size, M) positions in the needed chunks, joined.
+    index = torch.searchsorted(needed, position // block_size) * block_size + position % block_size
+    needed = needed.tolist()
     lines = torch.arange(M, device=x.device)
-    # The final queues are read from the last chunks, so keep those.
-    keep_from = (
-        (samples + prefix - history) // block_size if return_zf or return_absorption_zf else None
-    )
-    released = 0
+    # The final queues are the last `history` samples of the stream.
+    tail = (samples + prefix - history) // block_size
 
-    pad_span = -(-_OUTPUT_CHUNK // block_size) * block_size
-    outputs, pending, pending_start = [], [], 0
-    for block, start in enumerate(range(0, samples, block_size)):
-        stop = min(start + block_size, samples)
-        recent = [chunks[block + j] for j in needed]
-        stream = recent[0] if len(needed) == 1 else torch.cat(recent, dim=1)
-        # Advanced indexing saves only the index for backward, not the stream.
-        r = stream[:, index[: stop - start], lines]
-        # Release chunks no later block reads, so their memory is reused.
-        release = block + 1 + needed[0]
-        if keep_from is not None:
-            release = min(release, keep_from)
-        for c in range(released, release):
-            chunks[c] = None
-        released = max(released, release)
-        if absorb and not absorption_after_matrix:
-            r, absorption_state = absorb_block(r, absorption_state)
-        feedback = r @ A.mT
-        if absorb and absorption_after_matrix:
-            feedback, absorption_state = absorb_block(feedback, absorption_state)
-        if Bx.dim() == 2:
-            # A 2-D Bx enters the first line only. Pad it a span of blocks at
-            # a time: per block costs kernels, and all at once (B, N, M) memory.
-            if start % pad_span == 0:
-                padded = F.pad(Bx[:, start : start + pad_span, None], (0, M - 1))
-            offset = start % pad_span
-            feedback = feedback + padded[:, offset : offset + stop - start]
-        else:
-            feedback = feedback + Bx[:, start:stop]
-        chunks.append(feedback)
-        pending.append(r if out_idx is None else r[..., out_idx])
-        # Map delay outputs to y in chunks: per block is slow for short blocks,
-        # and all at once materialises a (B, N, M) tensor.
-        if stop - pending_start >= _OUTPUT_CHUNK or stop == samples:
-            h = pending[0] if len(pending) == 1 else torch.cat(pending, dim=1)
-            outputs.append(_ssm_C_D(h, x[:, pending_start:stop], C, D, batch_size, M))
-            pending, pending_start = [], stop
+    # Process spans of whole blocks of about _OUTPUT_CHUNK samples: a 2-D Bx,
+    # which enters the first line only, is padded to (B, span, M), and the
+    # delay outputs are mapped to y, a span at a time. Per block is slow for
+    # short blocks, and all at once materialises (B, N, M) tensors.
+    span = -(-_OUTPUT_CHUNK // block_size) * block_size
+    outputs = []
+    for span_start in range(0, samples, span):
+        span_stop = min(span_start + span, samples)
+        Bx_span = Bx[:, span_start:span_stop]
+        if Bx_span.dim() == 2:
+            Bx_span = F.pad(Bx_span.unsqueeze(-1), (0, M - 1))
+        pending = []
+        for start in range(span_start, span_stop, block_size):
+            block = start // block_size
+            stop = min(start + block_size, span_stop)
+            joined = [chunks[block + j] for j in needed]
+            stream = joined[0] if len(joined) == 1 else torch.cat(joined, dim=1)
+            # Advanced indexing saves only the index for backward, not the stream.
+            r = stream[:, index[: stop - start], lines]
+            if block < tail:
+                # No later block reads this chunk, so its memory is reused.
+                chunks[block] = None
+            if absorb and not absorption_after_matrix:
+                r, absorption_state = absorb_block(r, absorption_state)
+            feedback = r @ A.mT
+            if absorb and absorption_after_matrix:
+                feedback, absorption_state = absorb_block(feedback, absorption_state)
+            chunks.append(feedback + Bx_span[:, start - span_start : stop - span_start])
+            pending.append(r if out_idx is None else r[..., out_idx])
+        h = pending[0] if len(pending) == 1 else torch.cat(pending, dim=1)
+        outputs.append(_ssm_C_D(h, x[:, span_start:span_stop], C, D, batch_size, M))
 
     if outputs:
         y = outputs[0] if len(outputs) == 1 else torch.cat(outputs, dim=1)
@@ -421,14 +397,11 @@ def delay_state_space(
             h = h[..., out_idx]
         y = _ssm_C_D(h, x, C, D, batch_size, M)
 
-    if return_zf or return_absorption_zf:
-        first = (samples + prefix - history) // block_size
-        tail = torch.cat(chunks[first:], dim=1)
-        offset = samples + prefix - first * block_size
-        zf = tuple(
-            tail[:, offset - delay : offset, line].contiguous() for line, delay in enumerate(delays)
-        )
-        if absorb:
-            return y, zf, absorption_state.reshape(batch_size, M, K)
-        return y, zf
-    return y
+    if not return_states:
+        return y
+    stream = torch.cat(chunks[tail:], dim=1)
+    end = samples + prefix - tail * block_size
+    zf = tuple(stream[:, end - delay : end, line].contiguous() for line, delay in enumerate(delays))
+    if absorb:
+        return y, zf, absorption_state.reshape(batch_size, M, K)
+    return y, zf
