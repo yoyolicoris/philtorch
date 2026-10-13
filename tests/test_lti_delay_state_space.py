@@ -1,8 +1,12 @@
+import itertools
+import random
+
 import pytest
 import torch
 
 import philtorch.lti.delay as delay_module
 from philtorch.lti import delay_state_space, state_space
+from philtorch.lti.ssm import _ssm_B, _ssm_C_D
 
 BATCH = 3
 LINES = 4
@@ -442,3 +446,538 @@ def test_delay_state_space_validates_output_matrices():
 def test_delay_state_space_validates_initial_states(zi, error, message):
     with pytest.raises(error, match=message):
         delay_state_space(torch.zeros(2, 2), torch.zeros(2, 4), (2, 3), zi=zi)
+
+
+# --- absorption filters ---------------------------------------------------
+
+POSITIONS = [False, True]
+POSITION_IDS = ["after-delay", "after-matrix"]
+
+
+def _filter_coefficients(coefficients, orders, dtype):
+    """Random stable per-line filters, as (b, a) in lfilter's convention."""
+    kb, ka = orders
+    b_batch, a_batch = {
+        "shared": ((), ()),
+        "batched": ((BATCH,), (BATCH,)),
+        "mixed": ((BATCH,), ()),
+    }[coefficients]
+    b = 0.5 * torch.randn(*b_batch, LINES, kb + 1, dtype=dtype)
+    a = 0.3 * torch.randn(*a_batch, LINES, ka, dtype=dtype)
+    return b, a
+
+
+def _absorption_state(mode, orders, dtype):
+    if mode is None:
+        return None
+    shape = (LINES, max(orders[0], orders[1]))
+    shape = shape if mode == "shared" else (BATCH, *shape)
+    return torch.randn(*shape, dtype=dtype)
+
+
+def _reference_absorption(A, x, delays, B, C, D, out_idx, zi, b, a, absorption_zi, after_matrix):
+    """Run the network one sample at a time, with explicit queues and filters.
+
+    The filters are written from y[n] = sum_k b_k x[n - k] - sum_k a_k y[n - k]
+    in transposed direct form II, so z_k[n] = b_{k+1} x[n] - a_{k+1} y[n] +
+    z_{k+1}[n - 1], as SciPy's ``zi`` holds them. The layouts of B, C and D are
+    those of the expanded state-space test above, and are applied here by the
+    same helpers as in ``delay_state_space``.
+    """
+    batch_size, samples = x.shape[:2]
+    M = len(delays)
+    Bx = _ssm_B(B, x, batch_size, M)
+    if Bx.dim() == 2:
+        Bx = torch.cat([Bx.unsqueeze(-1), Bx.new_zeros(batch_size, samples, M - 1)], -1)
+
+    b = b.expand(batch_size, M, -1)
+    a = a.expand(batch_size, M, -1)
+    K = max(b.size(-1) - 1, a.size(-1))
+    b = torch.cat([b, b.new_zeros(batch_size, M, K + 1 - b.size(-1))], -1)
+    a = torch.cat([a, a.new_zeros(batch_size, M, K - a.size(-1))], -1)
+    if absorption_zi is None:
+        z = x.new_zeros(batch_size, M, K)
+    else:
+        z = absorption_zi.expand(batch_size, M, K)
+    z = list(z.unbind(-1))  # K tensors of shape (B, M)
+
+    def apply_filters(u):
+        nonlocal z
+        out = b[..., 0] * u + (z[0] if K else 0)
+        nxt = [b[..., k + 1] * u - a[..., k] * out for k in range(K)]
+        z = [nxt[k] + (z[k + 1] if k + 1 < K else 0) for k in range(K)]
+        return out
+
+    if zi is None:
+        queues = [[x.new_zeros(batch_size)] * delay for delay in delays]
+    else:
+        queues = [list(state.expand(batch_size, -1).unbind(-1)) for state in zi]
+
+    rs = []
+    for n in range(samples):
+        q = torch.stack([queue.pop(0) for queue in queues], dim=-1)  # (B, M)
+        if after_matrix:
+            r = q
+            s = apply_filters((A @ r.unsqueeze(-1)).squeeze(-1)) + Bx[:, n]
+        else:
+            r = apply_filters(q)
+            s = (A @ r.unsqueeze(-1)).squeeze(-1) + Bx[:, n]
+        for queue, value in zip(queues, s.unbind(-1)):
+            queue.append(value)
+        rs.append(r)
+
+    h = torch.stack(rs, dim=1) if rs else x.new_empty(batch_size, 0, M)
+    if out_idx is not None:
+        h = h[..., out_idx]
+    y = _ssm_C_D(h, x, C, D, batch_size, M)
+    zf = tuple(torch.stack(queue, dim=-1) for queue in queues)
+    absorption_zf = torch.stack(z, dim=-1) if K else x.new_zeros(batch_size, M, 0)
+    return y, zf, absorption_zf
+
+
+_ABSORPTION_LAYOUTS = [
+    "defaults 2D",
+    "B(M) C(P,M) D(P)",
+    "B(M) out_idx D()",
+    "B(b,M,F) C(b,P,M) D(b,P,F)",
+    "defaults 3D",
+]
+_ABSORPTION_ORDERS = [(0, 0), (1, 1), (2, 1), (0, 2)]
+
+
+def _case_id(value):
+    if isinstance(value, torch.dtype):
+        return str(value).removeprefix("torch.")
+    if isinstance(value, bool):
+        return "after-matrix" if value else "after-delay"
+    return str(value).replace(" ", "")
+
+
+def _absorption_cases():
+    # The full product is 5184 cases. A seeded sample keeps every value of
+    # every option, and most pairs of them, in 200.
+    options = list(
+        itertools.product(
+            _ABSORPTION_LAYOUTS,
+            POSITIONS,
+            [torch.double, torch.cdouble],
+            _ABSORPTION_ORDERS,
+            ["shared", "batched", "mixed"],
+            [False, True],
+            [None, "1d", "2d"],
+            [None, "shared", "batched"],
+            [None, 1],
+        )
+    )
+    return [
+        pytest.param(*case, id="-".join(_case_id(value) for value in case))
+        for case in random.Random(0).sample(options, 200)
+    ]
+
+
+@pytest.mark.parametrize(
+    "layout, after_matrix, dtype, orders, coefficients, batched_A, zi_mode, az_mode, block_size",
+    _absorption_cases(),
+)
+def test_delay_state_space_absorption_matches_reference(
+    layout, after_matrix, dtype, orders, coefficients, batched_A, zi_mode, az_mode, block_size
+):
+    args = _layout(layout, dtype)
+    A_shape = (BATCH, LINES, LINES) if batched_A else (LINES, LINES)
+    A = 0.4 * torch.randn(*A_shape, dtype=dtype)
+    b, a = _filter_coefficients(coefficients, orders, dtype)
+    zi = _initial_states(zi_mode, dtype)
+    absorption_zi = _absorption_state(az_mode, orders, dtype)
+
+    result = delay_state_space(
+        A,
+        delays=DELAYS,
+        zi=zi,
+        block_size=block_size,
+        absorption=(b, a),
+        absorption_zi=absorption_zi,
+        absorption_after_matrix=after_matrix,
+        **args,
+    )
+    expected_y, expected_zf, expected_azf = _reference_absorption(
+        A, args["x"], DELAYS, args["B"], args["C"], args["D"], args["out_idx"],
+        zi, b, a, absorption_zi, after_matrix,
+    )  # fmt: skip
+
+    if zi is None and absorption_zi is None:
+        assert isinstance(result, torch.Tensor)
+        y = result
+    else:
+        assert isinstance(result, tuple) and len(result) == 3
+        y, zf, azf = result
+        _assert_states_close(zf, expected_zf)
+        assert azf.shape == (BATCH, LINES, max(orders))
+        torch.testing.assert_close(azf, expected_azf)
+    torch.testing.assert_close(y, expected_y)
+
+
+@pytest.mark.parametrize("after_matrix", POSITIONS, ids=POSITION_IDS)
+@pytest.mark.parametrize("batched_zi", [False, True])
+def test_delay_state_space_identity_absorption_is_a_no_op(after_matrix, batched_zi):
+    x = torch.randn(BATCH, SAMPLES, dtype=torch.double)
+    A = 0.4 * torch.randn(LINES, LINES, dtype=torch.double)
+    B, C, D = (torch.randn(shape, dtype=torch.double) for shape in ((LINES,), (LINES,), ()))
+    zi = _initial_states("2d" if batched_zi else "1d", torch.double)
+    expected_y, expected_zf = delay_state_space(A, x, DELAYS, B=B, C=C, D=D, zi=zi)
+
+    ones, zeros = (
+        torch.ones(LINES, 1, dtype=torch.double),
+        torch.zeros(LINES, 1, dtype=torch.double),
+    )
+    identities = {
+        "pure gain": (ones, torch.empty(LINES, 0, dtype=torch.double)),
+        "padded": (torch.cat([ones, zeros], dim=1), zeros),
+    }
+    for b, a in identities.values():
+        y, zf, azf = delay_state_space(
+            A,
+            x,
+            DELAYS,
+            B=B,
+            C=C,
+            D=D,
+            zi=zi,
+            absorption=(b, a),
+            absorption_after_matrix=after_matrix,
+        )
+        torch.testing.assert_close(y, expected_y)
+        _assert_states_close(zf, expected_zf)
+        assert azf.shape == (BATCH, LINES, a.size(-1))
+        assert torch.count_nonzero(azf) == 0
+
+
+@pytest.mark.parametrize("after_matrix", POSITIONS, ids=POSITION_IDS)
+@pytest.mark.parametrize("delay", [1, 4])
+def test_delay_state_space_absorption_single_line_matches_scipy(after_matrix, delay):
+    np = pytest.importorskip("numpy")
+    signal = pytest.importorskip("scipy.signal")
+    gain, b, a = 0.5, np.array([0.8, 0.3]), np.array([1.0, -0.4])
+    x = torch.randn(2, 40, dtype=torch.double)
+    x[0, 1:] = 0.0  # an impulse for the first row
+
+    # Polynomials in z^-1, lowest power first. H = b / a and the delay is z^-m.
+    shifted_b = np.concatenate([np.zeros(delay), b])
+    loop = np.zeros(max(len(a), len(shifted_b)))
+    loop[: len(a)] += a
+    loop[: len(shifted_b)] -= gain * shifted_b
+    if after_matrix:  # y = z^-m / (1 - g z^-m H)
+        numerator = np.concatenate([np.zeros(delay), a])
+    else:  # y = z^-m H / (1 - g z^-m H)
+        numerator = shifted_b
+    expected = signal.lfilter(numerator, loop, x.numpy(), axis=-1)
+
+    y = delay_state_space(
+        torch.tensor([[gain]], dtype=torch.double),
+        x,
+        (delay,),
+        C=torch.ones(1, dtype=torch.double),
+        absorption=(
+            torch.from_numpy(b)[None],
+            torch.from_numpy(a[1:])[None],
+        ),
+        absorption_after_matrix=after_matrix,
+    )
+
+    torch.testing.assert_close(y, torch.from_numpy(expected))
+
+
+@pytest.mark.parametrize("after_matrix", POSITIONS, ids=POSITION_IDS)
+@pytest.mark.parametrize("split", [2, 5, 9, 13])
+@pytest.mark.parametrize("dtype", [torch.double, torch.cdouble])
+def test_delay_state_space_absorption_streaming(after_matrix, split, dtype):
+    # The splits fall below the shortest delay (3), between the delays, and
+    # beyond the longest (7).
+    samples, orders = 17, (2, 2)
+    x = torch.randn(BATCH, samples, dtype=dtype)
+    A = 0.4 * torch.randn(BATCH, LINES, LINES, dtype=dtype)
+    B, C, D = (
+        torch.randn(shape, dtype=dtype) for shape in ((LINES,), (OUTPUTS, LINES), (OUTPUTS,))
+    )
+    absorption = _filter_coefficients("batched", orders, dtype)
+    zi = _initial_states("2d", dtype)
+    absorption_zi = _absorption_state("batched", orders, dtype)
+    kwargs = dict(B=B, C=C, D=D, absorption=absorption, absorption_after_matrix=after_matrix)
+
+    expected_y, expected_zf, expected_azf = delay_state_space(
+        A, x, DELAYS, zi=zi, absorption_zi=absorption_zi, **kwargs
+    )
+    first_y, zf, azf = delay_state_space(
+        A, x[:, :split], DELAYS, zi=zi, absorption_zi=absorption_zi, **kwargs
+    )
+    second_y, final_zf, final_azf = delay_state_space(
+        A, x[:, split:], DELAYS, zi=zf, absorption_zi=azf, **kwargs
+    )
+
+    torch.testing.assert_close(torch.cat([first_y, second_y], dim=1), expected_y)
+    _assert_states_close(final_zf, expected_zf)
+    torch.testing.assert_close(final_azf, expected_azf)
+
+
+@pytest.mark.parametrize("after_matrix", POSITIONS, ids=POSITION_IDS)
+def test_delay_state_space_absorption_return_contract(after_matrix):
+    dtype, orders = torch.double, (1, 2)
+    x = torch.randn(BATCH, SAMPLES, dtype=dtype)
+    A = 0.4 * torch.randn(LINES, LINES, dtype=dtype)
+    absorption = _filter_coefficients("shared", orders, dtype)
+    zi = _initial_states("2d", dtype)
+    absorption_zi = _absorption_state("shared", orders, dtype)
+    kwargs = dict(absorption=absorption, absorption_after_matrix=after_matrix)
+    zero_zi = tuple(torch.zeros(BATCH, delay, dtype=dtype) for delay in DELAYS)
+    zero_az = torch.zeros(LINES, max(orders), dtype=dtype)
+
+    plain = delay_state_space(A, x, DELAYS, **kwargs)
+    assert isinstance(plain, torch.Tensor)
+
+    # Only the filters' state: the queues start empty, and come back.
+    y, zf, azf = delay_state_space(A, x, DELAYS, absorption_zi=absorption_zi, **kwargs)
+    expected_y, expected_zf, expected_azf = delay_state_space(
+        A, x, DELAYS, zi=zero_zi, absorption_zi=absorption_zi, **kwargs
+    )
+    torch.testing.assert_close(y, expected_y)
+    _assert_states_close(zf, expected_zf)
+    torch.testing.assert_close(azf, expected_azf)
+
+    # Only the queues: the filters start at zero, and their state comes back.
+    y, zf, azf = delay_state_space(A, x, DELAYS, zi=zi, **kwargs)
+    expected_y, expected_zf, expected_azf = delay_state_space(
+        A, x, DELAYS, zi=zi, absorption_zi=zero_az, **kwargs
+    )
+    torch.testing.assert_close(y, expected_y)
+    _assert_states_close(zf, expected_zf)
+    torch.testing.assert_close(azf, expected_azf)
+    assert azf.shape == (BATCH, LINES, max(orders))
+
+    # Zero states are the default.
+    zero_y, _, _ = delay_state_space(A, x, DELAYS, zi=zero_zi, absorption_zi=zero_az, **kwargs)
+    torch.testing.assert_close(zero_y, plain)
+
+
+@pytest.mark.parametrize("after_matrix", POSITIONS, ids=POSITION_IDS)
+@pytest.mark.parametrize("az_dim", [2, 3])
+@pytest.mark.parametrize("with_zi", [False, True])
+def test_delay_state_space_absorption_zero_length(after_matrix, az_dim, with_zi):
+    delays, orders = (2, 3), (1, 2)
+    x = torch.empty(2, 0)
+    A = torch.eye(2)
+    b, a = torch.randn(2, 2), torch.randn(2, 2)
+    az_shape = (2, 2) if az_dim == 2 else (2, 2, 2)
+    absorption_zi = torch.randn(*az_shape)
+    zi = (
+        (torch.tensor([[1.0, 2.0], [3.0, 4.0]]), torch.tensor([5.0, 6.0, 7.0])) if with_zi else None
+    )
+
+    y, zf, azf = delay_state_space(
+        A,
+        x,
+        delays,
+        C=torch.ones(2),
+        D=torch.tensor(0.5),
+        zi=zi,
+        absorption=(b, a),
+        absorption_zi=absorption_zi,
+        absorption_after_matrix=after_matrix,
+    )
+
+    assert y.shape == (2, 0)
+    assert y.dtype == x.dtype
+    assert azf.shape == (2, 2, max(orders))
+    torch.testing.assert_close(azf, absorption_zi.expand(2, -1, -1))
+    if with_zi:
+        _assert_states_close(zf, (zi[0], zi[1].expand(2, -1)))
+    else:
+        _assert_states_close(zf, tuple(torch.zeros(2, delay) for delay in delays))
+
+
+@pytest.mark.parametrize("after_matrix", POSITIONS, ids=POSITION_IDS)
+@pytest.mark.parametrize("batched_coefficients", [False, True])
+def test_delay_state_space_absorption_gradcheck(after_matrix, batched_coefficients):
+    delays, batch, samples, M = (2, 3), 2, 8, 2
+    double = dict(dtype=torch.double, requires_grad=True)
+    x = torch.randn(batch, samples, **double)
+    A = (0.4 * torch.randn(M, M, dtype=torch.double)).requires_grad_()
+    coefficient_batch = (batch,) if batched_coefficients else ()
+    b = (0.5 * torch.randn(*coefficient_batch, M, 2, dtype=torch.double)).requires_grad_()
+    a = (0.3 * torch.randn(*coefficient_batch, M, 1, dtype=torch.double)).requires_grad_()
+    absorption_zi = torch.randn(batch, M, 1, **double)
+
+    def run(A, b, a, absorption_zi, x):
+        y, zf, azf = delay_state_space(
+            A,
+            x,
+            delays,
+            C=torch.ones(M, dtype=torch.double),
+            absorption=(b, a),
+            absorption_zi=absorption_zi,
+            absorption_after_matrix=after_matrix,
+        )
+        return y, azf, *zf
+
+    assert torch.autograd.gradcheck(run, (A, b, a, absorption_zi, x))
+
+
+@pytest.mark.parametrize("after_matrix", POSITIONS, ids=POSITION_IDS)
+def test_delay_state_space_absorption_unroll_factor(after_matrix):
+    dtype, orders = torch.double, (2, 1)
+    x = torch.randn(BATCH, SAMPLES, dtype=dtype)
+    A = 0.4 * torch.randn(LINES, LINES, dtype=dtype)
+    absorption = _filter_coefficients("shared", orders, dtype)
+    zi = _initial_states("2d", dtype)
+    absorption_zi = _absorption_state("batched", orders, dtype)
+    kwargs = dict(
+        absorption=absorption,
+        zi=zi,
+        absorption_zi=absorption_zi,
+        absorption_after_matrix=after_matrix,
+        block_size=2,
+    )
+    expected_y, expected_zf, expected_azf = delay_state_space(A, x, DELAYS, **kwargs)
+
+    runs = {
+        "2": delay_state_space(A, x, DELAYS, unroll_factor=2, **kwargs),
+    }
+    with pytest.warns(FutureWarning, match="unroll_factor=1"):
+        runs["1"] = delay_state_space(A, x, DELAYS, unroll_factor=1, **kwargs)
+
+    for y, zf, azf in runs.values():
+        torch.testing.assert_close(y, expected_y)
+        _assert_states_close(zf, expected_zf)
+        torch.testing.assert_close(azf, expected_azf)
+
+
+def _validation_inputs(dtype=torch.double):
+    return dict(
+        A=torch.zeros(2, 2, dtype=dtype),
+        x=torch.zeros(BATCH, 9, dtype=dtype),
+        delays=(2, 3),
+        absorption=(torch.zeros(2, 2, dtype=dtype), torch.zeros(2, 1, dtype=dtype)),
+    )
+
+
+def _zeros(*shape):
+    return torch.zeros(*shape, dtype=torch.double)
+
+
+@pytest.mark.parametrize(
+    ("overrides", "error", "message"),
+    [
+        pytest.param(
+            dict(absorption=(_zeros(2, 2),)), ValueError, "pair of tensors", id="one-element"
+        ),
+        pytest.param(
+            dict(absorption=(_zeros(2, 2), _zeros(2, 1), _zeros(2, 1))),
+            ValueError,
+            "pair of tensors",
+            id="three-elements",
+        ),
+        pytest.param(dict(absorption=_zeros(2, 2)), ValueError, "pair of tensors", id="tensor"),
+        pytest.param(
+            dict(absorption=(_zeros(2), _zeros(2, 1))),
+            ValueError,
+            "absorption b must be 2D or 3D",
+            id="b-1d",
+        ),
+        pytest.param(
+            dict(absorption=(_zeros(2, 2), _zeros(1, BATCH, 2, 1))),
+            ValueError,
+            "absorption a must be 2D or 3D",
+            id="a-4d",
+        ),
+        pytest.param(
+            dict(absorption=(_zeros(3, 2), _zeros(2, 1))),
+            ValueError,
+            "absorption b must match the number of delays",
+            id="b-lines",
+        ),
+        pytest.param(
+            dict(absorption=(_zeros(2, 2), _zeros(BATCH, 3, 1))),
+            ValueError,
+            "absorption a must match the number of delays",
+            id="a-lines",
+        ),
+        pytest.param(
+            dict(absorption=(_zeros(BATCH + 1, 2, 2), _zeros(2, 1))),
+            ValueError,
+            "Batch size of absorption b",
+            id="b-batch",
+        ),
+        pytest.param(
+            dict(absorption=(_zeros(2, 2), _zeros(BATCH + 1, 2, 1))),
+            ValueError,
+            "Batch size of absorption a",
+            id="a-batch",
+        ),
+        pytest.param(
+            dict(absorption_zi=_zeros(2)), ValueError, "absorption_zi must be 2D or 3D", id="zi-1d"
+        ),
+        pytest.param(
+            dict(absorption_zi=_zeros(1, BATCH, 2, 1)),
+            ValueError,
+            "absorption_zi must be 2D or 3D",
+            id="zi-4d",
+        ),
+        pytest.param(
+            dict(absorption_zi=_zeros(3, 1)),
+            ValueError,
+            "absorption_zi must match the number of delays",
+            id="zi-lines",
+        ),
+        pytest.param(
+            dict(absorption_zi=_zeros(2, 2)),
+            ValueError,
+            "Last dimension of absorption_zi must be",
+            id="zi-order",
+        ),
+        pytest.param(
+            dict(absorption_zi=_zeros(BATCH + 1, 2, 1)),
+            ValueError,
+            "Batch size of absorption_zi",
+            id="zi-batch",
+        ),
+        pytest.param(
+            dict(absorption=([[0.0, 0.0]] * 2, _zeros(2, 1))),
+            TypeError,
+            "absorption b must be a Tensor",
+            id="b-list",
+        ),
+        pytest.param(
+            dict(absorption=(_zeros(2, 2), [[0.0]] * 2)),
+            TypeError,
+            "absorption a must be a Tensor",
+            id="a-list",
+        ),
+        pytest.param(
+            dict(absorption_zi=[[0.0], [0.0]]),
+            TypeError,
+            "absorption_zi must be a Tensor",
+            id="zi-list",
+        ),
+        pytest.param(
+            dict(absorption=None, absorption_zi=_zeros(2, 1)),
+            ValueError,
+            "absorption_zi needs absorption",
+            id="zi-without-absorption",
+        ),
+        pytest.param(
+            dict(absorption=None, absorption_after_matrix=True),
+            ValueError,
+            "absorption_after_matrix needs absorption",
+            id="after-matrix-without-absorption",
+        ),
+        pytest.param(
+            dict(absorption=None, unroll_factor=2),
+            ValueError,
+            "unroll_factor needs absorption",
+            id="unroll-without-absorption",
+        ),
+    ],
+)
+def test_delay_state_space_validates_absorption(overrides, error, message):
+    inputs = {**_validation_inputs(), **overrides}
+    A, x, delays = inputs.pop("A"), inputs.pop("x"), inputs.pop("delays")
+    with pytest.raises(error, match=message):
+        delay_state_space(A, x, delays, **inputs)

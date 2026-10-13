@@ -521,3 +521,127 @@ def test_fir_state_with_signals_shorter_than_the_order(transpose: bool, N: int):
         y_ref, zf_ref = signal.lfilter(b, [1], history)[:, 5:], history[:, ::-1][:, :5]
     assert np.allclose(y.numpy(), y_ref)
     assert np.allclose(zf.numpy(), zf_ref)
+
+
+def _empty_a_coeffs(num_taps: int, batched: bool, B: int = 3):
+    """Random NumPy b and an empty tensor a, batched or shared."""
+    rng = np.random.default_rng(0)
+    b = rng.standard_normal((B, num_taps) if batched else (num_taps,))
+    a = torch.zeros(B, 0, dtype=torch.float64) if batched else torch.zeros(0, dtype=torch.float64)
+    return b, a
+
+
+@pytest.mark.parametrize("batched", [True, False])
+@pytest.mark.parametrize(
+    ("form", "backend", "use_zi"),
+    [
+        (form, backend, use_zi)
+        for form, backend in [
+            ("df2", "ssm"),
+            ("tdf2", "ssm"),
+            ("df1", "ssm"),
+            ("tdf1", "ssm"),
+            ("df2", "diag_ssm"),
+            ("tdf2", "diag_ssm"),
+        ]
+        for use_zi in (False, True)
+        # df1 and tdf1 do not take zi.
+        if not (use_zi and form in ("df1", "tdf1"))
+    ],
+)
+def test_lfilter_pure_gain(form: str, backend: str, use_zi: bool, batched: bool):
+    B, T = 3, 20
+    b, a = _empty_a_coeffs(1, batched, B)
+    x = np.random.default_rng(1).standard_normal((B, T))
+    # Unbatched everything: the filter is run on one signal.
+    if not batched:
+        x = x[0]
+    kwargs = {}
+    if use_zi:
+        kwargs["zi"] = torch.zeros(*(() if not batched else (B,)), 0, dtype=torch.float64)
+    out = lfilter(torch.from_numpy(b), a, torch.from_numpy(x), form=form, backend=backend, **kwargs)
+    y, zf = out if use_zi else (out, None)
+    assert y.shape == x.shape
+    if batched:
+        y_ref = np.stack([signal.lfilter(b[i], [1.0], x[i]) for i in range(B)])
+    else:
+        y_ref = signal.lfilter(b, [1.0], x)
+    assert np.allclose(y.numpy(), y_ref)
+    if use_zi:
+        assert zf.shape == ((B, 0) if batched else (0,))
+
+
+@pytest.mark.parametrize("batched", [True, False])
+@pytest.mark.parametrize(
+    ("form", "backend", "delayed_form"),
+    [
+        ("df2", "ssm", False),
+        ("tdf2", "ssm", False),
+        ("df1", "ssm", False),
+        ("tdf1", "ssm", False),
+        ("df2", "diag_ssm", False),
+        ("df2", "diag_ssm", True),
+        ("tdf2", "diag_ssm", False),
+        ("tdf2", "diag_ssm", True),
+    ],
+)
+def test_lfilter_empty_a_fir(form: str, backend: str, delayed_form: bool, batched: bool):
+    B, T = 3, 20
+    b, a = _empty_a_coeffs(3, batched, B)
+    x = np.random.default_rng(1).standard_normal((B, T))
+    kwargs = {"delayed_form": delayed_form} if backend == "diag_ssm" else {}
+    y = lfilter(
+        torch.from_numpy(b),
+        a,
+        torch.from_numpy(x),
+        form=form,
+        backend=backend,
+        **kwargs,
+    )
+    b_ref = np.broadcast_to(b, (B, 3))
+    y_ref = np.stack([signal.lfilter(b_ref[i], [1.0], x[i]) for i in range(B)])
+    assert np.allclose(y.numpy(), y_ref)
+
+
+@pytest.mark.parametrize("batched", [True, False])
+def test_lfilter_empty_a_fir_tdf2_zi(batched: bool):
+    B, T = 3, 20
+    rng = np.random.default_rng(2)
+    b, a = _empty_a_coeffs(3, batched, B)
+    x = rng.standard_normal((B, T))
+    zi = rng.standard_normal((B, 2))
+    b_ref = np.broadcast_to(b, (B, 3))
+    refs = [signal.lfilter(b_ref[i], [1.0], x[i], zi=zi[i]) for i in range(B)]
+    y_ref = np.stack([r[0] for r in refs])
+    zf_ref = np.stack([r[1] for r in refs])
+    y, zf = lfilter(
+        torch.from_numpy(b), a, torch.from_numpy(x), zi=torch.from_numpy(zi), form="tdf2"
+    )
+    assert np.allclose(y.numpy(), y_ref)
+    assert np.allclose(zf.numpy(), zf_ref)
+
+
+@pytest.mark.parametrize("backend", ["ssm", "diag_ssm"])
+@pytest.mark.parametrize("num_taps", [1, 3])
+def test_lfilter_empty_a_gradients(backend: str, num_taps: int):
+    rng = np.random.default_rng(3)
+    b = torch.from_numpy(rng.standard_normal((2, num_taps))).requires_grad_()
+    x = torch.from_numpy(rng.standard_normal((2, 12))).requires_grad_()
+    a = torch.zeros(2, 0, dtype=torch.float64)
+    assert torch.autograd.gradcheck(
+        lambda b, x: lfilter(b, a, x, form="tdf2", backend=backend), (b, x)
+    )
+
+
+def test_lfilter_empty_a_errors():
+    b1 = torch.ones(2, 1, dtype=torch.float64)
+    b3 = torch.ones(2, 3, dtype=torch.float64)
+    a = torch.zeros(2, 0, dtype=torch.float64)
+    x = torch.ones(2, 10, dtype=torch.float64)
+
+    with pytest.raises(ValueError, match="0 states"):
+        lfilter(b1, a, x, zi=torch.zeros(2, 1, dtype=torch.float64), form="tdf2")
+    with pytest.raises(ValueError, match="Unknown filter form"):
+        lfilter(b3, a, x, form="df1", backend="diag_ssm")
+    with pytest.raises(ValueError, match="does not take zi"):
+        lfilter(b3, a, x, zi=torch.zeros(2, 2, dtype=torch.float64), backend="diag_ssm")

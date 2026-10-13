@@ -464,6 +464,14 @@ def _ssm_lfilter(
     if zi is not None and form in ("df1", "tdf1"):
         raise ValueError(f"form={form!r} does not take zi; use 'df2' or 'tdf2'.")
 
+    if a.size(-1) == 0 and form in ("df2", "tdf2", "df1", "tdf1"):
+        # A pure gain has no state: the output is b0 * x, and the final state
+        # is empty.
+        if zi is not None and zi.size(-1) != 0:
+            raise ValueError(f"zi must have 0 states for a pure gain, got {zi.size(-1)}.")
+        y = b[..., :1] * x
+        return y if zi is None else (y, y.new_empty((y.size(0), 0)))
+
     A = companion(a)
 
     match form:
@@ -527,12 +535,23 @@ def _diag_ssm_lfilter(
     # still has a real output and state.
     real = not any(t.is_complex() for t in (b, a, x) + (() if zi is None else (zi,)))
 
-    if b.size(-1) > a.size(-1) + 1:
-        if zi is not None:
-            raise ValueError(
-                "backend='diag_ssm' does not take zi when b has more than "
-                "len(a) + 1 coefficients; use backend='ssm'."
-            )
+    if form not in ("df2", "tdf2"):
+        raise ValueError(f"Unknown filter form: {form}")
+
+    too_long = b.size(-1) > a.size(-1) + 1
+    if too_long and zi is not None:
+        raise ValueError(
+            "backend='diag_ssm' does not take zi when b has more than "
+            "len(a) + 1 coefficients; use backend='ssm'."
+        )
+
+    if a.size(-1) == 0:
+        # With no poles, the filter is the FIR filter b.
+        if zi is not None and zi.dim() == 1:
+            zi = zi.unsqueeze(0).expand(x.size(0), -1)
+        return fir(b.broadcast_to((x.size(0), -1)), x, zi)
+
+    if too_long:
         # fir takes one filter per signal.
         b = b.broadcast_to((x.size(0), b.size(-1)))
         if delayed_form:
@@ -582,8 +601,6 @@ def _diag_ssm_lfilter(
                 out_idx=0,
                 **kwargs,
             )
-        case _:
-            raise ValueError(f"Unknown filter form: {form}")
 
     results = filt(x)
     if isinstance(results, tuple):
