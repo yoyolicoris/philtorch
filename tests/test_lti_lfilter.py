@@ -669,6 +669,25 @@ def test_lfilter_empty_a_gradients(backend: str, num_taps: int):
     )
 
 
+@pytest.mark.parametrize("backend", ["ssm", "diag_ssm"])
+@pytest.mark.parametrize("a", [torch.zeros(0), torch.zeros(1)], ids=["empty-a", "order-1"])
+def test_lfilter_rejects_0d_signal(backend: str, a: torch.Tensor):
+    with pytest.raises(ValueError, match="x must be 1D or 2D"):
+        lfilter(torch.ones(1), a, torch.tensor(2.0), backend=backend)
+
+
+@pytest.mark.parametrize("backend", ["ssm", "diag_ssm"])
+@pytest.mark.parametrize("zi_shape", [(0,), (2, 0)])
+def test_lfilter_pure_gain_final_state_keeps_zi_in_the_graph(backend: str, zi_shape):
+    # An empty final state has a zero gradient for zi, not none.
+    zi = torch.zeros(zi_shape, dtype=torch.float64, requires_grad=True)
+    b = torch.ones(1, dtype=torch.float64)
+    x = torch.randn(2, 4, dtype=torch.float64)
+    _, zf = lfilter(b, torch.zeros(0, dtype=torch.float64), x, zi=zi, backend=backend)
+    (grad,) = torch.autograd.grad(zf.sum(), zi)
+    assert grad.shape == zi.shape
+
+
 @pytest.mark.parametrize(
     ("match", "num_taps", "zi_shape", "kwargs"),
     [

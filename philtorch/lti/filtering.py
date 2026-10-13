@@ -433,7 +433,7 @@ def lfilter(
     )
     if x.dim() == 1:
         x = x.unsqueeze(0)
-    elif x.dim() > 2:
+    elif x.dim() != 2:
         raise ValueError("Input signal x must be 1D or 2D.")
 
     if b.dim() not in (1, 2):
@@ -543,7 +543,8 @@ def _ssm_lfilter(
         if zi is not None and zi.size(-1) != 0:
             raise ValueError(f"zi must have 0 states for a pure gain, got {zi.size(-1)}.")
         y = b[..., :1] * x
-        return y if zi is None else (y, y.new_empty((y.size(0), 0)))
+        # The empty final state stays in the graph of zi, as on the general path.
+        return y if zi is None else (y, y[:, :0] + zi.expand(y.size(0), 0))
 
     A = companion(a)
 
