@@ -11,6 +11,19 @@ Agree on the task with the maintainer before carrying it out. Where the request 
 - renaming, moving or deleting files or public names;
 - choosing between designs with real trade-offs: give the options and a recommendation, and let the maintainer decide.
 
+## Delegating work
+
+Once a task is agreed, the main agent (the one talking with the maintainer) delegates the parts that can run in parallel:
+
+- **Split the work into parts with disjoint files,** so that no two agents edit the same file. Give each part to a mid-tier subagent with exact instructions: the files, the target behaviour, any text to use verbatim, and the checks to run.
+- **A mid-tier subagent may split its part further** over small-tier subagents, on the same terms, and reviews their results. That is the deepest level: three in all, counting the main agent.
+- **Parts that depend on others,** such as the tests of new behaviour, start once those are final.
+- **The main agent collects the results, reviews every diff, corrects what is wrong, and reports to the maintainer.** It is responsible for the result; a subagent's report is a claim to check.
+- **Tests:** a subagent runs the tests its part exercises, selected by name, when they don't strain the machine. Builds and long or GPU-heavy runs are left to the main agent.
+- **Benchmarks** never run in parallel, and only when no other process competes for the machine, the GPU above all. The main agent runs them at the end, after the subagents have finished.
+
+Which model each tier is depends on the tool; its own file says, such as `CLAUDE.md`.
+
 ## Commands
 
 Pixi defines the environment (`pixi.toml`); the default environment installs philtorch editable, with its compiled extension. On Linux, wrap builds and full test runs in the resource limiter (defaults: 3 CPUs, 12 GiB, two native build jobs; override with `PHILTORCH_CPU_QUOTA`, `PHILTORCH_MEMORY_MAX`, `MAX_JOBS`, `OMP_NUM_THREADS`):
