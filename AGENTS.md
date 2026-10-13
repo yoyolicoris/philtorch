@@ -11,6 +11,23 @@ Agree on the task with the maintainer before carrying it out. Where the request 
 - renaming, moving or deleting files or public names;
 - choosing between designs with real trade-offs: give the options and a recommendation, and let the maintainer decide.
 
+## Delegating work
+
+Once a task is agreed, the main agent (the one talking with the maintainer) delegates the parts big enough to be worth running in parallel. A small task it does itself.
+
+- **Split the work into parts with disjoint files,** so that no two agents edit the same file. Give each part to a mid-tier subagent with exact instructions: the files, the target behaviour, any text to use verbatim, and the checks to run.
+- **A mid-tier subagent may split its part further** over small-tier subagents, on the same terms: disjoint files, exact instructions, and a review of the results. That is the deepest level: three in all, counting the main agent.
+- **Parts that depend on others,** such as the tests of new behaviour, start once those are final.
+- **Subagents don't commit or push.** The main agent commits, and pushes only when the maintainer asks.
+- **Open questions go up.** A subagent can't ask the maintainer. If its instructions leave something open, it reports the question to its caller instead of deciding it. The main agent asks the maintainer, as "Before starting a task" says.
+- **One working tree, environment and build are shared,** even by parts with disjoint files. Nobody rebuilds the extension while subagents run; the main agent does, between rounds.
+- **Tests:** a subagent runs the tests its part exercises, selected by name, when they don't strain the machine, and reports which it ran and why they cover its part, so that the main agent can pass that on, as "Commands" asks. Builds and long or GPU-heavy runs are left to the main agent.
+- **Benchmarks** never run in parallel, and only when no other process competes for the machine, the GPU above all. The main agent runs them last, after the subagents have finished.
+- **The main agent collects the results, reviews every diff, corrects what is wrong, and reports to the maintainer.** It is responsible for the result; a subagent's report is a claim to check.
+- **Without subagents:** an agent whose tool can't spawn them, or whose tool file defines no tiers, does the work itself.
+
+Which model each tier is depends on the tool; its own file says, such as `CLAUDE.md`.
+
 ## Commands
 
 Pixi defines the environment (`pixi.toml`); the default environment installs philtorch editable, with its compiled extension. On Linux, wrap builds and full test runs in the resource limiter (defaults: 3 CPUs, 12 GiB, two native build jobs; override with `PHILTORCH_CPU_QUOTA`, `PHILTORCH_MEMORY_MAX`, `MAX_JOBS`, `OMP_NUM_THREADS`):
@@ -34,7 +51,7 @@ Benchmarks live in `benchmarks/` and run as `pixi run python benchmarks/<name>.p
 ## Architecture
 
 - **`philtorch._C` is required.** `philtorch/__init__.py` checks that the installed torch matches the one the extension was built for (`_build_check.py`), imports `_C`, and `_ops.py` registers the fake and autograd implementations of the native ops (`torch.ops.philtorch.*`: `recur2`, `recurN`, `lti_recur*`, `scan`, `lpc`, PararNN). There is no pure-PyTorch fallback if the extension is missing; `setup.py`/`build_support.py` compile `philtorch/csrc/*.cpp`/`*.cu` (CUDA when available or `PHILTORCH_FORCE_CUDA=1`) and the Metal source on macOS.
-- **Filters: `lti/` (time-invariant) and `lpv/` (parameter-varying).** The user-facing functions (`lfilter`, `filtfilt`, `state_space`, ...) normalize coefficients into a state-space recursion. `lti/ssm.py` and `lpv/ssm.py` validate their own layouts of A and share one engine, `philtorch/_ssm.py`, on the operator's (B or 1, T or 1, M, M): with `unroll_factor == 1` it runs the operator of `philtorch/_recur.py`, whose `NotImplementedError` for want of a kernel reaches the user with a hint: there is no silent fallback. A larger `unroll_factor` runs PyTorch ops on any device, in the dtypes their matrix products take there (on CUDA, no integers): the sequential loop from the sequence length on, and below it a block-unrolled recursion, by A's powers when time-invariant and by cumulative products when time-varying. Both modules' `linear_recurrence`, the scalar case, runs the same engine's `scalar_recursion`. The LPV `torchlpc` backend is vendored (`_torchlpc.py`, `csrc/torchlpc_*`).
+- **Filters: `lti/` (time-invariant) and `lpv/` (parameter-varying).** The user-facing functions (`lfilter`, `filtfilt`, `state_space`, ...) normalize coefficients into a state-space recursion. `lti/ssm.py` and `lpv/ssm.py` validate their own layouts of A and share one engine, `philtorch/_ssm.py`, on the operator's (B or 1, T or 1, M, M): with `unroll_factor=None`, the default, it runs the operator of `philtorch/_recur.py`, whose `NotImplementedError` for want of a kernel reaches the user with a hint: there is no silent fallback. An integer `unroll_factor` runs PyTorch ops on any device, in the dtypes their matrix products take there (on CUDA, no integers): the sequential loop at 1 or from the sequence length on, and in between a block-unrolled recursion, by A's powers when time-invariant and by cumulative products when time-varying. Both modules' `linear_recurrence`, the scalar case, runs the same engine's `scalar_recursion`. The LPV `torchlpc` backend is vendored (`_torchlpc.py`, `csrc/torchlpc_*`).
 - **`philtorch/_recur.py`** is one operator for the recurrence h[t] = A[t] h[t − 1] + x[t] of any state size M, which the filters' `state_space_recursion` runs. One autograd function defines its derivatives; its forward picks a native kernel by device, M and dtype, or, on CUDA, the Triton scan in `_recur_kernels.py`, and raises `NotImplementedError` where none applies, with no PyTorch fallback.
 - **`estimation/` (Kalman, HMM) and `align/` (DTW, soft-DTW, CTC).**
   - Kalman is pure PyTorch with a parallel scan.

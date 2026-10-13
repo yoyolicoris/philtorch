@@ -5,7 +5,9 @@ from torch import Tensor
 from .. import _ssm
 
 
-def linear_recurrence(a: Tensor, init: Tensor, x: Tensor, *, unroll_factor: int = 1) -> Tensor:
+def linear_recurrence(
+    a: Tensor, init: Tensor, x: Tensor, *, unroll_factor: int | None = None
+) -> Tensor:
     r"""Compute batched first-order recurrences with time-varying coefficients.
 
     This computes
@@ -22,25 +24,27 @@ def linear_recurrence(a: Tensor, init: Tensor, x: Tensor, *, unroll_factor: int 
         init (Tensor): the initial value :math:`h[0]`, of shape :math:`()`,
             :math:`(1)` or :math:`(B)`.
         x (Tensor): input sequences, of shape :math:`(B, N)`.
-        unroll_factor (int, optional): ``1`` runs a kernel chosen by device
-            and dtype, and raises where none takes the input. A
-            value greater than 1 and less than :math:`N` runs a block-unrolled
-            PyTorch recursion with blocks of this length, and :math:`N` or more
-            runs a plain PyTorch loop; see the README for guidance.
-            Default: ``1``.
+        unroll_factor (int, optional): ``None`` (the default) runs a kernel
+            chosen by device and dtype, and raises where none takes the
+            input. ``1`` runs the sequential PyTorch loop, as does :math:`N`
+            or more; a value from 2 to :math:`N - 1` runs a block-unrolled
+            PyTorch recursion with blocks of that length. In 0.7, ``1`` ran
+            the kernel: it emits a :class:`FutureWarning` until 0.9, and
+            omitting the argument keeps the kernel. See the README for
+            guidance. Default: ``None``.
 
     Returns:
         Tensor: :math:`h[1], \dots, h[N]`, of shape :math:`(B, N)`.
 
     Raises:
-        ValueError: if :attr:`unroll_factor` is less than 1, or, with
-            ``unroll_factor > 1``, if :attr:`x` is not 2-D, :attr:`a` is not
-            1-D or 2-D, or :attr:`init` is not 0-D or 1-D.
+        ValueError: if :attr:`x` is not 2-D, if :attr:`unroll_factor` is 0 or
+            negative, or, with an integer :attr:`unroll_factor`, if :attr:`a`
+            is not 1-D or 2-D, or :attr:`init` is not 0-D or 1-D.
         ValueError or RuntimeError: if :attr:`a` or :attr:`init` does not
             match :attr:`x`; which one depends on :attr:`unroll_factor`.
-        NotImplementedError: with ``unroll_factor=1``, if no kernel takes the
-            input; an :attr:`unroll_factor` greater than 1 runs PyTorch ops,
-            on any device.
+        NotImplementedError: with ``unroll_factor=None``, if no kernel takes
+            the input; an integer :attr:`unroll_factor` runs PyTorch ops, on
+            any device.
 
     Example::
 
@@ -51,11 +55,11 @@ def linear_recurrence(a: Tensor, init: Tensor, x: Tensor, *, unroll_factor: int 
         tensor([[1.0000, 0.5000, 1.0000, 0.5000]])
     """
 
-    if unroll_factor == 1:
-        return _ssm.scalar_recursion(a.broadcast_to(x.shape), init.broadcast_to(x.shape[0]), x)
-
     if x.dim() != 2:
         raise ValueError(f"Input x must be 2D, got {x.shape}")
+    if unroll_factor is None:
+        return _ssm.scalar_recursion(a.broadcast_to(x.shape), init.broadcast_to(x.shape[0]), x)
+
     if a.dim() not in (1, 2):
         raise ValueError(f"State matrix a must be 1D or 2D, got {a.shape}")
     if a.dim() == 1 and a.size(0) != x.size(1):

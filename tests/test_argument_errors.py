@@ -186,6 +186,11 @@ def test_lpv_filtering_rejects_bad_arguments(call, match):
             id="x-not-2d",
         ),
         pytest.param(
+            lambda: lpv.linear_recurrence(_zeros(4), _zeros(()), _ones(4)),
+            "Input x must be 2D",
+            id="x-not-2d-default",
+        ),
+        pytest.param(
             lambda: lpv.linear_recurrence(
                 _zeros(1, 1, 4), _zeros(()), _ones(1, 4), unroll_factor=2
             ),
@@ -452,6 +457,11 @@ def test_lti_interp_rejects_bad_arguments(call, match):
             lambda: lti.linear_recurrence(_zeros(()), _zeros(()), _ones(1, 1, 4), unroll_factor=2),
             "Input x must be 2D",
             id="x-not-2d",
+        ),
+        pytest.param(
+            lambda: lti.linear_recurrence(_zeros(()), _zeros(()), _ones(4)),
+            "Input x must be 2D",
+            id="x-not-2d-default",
         ),
         pytest.param(
             lambda: lti.linear_recurrence(_zeros(1, 1), _zeros(()), _ones(1, 4), unroll_factor=2),

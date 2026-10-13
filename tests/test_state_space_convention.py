@@ -11,12 +11,19 @@ function below is written as such a model and checked against one simulator,
 so a structure that applies its coefficients a step early or late fails here.
 """
 
+import warnings
+from unittest import mock
+
 import pytest
 import torch
 
+import philtorch._ssm as _ssm
 import philtorch.lpv as lpv
 import philtorch.lti as lti
 from philtorch.mat import companion
+
+# For the tests that pass unroll_factor=1 without checking its warning.
+ignore_one = pytest.mark.filterwarnings("ignore:unroll_factor=1:FutureWarning")
 
 BATCH, N, M = 2, 10, 3
 
@@ -113,7 +120,8 @@ def test_lpv_state_space(signals):
 
 
 # 4 leaves a partial last block of the unrolled recursions, 5 none.
-@pytest.mark.parametrize("unroll_factor", [1, 4, 5, N])
+@ignore_one
+@pytest.mark.parametrize("unroll_factor", [None, 1, 4, 5, N])
 def test_lpv_state_space_recursion_returns_the_next_states(signals, unroll_factor):
     s = signals
     _, states = _simulate(s["A"], s["B"], s["C"], s["D"], s["u"], s["zi"])
@@ -125,7 +133,8 @@ def test_lpv_state_space_recursion_returns_the_next_states(signals, unroll_facto
 
 
 # 4 leaves a partial last block of the unrolled recursions, 5 none.
-@pytest.mark.parametrize("unroll_factor", [1, 4, 5, N])
+@ignore_one
+@pytest.mark.parametrize("unroll_factor", [None, 1, 4, 5, N])
 def test_lpv_linear_recurrence_returns_the_next_states(signals, unroll_factor):
     s = signals
     a = s["a"][..., 0]
@@ -172,7 +181,8 @@ def test_lpv_fir_and_allpole(signals, transpose):
 # the state the recursions return and the final state still can.
 
 
-@pytest.mark.parametrize("unroll_factor", [1, 4, 5, N])
+@ignore_one
+@pytest.mark.parametrize("unroll_factor", [None, 1, 4, 5, N])
 def test_lti_state_space(signals, unroll_factor):
     s = signals
     A, B, C, D = s["A"][:, 0], s["B"][:, 0], s["C"][:, 0], s["D"][:, 0]
@@ -192,7 +202,8 @@ def test_lti_state_space(signals, unroll_factor):
 
 
 # 4 leaves a partial last block of the unrolled recursions, 5 none.
-@pytest.mark.parametrize("unroll_factor", [1, 4, 5, N])
+@ignore_one
+@pytest.mark.parametrize("unroll_factor", [None, 1, 4, 5, N])
 def test_lti_linear_recurrence_returns_the_next_states(signals, unroll_factor):
     s = signals
     a = s["a"][:, 0, 0]
@@ -208,13 +219,14 @@ def test_lti_linear_recurrence_returns_the_next_states(signals, unroll_factor):
     assert torch.allclose(h, states[..., 0])
 
 
+@ignore_one
 def test_lpv_linear_recurrence_broadcasts_a_and_init():
     # a shared over the batch, (N), and a scalar init, as one per signal.
     x = torch.randn(2, 7, dtype=torch.double)
     a = torch.rand(7, dtype=torch.double)
     init = torch.tensor(0.5, dtype=torch.double)
     expected = lpv.linear_recurrence(a.expand_as(x), init.expand(x.size(0)), x)
-    for unroll_factor in (1, 3):
+    for unroll_factor in (None, 1, 3):
         actual = lpv.linear_recurrence(a, init, x, unroll_factor=unroll_factor)
         assert torch.allclose(actual, expected)
 
@@ -228,15 +240,16 @@ def _recursion_inputs(module, dtype):
     return [t.to(dtype) for t in (A, zi, x)]
 
 
+@ignore_one
 @pytest.mark.parametrize("module", [lti, lpv], ids=["lti", "lpv"])
 def test_state_space_recursion_without_a_kernel(module):
-    # No kernel takes int32: unroll_factor=1 raises and says what to do, and
-    # unroll_factor > 1 runs PyTorch ops: the block-unrolled recursion and the
-    # sequential loop give the same states as the kernels' int64.
-    with pytest.raises(NotImplementedError, match="pass unroll_factor > 1"):
+    # No kernel takes int32: the default raises and says what to do, and
+    # unroll_factor=1 or more runs PyTorch ops: the sequential loop and the
+    # block-unrolled recursion give the same states as the kernels' int64.
+    with pytest.raises(NotImplementedError, match="pass unroll_factor=1"):
         module.state_space_recursion(*_recursion_inputs(module, torch.int32))
     expected = module.state_space_recursion(*_recursion_inputs(module, torch.int64))
-    for unroll_factor in (3, N):
+    for unroll_factor in (1, 3, N):
         actual = module.state_space_recursion(
             *_recursion_inputs(module, torch.int32), unroll_factor=unroll_factor
         )
@@ -244,17 +257,20 @@ def test_state_space_recursion_without_a_kernel(module):
         assert torch.equal(actual.long(), expected)
 
 
+@ignore_one
 @pytest.mark.parametrize("module", [lti, lpv], ids=["lti", "lpv"])
 def test_linear_recurrence_without_a_kernel(module):
     A, zi, x = _recursion_inputs(module, torch.int32)
     a = A[0, 0] if module is lti else A[:, 0, 0]
-    with pytest.raises(NotImplementedError, match="pass unroll_factor > 1"):
+    with pytest.raises(NotImplementedError, match="pass unroll_factor=1"):
         module.linear_recurrence(a, zi[:, 0], x[..., 0])
-    # The sequential loop takes any dtype. (The scalar block-unrolled recursion
-    # doesn't take integers: torch.cumprod and torch.linalg.vecdot don't.)
+    # The sequential loop (unroll_factor=1 or N) takes any dtype. (The scalar
+    # block-unrolled recursion doesn't take integers: torch.cumprod and
+    # torch.linalg.vecdot don't.)
     expected = module.linear_recurrence(a.long(), zi[:, 0].long(), x[..., 0].long())
-    actual = module.linear_recurrence(a, zi[:, 0], x[..., 0], unroll_factor=N)
-    assert torch.equal(actual.long(), expected)
+    for unroll_factor in (1, N):
+        actual = module.linear_recurrence(a, zi[:, 0], x[..., 0], unroll_factor=unroll_factor)
+        assert torch.equal(actual.long(), expected)
 
 
 @pytest.mark.parametrize("module", [lti, lpv], ids=["lti", "lpv"])
@@ -280,7 +296,7 @@ def test_state_space_recursion_rejects_bad_shapes(module):
     if module is lpv:
         with pytest.raises(ValueError, match="same time dimension"):
             module.state_space_recursion(A[:-1], zi, x)
-    with pytest.raises(ValueError, match="Unroll factor"):
+    with pytest.raises(ValueError, match="must be None or at least 1"):
         module.state_space_recursion(A, zi, x, unroll_factor=0)
 
 
@@ -293,17 +309,100 @@ def test_linear_recurrence_rejects_bad_shapes(module):
         module.linear_recurrence(a[:-1] if module is lpv else a.repeat(2), init, x, unroll_factor=3)
     with pytest.raises(ValueError, match="Initial state init must be 1D"):
         module.linear_recurrence(a, init.repeat(2), x, unroll_factor=3)
-    with pytest.raises(ValueError, match="Unroll factor"):
+    with pytest.raises(ValueError, match="must be None or at least 1"):
         module.linear_recurrence(a, init, x, unroll_factor=0)
 
 
+def _recursion_calls(module):
+    A, zi, x = _recursion_inputs(module, torch.float64)
+    a = A[0, 0] if module is lti else A[:, 0, 0]
+    return {
+        "state_space_recursion": lambda **kw: module.state_space_recursion(A, zi, x, **kw),
+        "linear_recurrence": lambda **kw: module.linear_recurrence(a, zi[:, 0], x[..., 0], **kw),
+    }
+
+
+@pytest.mark.parametrize("module", [lti, lpv], ids=["lti", "lpv"])
+def test_unroll_factor_one_warns_and_runs_the_loop(module):
+    calls = _recursion_calls(module)
+    for call in calls.values():
+        with pytest.warns(FutureWarning, match="since philtorch 0.8") as record:
+            actual = call(unroll_factor=1)
+        # The warning points at the caller, not at philtorch.
+        assert record[0].filename == __file__
+        torch.testing.assert_close(actual, call(unroll_factor=N))
+        torch.testing.assert_close(actual, call())
+
+
+@pytest.mark.parametrize("module", [lti, lpv], ids=["lti", "lpv"])
+def test_unroll_factor_picks_the_loop_or_the_kernels(module):
+    # Which engine runs, by spying on the ones recursion looks up by name.
+    calls = _recursion_calls(module)
+    engines = {
+        "state_space_recursion": ("_loop", "_kernels"),
+        "linear_recurrence": ("_scalar_loop", "_scalar_kernels"),
+    }
+    for name, (loop, kernels) in engines.items():
+        for unroll_factor, (expected, other) in [(1, (loop, kernels)), (None, (kernels, loop))]:
+            with (
+                mock.patch.object(_ssm, loop, wraps=getattr(_ssm, loop)) as loop_spy,
+                mock.patch.object(_ssm, kernels, wraps=getattr(_ssm, kernels)) as kernels_spy,
+                warnings.catch_warnings(),
+            ):
+                warnings.simplefilter("ignore", FutureWarning)
+                calls[name](unroll_factor=unroll_factor)
+            spies = {loop: loop_spy, kernels: kernels_spy}
+            spies[expected].assert_called_once()
+            spies[other].assert_not_called()
+
+
+@pytest.mark.parametrize("module", [lti, lpv], ids=["lti", "lpv"])
+def test_unroll_factor_warns_only_for_one(module):
+    calls = _recursion_calls(module)
+    with warnings.catch_warnings():
+        warnings.simplefilter("error")
+        for call in calls.values():
+            for unroll_factor in (None, 3, N):
+                call(unroll_factor=unroll_factor)
+
+
+@pytest.mark.parametrize("module", [lti, lpv], ids=["lti", "lpv"])
+def test_unroll_factor_one_compiles_in_one_graph(module):
+    # The warning is skipped while tracing: fullgraph=True would fail on it.
+    # Dynamo's tracing is what this checks, so aot_eager, which needs no C++
+    # compiler: Windows CI has none for Inductor.
+    A, zi, x = _recursion_inputs(module, torch.float64)
+    a = A[0, 0] if module is lti else A[:, 0, 0]
+    calls = [
+        lambda x: module.state_space_recursion(A, zi, x, unroll_factor=1),
+        lambda x: module.linear_recurrence(a, zi[:, 0], x[..., 0], unroll_factor=1),
+    ]
+    for call in calls:
+        with pytest.warns(FutureWarning, match="since philtorch 0.8"):
+            expected = call(x)
+        compiled = torch.compile(call, backend="aot_eager", fullgraph=True)
+        torch.testing.assert_close(compiled(x), expected)
+
+
+@pytest.mark.parametrize("module", [lti, lpv], ids=["lti", "lpv"])
+def test_unroll_factor_rejects_zero_and_negative(module):
+    A, zi, x = _recursion_inputs(module, torch.float64)
+    a = A[0, 0] if module is lti else A[:, 0, 0]
+    for unroll_factor in (0, -1):
+        with pytest.raises(ValueError, match="must be None or at least 1"):
+            module.state_space_recursion(A, zi, x, unroll_factor=unroll_factor)
+        with pytest.raises(ValueError, match="must be None or at least 1"):
+            module.linear_recurrence(a, zi[:, 0], x[..., 0], unroll_factor=unroll_factor)
+
+
+@ignore_one
 def test_lti_linear_recurrence_takes_a_scalar_init():
     # A 0-D init, shared by the batch, through the unrolled recursion too.
     x = torch.randn(BATCH, N, dtype=torch.float64)
     a = torch.rand(BATCH, dtype=torch.float64)
     init = torch.tensor(0.5, dtype=torch.float64)
     expected = lti.linear_recurrence(a, init.expand(BATCH), x)
-    for unroll_factor in (1, 3):
+    for unroll_factor in (None, 1, 3):
         assert torch.allclose(
             lti.linear_recurrence(a, init, x, unroll_factor=unroll_factor), expected
         )
@@ -330,8 +429,9 @@ def test_recursions_vmap(module):
     torch.testing.assert_close(actual, expected)
 
 
+@ignore_one
 @pytest.mark.parametrize("module", [lti, lpv], ids=["lti", "lpv"])
-@pytest.mark.parametrize("unroll_factor", [1, 3, 100])
+@pytest.mark.parametrize("unroll_factor", [None, 1, 3, 100])
 @pytest.mark.parametrize(("batch", "steps"), [(2, 0), (0, 8), (0, 0)])
 def test_recursions_take_empty_inputs(module, unroll_factor, batch, steps):
     # No steps or no signals: an empty result, by every algorithm. LPV's A is

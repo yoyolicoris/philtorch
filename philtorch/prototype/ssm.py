@@ -22,7 +22,7 @@ def exp_state_space_recursion(
         A (Tensor): State matrices with shape (M, M) or (B, M, M) when batched.
         zi (Tensor): Initial states with shape (B, M).
         x (Tensor): Input sequence with shape (B, T, ...) or (B, T).
-        unroll_factor (int): Block size for recursion acceleration (>=1).
+        unroll_factor (int): unused; the prefix scan takes no block length.
         out_idx (int, optional): If provided, return only this state index.
 
     Returns:

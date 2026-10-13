@@ -16,7 +16,7 @@ def newton_solve(
     atol: float = 1e-6,
     rtol: float = 1e-6,
     fprime: Callable[[Tensor, Tensor], Tensor] | None = None,
-    unroll_factor: int = 1,
+    unroll_factor: int | None = None,
     return_intermediate: bool = False,
 ) -> tuple[Tensor, int] | tuple[Tensor, int, list[tuple[Tensor, Tensor]]]:
     """Solve for the root of a function using Newton's method.
