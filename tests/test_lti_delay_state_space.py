@@ -1,5 +1,6 @@
 import itertools
 import random
+import warnings
 
 import pytest
 import torch
@@ -455,7 +456,7 @@ POSITION_IDS = ["after-delay", "after-matrix"]
 
 
 def _filter_coefficients(coefficients, orders, dtype):
-    """Random stable per-line filters, as (b, a) in lfilter's convention."""
+    """Random per-line filters, as (b, a) in lfilter's convention."""
     kb, ka = orders
     b_batch, a_batch = {
         "shared": ((), ()),
@@ -545,33 +546,43 @@ _ABSORPTION_LAYOUTS = [
 _ABSORPTION_ORDERS = [(0, 0), (1, 1), (2, 1), (0, 2)]
 
 
-def _case_id(value):
-    if isinstance(value, torch.dtype):
-        return str(value).removeprefix("torch.")
-    if isinstance(value, bool):
-        return "after-matrix" if value else "after-delay"
-    return str(value).replace(" ", "")
+def _case_id(layout, after_matrix, dtype, orders, coefficients, batched_A, zi_mode, az_mode, block):
+    return "-".join(
+        [
+            layout.replace(" ", ""),
+            POSITION_IDS[after_matrix],
+            str(dtype).removeprefix("torch."),
+            f"orders{orders[0]}{orders[1]}",
+            coefficients,
+            "A3d" if batched_A else "A2d",
+            f"zi-{zi_mode or 'none'}",
+            f"az-{az_mode or 'none'}",
+            "block-default" if block is None else f"block-{block}",
+        ]
+    )
+
+
+_ABSORPTION_OPTIONS = list(
+    itertools.product(
+        _ABSORPTION_LAYOUTS,
+        POSITIONS,
+        [torch.double, torch.cdouble],
+        _ABSORPTION_ORDERS,
+        ["shared", "batched", "mixed"],
+        [False, True],
+        [None, "1d", "2d"],
+        [None, "shared", "batched"],
+        [None, 1, 2],
+    )
+)
 
 
 def _absorption_cases():
-    # The full product is 5184 cases. A seeded sample keeps every value of
-    # every option, and most pairs of them, in 200.
-    options = list(
-        itertools.product(
-            _ABSORPTION_LAYOUTS,
-            POSITIONS,
-            [torch.double, torch.cdouble],
-            _ABSORPTION_ORDERS,
-            ["shared", "batched", "mixed"],
-            [False, True],
-            [None, "1d", "2d"],
-            [None, "shared", "batched"],
-            [None, 1],
-        )
-    )
+    # The full product is 12960 cases. A seeded sample of 200 keeps every
+    # value of every option.
     return [
-        pytest.param(*case, id="-".join(_case_id(value) for value in case))
-        for case in random.Random(0).sample(options, 200)
+        pytest.param(*case, id=_case_id(*case))
+        for case in random.Random(0).sample(_ABSORPTION_OPTIONS, 200)
     ]
 
 
@@ -821,32 +832,92 @@ def test_delay_state_space_absorption_gradcheck(after_matrix, batched_coefficien
 
 
 @pytest.mark.parametrize("after_matrix", POSITIONS, ids=POSITION_IDS)
+@pytest.mark.parametrize("orders", [(1, 1), (0, 0)])
+@pytest.mark.parametrize(
+    ("delays", "block_size"), [((2, 37), 1), ((2, 37), 2), ((1, 50), 1)], ids=str
+)
+def test_delay_state_space_absorption_spread_delays(delays, block_size, orders, after_matrix):
+    # A short and a long line read from chunks far apart in the stream.
+    dtype, batch, samples, M = torch.double, 2, 120, 2
+    x = torch.randn(batch, samples, M, dtype=dtype)
+    A = 0.3 * torch.randn(M, M, dtype=dtype)
+    b = 0.5 * torch.randn(M, orders[0] + 1, dtype=dtype)
+    a = 0.3 * torch.randn(M, orders[1], dtype=dtype)
+    zi = tuple(torch.randn(batch, delay, dtype=dtype) for delay in delays)
+
+    y, zf, azf = delay_state_space(
+        A,
+        x,
+        delays,
+        zi=zi,
+        block_size=block_size,
+        absorption=(b, a),
+        absorption_after_matrix=after_matrix,
+    )
+    expected_y, expected_zf, expected_azf = _reference_absorption(
+        A, x, delays, None, None, None, None, zi, b, a, None, after_matrix
+    )
+
+    torch.testing.assert_close(y, expected_y)
+    _assert_states_close(zf, expected_zf)
+    torch.testing.assert_close(azf, expected_azf)
+
+
+@pytest.mark.parametrize("after_matrix", POSITIONS, ids=POSITION_IDS)
 def test_delay_state_space_absorption_unroll_factor(after_matrix):
     dtype, orders = torch.double, (2, 1)
     x = torch.randn(BATCH, SAMPLES, dtype=dtype)
     A = 0.4 * torch.randn(LINES, LINES, dtype=dtype)
+    B, C, D = (
+        torch.randn(shape, dtype=dtype) for shape in ((LINES,), (OUTPUTS, LINES), (OUTPUTS,))
+    )
     absorption = _filter_coefficients("shared", orders, dtype)
     zi = _initial_states("2d", dtype)
     absorption_zi = _absorption_state("batched", orders, dtype)
     kwargs = dict(
+        B=B,
+        C=C,
+        D=D,
         absorption=absorption,
         zi=zi,
         absorption_zi=absorption_zi,
         absorption_after_matrix=after_matrix,
         block_size=2,
     )
-    expected_y, expected_zf, expected_azf = delay_state_space(A, x, DELAYS, **kwargs)
+    expected_y, expected_zf, expected_azf = _reference_absorption(
+        A, x, DELAYS, B, C, D, None, zi, *absorption, absorption_zi, after_matrix
+    )
 
-    runs = {
-        "2": delay_state_space(A, x, DELAYS, unroll_factor=2, **kwargs),
-    }
-    with pytest.warns(FutureWarning, match="unroll_factor=1"):
-        runs["1"] = delay_state_space(A, x, DELAYS, unroll_factor=1, **kwargs)
+    # unroll_factor=1 is new here, so it runs the sequential loop quietly.
+    with warnings.catch_warnings():
+        warnings.simplefilter("error")
+        runs = [
+            delay_state_space(A, x, DELAYS, unroll_factor=factor, **kwargs)
+            for factor in (None, 1, 2)
+        ]
 
-    for y, zf, azf in runs.values():
+    for y, zf, azf in runs:
         torch.testing.assert_close(y, expected_y)
         _assert_states_close(zf, expected_zf)
         torch.testing.assert_close(azf, expected_azf)
+
+
+@pytest.mark.parametrize("mode", ["plain", "after-delay", "after-matrix"])
+@pytest.mark.parametrize("block_size", [None, 1])
+def test_delay_state_space_returned_queues_are_contiguous(mode, block_size):
+    dtype = torch.double
+    x = torch.randn(BATCH, SAMPLES, dtype=dtype)
+    A = 0.4 * torch.randn(LINES, LINES, dtype=dtype)
+    kwargs = dict(zi=_initial_states("1d", dtype), block_size=block_size)
+    if mode != "plain":
+        kwargs.update(
+            absorption=_filter_coefficients("shared", (1, 1), dtype),
+            absorption_after_matrix=mode == "after-matrix",
+        )
+
+    zf = delay_state_space(A, x, DELAYS, **kwargs)[1]
+
+    assert all(queue.is_contiguous() for queue in zf)
 
 
 def _validation_inputs(dtype=torch.double):
@@ -973,6 +1044,54 @@ def _zeros(*shape):
             ValueError,
             "unroll_factor needs absorption",
             id="unroll-without-absorption",
+        ),
+        pytest.param(
+            dict(absorption=(_zeros(2, 2).float(), _zeros(2, 1))),
+            ValueError,
+            "must have the dtype and device of x",
+            id="b-dtype",
+        ),
+        pytest.param(
+            dict(absorption=(_zeros(2, 2), _zeros(2, 1).float())),
+            ValueError,
+            "must have the dtype and device of x",
+            id="a-dtype",
+        ),
+        pytest.param(
+            dict(absorption_zi=_zeros(2, 1).float()),
+            ValueError,
+            "must have the dtype and device of x",
+            id="zi-dtype",
+        ),
+        pytest.param(
+            dict(absorption=(_zeros(2, 0), _zeros(2, 1))),
+            ValueError,
+            "absorption b must have at least one coefficient",
+            id="b-empty",
+        ),
+        pytest.param(
+            dict(unroll_factor=0),
+            ValueError,
+            "unroll_factor must be None or at least 1, got 0",
+            id="unroll-zero",
+        ),
+        pytest.param(
+            dict(absorption=(_zeros(2, 1), _zeros(2, 0)), unroll_factor=-3),
+            ValueError,
+            "unroll_factor must be None or at least 1, got -3",
+            id="unroll-negative-pure-gain",
+        ),
+        pytest.param(
+            dict(unroll_factor=1.5),
+            ValueError,
+            "unroll_factor must be None or at least 1, got 1.5",
+            id="unroll-float",
+        ),
+        pytest.param(
+            dict(unroll_factor=True),
+            ValueError,
+            "unroll_factor must be None or at least 1, got True",
+            id="unroll-bool",
         ),
     ],
 )

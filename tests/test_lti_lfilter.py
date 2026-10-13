@@ -571,6 +571,40 @@ def test_lfilter_pure_gain(form: str, backend: str, use_zi: bool, batched: bool)
         assert zf.shape == ((B, 0) if batched else (0,))
 
 
+@pytest.mark.parametrize(
+    ("form", "backend", "use_zi"),
+    [
+        (form, backend, use_zi)
+        for form, backend in [
+            ("df2", "ssm"),
+            ("tdf2", "ssm"),
+            ("df1", "ssm"),
+            ("tdf1", "ssm"),
+            ("df2", "diag_ssm"),
+            ("tdf2", "diag_ssm"),
+        ]
+        for use_zi in (False, True)
+        # df1 and tdf1 do not take zi.
+        if not (use_zi and form in ("df1", "tdf1"))
+    ],
+)
+def test_lfilter_pure_gain_shared_coefficients_batched_signal(
+    form: str, backend: str, use_zi: bool
+):
+    # Shared b (1,) and a (0,) on a batch of signals; a shared zi has shape (0,).
+    B, T = 3, 20
+    b, a = _empty_a_coeffs(1, False, B)
+    x = np.random.default_rng(1).standard_normal((B, T))
+    kwargs = {"zi": torch.zeros(0, dtype=torch.float64)} if use_zi else {}
+    out = lfilter(torch.from_numpy(b), a, torch.from_numpy(x), form=form, backend=backend, **kwargs)
+    y, zf = out if use_zi else (out, None)
+    y_ref = np.stack([signal.lfilter(b, [1.0], x[i]) for i in range(B)])
+    assert y.shape == (B, T)
+    assert np.allclose(y.numpy(), y_ref)
+    if use_zi:
+        assert zf.shape == (B, 0)
+
+
 @pytest.mark.parametrize("batched", [True, False])
 @pytest.mark.parametrize(
     ("form", "backend", "delayed_form"),
@@ -586,6 +620,8 @@ def test_lfilter_pure_gain(form: str, backend: str, use_zi: bool, batched: bool)
     ],
 )
 def test_lfilter_empty_a_fir(form: str, backend: str, delayed_form: bool, batched: bool):
+    # On "ssm", 3 taps pad a to length 2, so the empty-a shortcut is not reached:
+    # these cases check the FIR result of an empty a through the general path.
     B, T = 3, 20
     b, a = _empty_a_coeffs(3, batched, B)
     x = np.random.default_rng(1).standard_normal((B, T))
@@ -645,3 +681,56 @@ def test_lfilter_empty_a_errors():
         lfilter(b3, a, x, form="df1", backend="diag_ssm")
     with pytest.raises(ValueError, match="does not take zi"):
         lfilter(b3, a, x, zi=torch.zeros(2, 2, dtype=torch.float64), backend="diag_ssm")
+
+
+@pytest.mark.parametrize(("backend", "num_taps"), [("ssm", 1), ("diag_ssm", 1), ("diag_ssm", 3)])
+def test_lfilter_empty_a_rejects_unknown_keyword(backend: str, num_taps: int):
+    # A misspelt keyword must fail as it does on the general path.
+    b = torch.ones(2, num_taps, dtype=torch.float64)
+    a = torch.zeros(2, 0, dtype=torch.float64)
+    x = torch.ones(2, 10, dtype=torch.float64)
+    with pytest.raises(TypeError, match="unexpected keyword argument 'unrol_factor'"):
+        lfilter(b, a, x, backend=backend, unrol_factor=3)
+
+
+def test_lfilter_empty_a_keywords_of_each_backend():
+    b = torch.ones(2, 1, dtype=torch.float64)
+    a = torch.zeros(2, 0, dtype=torch.float64)
+    x = torch.ones(2, 10, dtype=torch.float64)
+    # diag_ssm takes L; ssm does not.
+    assert lfilter(b, a, x, backend="diag_ssm", L=None).shape == x.shape
+    with pytest.raises(TypeError, match="unexpected keyword argument 'L'"):
+        lfilter(b, a, x, backend="ssm", L=None)
+    # Both take unroll_factor.
+    for backend in ("ssm", "diag_ssm"):
+        assert lfilter(b, a, x, backend=backend, unroll_factor=3).shape == x.shape
+
+
+@pytest.mark.parametrize(
+    ("backend", "name", "num_taps"),
+    # On "ssm", more than 1 tap takes the general path; on "diag_ssm", zi needs 1 tap.
+    [
+        ("ssm", "a", 1),
+        ("ssm", "b", 1),
+        ("ssm", "zi", 1),
+        ("diag_ssm", "a", 1),
+        ("diag_ssm", "b", 1),
+        ("diag_ssm", "zi", 1),
+        ("diag_ssm", "a", 3),
+        ("diag_ssm", "b", 3),
+    ],
+)
+def test_lfilter_empty_a_rejects_batch_mismatch(backend: str, name: str, num_taps: int):
+    f64 = {"dtype": torch.float64}
+    b = torch.ones(num_taps, **f64)
+    a = torch.zeros(0, **f64)
+    x = torch.ones(3, 10, **f64)
+    kwargs = {"form": "tdf2"}
+    if name == "a":
+        a = torch.zeros(2, 0, **f64)
+    elif name == "b":
+        b = torch.ones(2, num_taps, **f64)
+    else:
+        kwargs["zi"] = torch.zeros(5, 0, **f64)
+    with pytest.raises(ValueError, match=f"Batch size of {name}"):
+        lfilter(b, a, x, backend=backend, **kwargs)

@@ -447,6 +447,31 @@ def lfilter(
     return y.squeeze(0) if squeeze_first else y
 
 
+# The keyword arguments the general path forwards: ``state_space`` and
+# ``state_space_recursion`` take only ``unroll_factor`` of those that
+# ``lfilter`` leaves free, and ``diag_state_space`` also ``L``, ``V`` and
+# ``Vinv`` (``delayed_form`` is a parameter of ``_diag_ssm_lfilter``).
+_SSM_KWARGS = ("unroll_factor",)
+_DIAG_SSM_KWARGS = ("L", "V", "Vinv", "unroll_factor")
+
+
+def _check_kwargs(kwargs: dict, accepted: tuple[str, ...]) -> None:
+    """Raise the ``TypeError`` of the general path for an unknown keyword."""
+    for name in kwargs:
+        if name not in accepted:
+            raise TypeError(f"lfilter() got an unexpected keyword argument {name!r}")
+
+
+def _check_batch_sizes(b: Tensor, a: Tensor, x: Tensor, zi: Tensor | None) -> None:
+    """Check that batched coefficients and states match the batch size of x."""
+    for name, t in (("b", b), ("a", a), ("zi", zi)):
+        if t is not None and t.dim() == 2 and t.size(0) != x.size(0):
+            raise ValueError(
+                f"Batch size of {name} must match batch size of x, "
+                f"got {name}: {t.size(0)}, x: {x.size(0)}"
+            )
+
+
 def _ssm_lfilter(
     b: Tensor,
     a: Tensor,
@@ -466,7 +491,10 @@ def _ssm_lfilter(
 
     if a.size(-1) == 0 and form in ("df2", "tdf2", "df1", "tdf1"):
         # A pure gain has no state: the output is b0 * x, and the final state
-        # is empty.
+        # is empty. The state-space functions of the general path would have
+        # checked the keyword arguments and the batch sizes.
+        _check_kwargs(kwargs, _SSM_KWARGS)
+        _check_batch_sizes(b, a, x, zi)
         if zi is not None and zi.size(-1) != 0:
             raise ValueError(f"zi must have 0 states for a pure gain, got {zi.size(-1)}.")
         y = b[..., :1] * x
@@ -546,7 +574,10 @@ def _diag_ssm_lfilter(
         )
 
     if a.size(-1) == 0:
-        # With no poles, the filter is the FIR filter b.
+        # With no poles, the filter is the FIR filter b. The general path
+        # would have checked the keyword arguments and the batch sizes.
+        _check_kwargs(kwargs, _DIAG_SSM_KWARGS)
+        _check_batch_sizes(b, a, x, zi)
         if zi is not None and zi.dim() == 1:
             zi = zi.unsqueeze(0).expand(x.size(0), -1)
         return fir(b.broadcast_to((x.size(0), -1)), x, zi)

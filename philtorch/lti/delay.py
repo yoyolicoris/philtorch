@@ -112,20 +112,22 @@ def delay_state_space(
         absorption_after_matrix (bool, optional): put the filters after
             :math:`A` instead of after the delay lines, as above. Needs
             :attr:`absorption`. Default: ``False``.
-        unroll_factor (int, optional): passed to :func:`state_space`, which
-            runs the filters: ``None`` runs native kernels and an integer runs
-            PyTorch ops on any device. Needs :attr:`absorption`.
-            Default: ``None``.
+        unroll_factor (int, optional): how :func:`state_space` runs the
+            filters: ``None`` runs native kernels, and an integer
+            :math:`\ge 1` runs PyTorch ops on any device, with ``1`` the
+            sequential loop. Needs :attr:`absorption`. Default: ``None``.
 
     Returns:
         Tensor or tuple: the outputs, as :func:`state_space`, and with
-        :attr:`zi`, a tuple holding one final queue per delay line. The queues
-        hold the values before the filters: ``zi[i][..., 0]`` is the next
-        value line :math:`i` emits before its filter. With
-        :attr:`absorption`, and :attr:`zi` or :attr:`absorption_zi`, a tuple
-        ``(y, zf, absorption_zf)``, where ``absorption_zf`` is the final
-        state of the filters, of shape :math:`(B, M, K)`, and whichever of
-        the two initial states is not given starts at zero.
+        :attr:`zi`, a tuple holding one final queue per delay line. By
+        default, the queues hold the values before the filters:
+        ``zi[i][..., 0]`` is the next value line :math:`i` emits before its
+        filter. With ``absorption_after_matrix=True``, they hold the filtered
+        feedback instead. With :attr:`absorption`, and :attr:`zi` or
+        :attr:`absorption_zi`, a tuple ``(y, zf, absorption_zf)``, where
+        ``absorption_zf`` is the final state of the filters, of shape
+        :math:`(B, M, K)`, and whichever of the two initial states is not
+        given starts at zero.
 
     Raises:
         ValueError: if a delay or :attr:`block_size` is invalid, if
@@ -135,7 +137,10 @@ def delay_state_space(
             the states, if :attr:`absorption` is not a pair of tensors, if
             its coefficients or :attr:`absorption_zi` are not 2-D or 3-D or
             do not match :math:`M`, the batch size or :math:`K`, if
-            :attr:`absorption_zi`, :attr:`absorption_after_matrix` or
+            :math:`b` is empty, if the coefficients or :attr:`absorption_zi`
+            differ from :attr:`x` in dtype or device, if
+            :attr:`unroll_factor` is not ``None`` or an integer of at least 1,
+            if :attr:`absorption_zi`, :attr:`absorption_after_matrix` or
             :attr:`unroll_factor` is given without :attr:`absorption`, or if
             the other shapes do not match.
         TypeError: if a queue in :attr:`zi`, either coefficient in
@@ -173,6 +178,12 @@ def delay_state_space(
             raise ValueError("absorption_after_matrix needs absorption")
         if unroll_factor is not None:
             raise ValueError("unroll_factor needs absorption")
+    elif unroll_factor is not None:
+        unroll_factor = _as_int(
+            unroll_factor, f"unroll_factor must be None or at least 1, got {unroll_factor}"
+        )
+        if unroll_factor < 1:
+            raise ValueError(f"unroll_factor must be None or at least 1, got {unroll_factor}")
 
     # Anything that is not a sequence (int, NumPy scalar, 0-d array/tensor) is
     # a single delay line, so a non-integer scalar gets the ValueError below.
@@ -229,6 +240,17 @@ def delay_state_space(
                     f"Batch size of absorption {name} must match batch size of x, "
                     f"got {coefficients.size(0)}, x: {batch_size}"
                 )
+        if absorption[0].size(-1) == 0:
+            raise ValueError("absorption b must have at least one coefficient")
+        checked = {"b": absorption[0], "a": absorption[1]}
+        if isinstance(absorption_zi, Tensor):
+            checked["absorption_zi"] = absorption_zi
+        if any(t.dtype != x.dtype or t.device != x.device for t in checked.values()):
+            got = ", ".join(f"{name}: {t.dtype} on {t.device}" for name, t in checked.items())
+            raise ValueError(
+                "absorption b, a and absorption_zi must have the dtype and device of x, "
+                f"got {got}, x: {x.dtype} on {x.device}"
+            )
         filter_b, filter_a = (
             c.expand(batch_size, -1, -1) if c.dim() == 2 else c for c in absorption
         )
@@ -272,13 +294,17 @@ def delay_state_space(
             return signal * filter_D.view(batch_size, 1, M), state
         length = signal.size(1)
         flat = signal.permute(0, 2, 1).reshape(batch_size * M, length)
+        # unroll_factor=1 would make state_space warn that its meaning changed
+        # in 0.8, but this argument is new. A factor of at least the block
+        # length runs the same sequential loop.
+        factor = length + 1 if unroll_factor == 1 else unroll_factor
         flat, state = state_space(
             filter_A,
             flat,
             B=filter_B,
             D=filter_D,
             zi=state,
-            unroll_factor=unroll_factor,
+            unroll_factor=factor,
             out_idx=0,
         )
         return flat.reshape(batch_size, M, length).permute(0, 2, 1), state
@@ -320,33 +346,49 @@ def delay_state_space(
     # The stream is stored in chunks of block_size samples of all lines,
     # behind a prefix of `prefix` samples (a multiple of block_size) that
     # holds the initial queues right-aligned, so stream position t sits at
-    # index t + prefix. A block reads a window of the last chunks, at the same
-    # offsets every time.
+    # index t + prefix. At block `block`, line i reads block_size consecutive
+    # positions from chunk `block` on, at the same offsets every time, in at
+    # most two chunks. Only the `needed` chunks, relative to `block`, are
+    # joined and read.
     history = max(delays)
     prefix = -(-history // block_size) * block_size
     queues = torch.stack(
         [F.pad(state, (prefix - delay, 0)) for state, delay in zip(initial, delays)], -1
     )
     chunks: list[Tensor | None] = list(queues.split(block_size, dim=1))
-    skip = (prefix - history) // block_size
-    window = prefix // block_size - skip
-    delay_tensor = torch.tensor(delays, device=x.device)
-    index = (
+    needed = sorted(
+        {(prefix - delay + k) // block_size for delay in delays for k in (0, block_size - 1)}
+    )
+    position = (
         torch.arange(block_size, device=x.device)[:, None]
-        + (prefix - skip * block_size)
-        - delay_tensor
-    ).expand(batch_size, -1, -1)
+        + prefix
+        - torch.tensor(delays, device=x.device)
+    )
+    rank = torch.zeros(needed[-1] + 1, dtype=position.dtype, device=x.device)
+    rank[needed] = torch.arange(len(needed), device=x.device)
+    # (block_size, M) positions in the joined chunks.
+    index = rank[position // block_size] * block_size + position % block_size
+    lines = torch.arange(M, device=x.device)
+    # The final queues are read from the last chunks, so keep those.
+    keep_from = (
+        (samples + prefix - history) // block_size if return_zf or return_absorption_zf else None
+    )
+    released = 0
 
     outputs, pending, pending_start = [], [], 0
     for block, start in enumerate(range(0, samples, block_size)):
         stop = min(start + block_size, samples)
-        first = block + skip
-        recent = chunks[first : first + window]
-        stream = recent[0] if window == 1 else torch.cat(recent, dim=1)
-        r = stream.gather(1, index[:, : stop - start])
-        if first > 0:
-            # Release chunks no block reads again, so their memory is reused.
-            chunks[first - 1] = None
+        recent = [chunks[block + j] for j in needed]
+        stream = recent[0] if len(needed) == 1 else torch.cat(recent, dim=1)
+        # Advanced indexing saves only the index for backward, not the stream.
+        r = stream[:, index[: stop - start], lines]
+        # Release chunks no later block reads, so their memory is reused.
+        release = block + 1 + needed[0]
+        if keep_from is not None:
+            release = min(release, keep_from)
+        for c in range(released, release):
+            chunks[c] = None
+        released = max(released, release)
         if absorb and not absorption_after_matrix:
             r, absorption_state = absorb_block(r, absorption_state)
         feedback = r @ A.mT
@@ -378,7 +420,9 @@ def delay_state_space(
         first = (samples + prefix - history) // block_size
         tail = torch.cat(chunks[first:], dim=1)
         offset = samples + prefix - first * block_size
-        zf = tuple(tail[:, offset - delay : offset, line] for line, delay in enumerate(delays))
+        zf = tuple(
+            tail[:, offset - delay : offset, line].contiguous() for line, delay in enumerate(delays)
+        )
         if absorb:
             return y, zf, absorption_state.reshape(batch_size, M, K)
         return y, zf
