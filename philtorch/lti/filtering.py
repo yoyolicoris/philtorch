@@ -301,6 +301,15 @@ def fir(
         if zi.size(1) != M:
             raise ValueError("The second dimension of zi must match the filter order.")
 
+    if N == 0:
+        # The convolutions reject empty signals. With no steps the output is
+        # empty and the state unchanged; the empty slices keep b, x and zi in
+        # the graph, so each gets a zero gradient.
+        gain = b[:, :0].sum(-1, keepdim=True)
+        if zi is None:
+            return x + gain
+        return x + gain + zi[:, :0], zi + gain
+
     if transpose:
         y = F.conv_transpose1d(
             x.unsqueeze(0),
@@ -542,8 +551,9 @@ def _ssm_lfilter(
             raise ValueError(f"Initial conditions zi must be 1D or 2D, got {zi.shape}")
         if zi is not None and zi.size(-1) != 0:
             raise ValueError(f"zi must have 0 states for a pure gain, got {zi.size(-1)}.")
-        y = b[..., :1] * x
-        # The empty final state stays in the graph of zi, as on the general path.
+        # The empty a and the empty final state stay in the graph, so a and zi
+        # get zero gradients, as on the general path.
+        y = b[..., :1] * x + a.sum(-1, keepdim=True).to(x)
         return y if zi is None else (y, y[:, :0] + zi.expand(y.size(0), 0))
 
     A = companion(a)
@@ -632,7 +642,12 @@ def _diag_ssm_lfilter(
             b = F.pad(b, (0, 1))
         if zi is not None and zi.dim() == 1:
             zi = zi.unsqueeze(0).expand(x.size(0), -1)
-        return fir(b.broadcast_to((x.size(0), -1)), x, zi)
+        # The empty a stays in the graph, so it gets a zero gradient.
+        no_poles = a.sum(-1, keepdim=True).to(x)
+        result = fir(b.broadcast_to((x.size(0), -1)), x, zi)
+        if zi is None:
+            return result + no_poles
+        return result[0] + no_poles, result[1]
 
     if too_long:
         # fir takes one filter per signal.

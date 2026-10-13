@@ -317,8 +317,10 @@ def delay_state_space(
     def absorb_block(signal: Tensor, state: Tensor) -> tuple[Tensor, Tensor]:
         """Filter a (B, L, M) block line by line, from and to a (B * M, K) state."""
         if not K:
-            # A pure gain has no state.
-            return signal * filter_D.view(batch_size, 1, M), state
+            # A pure gain has no state. The empty filter_B keeps a in the graph,
+            # so it gets a zero gradient.
+            gain = filter_D.view(batch_size, 1, M) + filter_B.sum(-1).view(batch_size, 1, M)
+            return signal * gain, state
         length = signal.size(1)
         flat = signal.permute(0, 2, 1).reshape(batch_size * M, length)
         # unroll_factor=1 would make state_space warn that its meaning changed
@@ -399,7 +401,12 @@ def delay_state_space(
     if outputs:
         y = outputs[0] if len(outputs) == 1 else torch.cat(outputs, dim=1)
     else:
-        h = x.new_empty(batch_size, 0, M)
+        # No steps: the empty slices keep every input in the graph, so each
+        # gets a zero gradient, as on the other paths.
+        h = chunks[0][:, :0] + A[..., :0, :].sum(-2, keepdim=True)
+        h = h + (Bx[:, :0, None] if Bx.dim() == 2 else Bx[:, :0])
+        if absorb:
+            h = h + filter_B[:, :0].sum(-1).view(batch_size, 1, M)
         if out_idx is not None:
             h = h[..., out_idx]
         y = _ssm_C_D(h, x, C, D, batch_size, M)

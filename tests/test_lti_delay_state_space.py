@@ -1216,3 +1216,39 @@ def test_delay_state_space_validates_absorption(overrides, error, message):
     A, x, delays = inputs.pop("A"), inputs.pop("x"), inputs.pop("delays")
     with pytest.raises(error, match=message):
         delay_state_space(A, x, delays, **inputs)
+
+
+@pytest.mark.parametrize("samples", [0, 2, 9], ids=["empty", "shorter-than-delays", "longer"])
+@pytest.mark.parametrize(
+    "absorption",
+    [None, ("after-delay", 1), ("after-matrix", 1), ("after-delay", 0), ("after-matrix", 0)],
+    ids=["none", "after-delay", "after-matrix", "after-delay-gain", "after-matrix-gain"],
+)
+@pytest.mark.parametrize("x_dim", [2, 3])
+def test_delay_state_space_every_input_gets_a_gradient(samples, absorption, x_dim):
+    # Shortcuts must not drop inputs from the graph: no steps, a pure gain or
+    # an output read only from the initial queues still gives zero gradients,
+    # not None.
+    delays, batch, M = (3, 4), 2, 2
+    f64 = dict(dtype=torch.double, requires_grad=True)
+    A = (0.4 * torch.randn(batch, M, M, dtype=torch.double)).requires_grad_()
+    x = torch.randn(batch, samples, *((M,) if x_dim == 3 else ()), **f64)
+    B = torch.randn(M, M, **f64) if x_dim == 3 else torch.randn(M, **f64)
+    zi = tuple(torch.randn(batch, delay, **f64) for delay in delays)
+    inputs = [A, x, B, *zi]
+    kwargs = dict(B=B, C=torch.ones(M, dtype=torch.double), zi=zi)
+    if absorption is not None:
+        position, order = absorption
+        b = torch.randn(M, order + 1, **f64)
+        a = (0.3 * torch.randn(M, order, dtype=torch.double)).requires_grad_()
+        absorption_zi = torch.randn(batch, M, order, **f64)
+        inputs += [b, a, absorption_zi]
+        kwargs.update(
+            absorption=(b, a),
+            absorption_zi=absorption_zi,
+            absorption_after_matrix=position == "after-matrix",
+        )
+    y, zf, *azf = delay_state_space(A, x, delays, **kwargs)
+    total = y.sum() + sum(q.sum() for q in zf) + sum(t.sum() for t in azf)
+    for grad in torch.autograd.grad(total, inputs, allow_unused=True):
+        assert grad is not None

@@ -899,3 +899,55 @@ def test_lfilter_empty_a_rejects_batch_mismatch(backend: str, name: str, num_tap
         kwargs["zi"] = torch.zeros(5, 0, **f64)
     with pytest.raises(ValueError, match=f"Batch size of {name}"):
         lfilter(b, a, x, backend=backend, **kwargs)
+
+
+def _assert_every_input_gets_a_gradient(outputs, inputs):
+    """Every input reaches the outputs, so none gets a gradient of None."""
+    flat = [t for t in (outputs if isinstance(outputs, tuple) else (outputs,))]
+    total = sum(t.sum() for t in flat)
+    for grad in torch.autograd.grad(total, inputs, allow_unused=True):
+        assert grad is not None
+
+
+@pytest.mark.parametrize("transpose", [True, False])
+@pytest.mark.parametrize("with_zi", [False, True])
+def test_fir_empty_signal(transpose: bool, with_zi: bool):
+    # The convolutions reject empty signals; fir returns an empty output and
+    # the unchanged state.
+    b = torch.randn(2, 3, dtype=torch.float64, requires_grad=True)
+    x = torch.randn(2, 0, dtype=torch.float64, requires_grad=True)
+    zi = torch.randn(2, 2, dtype=torch.float64, requires_grad=True) if with_zi else None
+    result = fir(b, x, zi, transpose=transpose)
+    y, zf = result if with_zi else (result, None)
+    assert y.shape == (2, 0)
+    if with_zi:
+        torch.testing.assert_close(zf, zi)
+    _assert_every_input_gets_a_gradient(result, [b, x] + ([zi] if with_zi else []))
+
+
+_GRADIENT_CASES = [
+    (backend, form, num_taps, num_poles)
+    for backend, forms in (("ssm", ("df2", "tdf2", "df1", "tdf1")), ("diag_ssm", ("df2", "tdf2")))
+    for form in forms
+    for num_taps, num_poles in ((1, 0), (3, 0), (2, 1), (3, 1))
+]
+
+
+@pytest.mark.parametrize(("backend", "form", "num_taps", "num_poles"), _GRADIENT_CASES)
+@pytest.mark.parametrize("samples", [0, 6])
+def test_lfilter_every_input_gets_a_gradient(backend, form, num_taps, num_poles, samples):
+    # Shortcuts must not drop inputs from the graph: an empty a, an empty
+    # final state or an empty signal still gives zero gradients, not None.
+    f64 = dict(dtype=torch.float64, requires_grad=True)
+    b = torch.randn(2, num_taps, **f64)
+    a = (0.3 * torch.randn(2, num_poles, dtype=torch.float64)).requires_grad_()
+    x = torch.randn(2, samples, **f64)
+    inputs = [b, a, x]
+    kwargs = {"form": form, "backend": backend}
+    order = max(num_taps - 1, num_poles) if backend == "ssm" else num_poles
+    takes_zi = form in ("df2", "tdf2") and not (backend == "diag_ssm" and num_taps > num_poles + 1)
+    if takes_zi:
+        kwargs["zi"] = torch.randn(2, order, **f64)
+        inputs.append(kwargs["zi"])
+    outputs = lfilter(b, a, x, **kwargs)
+    _assert_every_input_gets_a_gradient(outputs, inputs)
