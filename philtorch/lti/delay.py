@@ -375,6 +375,7 @@ def delay_state_space(
     )
     released = 0
 
+    pad_span = -(-_OUTPUT_CHUNK // block_size) * block_size
     outputs, pending, pending_start = [], [], 0
     for block, start in enumerate(range(0, samples, block_size)):
         stop = min(start + block_size, samples)
@@ -395,8 +396,12 @@ def delay_state_space(
         if absorb and absorption_after_matrix:
             feedback, absorption_state = absorb_block(feedback, absorption_state)
         if Bx.dim() == 2:
-            # A 2-D Bx enters the first line only.
-            feedback = feedback + F.pad(Bx[:, start:stop, None], (0, M - 1))
+            # A 2-D Bx enters the first line only. Pad it a span of blocks at
+            # a time: per block costs kernels, and all at once (B, N, M) memory.
+            if start % pad_span == 0:
+                padded = F.pad(Bx[:, start : start + pad_span, None], (0, M - 1))
+            offset = start % pad_span
+            feedback = feedback + padded[:, offset : offset + stop - start]
         else:
             feedback = feedback + Bx[:, start:stop]
         chunks.append(feedback)
