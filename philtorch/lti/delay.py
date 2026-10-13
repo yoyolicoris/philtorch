@@ -5,10 +5,11 @@ from collections.abc import Iterable, Sequence
 from typing import Any
 
 import torch
+import torch.nn.functional as F
 from torch import Tensor
 
-from .filtering import lfilter
-from .ssm import _ssm_B, _ssm_C_D
+from ..mat import companion
+from .ssm import _ssm_B, _ssm_C_D, state_space
 
 _OUTPUT_CHUNK = 4096
 
@@ -138,10 +139,10 @@ def delay_state_space(
         absorption_after_matrix (bool, optional): put the filters after
             :math:`A` instead of after the delay lines, as above. Needs
             :attr:`absorption`. Default: ``False``.
-        unroll_factor (int, optional): passed to :func:`lfilter` for the
-            filters, which passes it to :func:`state_space`: ``None`` runs
-            native kernels and an integer runs PyTorch ops on any device.
-            Needs :attr:`absorption`. Default: ``None``.
+        unroll_factor (int, optional): passed to :func:`state_space`, which
+            runs the filters: ``None`` runs native kernels and an integer runs
+            PyTorch ops on any device. Needs :attr:`absorption`.
+            Default: ``None``.
 
     Returns:
         Tensor or tuple: the outputs, as :func:`state_space`, and with
@@ -263,6 +264,12 @@ def delay_state_space(
         filter_b = filter_b.reshape(batch_size * M, filter_b.size(-1))
         filter_a = filter_a.reshape(batch_size * M, filter_a.size(-1))
         K = max(filter_b.size(-1) - 1, filter_a.size(-1))
+        # The transposed direct form II of lfilter, built once for all blocks.
+        filter_b = F.pad(filter_b, (0, K + 1 - filter_b.size(-1)))
+        filter_a = F.pad(filter_a, (0, K - filter_a.size(-1)))
+        filter_D = filter_b[:, 0]
+        filter_A = companion(filter_a).mT if K else None
+        filter_B = filter_b[:, 1:] - filter_b[:, :1] * filter_a
         if absorption_zi is None:
             absorption_state = x.new_zeros(batch_size * M, K)
         else:
@@ -289,16 +296,19 @@ def delay_state_space(
 
     def absorb_block(signal: Tensor, state: Tensor) -> tuple[Tensor, Tensor]:
         """Filter a (B, L, M) block line by line, from and to a (B * M, K) state."""
+        if not K:
+            # A pure gain has no state.
+            return signal * filter_D.view(batch_size, 1, M), state
         length = signal.size(1)
         flat = signal.permute(0, 2, 1).reshape(batch_size * M, length)
-        flat, state = lfilter(
-            filter_b,
-            filter_a,
+        flat, state = state_space(
+            filter_A,
             flat,
+            B=filter_B,
+            D=filter_D,
             zi=state,
-            form="tdf2",
-            backend="ssm",
             unroll_factor=unroll_factor,
+            out_idx=0,
         )
         return flat.reshape(batch_size, M, length).permute(0, 2, 1), state
 
