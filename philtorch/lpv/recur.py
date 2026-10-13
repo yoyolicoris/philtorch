@@ -28,7 +28,9 @@ def linear_recurrence(
             chosen by device and dtype, and raises where none takes the
             input. ``1`` runs the sequential PyTorch loop, as does :math:`N`
             or more; a value from 2 to :math:`N - 1` runs a block-unrolled
-            PyTorch recursion with blocks of that length. See the README for
+            PyTorch recursion with blocks of that length. In 0.7, ``1`` ran
+            the kernel: it emits a :class:`FutureWarning` until 0.9, and
+            omitting the argument keeps the kernel. See the README for
             guidance. Default: ``None``.
 
     Returns:

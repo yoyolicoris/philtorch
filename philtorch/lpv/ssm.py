@@ -46,7 +46,9 @@ def state_space_recursion(
         unroll_factor (int, optional): ``None`` for the kernels described
             above. ``1`` runs the sequential loop, as does :math:`N` or more,
             and a value from 2 to :math:`N - 1` is the block length of the
-            unrolled recursion. Default: ``None``.
+            unrolled recursion. In 0.7, ``1`` ran the kernels: it emits a
+            :class:`FutureWarning` until 0.9, and omitting the argument keeps
+            the kernels. Default: ``None``.
         out_idx (int, optional): return only this state. Default: ``None``.
 
     Returns:

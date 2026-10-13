@@ -7,7 +7,7 @@ Provides specialized code review guidance for the PhilTorch repository. It enfor
 - Reviewing pull requests and new code contributions.
 - Auditing custom `torch.autograd.Function` implementations.
 - Checking C++/CUDA kernel extensions (including Triton kernels) for filtering and matrix recursions.
-- Verifying fallback PyTorch implementations (associative scans).
+- Verifying the integer `unroll_factor` paths (sequential loop and block-unrolled recursion) against the kernels.
 
 ## Core Review Principles
 
@@ -21,7 +21,7 @@ Provides specialized code review guidance for the PhilTorch repository. It enfor
 - **Backward Pass:** Verify `ctx.save_for_backward` only saves necessary tensors to prevent memory bloat. Check if `backward` correctly calculates gradients with respect to all inputs (handling `None` gracefully for non-differentiable inputs).
 - **Tensor Contiguity:** Ensure tensors passed to C++/CUDA extensions are contiguous (`tensor.contiguous()`) to prevent memory stride errors.
 - **Device & Dtype Handling:** Ensure new tensors are created on the correct `device` and with the proper `dtype` matching input tensors.
-- **Fallback Mechanisms:** Check that pure PyTorch fallbacks (e.g., using `unroll_factor` and associative scans) are logically correct when C++ extensions are not compiled.
+- **No Silent Fallbacks:** `philtorch._C` is required, so there is no pure-PyTorch fallback. The default `unroll_factor=None` runs the kernels and raises `NotImplementedError` where none applies. Flag any new fallback that hides that error. An integer `unroll_factor` is an explicit choice (the sequential loop at 1 or from the sequence length on, a block-unrolled recursion in between); check that it matches the kernels' results and gradients.
 
 ### 2. C++ / CUDA & Dependencies
 - **Kernel Safety:** Check for out-of-bounds memory accesses in CUDA/Triton kernels, particularly at sequence boundaries during parallel associative scans.
@@ -36,7 +36,7 @@ Provides specialized code review guidance for the PhilTorch repository. It enfor
 
 Structure your feedback clearly using the following severity labels:
 - 🔴 **[blocking]** - Must fix before merge (e.g., autograd bugs, CUDA race conditions, failing tests, stateful regressions).
-- 🟡 **[important]** - Should fix, discuss if disagree (e.g., unnecessary memory copies, sub-optimal unroll factors, missing PyTorch native fallbacks).
+- 🟡 **[important]** - Should fix, discuss if disagree (e.g., unnecessary memory copies, sub-optimal unroll factors, a silent fallback where there should be a `NotImplementedError`, a new CUDA test missing `pytest.mark.cuda`).
 - 🟢 **[nit]** - Nice to have, not blocking (e.g., variable naming, inline comments).
 - 💡 **[suggestion]** - Alternative approach to consider (e.g., suggesting a more efficient tensor operation).
 

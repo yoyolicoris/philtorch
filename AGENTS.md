@@ -13,14 +13,18 @@ Agree on the task with the maintainer before carrying it out. Where the request 
 
 ## Delegating work
 
-Once a task is agreed, the main agent (the one talking with the maintainer) delegates the parts that can run in parallel:
+Once a task is agreed, the main agent (the one talking with the maintainer) delegates the parts big enough to be worth running in parallel. A small task it does itself.
 
 - **Split the work into parts with disjoint files,** so that no two agents edit the same file. Give each part to a mid-tier subagent with exact instructions: the files, the target behaviour, any text to use verbatim, and the checks to run.
-- **A mid-tier subagent may split its part further** over small-tier subagents, on the same terms, and reviews their results. That is the deepest level: three in all, counting the main agent.
+- **A mid-tier subagent may split its part further** over small-tier subagents, on the same terms: disjoint files, exact instructions, and a review of the results. That is the deepest level: three in all, counting the main agent.
 - **Parts that depend on others,** such as the tests of new behaviour, start once those are final.
+- **Subagents don't commit or push.** The main agent commits, and pushes only when the maintainer asks.
+- **Open questions go up.** A subagent can't ask the maintainer. If its instructions leave something open, it reports the question to its caller instead of deciding it. The main agent asks the maintainer, as "Before starting a task" says.
+- **One working tree, environment and build are shared,** even by parts with disjoint files. Nobody rebuilds the extension while subagents run; the main agent does, between rounds.
+- **Tests:** a subagent runs the tests its part exercises, selected by name, when they don't strain the machine, and reports which it ran and why they cover its part, so that the main agent can pass that on, as "Commands" asks. Builds and long or GPU-heavy runs are left to the main agent.
+- **Benchmarks** never run in parallel, and only when no other process competes for the machine, the GPU above all. The main agent runs them last, after the subagents have finished.
 - **The main agent collects the results, reviews every diff, corrects what is wrong, and reports to the maintainer.** It is responsible for the result; a subagent's report is a claim to check.
-- **Tests:** a subagent runs the tests its part exercises, selected by name, when they don't strain the machine. Builds and long or GPU-heavy runs are left to the main agent.
-- **Benchmarks** never run in parallel, and only when no other process competes for the machine, the GPU above all. The main agent runs them at the end, after the subagents have finished.
+- **Without subagents:** an agent whose tool can't spawn them, or whose tool file defines no tiers, does the work itself.
 
 Which model each tier is depends on the tool; its own file says, such as `CLAUDE.md`.
 

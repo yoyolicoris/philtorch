@@ -17,6 +17,7 @@ the inputs' mapping, B x, and the outputs', C h + D x.
   block. Each runs on its module's own layout of A, which it was written for.
 """
 
+import sys
 import warnings
 from collections.abc import Callable
 
@@ -27,13 +28,34 @@ from torch import Tensor
 from .mat import matrices_cumdot, matrix_power_accumulate
 
 
+def _outside_philtorch_stacklevel() -> int:
+    """The ``stacklevel`` of :func:`warnings.warn` that points at the first frame
+    outside philtorch, counting from the frame that calls this helper.
+
+    ``skip_file_prefixes`` does this from Python 3.12; 3.10 is supported too.
+    """
+    # Frame 0 is this helper's; the warn call is in its caller, frame 1.
+    depth = 1
+    frame = sys._getframe(depth)
+    while frame is not None:
+        name = frame.f_globals.get("__name__", "")
+        if name != "philtorch" and not name.startswith("philtorch."):
+            break
+        depth += 1
+        frame = frame.f_back
+    return depth
+
+
 def _warn_unroll_factor_one():
+    # warnings.warn can't be traced by Dynamo.
+    if torch.compiler.is_compiling():
+        return
     warnings.warn(
         "unroll_factor=1 runs the sequential loop since philtorch 0.8; in 0.7 it ran "
         "the native kernels, which unroll_factor=None, the default, runs now. This "
         "warning will be removed in 0.9.",
         FutureWarning,
-        stacklevel=3,
+        stacklevel=_outside_philtorch_stacklevel(),
     )
 
 
@@ -87,9 +109,9 @@ def _loop(A: Tensor, zi: Tensor, x: Tensor, out_idx: int | None = None) -> Tenso
 
 # Appended to the operator's error where no kernel takes the input.
 _NO_KERNEL_HINT = (
-    "; pass unroll_factor=1 for the sequential loop, or 2 to N - 1 for a block-unrolled "
-    "recursion: PyTorch ops on any device, in the dtypes their matrix products take there "
-    "(on CUDA, no integers)"
+    "; pass unroll_factor=1 for the sequential loop, or 2 up to one less than the sequence "
+    "length for a block-unrolled recursion: PyTorch ops on any device, in the dtypes their "
+    "matrix products take there (on CUDA, no integers)"
 )
 
 
