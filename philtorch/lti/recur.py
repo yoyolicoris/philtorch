@@ -37,8 +37,8 @@ def linear_recurrence(
         Tensor: :math:`h[1], \dots, h[N]`, of shape :math:`(B, N)`.
 
     Raises:
-        ValueError: if :attr:`unroll_factor` is 0 or negative, or, with an
-            integer :attr:`unroll_factor`, if :attr:`x` is not 2-D, :attr:`a`
+        ValueError: if :attr:`x` is not 2-D, if :attr:`unroll_factor` is 0 or
+            negative, or, with an integer :attr:`unroll_factor`, if :attr:`a`
             or :attr:`init` is not 0-D or 1-D, or either has a batch size
             other than 1 or that of :attr:`x`.
         RuntimeError: with ``unroll_factor=None``, for the same batch-size
@@ -54,14 +54,14 @@ def linear_recurrence(
         >>> linear_recurrence(torch.tensor(0.5), torch.tensor(0.0), x)
         tensor([[1.0000, 0.5000, 0.2500, 0.1250]])
     """
+    if x.dim() != 2:
+        raise ValueError(f"Input x must be 2D, got {x.shape}")
     if unroll_factor is None:
         batch_size = x.shape[0]
         return _ssm.scalar_recursion(
             a.broadcast_to(batch_size)[:, None], init.broadcast_to(batch_size), x
         )
 
-    if x.dim() != 2:
-        raise ValueError(f"Input x must be 2D, got {x.shape}")
     if a.dim() not in (0, 1):
         raise ValueError(f"State matrix a must be 1D or 0D, got {a.shape}")
     if a.dim() == 1 and a.size(0) > 1 and a.size(0) != x.size(0):
