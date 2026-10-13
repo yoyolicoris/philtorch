@@ -209,11 +209,11 @@ def delay_state_space(
         default, the queues hold the values before the filters:
         ``zi[i][..., 0]`` is the next value line :math:`i` emits before its
         filter. With ``absorption_after_matrix=True``, they hold the filtered
-        feedback instead. With :attr:`absorption`, and :attr:`zi` or
-        :attr:`absorption_zi`, a tuple ``(y, zf, absorption_zf)``, where
-        ``absorption_zf`` is the final state of the filters, of shape
-        :math:`(B, M, K)`, and whichever of the two initial states is not
-        given starts at zero.
+        feedback plus :math:`B \mathbf{x}`, the values the lines emit. With
+        :attr:`absorption`, and :attr:`zi` or :attr:`absorption_zi`, a tuple
+        ``(y, zf, absorption_zf)``, where ``absorption_zf`` is the final
+        state of the filters, of shape :math:`(B, M, K)`, and whichever of
+        the two initial states is not given starts at zero.
 
     Raises:
         ValueError: if a delay or :attr:`block_size` is invalid, if
@@ -344,15 +344,16 @@ def delay_state_space(
             [F.pad(queue, (prefix - delay, 0)) for queue, delay in zip(initial, delays)], -1
         ).split(block_size, dim=1)
     )
-    position = (
-        torch.arange(block_size, device=x.device)[:, None]
-        + prefix
-        - torch.tensor(delays, device=x.device)
+    # Line i reads chunks (prefix - m_i) // block_size through
+    # (prefix - m_i + block_size - 1) // block_size.
+    needed = sorted(
+        {(prefix - delay + k) // block_size for delay in delays for k in (0, block_size - 1)}
     )
-    needed = (position // block_size).unique()
-    # (block_size, M) positions in the needed chunks, joined.
-    index = torch.searchsorted(needed, position // block_size) * block_size + position % block_size
-    needed = needed.tolist()
+    # (block_size, M) positions in the needed chunks, joined. They depend on
+    # Python ints only, so they are built on the CPU and copied once.
+    position = torch.arange(block_size)[:, None] + prefix - torch.tensor(delays)
+    index = torch.searchsorted(torch.tensor(needed), position // block_size) * block_size
+    index = (index + position % block_size).to(x.device, non_blocking=True)
     lines = torch.arange(M, device=x.device)
     # The final queues are the last `history` samples of the stream.
     tail = (samples + prefix - history) // block_size

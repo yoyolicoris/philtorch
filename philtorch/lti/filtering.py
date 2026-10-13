@@ -365,6 +365,7 @@ def lfilter(
             shape :math:`(B, M_b + 1)` or :math:`(M_b + 1)`.
         a (Tensor): denominator coefficients :math:`a_1, \dots, a_{M_a}`,
             without the leading 1, of shape :math:`(B, M_a)` or :math:`(M_a)`.
+            :math:`M_a` may be 0, for an FIR filter.
         x (Tensor): input signals, of shape :math:`(B, N)` or :math:`(N)`.
         zi (Tensor, optional): initial state, of shape :math:`(B, M)` or
             :math:`(M)` and the dtype of :attr:`x`, where
@@ -401,7 +402,11 @@ def lfilter(
         ValueError: if :attr:`form` or :attr:`backend` is unknown,
             :attr:`b` or :attr:`a` is not 1-D or 2-D, :attr:`x` has more
             than 2 dimensions, or :attr:`zi` is given to a form or backend
-            that does not take it.
+            that does not take it; with an empty :attr:`a`, also if
+            :attr:`zi` has states for a pure gain, or if a batched :attr:`b`,
+            :attr:`a` or :attr:`zi` does not match the batch size of
+            :attr:`x`.
+        TypeError: if a keyword argument is not one the backend takes.
 
     Note:
         Unlike :func:`scipy.signal.lfilter`, :attr:`a` omits the leading
