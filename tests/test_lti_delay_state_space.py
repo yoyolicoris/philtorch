@@ -806,29 +806,35 @@ def test_delay_state_space_absorption_zero_length(after_matrix, az_dim, with_zi)
 
 @pytest.mark.parametrize("after_matrix", POSITIONS, ids=POSITION_IDS)
 @pytest.mark.parametrize("batched_coefficients", [False, True])
-def test_delay_state_space_absorption_gradcheck(after_matrix, batched_coefficients):
+@pytest.mark.parametrize("orders", [(1, 1), (0, 0)], ids=["order-1", "pure-gain"])
+def test_delay_state_space_absorption_gradcheck(after_matrix, batched_coefficients, orders):
     delays, batch, samples, M = (2, 3), 2, 8, 2
     double = dict(dtype=torch.double, requires_grad=True)
     x = torch.randn(batch, samples, **double)
     A = (0.4 * torch.randn(M, M, dtype=torch.double)).requires_grad_()
     coefficient_batch = (batch,) if batched_coefficients else ()
-    b = (0.5 * torch.randn(*coefficient_batch, M, 2, dtype=torch.double)).requires_grad_()
-    a = (0.3 * torch.randn(*coefficient_batch, M, 1, dtype=torch.double)).requires_grad_()
-    absorption_zi = torch.randn(batch, M, 1, **double)
+    b = (
+        0.5 * torch.randn(*coefficient_batch, M, orders[0] + 1, dtype=torch.double)
+    ).requires_grad_()
+    a = (0.3 * torch.randn(*coefficient_batch, M, orders[1], dtype=torch.double)).requires_grad_()
+    absorption_zi = torch.randn(batch, M, max(orders), **double)
+    # The initial queues reach y through the indexed reads of the stream.
+    zi = tuple(torch.randn(batch, delay, **double) for delay in delays)
 
-    def run(A, b, a, absorption_zi, x):
+    def run(A, b, a, absorption_zi, x, *zi):
         y, zf, azf = delay_state_space(
             A,
             x,
             delays,
             C=torch.ones(M, dtype=torch.double),
+            zi=zi,
             absorption=(b, a),
             absorption_zi=absorption_zi,
             absorption_after_matrix=after_matrix,
         )
         return y, azf, *zf
 
-    assert torch.autograd.gradcheck(run, (A, b, a, absorption_zi, x))
+    assert torch.autograd.gradcheck(run, (A, b, a, absorption_zi, x, *zi))
 
 
 @pytest.mark.parametrize("after_matrix", POSITIONS, ids=POSITION_IDS)

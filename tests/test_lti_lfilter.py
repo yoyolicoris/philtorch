@@ -677,6 +677,9 @@ def test_lfilter_empty_a_errors():
 
     with pytest.raises(ValueError, match="0 states"):
         lfilter(b1, a, x, zi=torch.zeros(2, 1, dtype=torch.float64), form="tdf2")
+    for backend in ("ssm", "diag_ssm"):
+        with pytest.raises(ValueError, match="zi must be"):
+            lfilter(b1, a, x, zi=torch.zeros(2, 1, 0, dtype=torch.float64), backend=backend)
     with pytest.raises(ValueError, match="Unknown filter form"):
         lfilter(b3, a, x, form="df1", backend="diag_ssm")
     with pytest.raises(ValueError, match="does not take zi"):

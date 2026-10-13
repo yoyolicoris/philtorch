@@ -500,6 +500,8 @@ def _ssm_lfilter(
         # checked the keyword arguments and the batch sizes.
         _check_kwargs(kwargs, _SSM_KWARGS)
         _check_batch_sizes(b, a, x, zi)
+        if zi is not None and zi.dim() not in (1, 2):
+            raise ValueError(f"Initial conditions zi must be 1D or 2D, got {zi.shape}")
         if zi is not None and zi.size(-1) != 0:
             raise ValueError(f"zi must have 0 states for a pure gain, got {zi.size(-1)}.")
         y = b[..., :1] * x
