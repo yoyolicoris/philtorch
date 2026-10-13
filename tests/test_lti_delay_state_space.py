@@ -908,6 +908,98 @@ def test_delay_state_space_absorption_unroll_factor(after_matrix):
         torch.testing.assert_close(azf, expected_azf)
 
 
+@pytest.mark.parametrize("after_matrix", POSITIONS, ids=POSITION_IDS)
+@pytest.mark.parametrize("x_dim", [2, 3])
+@pytest.mark.parametrize("chunk", [1, 5, 8])
+def test_delay_state_space_absorption_across_spans(monkeypatch, chunk, x_dim, after_matrix):
+    # With block_size 4, chunks of 1, 5 and 8 samples make spans of 4, 8 and 8,
+    # so the absorption state must carry over from one span to the next.
+    dtype, delays, samples = torch.double, (4, 6), 37
+    x = torch.randn(2, samples, *(2,) * (x_dim - 2), dtype=dtype)
+    A = 0.5 * torch.randn(2, 2, dtype=dtype)
+    b, a = 0.5 * torch.randn(2, 2, dtype=dtype), 0.3 * torch.randn(2, 1, dtype=dtype)
+    zi = (torch.randn(4, dtype=dtype), torch.randn(2, 6, dtype=dtype))
+    absorption_zi = torch.randn(2, 1, dtype=dtype)
+    expected_y, expected_zf, expected_azf = _reference_absorption(
+        A, x, delays, None, None, None, None, zi, b, a, absorption_zi, after_matrix
+    )
+
+    monkeypatch.setattr(delay_module, "_OUTPUT_CHUNK", chunk)
+    y, zf, azf = delay_state_space(
+        A,
+        x,
+        delays,
+        zi=zi,
+        absorption=(b, a),
+        absorption_zi=absorption_zi,
+        absorption_after_matrix=after_matrix,
+    )
+
+    torch.testing.assert_close(y, expected_y)
+    _assert_states_close(zf, expected_zf)
+    torch.testing.assert_close(azf, expected_azf)
+
+
+@pytest.mark.parametrize("after_matrix", POSITIONS, ids=POSITION_IDS)
+@pytest.mark.parametrize("factor", [None, 1, 2])
+def test_delay_state_space_absorption_passes_unroll_factor(monkeypatch, factor, after_matrix):
+    dtype, delays = torch.double, (4, 6)
+    x = torch.randn(2, 22, dtype=dtype)  # blocks of 4 samples, the last of 2
+    A = 0.5 * torch.randn(2, 2, dtype=dtype)
+    absorption = 0.5 * torch.randn(2, 2, dtype=dtype), 0.3 * torch.randn(2, 1, dtype=dtype)
+    calls = []
+
+    def spy(A, x, *args, **kwargs):
+        calls.append((x.size(1), kwargs["unroll_factor"]))
+        return state_space(A, x, *args, **kwargs)
+
+    monkeypatch.setattr(delay_module, "state_space", spy)
+    delay_state_space(
+        A,
+        x,
+        delays,
+        absorption=absorption,
+        absorption_after_matrix=after_matrix,
+        unroll_factor=factor,
+    )
+
+    # unroll_factor=1 becomes one more than the block's length: any larger
+    # factor runs the sequential loop, without state_space's FutureWarning.
+    assert [length for length, _ in calls] == [4] * 5 + [2]
+    expected = {None: lambda n: None, 1: lambda n: n + 1, 2: lambda n: 2}[factor]
+    assert [value for _, value in calls] == [expected(length) for length, _ in calls]
+
+    calls.clear()
+    pure_gain = absorption[0][:, :1], absorption[1][:, :0]
+    delay_state_space(A, x, delays, absorption=pure_gain, unroll_factor=factor)
+    assert calls == []
+
+
+@pytest.mark.parametrize(
+    "factor",
+    [
+        pytest.param(lambda np: np.int64(2), id="numpy-scalar"),
+        pytest.param(lambda np: torch.tensor(2), id="tensor"),
+    ],
+)
+@pytest.mark.parametrize("container", [tuple, list])
+def test_delay_state_space_absorption_accepts_integer_like_unroll_factor_and_list(
+    factor, container
+):
+    np = pytest.importorskip("numpy")
+    dtype, delays = torch.double, (4, 6)
+    x = torch.randn(2, 22, dtype=dtype)
+    A = 0.5 * torch.randn(2, 2, dtype=dtype)
+    absorption = 0.5 * torch.randn(2, 2, dtype=dtype), 0.3 * torch.randn(2, 1, dtype=dtype)
+    expected = delay_state_space(A, x, delays, absorption=absorption, unroll_factor=2)
+
+    result = delay_state_space(
+        A, x, delays, absorption=container(absorption), unroll_factor=factor(np)
+    )
+
+    torch.testing.assert_close(result, expected)
+
+
 @pytest.mark.parametrize("mode", ["plain", "after-delay", "after-matrix"])
 @pytest.mark.parametrize("block_size", [None, 1])
 def test_delay_state_space_returned_queues_are_contiguous(mode, block_size):
@@ -1068,6 +1160,24 @@ def _zeros(*shape):
             ValueError,
             "must have the dtype and device of x",
             id="zi-dtype",
+        ),
+        pytest.param(
+            dict(absorption=(_zeros(2, 2).to("meta"), _zeros(2, 1))),
+            ValueError,
+            "dtype and device",
+            id="b-device",
+        ),
+        pytest.param(
+            dict(absorption=(_zeros(2, 2), _zeros(2, 1).to("meta"))),
+            ValueError,
+            "dtype and device",
+            id="a-device",
+        ),
+        pytest.param(
+            dict(absorption_zi=_zeros(2, 1).to("meta")),
+            ValueError,
+            "dtype and device",
+            id="zi-device",
         ),
         pytest.param(
             dict(absorption=(_zeros(2, 0), _zeros(2, 1))),

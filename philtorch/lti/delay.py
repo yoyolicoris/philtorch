@@ -147,18 +147,19 @@ def delay_state_space(
     sequence is processed in blocks no longer than the shortest delay, so each
     block only reads values written by earlier blocks.
 
-    With :attr:`absorption`, each line also has an IIR filter :math:`h_i`, with
+    With :attr:`absorption`, each line also has an IIR filter :math:`g_i`, with
     the transfer function of :func:`lfilter`, for the loss of a feedback delay
-    network. By default it filters the delay output, so :math:`r_i = h_i * q_i`
-    for :math:`q_i[n] = s_i[n - m_i]`, and :math:`A`, :math:`C` and
-    :attr:`out_idx` all see the filtered :math:`\mathbf{r}`. With
+    network. By default it filters the delay output: for
+    :math:`q_i[n] = s_i[n - m_i]`, :math:`r_i = g_i \ast q_i` (the convolution
+    of :math:`q_i` with the impulse response of :math:`g_i`), and :math:`A`,
+    :math:`C` and :attr:`out_idx` all see the filtered :math:`\mathbf{r}`. With
     ``absorption_after_matrix=True``, :math:`\mathbf{r} = \mathbf{q}` and only
     the feedback path is filtered:
 
     .. math::
-        \mathbf{s}[n] = H(A \mathbf{r})[n] + B \mathbf{x}[n],
+        \mathbf{s}[n] = G(A \mathbf{r})[n] + B \mathbf{x}[n],
 
-    where :math:`H` applies :math:`h_i` to entry :math:`i`. In both positions
+    where :math:`G` filters entry :math:`i` by :math:`g_i`. In both positions
     :math:`B \mathbf{x}` is not filtered.
 
     Args:
@@ -176,44 +177,49 @@ def delay_state_space(
         D (Tensor, optional): see :func:`state_space`. Default: ``None``.
         zi (Sequence[Tensor], optional): one initial queue per delay line, of
             shape :math:`(m_i)` or :math:`(B, m_i)`. Each queue is output first,
-            so ``zi[i][..., 0]`` is the next value delay line :math:`i` emits.
-            Default: ``None``, all zero.
+            so ``zi[i][..., 0]`` is the next value delay line :math:`i` emits,
+            before any absorption filter. Default: ``None``, all zero.
         block_size (int, optional): the processing block length, at most
             :math:`\min_i m_i`. Default: ``None``, which uses
             :math:`\min_i m_i`.
         out_idx (int, optional): output only this delay line, instead of using
             :attr:`C`. Default: ``None``.
-        absorption (tuple of Tensor, optional): the per-line filters
-            :math:`(b, a)`, as in :func:`lfilter`, so :math:`a` omits the
-            leading 1. :math:`b` has shape :math:`(M, M_b + 1)` or
-            :math:`(B, M, M_b + 1)`, and :math:`a` has shape :math:`(M, M_a)`
-            or :math:`(B, M, M_a)`, where :math:`M_a` may be 0. Batched and
-            unbatched coefficients can be mixed. Default: ``None``, no
-            filters.
+        absorption (tuple or list of Tensor, optional): the per-line filters
+            :math:`g_i`, as a pair :math:`(b, a)` of tensors, as in
+            :func:`lfilter`, so :math:`a` omits the leading 1. :math:`b` has
+            shape :math:`(M, M_b + 1)` or :math:`(B, M, M_b + 1)`, and
+            :math:`a` has shape :math:`(M, M_a)` or :math:`(B, M, M_a)`, where
+            :math:`M_a` may be 0. Batched and unbatched coefficients can be
+            mixed. Both must have the dtype and device of :attr:`x`.
+            Default: ``None``, no filters.
         absorption_zi (Tensor, optional): the initial states of the filters,
             as the :attr:`zi` of :func:`lfilter` with ``form="tdf2"``, of
             shape :math:`(M, K)` or :math:`(B, M, K)`, where
-            :math:`K = \max(M_a, M_b)`. Needs :attr:`absorption`.
-            Default: ``None``, all zero.
+            :math:`K = \max(M_a, M_b)`. It must have the dtype and device of
+            :attr:`x`. Needs :attr:`absorption`. Default: ``None``, all zero.
         absorption_after_matrix (bool, optional): put the filters after
             :math:`A` instead of after the delay lines, as above. Needs
             :attr:`absorption`. Default: ``False``.
-        unroll_factor (int, optional): how :func:`state_space` runs the
-            filters: ``None`` runs native kernels, and an integer
-            :math:`\ge 1` runs PyTorch ops on any device, with ``1`` the
-            sequential loop. Needs :attr:`absorption`. Default: ``None``.
+        unroll_factor (int, optional): the ``unroll_factor`` of the recursion
+            that runs the filters, one block of at most :attr:`block_size`
+            samples at a time (see :func:`state_space`): ``None`` runs native
+            kernels; an integer :math:`\ge 1` runs PyTorch ops on any device,
+            the sequential loop for ``1`` or any value of at least the block
+            length. A pure gain (:math:`K = 0`) ignores it. Needs
+            :attr:`absorption`. Default: ``None``.
 
     Returns:
-        Tensor or tuple: the outputs, as :func:`state_space`, and with
-        :attr:`zi`, a tuple holding one final queue per delay line. By
-        default, the queues hold the values before the filters:
-        ``zi[i][..., 0]`` is the next value line :math:`i` emits before its
-        filter. With ``absorption_after_matrix=True``, they hold the filtered
-        feedback plus :math:`B \mathbf{x}`, the values the lines emit. With
-        :attr:`absorption`, and :attr:`zi` or :attr:`absorption_zi`, a tuple
-        ``(y, zf, absorption_zf)``, where ``absorption_zf`` is the final
-        state of the filters, of shape :math:`(B, M, K)`, and whichever of
-        the two initial states is not given starts at zero.
+        Tensor or tuple: the outputs, as :func:`state_space`. With :attr:`zi`,
+        the pair ``(y, zf)``, where ``zf`` is a tuple of one final queue per
+        delay line, of shape :math:`(B, m_i)`. With :attr:`absorption`, and
+        :attr:`zi` or :attr:`absorption_zi`, the triple
+        ``(y, zf, absorption_zf)``, where ``absorption_zf`` is the final state
+        of the filters, of shape :math:`(B, M, K)`; whichever initial state is
+        not given starts at zero.
+
+        ``zf[i][..., 0]`` is the next value line :math:`i` emits: by default,
+        before its absorption filter; with ``absorption_after_matrix=True``,
+        the filtered feedback plus :math:`B \mathbf{x}`.
 
     Raises:
         ValueError: if a delay or :attr:`block_size` is invalid, if

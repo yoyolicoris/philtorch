@@ -1,5 +1,6 @@
 """IIR and FIR filtering with time-invariant coefficients."""
 
+import operator
 from functools import partial
 
 import torch
@@ -401,12 +402,17 @@ def lfilter(
     Raises:
         ValueError: if :attr:`form` or :attr:`backend` is unknown,
             :attr:`b` or :attr:`a` is not 1-D or 2-D, :attr:`x` has more
-            than 2 dimensions, or :attr:`zi` is given to a form or backend
-            that does not take it; with an empty :attr:`a`, also if
-            :attr:`zi` has states for a pure gain, or if a batched :attr:`b`,
-            :attr:`a` or :attr:`zi` does not match the batch size of
-            :attr:`x`.
-        TypeError: if a keyword argument is not one the backend takes.
+            than 2 dimensions, :attr:`zi` is not 1-D or 2-D or is given to a
+            form or backend that does not take it, ``unroll_factor`` is below
+            1, or, with ``backend="ssm"``, a non-empty :attr:`a` or :attr:`zi`
+            has a dtype or device other than that of :attr:`x`. For a pure
+            gain (one coefficient in :attr:`b` and an empty :attr:`a`), also
+            if :attr:`b` has a dtype or device other than that of :attr:`x`,
+            if :attr:`zi` has states, or if a batched :attr:`b`, :attr:`a` or
+            :attr:`zi` does not match the batch size of :attr:`x`; the batch
+            check holds for any empty :attr:`a` with ``backend="diag_ssm"``.
+        TypeError: if a keyword argument is not one the backend takes, or
+            ``unroll_factor`` is not an integer.
 
     Note:
         Unlike :func:`scipy.signal.lfilter`, :attr:`a` omits the leading
@@ -467,6 +473,35 @@ def _check_kwargs(kwargs: dict, accepted: tuple[str, ...]) -> None:
             raise TypeError(f"lfilter() got an unexpected keyword argument {name!r}")
 
 
+def _check_unroll_factor(kwargs: dict) -> None:
+    """Raise the errors of the general path for a bad ``unroll_factor``."""
+    unroll_factor = kwargs.get("unroll_factor")
+    if unroll_factor is None:
+        return
+    if unroll_factor < 1:
+        raise ValueError(f"unroll_factor must be None or at least 1, got {unroll_factor}")
+    # Block sizes are integers: the general path fails on a float in a pad.
+    try:
+        operator.index(unroll_factor)
+    except TypeError:
+        raise TypeError(
+            f"unroll_factor must be None or an integer, got {unroll_factor!r}"
+        ) from None
+
+
+def _check_dtypes_devices(b: Tensor, x: Tensor, zi: Tensor | None) -> None:
+    """Check that b and the state share x's dtype and device.
+
+    An empty ``a`` holds no values, so its dtype, such as the float32 of
+    ``torch.tensor([])``, does not matter.
+    """
+    if any(t is not None and (t.dtype != x.dtype or t.device != x.device) for t in (b, zi)):
+        raise ValueError(
+            "b, zi and x must share a dtype and a device, got "
+            f"{[(t.dtype, str(t.device)) for t in (b, zi, x) if t is not None]}"
+        )
+
+
 def _check_batch_sizes(b: Tensor, a: Tensor, x: Tensor, zi: Tensor | None) -> None:
     """Check that batched coefficients and states match the batch size of x."""
     for name, t in (("b", b), ("a", a), ("zi", zi)):
@@ -497,8 +532,11 @@ def _ssm_lfilter(
     if a.size(-1) == 0 and form in ("df2", "tdf2", "df1", "tdf1"):
         # A pure gain has no state: the output is b0 * x, and the final state
         # is empty. The state-space functions of the general path would have
-        # checked the keyword arguments and the batch sizes.
+        # checked the keyword arguments, unroll_factor, the dtypes and
+        # devices, and the batch sizes.
         _check_kwargs(kwargs, _SSM_KWARGS)
+        _check_unroll_factor(kwargs)
+        _check_dtypes_devices(b, x, zi)
         _check_batch_sizes(b, a, x, zi)
         if zi is not None and zi.dim() not in (1, 2):
             raise ValueError(f"Initial conditions zi must be 1D or 2D, got {zi.shape}")
@@ -582,9 +620,15 @@ def _diag_ssm_lfilter(
 
     if a.size(-1) == 0:
         # With no poles, the filter is the FIR filter b. The general path
-        # would have checked the keyword arguments and the batch sizes.
+        # would have checked the keyword arguments, unroll_factor and the
+        # batch sizes.
         _check_kwargs(kwargs, _DIAG_SSM_KWARGS)
+        _check_unroll_factor(kwargs)
         _check_batch_sizes(b, a, x, zi)
+        if b.size(-1) == 0:
+            # fir needs a tap: no coefficient means a zero filter, as with
+            # backend="ssm", which pads b to len(a) + 1.
+            b = F.pad(b, (0, 1))
         if zi is not None and zi.dim() == 1:
             zi = zi.unsqueeze(0).expand(x.size(0), -1)
         return fir(b.broadcast_to((x.size(0), -1)), x, zi)

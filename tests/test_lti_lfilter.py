@@ -669,21 +669,164 @@ def test_lfilter_empty_a_gradients(backend: str, num_taps: int):
     )
 
 
-def test_lfilter_empty_a_errors():
-    b1 = torch.ones(2, 1, dtype=torch.float64)
-    b3 = torch.ones(2, 3, dtype=torch.float64)
+@pytest.mark.parametrize(
+    ("match", "num_taps", "zi_shape", "kwargs"),
+    [
+        ("0 states", 1, (2, 1), {"form": "tdf2"}),
+        ("zi must be", 1, (2, 1, 0), {"backend": "ssm"}),
+        ("zi must be", 1, (2, 1, 0), {"backend": "diag_ssm"}),
+        ("Unknown filter form", 3, None, {"form": "df1", "backend": "diag_ssm"}),
+        ("does not take zi", 3, (2, 2), {"backend": "diag_ssm"}),
+    ],
+    ids=["zi-with-states", "zi-3d-ssm", "zi-3d-diag_ssm", "diag_ssm-df1", "diag_ssm-zi-long-b"],
+)
+def test_lfilter_empty_a_errors(
+    match: str, num_taps: int, zi_shape: tuple[int, ...] | None, kwargs: dict
+):
+    f64 = {"dtype": torch.float64}
+    b = torch.ones(2, num_taps, **f64)
+    a = torch.zeros(2, 0, **f64)
+    x = torch.ones(2, 10, **f64)
+    if zi_shape is not None:
+        kwargs = {**kwargs, "zi": torch.zeros(*zi_shape, **f64)}
+    with pytest.raises(ValueError, match=match):
+        lfilter(b, a, x, **kwargs)
+
+
+@pytest.mark.parametrize("backend", ["ssm", "diag_ssm"])
+@pytest.mark.parametrize("zi_shape", [None, (0,), (3, 0)])
+def test_lfilter_no_taps_is_zero(backend: str, zi_shape: tuple[int, ...] | None):
+    # b with no coefficients is the zero filter, with or without poles.
+    x = torch.from_numpy(np.random.default_rng(0).standard_normal((3, 10)))
+    b = torch.zeros(0, dtype=torch.float64)
+    a = torch.zeros(0, dtype=torch.float64)
+    kwargs = {} if zi_shape is None else {"zi": torch.zeros(*zi_shape, dtype=torch.float64)}
+    out = lfilter(b, a, x, backend=backend, **kwargs)
+    y, zf = (out, None) if zi_shape is None else out
+    assert y.shape == x.shape
+    assert torch.equal(y, torch.zeros_like(x))
+    if zf is not None:
+        assert zf.shape == (3, 0)
+
+
+_EMPTY_A_UNROLL_CASES = [(form, "ssm", 1) for form in ("df2", "tdf2", "df1", "tdf1")] + [
+    (form, "diag_ssm", taps) for form in ("df2", "tdf2") for taps in (1, 3)
+]
+
+
+@pytest.mark.parametrize(("form", "backend", "num_taps"), _EMPTY_A_UNROLL_CASES)
+@pytest.mark.parametrize(
+    ("unroll_factor", "error"),
+    [
+        (0, ValueError),
+        (-3, ValueError),
+        (1.5, TypeError),
+        (np.int64(2), None),
+        (torch.tensor(3), None),
+        (True, None),
+        (None, None),
+    ],
+    ids=["0", "-3", "1.5", "np.int64", "tensor", "True", "None"],
+)
+def test_lfilter_empty_a_unroll_factor(
+    form: str, backend: str, num_taps: int, unroll_factor, error
+):
+    # The empty-a shortcuts check unroll_factor as the general path does.
+    rng = np.random.default_rng(0)
+    b = rng.standard_normal(num_taps)
+    x = rng.standard_normal((3, 12))
+    a = torch.zeros(0, dtype=torch.float64)
+    args = (torch.from_numpy(b), a, torch.from_numpy(x))
+    kwargs = {"form": form, "backend": backend, "unroll_factor": unroll_factor}
+    if error is not None:
+        match = (
+            "must be None or at least 1" if error is ValueError else "must be None or an integer"
+        )
+        with pytest.raises(error, match=match):
+            lfilter(*args, **kwargs)
+        return
+    y = lfilter(*args, **kwargs)
+    assert np.allclose(y.numpy(), signal.lfilter(b, [1.0], x, axis=-1))
+
+
+@pytest.mark.parametrize(
+    ("form", "case"),
+    [
+        (form, case)
+        for form in ("df2", "tdf2", "df1", "tdf1")
+        for case in ("b32", "zi64", "b-complex", "b-meta")
+        # df1 and tdf1 do not take zi.
+        if not (case == "zi64" and form in ("df1", "tdf1"))
+    ],
+)
+def test_lfilter_pure_gain_rejects_dtype_and_device(form: str, case: str):
+    x_dtype = torch.float32 if case == "zi64" else torch.float64
+    x = torch.ones(3, 10, dtype=x_dtype)
+    a = torch.zeros(0, dtype=torch.float64)
+    b = torch.ones(1, dtype=x_dtype)
+    kwargs = {}
+    match case:
+        case "b32":
+            b = b.float()
+        case "zi64":
+            kwargs["zi"] = torch.zeros(0, dtype=torch.float64)
+        case "b-complex":
+            b = b.to(torch.complex128)
+        case "b-meta":
+            b = b.to("meta")
+    with pytest.raises(ValueError, match="share a dtype and a device"):
+        lfilter(b, a, x, form=form, backend="ssm", **kwargs)
+
+
+@pytest.mark.parametrize("form", ["df2", "tdf2", "df1", "tdf1"])
+def test_lfilter_pure_gain_accepts_empty_a_of_another_dtype(form: str):
+    # torch.tensor([]) is float32, but an empty a holds no values.
+    rng = np.random.default_rng(0)
+    b = torch.from_numpy(rng.standard_normal(1))
+    x = torch.from_numpy(rng.standard_normal((3, 10)))
+    y = lfilter(b, torch.tensor([]), x, form=form, backend="ssm")
+    assert y.dtype == torch.float64
+    assert torch.allclose(y, b[0] * x)
+
+
+@pytest.mark.parametrize(("backend", "num_taps"), [("ssm", 1), ("diag_ssm", 1), ("diag_ssm", 3)])
+@pytest.mark.parametrize("dtype", [torch.complex128, torch.float32, torch.complex64])
+def test_lfilter_empty_a_complex_and_single_precision(
+    backend: str, num_taps: int, dtype: torch.dtype
+):
+    # Compared with SciPy, so that a conjugated b is caught.
+    rng = np.random.default_rng(0)
+
+    def draw(*shape):
+        v = rng.standard_normal(shape)
+        return v + 1j * rng.standard_normal(shape) if dtype.is_complex else v
+
+    b, x = draw(num_taps), draw(3, 16)
+    a = torch.zeros(0, dtype=dtype)
+    y = lfilter(torch.from_numpy(b).to(dtype), a, torch.from_numpy(x).to(dtype), backend=backend)
+    assert y.dtype == dtype
+    y_ref = signal.lfilter(b, [1.0], x, axis=-1)
+    tol = 1e-12 if dtype == torch.complex128 else 1e-4
+    assert np.allclose(y.numpy(), y_ref, atol=tol, rtol=tol)
+
+
+@pytest.mark.parametrize(("backend", "num_taps"), [("ssm", 1), ("diag_ssm", 1), ("diag_ssm", 3)])
+def test_lfilter_empty_a_rejects_several_unknown_keywords(backend: str, num_taps: int):
+    # The first unknown keyword is the one named.
+    b = torch.ones(2, num_taps, dtype=torch.float64)
     a = torch.zeros(2, 0, dtype=torch.float64)
     x = torch.ones(2, 10, dtype=torch.float64)
+    with pytest.raises(TypeError, match="unexpected keyword argument 'unrol_factor'"):
+        lfilter(b, a, x, backend=backend, unrol_factor=3, foo=1)
 
-    with pytest.raises(ValueError, match="0 states"):
-        lfilter(b1, a, x, zi=torch.zeros(2, 1, dtype=torch.float64), form="tdf2")
-    for backend in ("ssm", "diag_ssm"):
-        with pytest.raises(ValueError, match="zi must be"):
-            lfilter(b1, a, x, zi=torch.zeros(2, 1, 0, dtype=torch.float64), backend=backend)
-    with pytest.raises(ValueError, match="Unknown filter form"):
-        lfilter(b3, a, x, form="df1", backend="diag_ssm")
-    with pytest.raises(ValueError, match="does not take zi"):
-        lfilter(b3, a, x, zi=torch.zeros(2, 2, dtype=torch.float64), backend="diag_ssm")
+
+@pytest.mark.parametrize("num_taps", [1, 3])
+def test_lfilter_empty_a_diag_ssm_accepts_no_eigenbasis(num_taps: int):
+    b = torch.ones(2, num_taps, dtype=torch.float64)
+    a = torch.zeros(2, 0, dtype=torch.float64)
+    x = torch.ones(2, 10, dtype=torch.float64)
+    y = lfilter(b, a, x, backend="diag_ssm", V=None, Vinv=None)
+    assert torch.allclose(y, lfilter(b, a, x, backend="diag_ssm"))
 
 
 @pytest.mark.parametrize(("backend", "num_taps"), [("ssm", 1), ("diag_ssm", 1), ("diag_ssm", 3)])
