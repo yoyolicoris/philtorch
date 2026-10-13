@@ -369,6 +369,8 @@ def test_unroll_factor_warns_only_for_one(module):
 @pytest.mark.parametrize("module", [lti, lpv], ids=["lti", "lpv"])
 def test_unroll_factor_one_compiles_in_one_graph(module):
     # The warning is skipped while tracing: fullgraph=True would fail on it.
+    # Dynamo's tracing is what this checks, so aot_eager, which needs no C++
+    # compiler: Windows CI has none for Inductor.
     A, zi, x = _recursion_inputs(module, torch.float64)
     a = A[0, 0] if module is lti else A[:, 0, 0]
     calls = [
@@ -378,7 +380,8 @@ def test_unroll_factor_one_compiles_in_one_graph(module):
     for call in calls:
         with pytest.warns(FutureWarning, match="since philtorch 0.8"):
             expected = call(x)
-        torch.testing.assert_close(torch.compile(call, fullgraph=True)(x), expected)
+        compiled = torch.compile(call, backend="aot_eager", fullgraph=True)
+        torch.testing.assert_close(compiled(x), expected)
 
 
 @pytest.mark.parametrize("module", [lti, lpv], ids=["lti", "lpv"])
