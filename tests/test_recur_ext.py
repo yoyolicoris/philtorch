@@ -273,7 +273,7 @@ def test_recur2_extension_matches_unrolled(device):
     assert torch.allclose(ext_output, torch_output), torch.max(torch.abs(ext_output - torch_output))
     if device == "cuda":
         # CUDA uses the ParaRNN route here rather than the direct recur2 op.
-        native_output = lpv_state_space(A, zi, x, unroll_factor=1)
+        native_output = lpv_state_space(A, zi, x)
         assert torch.allclose(native_output, torch_output), torch.max(
             torch.abs(native_output - torch_output)
         )

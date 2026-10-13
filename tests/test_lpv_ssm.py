@@ -26,9 +26,7 @@ def test_ssm_unrolling(unroll_factor):
     A = companion(a).double()
     zi = torch.randn(batch_size, order).double()
 
-    output_naive = lpv_state_space(
-        A, zi, x, unroll_factor=1
-    )  # Naive implementation without unrolling
+    output_naive = lpv_state_space(A, zi, x)  # The default kernels
     output_unrolled = lpv_state_space(
         A, zi, x, unroll_factor=unroll_factor
     )  # Unrolled implementation

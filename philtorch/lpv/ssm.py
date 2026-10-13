@@ -13,7 +13,7 @@ def state_space_recursion(
     zi: Tensor,
     x: Tensor,
     *,
-    unroll_factor: int = 1,
+    unroll_factor: int | None = None,
     out_idx: int | None = None,
 ) -> Tensor:
     r"""Compute the states of a linear time-varying recurrence.
@@ -28,13 +28,14 @@ def state_space_recursion(
     :math:`\mathbf{h}[1], \dots, \mathbf{h}[N]`. A 2-D input feeds the
     first state only: :math:`\mathbf{x}[n] = x[n] \mathbf{e}_1`.
 
-    With ``unroll_factor=1``, this runs a kernel chosen by device, dtype and
-    :math:`M`: native ones on CPU and CUDA, and a Triton scan on CUDA for the
-    rest, and raises where none takes the input, such as on MPS. On any
-    device, an :attr:`unroll_factor` greater than 1 and less than :math:`N`
-    runs a block-unrolled PyTorch recursion instead, and one of :math:`N` or
-    more runs the sequential PyTorch loop. Both take the dtypes PyTorch's
-    matrix products take on the device: integers on CPU, but not on CUDA.
+    With the default ``unroll_factor=None``, this runs a kernel chosen by
+    device, dtype and :math:`M`: native ones on CPU and CUDA, and a Triton
+    scan on CUDA for the rest, and raises where none takes the input, such as
+    on MPS. On any device, ``unroll_factor=1`` runs the sequential PyTorch
+    loop, and so does one of :math:`N` or more; an :attr:`unroll_factor` from
+    2 to :math:`N - 1` runs a block-unrolled PyTorch recursion instead. Both
+    take the dtypes PyTorch's matrix products take on the device: integers on
+    CPU, but not on CUDA.
 
     Args:
         A (Tensor): state matrices :math:`A[n]`, of shape :math:`(N, M, M)` to
@@ -42,10 +43,10 @@ def state_space_recursion(
         zi (Tensor): the initial state :math:`\mathbf{h}[0]`, of shape
             :math:`(B, M)`.
         x (Tensor): inputs, of shape :math:`(B, N, M)` or :math:`(B, N)`.
-        unroll_factor (int, optional): ``1`` for the kernels described
-            above, a value less than :math:`N` for the block length of the
-            unrolled recursion, or :math:`N` or more for a plain loop.
-            Default: ``1``.
+        unroll_factor (int, optional): ``None`` for the kernels described
+            above. ``1`` runs the sequential loop, as does :math:`N` or more,
+            and a value from 2 to :math:`N - 1` is the block length of the
+            unrolled recursion. Default: ``None``.
         out_idx (int, optional): return only this state. Default: ``None``.
 
     Returns:
@@ -54,10 +55,10 @@ def state_space_recursion(
 
     Raises:
         ValueError: if the shapes do not match, or :attr:`unroll_factor` is
-            less than 1.
-        NotImplementedError: with ``unroll_factor=1``, if no kernel takes the
-            input; an :attr:`unroll_factor` greater than 1 runs PyTorch ops,
-            on any device.
+            0 or negative.
+        NotImplementedError: with ``unroll_factor=None``, if no kernel takes
+            the input; an integer :attr:`unroll_factor` runs PyTorch ops, on
+            any device.
 
     Note:
         These are the states after each input, :math:`\mathbf{h}[1]` to
@@ -118,7 +119,7 @@ def state_space(
     C: Tensor | None = None,
     D: Tensor | None = None,
     zi: Tensor | None = None,
-    unroll_factor: int = 1,
+    unroll_factor: int | None = None,
     out_idx: int | None = None,
     # **kwargs,
 ):
@@ -164,7 +165,7 @@ def state_space(
         zi (Tensor, optional): the initial state, of shape :math:`(B, M)` or
             :math:`(M)`. Default: ``None``, all zero.
         unroll_factor (int, optional): see :func:`state_space_recursion`.
-            Default: ``1``.
+            Default: ``None``.
         out_idx (int, optional): output only this state, instead of using
             :attr:`C`. Default: ``None``.
 

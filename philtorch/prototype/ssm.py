@@ -11,7 +11,7 @@ def exp_state_space_recursion(
     zi: Tensor,
     x: Tensor,
     *,
-    unroll_factor: int = 1,
+    unroll_factor: int | None = None,
     out_idx: int | None = None,
 ) -> Tensor:
     """Compute internal state evolution for an LTI model.
@@ -22,7 +22,9 @@ def exp_state_space_recursion(
         A (Tensor): State matrices with shape (M, M) or (B, M, M) when batched.
         zi (Tensor): Initial states with shape (B, M).
         x (Tensor): Input sequence with shape (B, T, ...) or (B, T).
-        unroll_factor (int): Block size for recursion acceleration (>=1).
+        unroll_factor (int, optional): ``None`` runs the native kernels, ``1``
+            or at least T the sequential loop, and a value in between the
+            block length of the unrolled recursion. Default: ``None``.
         out_idx (int, optional): If provided, return only this state index.
 
     Returns:
