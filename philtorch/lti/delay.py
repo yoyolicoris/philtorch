@@ -134,30 +134,39 @@ def delay_state_space(
 ):
     r"""Compute the outputs of a state-space model with delay lines.
 
-    For delay lengths :math:`m_1, \dots, m_M`, this computes
+    For delay lengths :math:`m_1, \dots, m_M`, with :math:`s_i[n]` the output
+    of delay line :math:`i`, this computes the recursion of a feedback delay
+    network,
 
     .. math::
-        r_i[n] &= s_i[n - m_i], \\
-        \mathbf{s}[n] &= A \mathbf{r}[n] + B \mathbf{x}[n], \\
-        \mathbf{y}[n] &= C \mathbf{r}[n] + D \mathbf{x}[n].
+        \mathbf{s}[n + \mathbf{m}] &= A \mathbf{s}[n] + B \mathbf{x}[n], \\
+        \mathbf{y}[n] &= C \mathbf{s}[n] + D \mathbf{x}[n],
 
-    With every delay equal to 1, this is :func:`state_space` with
-    :math:`\mathbf{h} = \mathbf{r}`; :attr:`B`, :attr:`C`, :attr:`D`,
+    where :math:`\mathbf{s}[n + \mathbf{m}]` stacks the :math:`s_i[n + m_i]`:
+    each line emits what was written into it :math:`m_i` steps earlier. With
+    every delay equal to 1, this is :func:`state_space` with
+    :math:`\mathbf{h} = \mathbf{s}`; :attr:`B`, :attr:`C`, :attr:`D`,
     :attr:`out_idx` and the return value follow the same conventions. The
     sequence is processed in blocks no longer than the shortest delay, so each
     block only reads values written by earlier blocks.
 
     With :attr:`absorption`, each line also has an IIR filter :math:`g_i`, with
     the transfer function of :func:`lfilter`, for the loss of a feedback delay
-    network. By default it filters the delay output: for
-    :math:`q_i[n] = s_i[n - m_i]`, :math:`r_i = g_i \ast q_i` (the convolution
-    of :math:`q_i` with the impulse response of :math:`g_i`), and :math:`A`,
-    :math:`C` and :attr:`out_idx` all see the filtered :math:`\mathbf{r}`. With
-    ``absorption_after_matrix=True``, :math:`\mathbf{r} = \mathbf{q}` and only
-    the feedback path is filtered:
+    network. Write :math:`\hat{s}_i = g_i \ast s_i` for the filtered output of
+    line :math:`i`, the convolution of :math:`s_i` with the impulse response
+    of :math:`g_i`. By default the filtered output replaces :math:`\mathbf{s}`
+    on the right of both equations, so :math:`A`, :math:`C` and
+    :attr:`out_idx` all see it:
 
     .. math::
-        \mathbf{s}[n] = G(A \mathbf{r})[n] + B \mathbf{x}[n],
+        \mathbf{s}[n + \mathbf{m}] &= A \hat{\mathbf s}[n] + B \mathbf{x}[n], \\
+        \mathbf{y}[n] &= C \hat{\mathbf s}[n] + D \mathbf{x}[n].
+
+    With ``absorption_after_matrix=True``, only the feedback path is filtered,
+    and :math:`\mathbf{y}` is as without filters:
+
+    .. math::
+        \mathbf{s}[n + \mathbf{m}] = G(A \mathbf{s})[n] + B \mathbf{x}[n],
 
     where :math:`G` filters entry :math:`i` by :math:`g_i`. In both positions
     :math:`B \mathbf{x}` is not filtered.
@@ -175,10 +184,10 @@ def delay_state_space(
         C (Tensor, optional): see :func:`state_space`. Default: ``None``,
             which outputs every delay line.
         D (Tensor, optional): see :func:`state_space`. Default: ``None``.
-        zi (Sequence[Tensor], optional): one initial queue per delay line, of
-            shape :math:`(m_i)` or :math:`(B, m_i)`. Each queue is output first,
-            so ``zi[i][..., 0]`` is the next value delay line :math:`i` emits,
-            before any absorption filter. Default: ``None``, all zero.
+        zi (Sequence[Tensor], optional): the first outputs of each delay line,
+            :math:`s_i[0], \dots, s_i[m_i - 1]`, as one queue per line, of
+            shape :math:`(m_i)` or :math:`(B, m_i)`. Default: ``None``, all
+            zero.
         block_size (int, optional): the processing block length, at most
             :math:`\min_i m_i`. Default: ``None``, which uses
             :math:`\min_i m_i`.
@@ -210,16 +219,14 @@ def delay_state_space(
 
     Returns:
         Tensor or tuple: the outputs, as :func:`state_space`. With :attr:`zi`,
-        the pair ``(y, zf)``, where ``zf`` is a tuple of one final queue per
-        delay line, of shape :math:`(B, m_i)`. With :attr:`absorption`, and
+        the pair ``(y, zf)``, where ``zf`` holds the next outputs of each
+        delay line, :math:`s_i[N], \dots, s_i[N + m_i - 1]`, as one queue per
+        line, of shape :math:`(B, m_i)`: pass it as :attr:`zi` to continue.
+        With :attr:`absorption`, and
         :attr:`zi` or :attr:`absorption_zi`, the triple
         ``(y, zf, absorption_zf)``, where ``absorption_zf`` is the final state
         of the filters, of shape :math:`(B, M, K)`; whichever initial state is
         not given starts at zero.
-
-        ``zf[i][..., 0]`` is the next value line :math:`i` emits: by default,
-        before its absorption filter; with ``absorption_after_matrix=True``,
-        the filtered feedback plus :math:`B \mathbf{x}`.
 
     Raises:
         ValueError: if a delay or :attr:`block_size` is invalid, if
