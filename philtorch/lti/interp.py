@@ -1,25 +1,44 @@
 """Signal interpolation and band-limited resampling."""
 
+import functools
 import math
 import numbers
-import operator
 from typing import Any
 
 import torch
 import torch.nn.functional as F
 from torch import Tensor
 
-from .._ops import _resample_backward_with, _resample_setup_context
+from .._ops import _resample_gradient, _resample_setup_context
+from .delay import _as_int
 from .recur import linear_recurrence
 
-# libsoxr's quality_spec (soxr.c): (precision in bits, passband_end), with
-# stopband_begin = 1. The last three passband ends are
-# 1 - .05 / lsx_to_3dB(precision * 20 log10(2)).
+# Passband ends of libsoxr's presets, from soxr.c and filter.c: LQ is
+# 1385 / 2048, and the others are 1 - .05 / lsx_to_3dB(rej), with
+# rej = bits * 20 log10(2) and lsx_to_3dB(a) = 1 - lsx_inv_f_resp(-3, a).
+
+
+def _soxr_inv_f_resp(drop: float, a: float) -> float:
+    """Port of lsx_inv_f_resp (soxr's filter.c)."""
+    x = ((2.0517e-07 * a - 1.1303e-04) * a + 0.023154) * a + 0.55924  # sinePhi
+    power = math.log(0.5) / math.log(math.sin(x * 0.5))  # sinePow
+    drop = 10 ** (drop / 20)  # dB_to_linear
+    s = 1 - drop if drop > 0.5 else drop
+    x = math.asin(s ** (1 / power)) / x
+    return x if drop > 0.5 else 1 - x
+
+
+def _soxr_passband_end(bits: int) -> float:
+    rejection = bits * 20.0 * math.log10(2.0)
+    return 1 - 0.05 / (1 - _soxr_inv_f_resp(-3, rejection))
+
+
+# (precision in bits, passband_end), with stopband_begin = 1.
 _QUALITY_RECIPES: dict[str, tuple[int, float]] = {
     "LQ": (16, 1385 / 2048),
-    "MQ": (16, 0.9158810491765671),
-    "HQ": (20, 0.9137436532733066),
-    "VHQ": (28, 0.9113283198951663),
+    "MQ": (16, _soxr_passband_end(16)),
+    "HQ": (20, _soxr_passband_end(20)),
+    "VHQ": (28, _soxr_passband_end(28)),
 }
 
 
@@ -48,6 +67,13 @@ def _quality_kaiser_params(quality: str) -> tuple[float, float, int]:
 
 _QUALITY_PRESETS = {quality: _quality_kaiser_params(quality) for quality in _QUALITY_RECIPES}
 
+# The most coefficients of the dense polyphase kernel of the conv1d path, p rows
+# of about q + taps (32 MB in float64). It bounds the table, p * taps, as well,
+# and the transpose's kernel is the same size.
+_MAX_KERNEL = 2**22
+
+_HAS_RESAMPLE_OP = hasattr(torch.ops.philtorch, "resample")
+
 
 def _as_float(value: Any, name: str) -> float:
     if isinstance(value, bool) or not isinstance(value, numbers.Real):
@@ -56,20 +82,6 @@ def _as_float(value: Any, name: str) -> float:
     if not math.isfinite(value):
         raise ValueError(f"{name} must be finite, got {value}")
     return value
-
-
-def _as_int(value: Any, name: str, minimum: int) -> int:
-    """An integer of at least ``minimum``, 0 or 1; bools are not integers."""
-    kind = "a positive" if minimum else "a non-negative"
-    if isinstance(value, bool):
-        raise ValueError(f"{name} must be {kind} integer, got {value!r}")
-    try:
-        result = operator.index(value)
-    except TypeError:
-        raise ValueError(f"{name} must be {kind} integer, got {value!r}") from None
-    if result < minimum:
-        raise ValueError(f"{name} must be {kind} integer, got {value!r}")
-    return result
 
 
 def _first_order_filt(
@@ -230,36 +242,144 @@ def cubic_spline(x: Tensor, m: int, scipy_padding: bool = False, **kwargs) -> Te
     return interped[..., : -(m - 1)]
 
 
+def _filter_taps(p: int, q: int, rolloff: float, num_zeros: int) -> tuple[float, int]:
+    """The cutoff c and the number of taps of one output of the resampler."""
+    c = rolloff * p / q if p < q else rolloff
+    # The window is open, |c (frac - k)| < N_z: at most floor(2 S) + 1 taps for
+    # S = N_z / c; one more is a guard against rounding at the edge.
+    return c, math.floor(2 * num_zeros / c) + 2
+
+
+def _constant_cache(fn):
+    """Cache ``fn``, of Python arguments, and make Dynamo run it, not trace it.
+
+    Dynamo would trace through an ``lru_cache`` and rebuild its tensors in the
+    compiled graph; as a constant, the cached tensors are lifted instead.
+    """
+    cached = functools.lru_cache(maxsize=16)(fn)
+    return torch.compiler.assume_constant_result(lambda *args: cached(*args))
+
+
+def _polyphase_table(
+    p: int, q: int, rolloff: float, beta: float, num_zeros: int, scale: float
+) -> tuple[Tensor, Tensor]:
+    """The weights of the resampler in the polyphase form, for rates q -> p.
+
+    Output ``f p + i`` is ``sum_k table[i, k] x[q f + first[i] + k]``, with x
+    zero outside the signal. The table, of shape (p, taps) in float64, holds
+    ``scale * g(c (t - n))`` for the window g of :func:`resample`, at the input
+    time ``t = (i q) / p`` of phase i and the n of its taps. The integer part
+    of t and the remainder (i q mod p) / p are computed exactly.
+    """
+    c, taps = _filter_taps(p, q, rolloff, num_zeros)
+    i = torch.arange(p, dtype=torch.int64)
+    whole = (i * q) // p
+    frac = ((i * q) % p).double() / p
+    first = whole + torch.ceil(frac - num_zeros / c).long()
+    k = torch.arange(taps, dtype=torch.float64)
+    z = c * (frac - (first - whole).double()).unsqueeze(1) - c * k
+    # I0(beta sqrt(1 - u^2)) / I0(beta) from the scaled i0e, which cannot
+    # overflow for a large beta.
+    arg = beta * torch.sqrt((1 - (z / num_zeros) ** 2).clamp(min=0))
+    window = torch.special.i0e(arg) / torch.special.i0e(torch.tensor(beta, dtype=torch.float64))
+    window = window * torch.exp(arg - beta)
+    table = torch.where(z.abs() < num_zeros, scale * torch.sinc(z) * window, 0.0)
+    return table, first
+
+
+@_constant_cache
+def _tables_on(
+    p: int,
+    q: int,
+    design: tuple[float, float, int, float],
+    device: torch.device,
+    dtype: torch.dtype,
+) -> tuple[Tensor, Tensor, Tensor, Tensor]:
+    """The table of q -> p and its transpose's (p -> q), on ``device``.
+
+    The transpose of the resampling is the resampling with the rates swapped
+    and the same scale, see :func:`philtorch._ops._resample_gradient`.
+    """
+    table, first = _polyphase_table(p, q, *design)
+    table_t, first_t = _polyphase_table(q, p, *design)
+    return (
+        table.to(device=device, dtype=dtype),
+        first.to(device),
+        table_t.to(device=device, dtype=dtype),
+        first_t.to(device),
+    )
+
+
+@_constant_cache
+def _conv_kernel(
+    p: int,
+    q: int,
+    design: tuple[float, float, int, float],
+    device: torch.device,
+    dtype: torch.dtype,
+) -> tuple[Tensor, int]:
+    """The (p, 1, L) kernel of :func:`_polyphase_conv`, and ``min(first)``.
+
+    The first tap of a phase grows with the phase, so ``first[0]`` is the
+    smallest and ``first[-1]`` the largest.
+    """
+    table, first = _polyphase_table(p, q, *design)
+    shift, last = int(first[0]), int(first[-1])
+    offset = (first - shift).unsqueeze(1) + torch.arange(table.size(1))
+    kernel = table.new_zeros(p, last - shift + table.size(1)).scatter_(1, offset, table)
+    return kernel.unsqueeze(1).to(device=device, dtype=dtype), shift
+
+
+def _polyphase_conv(x: Tensor, kernel: Tensor, shift: int, q: int, out_len: int) -> Tensor:
+    """Resample with one strided convolution, for devices without the op.
+
+    Frame f of the convolution, of stride q, reads ``x[q f + shift + j]`` for
+    the kernel's taps j, and gives p outputs, one per row of the kernel.
+    """
+    batch_size = x.size(0)
+    p, _, width = kernel.shape
+    frames = -(-out_len // p)
+    needed = q * (frames - 1) + width
+    if shift < 0:
+        x = F.pad(x, (-shift, 0))
+    else:
+        x = x[:, shift:]
+    x = x[:, :needed]
+    x = F.pad(x, (0, needed - x.size(1)))
+    y = F.conv1d(x.unsqueeze(1), kernel, stride=q)
+    return y.mT.reshape(batch_size, -1)[:, :out_len]
+
+
 class _Resample(torch.autograd.Function):
-    """Kaiser-sinc resampling, differentiable in ``x`` to any order in eager mode.
+    """The native resampling op, differentiable in ``x`` to any order in eager mode.
 
     Resampling is linear in ``x``: its tangent (``jvp``) is the same resampling
-    of ``dx``, and its gradient (``backward``) is the transpose, resampling
-    with the two rates swapped. The op's own autograd under
-    :func:`torch.compile` shares that backward, from :mod:`philtorch._ops`.
-    Both call ``apply`` again, so reverse and forward mode compose to any
-    order. Under :func:`torch.func.vmap`, the vmapped dimension joins the
-    batch. Dynamo can't trace an autograd function with a ``jvp``, so compiled
-    code skips this class.
+    of ``dx``, and its gradient (``backward``) is the transpose, the op with
+    the tables swapped. The op's own autograd under :func:`torch.compile`
+    shares that backward, from :mod:`philtorch._ops`. Both call the op again,
+    so reverse and forward mode compose to any order. Under
+    :func:`torch.func.vmap`, the vmapped dimension joins the batch. Dynamo
+    can't trace an autograd function with a ``jvp``, so compiled code skips
+    this class.
     """
 
     @staticmethod
     def forward(
         x: Tensor,
-        orig_freq: int,
-        new_freq: int,
-        scale: float,
-        rolloff: float,
-        beta: float,
-        num_zeros: int,
+        table: Tensor,
+        first: Tensor,
+        table_t: Tensor,
+        first_t: Tensor,
+        q: int,
         out_len: int,
     ) -> Tensor:
-        return torch.ops.philtorch.resample(
-            x, orig_freq, new_freq, scale, rolloff, beta, num_zeros, out_len
-        )
+        return torch.ops.philtorch.resample(x, table, first, table_t, first_t, q, out_len)
 
     setup_context = staticmethod(_resample_setup_context)
-    backward = staticmethod(_resample_backward_with(lambda *args: _Resample.apply(*args)))
+
+    @staticmethod
+    def backward(ctx, grad):
+        return (_resample_gradient(_Resample.apply, grad, ctx.params, ctx.in_len),) + (None,) * 6
 
     @staticmethod
     def jvp(ctx, dx, *_):
@@ -306,30 +426,31 @@ def resample(
     :math:`\rho` times the Nyquist frequency, unlike
     :func:`scipy.signal.resample_poly`, which then copies the input.
 
-    The two rates are reduced by their greatest common divisor. When the
-    reduced :attr:`new_freq`, the number of phases, is at most the output
-    length and its product with the number of taps, about :math:`2 N_z / c`,
-    is at most :math:`2^{20}`, the weights come from a polyphase table
-    computed once in ``float64``. Otherwise they are computed per output. Both
-    are exact evaluations of the formula, with no interpolated table, in a
-    native kernel for the CPU and CUDA; there is none for MPS. To approximate
-    an arbitrary ratio, take ``f = Fraction(ratio).limit_denominator(1000)``,
-    from :mod:`fractions`, and pass ``orig_freq=f.denominator`` and
-    ``new_freq=f.numerator``; a large denominator means many phases, and the
-    slower per-output path.
+    The two rates are reduced by their greatest common divisor. The filter
+    weights come from a polyphase table, computed once in ``float64``, with
+    one phase per reduced :attr:`new_freq` and about :math:`2 N_z / c` taps
+    per phase: an exact evaluation of the formula, with no interpolated table.
+    It runs as a strided convolution, and on CUDA, when the native extension
+    has its kernel, as that kernel. The convolution's kernel, about
+    :math:`p (q + 2 N_z / c)` coefficients for the reduced rates
+    :math:`q \to p`, is limited to :math:`2^{22}`, so to approximate an
+    arbitrary ratio, take
+    ``f = Fraction(new_freq, orig_freq).limit_denominator(1000)``, from
+    :mod:`fractions`, and pass ``orig_freq=f.denominator`` and
+    ``new_freq=f.numerator``.
 
     The presets of :attr:`quality` realise the passband, stopband and
     precision targets of ``libsoxr`` with one Kaiser-windowed sinc stage, not
     soxr's multi-stage design, so the outputs are not bit-identical to soxr's.
-    ``float32`` accumulation gives errors of around -120 dB to -140 dB. That
-    can miss the 20-bit target of ``"HQ"``, about -126 dB, on the per-output
-    path, and misses the 28-bit target of ``"VHQ"``, about -175 dB, on both:
-    use ``float64`` for them.
+    ``float32`` accumulation gives errors of around -110 dB to -140 dB. That
+    can miss the 20-bit target of ``"HQ"``, about -126 dB, and misses the
+    28-bit target of ``"VHQ"``, about -175 dB: use ``float64`` for them.
 
     Gradients and forward-mode derivatives exist in :attr:`x` to any order:
     the transpose of the resampling is the resampling with the two rates
-    swapped. Forward mode (:func:`torch.func.jvp`) and :func:`torch.func.vmap`
-    work in eager mode only; :func:`torch.compile` supports reverse mode.
+    swapped. On CUDA with the native kernel, forward mode
+    (:func:`torch.func.jvp`) and :func:`torch.func.vmap` work in eager mode
+    only; :func:`torch.compile` supports reverse mode.
 
     Args:
         x (Tensor): signals, of shape :math:`(B, T)`, in a floating-point
@@ -371,13 +492,11 @@ def resample(
         ValueError: if :attr:`x` is not a 2-D floating-point tensor, if
             :attr:`orig_freq` or :attr:`new_freq` is not a positive integer,
             if :attr:`quality` is unknown or ``None`` without all of
-            :attr:`rolloff`, :attr:`beta` and :attr:`num_zeros`, or if
+            :attr:`rolloff`, :attr:`beta` and :attr:`num_zeros`, if
             :attr:`rolloff`, :attr:`beta`, :attr:`num_zeros` or
-            :attr:`out_len` is out of range. Also, from the native kernel,
-            if :attr:`beta` exceeds about 346 (for every path and dtype), if
-            the product of the reduced rates exceeds :math:`2^{62}`, if
-            :attr:`out_len` reaches input positions beyond :math:`2^{62}`, or
-            if the filter has more than :math:`2^{30}` taps.
+            :attr:`out_len` is out of range, or if the polyphase kernel for
+            the reduced rates and the filter would hold more than
+            :math:`2^{22}` coefficients.
 
     Example::
 
@@ -393,41 +512,68 @@ def resample(
     if not x.is_floating_point():
         raise ValueError(f"x must be a floating-point tensor, got {x.dtype}")
 
-    orig = _as_int(orig_freq, "orig_freq", 1)
-    new = _as_int(new_freq, "new_freq", 1)
+    message = "{} must be a positive integer, got {!r}"
+    orig = _as_int(orig_freq, message.format("orig_freq", orig_freq))
+    new = _as_int(new_freq, message.format("new_freq", new_freq))
+    if orig < 1:
+        raise ValueError(message.format("orig_freq", orig_freq))
+    if new < 1:
+        raise ValueError(message.format("new_freq", new_freq))
     gcd = math.gcd(orig, new)
     orig, new = orig // gcd, new // gcd
 
     if quality is None:
         if rolloff is None or beta is None or num_zeros is None:
             raise ValueError("when quality is None, rolloff, beta and num_zeros must all be given")
-        design = [rolloff, beta, num_zeros]
+        preset = (None, None, None)
     elif isinstance(quality, str) and quality in _QUALITY_PRESETS:
-        design = list(_QUALITY_PRESETS[quality])
+        preset = _QUALITY_PRESETS[quality]
     else:
         valid = ", ".join(repr(k) for k in _QUALITY_PRESETS)
         raise ValueError(f"quality must be one of {{{valid}}} or None, got {quality!r}")
 
-    # The presets are valid: only the given values are checked.
-    if rolloff is not None:
-        design[0] = _as_float(rolloff, "rolloff")
-        if not 0.0 < design[0] <= 1.0:
-            raise ValueError(f"rolloff must be in (0, 1], got {design[0]}")
-    if beta is not None:
-        design[1] = _as_float(beta, "beta")
-        if design[1] < 0.0:
-            raise ValueError(f"beta must be non-negative, got {design[1]}")
-    if num_zeros is not None:
-        design[2] = _as_int(num_zeros, "num_zeros", 1)
-    rolloff_val, beta_val, zeros_val = design
+    rolloff = preset[0] if rolloff is None else _as_float(rolloff, "rolloff")
+    if not 0.0 < rolloff <= 1.0:
+        raise ValueError(f"rolloff must be in (0, 1], got {rolloff}")
+    beta = preset[1] if beta is None else _as_float(beta, "beta")
+    if beta < 0.0:
+        raise ValueError(f"beta must be non-negative, got {beta}")
+    if num_zeros is None:
+        num_zeros = preset[2]
+    else:
+        num_zeros = _as_int(num_zeros, message.format("num_zeros", num_zeros))
+        if num_zeros < 1:
+            raise ValueError(message.format("num_zeros", num_zeros))
 
     if out_len is None:
-        out_len_val = -(-x.shape[1] * new // orig)
+        out_len = -(-x.size(1) * new // orig)
     else:
-        out_len_val = _as_int(out_len, "out_len", 0)
+        message = "out_len must be a non-negative integer, got {!r}"
+        out_len = _as_int(out_len, message.format(out_len))
+        if out_len < 0:
+            raise ValueError(message.format(out_len))
 
-    scale = rolloff_val * new / orig if new < orig else rolloff_val
-    # Dynamo can't trace an autograd.Function with a jvp: compiled code calls
-    # the registered op, whose autograd is the same transpose.
-    apply = torch.ops.philtorch.resample if torch.compiler.is_compiling() else _Resample.apply
-    return apply(x, orig, new, scale, rolloff_val, beta_val, zeros_val, out_len_val)
+    taps = _filter_taps(new, orig, rolloff, num_zeros)[1]
+    if new * (orig + taps) > _MAX_KERNEL:
+        raise ValueError(
+            f"the filter for the reduced rates {orig} -> {new} needs {new} phases "
+            f"spanning {orig + taps} inputs, more than 2**22 coefficients; approximate "
+            "the ratio, e.g. "
+            "f = Fraction(new_freq, orig_freq).limit_denominator(1000), then "
+            "resample(x, f.denominator, f.numerator)"
+        )
+
+    scale = rolloff * new / orig if new < orig else rolloff
+    design = (rolloff, beta, num_zeros, scale)
+    dtype = torch.float64 if x.dtype == torch.float64 else torch.float32
+    if x.is_cuda and _HAS_RESAMPLE_OP:
+        tables = _tables_on(new, orig, design, x.device, dtype)
+        # Dynamo can't trace an autograd.Function with a jvp: compiled code
+        # calls the registered op, whose autograd is the same transpose.
+        apply = torch.ops.philtorch.resample if torch.compiler.is_compiling() else _Resample.apply
+        return apply(x, *tables, orig, out_len)
+    if x.size(0) == 0 or out_len == 0:
+        # Nothing to compute; the pad keeps the output in x's graph, with zero gradient.
+        return F.pad(x[:, :0], (0, out_len))
+    kernel, shift = _conv_kernel(new, orig, design, x.device, dtype)
+    return _polyphase_conv(x.to(dtype), kernel, shift, orig, out_len).to(x.dtype)

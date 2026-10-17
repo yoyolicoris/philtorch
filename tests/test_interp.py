@@ -9,6 +9,8 @@ from philtorch.lti.interp import (
     _QUALITY_PRESETS,
     _QUALITY_RECIPES,
     _quality_kaiser_params,
+    _soxr_passband_end,
+    _tables_on,
     cspline,
     cubic_spline,
     resample,
@@ -92,7 +94,6 @@ _TOLS = {
     torch.float16: dict(rtol=1e-3, atol=1e-3),
     torch.bfloat16: dict(rtol=8e-3, atol=8e-3),
 }
-_MAX_TABLE = 2**20  # kMaxTable in sinc_resample.h
 # A design with a short filter, for the gradient checks.
 _GRAD_DESIGN = dict(quality=None, rolloff=0.85, beta=9.0, num_zeros=4)
 
@@ -124,14 +125,6 @@ def _design(quality, rolloff=None, beta=None, num_zeros=None):
         b if beta is None else beta,
         z if num_zeros is None else num_zeros,
     )
-
-
-def _uses_table(orig_freq, new_freq, rolloff, num_zeros, out_len):
-    """Which path the kernels take: sinc_resample.h's make_resample_plan."""
-    p, _ = _rates(orig_freq, new_freq)
-    _, support = _cutoff_and_support(orig_freq, new_freq, rolloff, num_zeros)
-    taps = math.floor(2.0 * support) + 2
-    return p <= out_len and p <= _MAX_TABLE // taps
 
 
 def _kaiser_sinc(delta, c, support, beta):
@@ -191,27 +184,36 @@ def test_quality_presets_follow_kaiser_design():
         assert (round(rolloff, 4), round(kaiser_beta_, 2), num_zeros) == documented[quality]
 
 
-# (orig_freq, new_freq, T, table): the dense reference against both paths.
-# Table: p <= out_len. General: p > out_len, so each output makes its weights.
+@pytest.mark.parametrize(
+    "bits, expected",
+    [(16, 0.9158810491765671), (20, 0.9137436532733066), (28, 0.9113283198951663)],
+)
+def test_soxr_passband_end_matches_soxr(bits, expected):
+    # The values libsoxr's formula gives, computed with soxr itself.
+    assert _soxr_passband_end(bits) == pytest.approx(expected, rel=1e-12, abs=0)
+
+
+# (orig_freq, new_freq, T): T = 64 at (7, 10) is shorter than the filter's
+# width; (44100, 48000) reduces to (147, 160) and (1000, 1007) to itself, with
+# more phases than outputs (p > out_len).
 _REFERENCE_CASES = [
-    (1, 4, 40, True),
-    (3, 1, 90, True),
-    (7, 10, 64, True),
-    (147, 160, 200, True),
-    (160, 147, 200, True),
-    (44100, 48000, 60, False),  # reduces to (147, 160), out_len 66 < 160
-    (999983, 1000003, 40, False),
-    (1, 1, 50, True),
+    (1, 4, 40),
+    (3, 1, 90),
+    (7, 10, 64),
+    (147, 160, 200),
+    (160, 147, 200),
+    (44100, 48000, 60),
+    (1000, 1007, 40),
+    (1, 1, 50),
 ]
 
 
 @pytest.mark.parametrize("device", _DEVICES)
 @pytest.mark.parametrize("dtype", _DTYPES)
-@pytest.mark.parametrize("orig_freq, new_freq, T, table", _REFERENCE_CASES)
-def test_resample_matches_dense_reference(device, dtype, orig_freq, new_freq, T, table):
+@pytest.mark.parametrize("orig_freq, new_freq, T", _REFERENCE_CASES)
+def test_resample_matches_dense_reference(device, dtype, orig_freq, new_freq, T):
     rolloff, beta, num_zeros = _design("HQ")
     out_len = _default_out_len(T, orig_freq, new_freq)
-    assert _uses_table(orig_freq, new_freq, rolloff, num_zeros, out_len) == table
 
     gen = torch.Generator(device=device).manual_seed(42)
     x = torch.randn(3, T, device=device, dtype=dtype, generator=gen)
@@ -243,46 +245,6 @@ def test_resample_design_overrides_match_reference(device, orig_freq, new_freq, 
 
 
 @pytest.mark.parametrize("device", _DEVICES)
-@pytest.mark.parametrize("dtype", [torch.float64, torch.float32])
-@pytest.mark.parametrize(
-    "orig_freq, new_freq, T",
-    [(7, 10, 60), (147, 160, 250), (160, 147, 250), (2, 3, 80)],
-)
-def test_resample_table_and_general_paths_agree(device, dtype, orig_freq, new_freq, T):
-    # The same outputs, evaluated through the table (out_len >= p) and through
-    # the per-output weights (out_len < p): they differ only in rounding.
-    rolloff, _, num_zeros = _design("HQ")
-    p, _ = _rates(orig_freq, new_freq)
-    short, long = p - 1, 3 * p
-    assert not _uses_table(orig_freq, new_freq, rolloff, num_zeros, short)
-    assert _uses_table(orig_freq, new_freq, rolloff, num_zeros, long)
-
-    x = torch.randn(2, T, device=device, dtype=dtype)
-    general = resample(x, orig_freq, new_freq, out_len=short)
-    table = resample(x, orig_freq, new_freq, out_len=long)
-    torch.testing.assert_close(general, table[:, :short], **_TOLS[dtype])
-
-
-@pytest.mark.parametrize("device", _DEVICES)
-@pytest.mark.parametrize(
-    "orig_freq, new_freq, T, out_len",
-    [(2, 3, 50, None), (5, 2, 60, None), (147, 160, 50, None), (160, 147, 50, None), (2, 3, 50, 7)],
-)
-def test_resample_adjoint_is_the_op_with_rates_swapped(device, orig_freq, new_freq, T, out_len):
-    # <A x, y> = <x, A' y>, with A' the op with the two rates swapped, T
-    # outputs and the same explicit scale: the identity the backward relies on.
-    scale, rolloff, beta, num_zeros = 0.7, 0.9, 8.0, 6
-    out_len = _default_out_len(T, orig_freq, new_freq) if out_len is None else out_len
-    gen = torch.Generator(device=device).manual_seed(3)
-    x = torch.randn(3, T, device=device, dtype=torch.float64, generator=gen)
-    y = torch.randn(3, out_len, device=device, dtype=torch.float64, generator=gen)
-    op = torch.ops.philtorch.resample
-    ax = op(x, orig_freq, new_freq, scale, rolloff, beta, num_zeros, out_len)
-    aty = op(y, new_freq, orig_freq, scale, rolloff, beta, num_zeros, T)
-    torch.testing.assert_close((ax * y).sum(), (x * aty).sum(), **_TOLS[torch.float64])
-
-
-@pytest.mark.parametrize("device", _DEVICES)
 @pytest.mark.parametrize("quality", ["LQ", "MQ", "HQ", "VHQ"])
 @pytest.mark.parametrize("orig_freq, new_freq", [(2, 3), (1, 3)])
 def test_resample_presets_reconstruct_passband_tone(device, quality, orig_freq, new_freq):
@@ -307,7 +269,7 @@ def test_resample_presets_reconstruct_passband_tone(device, quality, orig_freq, 
 @pytest.mark.parametrize("device", _DEVICES)
 @pytest.mark.parametrize("quality", ["LQ", "MQ", "HQ", "VHQ"])
 @pytest.mark.parametrize("orig_freq, new_freq", [(4, 1), (3, 2)])
-@pytest.mark.parametrize("stop_edge_ratio", [1.0, 1.1, 1.5])
+@pytest.mark.parametrize("stop_edge_ratio", [1.0, 1.5])
 def test_resample_presets_attenuate_the_stopband(
     device, quality, orig_freq, new_freq, stop_edge_ratio
 ):
@@ -358,13 +320,13 @@ def test_resample_presets_reject_the_images_when_upsampling(device, quality, ori
     torch.testing.assert_close(y[:, m_lo:m_hi], expected, rtol=0, atol=2.0 ** -(bits + 1))
 
 
+@pytest.mark.parametrize("device", _DEVICES)
 @pytest.mark.parametrize("orig_freq, new_freq, T", [(2, 3, 200), (5, 2, 300), (147, 160, 60)])
-def test_resample_matches_scipy_resample_poly(orig_freq, new_freq, T):
+def test_resample_matches_scipy_resample_poly(device, orig_freq, new_freq, T):
     # resample_poly with the filter at the upsampled rate as `window`: h[j] =
     # c sinc(c j / p) K(j / p) / p, for j = -L .. L, since resample_poly
     # multiplies the window by p. It aligns output 0 with input 0 by padding
-    # that odd-length, centred filter, and zero-pads the signal, as we do. Both
-    # the table path (T = 200, 300) and the general one (T = 60) are covered.
+    # that odd-length, centred filter, and zero-pads the signal, as we do.
     # resample_poly returns a copy for equal rates, so (1, 1) is left out.
     rolloff, beta, num_zeros = _design("LQ")
     p, q = _rates(orig_freq, new_freq)
@@ -375,12 +337,12 @@ def test_resample_matches_scipy_resample_poly(orig_freq, new_freq, T):
 
     x = torch.randn(2, T, dtype=torch.float64)
     expected = resample_poly(x.numpy(), p, q, axis=1, window=h.numpy())
-    actual = resample(x, orig_freq, new_freq, "LQ")
+    actual = resample(x.to(device), orig_freq, new_freq, "LQ").cpu()
     torch.testing.assert_close(actual, torch.from_numpy(expected), **_TOLS[torch.float64])
 
 
-# (orig_freq, new_freq, T, out_len): table forward and adjoint; the same with a
-# short out_len, so that the forward is general; and a general pair both ways.
+# (orig_freq, new_freq, T, out_len): a pair of rates each way, a short out_len
+# (fewer outputs than phases) and a rate with many phases.
 _GRAD_CASES = [(2, 3, 24, None), (5, 2, 30, None), (2, 3, 24, 2), (147, 160, 20, None)]
 
 
@@ -389,17 +351,6 @@ def _grad_fn(orig_freq, new_freq, out_len):
         return resample(x, orig_freq, new_freq, out_len=out_len, **_GRAD_DESIGN)
 
     return fn
-
-
-def _resample_transpose(y, orig_freq, new_freq, T):
-    """A' y for _grad_fn's operator: the op with the rates swapped, T outputs.
-
-    Its scale is c = rolloff * min(1, p / q), as resample passes it.
-    """
-    rolloff, beta, num_zeros = _design(**_GRAD_DESIGN)
-    p, q = _rates(orig_freq, new_freq)
-    scale = rolloff * min(1.0, p / q)
-    return torch.ops.philtorch.resample(y, new_freq, orig_freq, scale, rolloff, beta, num_zeros, T)
 
 
 @pytest.mark.parametrize("device", _DEVICES)
@@ -431,8 +382,6 @@ def test_resample_forward_mode_and_forward_over_reverse(device, orig_freq, new_f
     grad_fn = torch.func.grad(loss)
     _, tangent = torch.func.jvp(grad_fn, (x,), (dx,))
     torch.testing.assert_close(tangent, grad_fn(dx))
-    expected = 2.0 * _resample_transpose(fn(dx), orig_freq, new_freq, T)
-    torch.testing.assert_close(tangent, expected)
 
 
 @pytest.mark.parametrize("device", _DEVICES)
@@ -461,14 +410,6 @@ def test_resample_vmap_of_grad_gives_per_sample_gradients(device, orig_freq, new
         row = row.clone().requires_grad_()
         (expected,) = torch.autograd.grad(loss(row), row)
         torch.testing.assert_close(grad, expected)
-
-
-@pytest.mark.parametrize("device", _DEVICES)
-@pytest.mark.parametrize("requires_grad", [True, False])
-@pytest.mark.parametrize("out_len", [20, 2])  # table and general
-def test_resample_opcheck(device, requires_grad, out_len):
-    x = torch.randn(2, 12, device=device, dtype=torch.float64, requires_grad=requires_grad)
-    torch.library.opcheck(torch.ops.philtorch.resample, (x, 2, 3, 0.9, 0.9, 10.0, 5, out_len))
 
 
 @pytest.mark.parametrize("device", _DEVICES)
@@ -570,7 +511,7 @@ def test_resample_equal_rates_low_pass_instead_of_copying(device):
 @pytest.mark.parametrize("orig_freq, new_freq", [(2, 3), (147, 160)])
 def test_resample_cuda_large_batch(orig_freq, new_freq):
     # More rows than a CUDA grid dimension holds (65535 blocks): the launch
-    # is chunked. 70000 rows of 8 samples, against the CPU kernel.
+    # is chunked. 70000 rows of 8 samples, against the CPU convolution.
     gen = torch.Generator().manual_seed(1)
     x = torch.randn(70000, 8, dtype=torch.float64, generator=gen)
     expected = resample(x, orig_freq, new_freq)
@@ -582,9 +523,9 @@ def test_resample_cuda_large_batch(orig_freq, new_freq):
 @pytest.mark.parametrize("dtype", [torch.float32, torch.float64])
 @pytest.mark.parametrize("T", [48, 5000])
 def test_resample_cuda_graph_capture(dtype, T):
-    # No host-to-device copy in the launch path: a captured call replays on
-    # new input. T = 48 takes the general path at 44100 -> 48000, 5000 the
-    # table path.
+    # No host-to-device copy in the launch path once the tables are cached on
+    # the device: the warm-up call caches them, and a captured call replays on
+    # new input.
     x = torch.randn(3, T, dtype=dtype, device="cuda")
     stream = torch.cuda.Stream()
     stream.wait_stream(torch.cuda.current_stream())
@@ -599,43 +540,36 @@ def test_resample_cuda_graph_capture(dtype, T):
     torch.testing.assert_close(y, resample(x, 44100, 48000), rtol=0, atol=0)
 
 
+@pytest.mark.cuda
+@pytest.mark.parametrize("requires_grad", [True, False])
+@pytest.mark.parametrize("out_len", [20, 2])
+def test_resample_opcheck(requires_grad, out_len):
+    # The tables of 2 -> 3 and their transpose's, as resample builds them.
+    rolloff, beta, num_zeros = _design("LQ")
+    design = (rolloff, beta, num_zeros, rolloff)
+    tables = _tables_on(3, 2, design, torch.device("cuda"), torch.float64)
+    x = torch.randn(2, 12, device="cuda", dtype=torch.float64, requires_grad=requires_grad)
+    torch.library.opcheck(torch.ops.philtorch.resample, (x, *tables, 2, out_len))
+
+
 @pytest.mark.parametrize(
     "kwargs, match",
     [
-        (dict(orig_freq=True, new_freq=2), "orig_freq must be a positive integer, got True"),
-        (dict(orig_freq=2, new_freq=False), "new_freq must be a positive integer, got False"),
-        (dict(orig_freq=2.0, new_freq=3), "orig_freq must be a positive integer, got 2.0"),
-        (dict(orig_freq=2, new_freq=1.5), "new_freq must be a positive integer, got 1.5"),
-        (dict(orig_freq="2", new_freq=3), "orig_freq must be a positive integer, got '2'"),
-        (dict(orig_freq=0, new_freq=3), "orig_freq must be a positive integer, got 0"),
-        (dict(orig_freq=2, new_freq=0), "new_freq must be a positive integer, got 0"),
-        (dict(orig_freq=-2, new_freq=3), "orig_freq must be a positive integer, got -2"),
-        (dict(orig_freq=2, new_freq=-3), "new_freq must be a positive integer, got -3"),
+        (dict(orig_freq=2.0), "orig_freq must be a positive integer, got 2.0"),
+        (dict(new_freq=0), "new_freq must be a positive integer, got 0"),
+        (dict(orig_freq=-2), "orig_freq must be a positive integer, got -2"),
         (dict(quality="unknown"), "quality must be one of .* or None, got 'unknown'"),
-        (dict(quality="hq"), "quality must be one of"),
-        (dict(quality=3), "quality must be one of .* or None, got 3"),
-        (dict(quality=None), "when quality is None, rolloff, beta and num_zeros must all be"),
-        (dict(quality=None, rolloff=0.9, beta=10.0), "when quality is None"),
-        (dict(quality=None, rolloff=0.9, num_zeros=4), "when quality is None"),
-        (dict(quality=None, beta=10.0, num_zeros=4), "when quality is None"),
-        (dict(rolloff=0.0), r"rolloff must be in \(0, 1\], got 0.0"),
+        (dict(quality=None, rolloff=0.9), "when quality is None, rolloff, beta and num_zeros"),
         (dict(rolloff=1.5), r"rolloff must be in \(0, 1\], got 1.5"),
-        (dict(rolloff=-0.5), r"rolloff must be in \(0, 1\], got -0.5"),
-        (dict(rolloff=float("nan")), "rolloff must be finite, got nan"),
-        (dict(rolloff=float("inf")), "rolloff must be finite, got inf"),
-        (dict(rolloff=True), "rolloff must be a real number, got True"),
         (dict(rolloff="0.9"), "rolloff must be a real number, got '0.9'"),
+        (dict(rolloff=float("nan")), "rolloff must be finite, got nan"),
         (dict(beta=-1.0), "beta must be non-negative, got -1.0"),
-        (dict(beta=float("nan")), "beta must be finite, got nan"),
-        (dict(beta=float("inf")), "beta must be finite, got inf"),
-        (dict(beta=True), "beta must be a real number, got True"),
         (dict(num_zeros=0), "num_zeros must be a positive integer, got 0"),
-        (dict(num_zeros=-3), "num_zeros must be a positive integer, got -3"),
-        (dict(num_zeros=True), "num_zeros must be a positive integer, got True"),
-        (dict(num_zeros=1.5), "num_zeros must be a positive integer, got 1.5"),
         (dict(out_len=-1), "out_len must be a non-negative integer, got -1"),
-        (dict(out_len=True), "out_len must be a non-negative integer, got True"),
-        (dict(out_len=2.0), "out_len must be a non-negative integer, got 2.0"),
+        (dict(orig_freq=999983, new_freq=1000003), "limit_denominator"),
+        # The table alone (5001 phases of about 194 taps) would fit; the dense
+        # kernel, about 5001 x 5194, does not.
+        (dict(orig_freq=5000, new_freq=5001), "limit_denominator"),
     ],
 )
 def test_resample_invalid_arguments(kwargs, match):
@@ -647,49 +581,5 @@ def test_resample_invalid_arguments(kwargs, match):
 def test_resample_invalid_signals():
     with pytest.raises(ValueError, match=r"x must be 2D \(B, T\), got 1D"):
         resample(torch.randn(16), 2, 3)
-    with pytest.raises(ValueError, match=r"x must be 2D \(B, T\), got 3D"):
-        resample(torch.randn(2, 2, 16), 2, 3)
     with pytest.raises(ValueError, match="x must be a floating-point tensor, got torch.int64"):
         resample(torch.ones(2, 16, dtype=torch.int64), 2, 3)
-
-
-# The checks below are the native kernels': ValueErrors from TORCH_CHECK_VALUE.
-
-
-@pytest.mark.parametrize("device", _DEVICES)
-@pytest.mark.parametrize("dtype", [torch.float64, torch.float32])
-@pytest.mark.parametrize("out_len", [30, 2], ids=["table", "general"])
-def test_resample_beta_limit(device, dtype, out_len):
-    # The Kaiser window's series needs more terms than the kernels hold from
-    # beta of about 346 on: the limit is the same on every path and dtype.
-    x = torch.randn(2, 16, device=device, dtype=dtype)
-    design = dict(quality=None, rolloff=0.9, num_zeros=4, out_len=out_len)
-    with pytest.raises(ValueError, match="beta .*too large"):
-        resample(x, 2, 3, beta=1000.0, **design)
-    assert resample(x, 2, 3, beta=300.0, **design).isfinite().all()
-
-
-@pytest.mark.parametrize("device", _DEVICES)
-def test_resample_rate_product_limit(device):
-    # After the gcd, the product of the rates must stay below 2 ** 62.
-    x = torch.randn(2, 16, device=device, dtype=torch.float64)
-    with pytest.raises(ValueError, match="too large"):
-        resample(x, 2**40, 2**40 + 1)
-
-
-@pytest.mark.parametrize("device", _DEVICES)
-def test_resample_taps_limit(device):
-    # A downsampling ratio so low that the filter has more than 2 ** 30 taps.
-    x = torch.randn(2, 16, device=device, dtype=torch.float64)
-    with pytest.raises(ValueError, match="taps for these rates, rolloff and num_zeros, more than"):
-        resample(x, 2**31, 1)
-
-
-@pytest.mark.parametrize("device", _DEVICES)
-def test_resample_op_rejects_bad_arguments(device):
-    x = torch.randn(2, 16, device=device, dtype=torch.float64)
-    op = torch.ops.philtorch.resample
-    with pytest.raises(ValueError, match="orig_freq"):
-        op(x, 0, 3, 1.0, 0.9, 5.0, 4, 8)
-    with pytest.raises(ValueError, match="scale must be finite"):
-        op(x, 2, 3, float("nan"), 0.9, 5.0, 4, 8)

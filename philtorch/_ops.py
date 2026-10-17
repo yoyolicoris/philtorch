@@ -250,10 +250,8 @@ def _pararnn_fake(block_size):
     return fake
 
 
-@torch.library.register_fake("philtorch::resample")
-def _resample_fake(x, orig_freq, new_freq, scale, rolloff, beta, num_zeros, out_len):
+def _resample_fake(x, table, first, table_t, first_t, q, out_len):
     torch._check(x.ndim == 2, lambda: f"x must be 2D (B, T), got {x.ndim}D")
-    torch._check(x.is_floating_point(), lambda: f"x must be a floating-point tensor, got {x.dtype}")
     torch._check(out_len >= 0, lambda: f"out_len must be a non-negative integer, got {out_len!r}")
     return x.new_empty((x.shape[0], out_len))
 
@@ -263,30 +261,26 @@ def _resample_setup_context(ctx, inputs, output):
     ctx.in_len = x.shape[1]
 
 
-def _resample_backward_with(apply):
-    """The backward of ``philtorch::resample``, calling ``apply`` for the op.
+def _resample_gradient(run, grad, params, in_len):
+    """The gradient of ``philtorch::resample`` in x, with ``run`` the op to call.
 
-    ``apply`` is the op to call: the autograd function's ``apply`` in eager
-    mode, the registered op itself in compiled code. The gradient in ``x`` is
-    the operator's transpose, again that op, so the derivatives compose to any
-    order. With r = new_freq / orig_freq, z = c (m / r - n) and
-    c = rho min(1, r), the operator has entries scale * g(z) at [m, n]. The op
-    with the rates swapped has the entry at [n, m] with the argument
-    c' (n r - m), c' = rho min(1, 1 / r). For r >= 1, c' = rho / r and
-    c = rho, and for r < 1, c' = rho and c = rho r. Either way
-    c' (n r - m) = -z, and g is even, so the transpose is the same op with the
-    rates swapped, the same scale and ``x``'s length as the output length.
+    ``run`` is the autograd function's ``apply`` in eager mode, the registered
+    op itself in compiled code. The operator maps x[q f + first[i] + k] to out
+    [f p + i] with weights table[i, k] = scale g(c (t - n)), g even, t the
+    output's and n the input's time on the input grid. Its transpose has the
+    entries at [n, m] of the same scale g(c (t - n)), which is the same
+    construction with the rates swapped (c' (n p / q - m) = -c (m q / p - n)
+    for c = rho min(1, p / q), c' = rho min(1, q / p)): the op with the tables
+    swapped, p as the stride and x's length as the output length. It is the op
+    again, so the derivatives compose to any order.
     """
-
-    def backward(ctx, grad):
-        orig_freq, new_freq, *rest, _ = ctx.params
-        grad_x = apply(grad, new_freq, orig_freq, *rest, ctx.in_len)
-        return (grad_x,) + (None,) * 7
-
-    return backward
+    table, first, table_t, first_t, _, _ = params
+    return run(grad, table_t, first_t, table, first, table.size(0), in_len)
 
 
-_resample_backward = _resample_backward_with(torch.ops.philtorch.resample)
+def _resample_backward(ctx, grad):
+    grad_x = _resample_gradient(torch.ops.philtorch.resample, grad, ctx.params, ctx.in_len)
+    return (grad_x,) + (None,) * 6
 
 
 for name, order, time_invariant in [
@@ -308,11 +302,6 @@ torch.library.register_autograd(
     "philtorch::scan", _scan_backward, setup_context=_scan_setup_context
 )
 torch.library.register_autograd("philtorch::lpc", _lpc_backward, setup_context=_lpc_setup_context)
-torch.library.register_autograd(
-    "philtorch::resample",
-    _resample_backward,
-    setup_context=_resample_setup_context,
-)
 
 
 for block_size in (2, 3):
@@ -322,3 +311,9 @@ for block_size in (2, 3):
         torch.library.register_autograd(
             f"parallel_reduce_cuda::{op}", _pararnn_backward, setup_context=_pararnn_setup_context
         )
+
+if hasattr(torch.ops.philtorch, "resample"):  # pragma: no cover - CUDA-only op
+    torch.library.register_fake("philtorch::resample", _resample_fake)
+    torch.library.register_autograd(
+        "philtorch::resample", _resample_backward, setup_context=_resample_setup_context
+    )
