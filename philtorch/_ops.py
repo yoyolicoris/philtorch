@@ -263,15 +263,12 @@ def _resample_setup_context(ctx, inputs, output):
 def _resample_gradient(run, ctx, grad):
     """The gradients of ``philtorch::resample``, with ``run`` the op to call.
 
-    ``run`` is the autograd function's ``apply`` in eager mode, the registered
-    op itself in compiled code. The operator maps x[q f + first[i] + k] to out
-    [f p + i] with weights table[i, k] = scale g(c (t - n)), g even, t the
-    output's and n the input's time on the input grid. Its transpose has the
-    entries at [n, m] of the same scale g(c (t - n)), which is the same
-    construction with the rates swapped (c' (n p / q - m) = -c (m q / p - n)
-    for c = rho min(1, p / q), c' = rho min(1, q / p)): the op with the tables
-    swapped, p as the stride and x's length as the output length. It is the op
-    again, so the derivatives compose to any order. Only x has a gradient.
+    ``run`` is the autograd function's ``apply`` in eager mode and the op in
+    compiled code. The weights are scale g(c (t - n)) for an even g, so the
+    transpose, entry [n, m], is the same construction with the rates swapped
+    (c' (n p / q - m) = -c (m q / p - n), c = rho min(1, p / q) and
+    c' = rho min(1, q / p)): the op with the tables swapped, p as the stride
+    and x's length as the output length. Only x has a gradient.
     """
     table, first, table_t, first_t, _, _ = ctx.params
     grad_x = run(grad, table_t, first_t, table, first, table.size(0), ctx.in_len)

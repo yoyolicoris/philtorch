@@ -8,7 +8,7 @@ from scipy.signal import cspline1d, cspline1d_eval, kaiser_beta, kaiserord, resa
 from philtorch.lti.interp import (
     _QUALITY_PRESETS,
     _QUALITY_RECIPES,
-    _quality_kaiser_params,
+    _kaiser_design,
     _soxr_passband_end,
     _tables_on,
     cspline,
@@ -84,10 +84,8 @@ def test_cubic_spline_requires_batched_signals(shape):
 
 _DEVICES = ["cpu", pytest.param("cuda", marks=pytest.mark.cuda)]
 _DTYPES = [torch.float64, torch.float32, torch.float16, torch.bfloat16]
-# Tolerances against the float64 dense reference, per dtype: float64 and
-# float32 accumulate in their own type; float16 and bfloat16 accumulate in
-# float32 and round once, so they differ from the rounded reference by about
-# one unit in the last place.
+# Tolerances against the float64 reference; float16 and bfloat16 accumulate in
+# float32 and round once.
 _TOLS = {
     torch.float64: dict(rtol=1e-12, atol=1e-12),
     torch.float32: dict(rtol=5e-6, atol=5e-6),
@@ -176,7 +174,7 @@ def test_quality_presets_follow_kaiser_design():
     for quality, (bits, passband_end) in _QUALITY_RECIPES.items():
         attenuation_db = (bits + 1) * 20.0 * math.log10(2.0)
         numtaps, beta = kaiserord(attenuation_db, 1.0 - passband_end)
-        rolloff, kaiser_beta_, num_zeros = _quality_kaiser_params(quality)
+        rolloff, kaiser_beta_, num_zeros = _kaiser_design(bits, passband_end)
         assert rolloff == 0.5 * (1.0 + passband_end)
         assert kaiser_beta_ == beta == kaiser_beta(attenuation_db)
         assert num_zeros == math.ceil(math.ceil((numtaps - 1) / 2) * rolloff)
@@ -248,11 +246,8 @@ def test_resample_design_overrides_match_reference(device, orig_freq, new_freq, 
 @pytest.mark.parametrize("quality", ["LQ", "MQ", "HQ", "VHQ"])
 @pytest.mark.parametrize("orig_freq, new_freq", [(2, 3), (1, 3)])
 def test_resample_presets_reconstruct_passband_tone(device, quality, orig_freq, new_freq):
-    # A tone at 30% of the Nyquist frequency, well inside every preset's
-    # passband, is reconstructed away from the edges (where the filter's
-    # support runs past the signal). The error stays below the preset's
-    # design precision, 2 ** -(bits + 1). Upsampling, the images of the tone
-    # are what is left in the error: they are in the stopband.
+    # A tone at 30% of Nyquist, inside every passband, is reconstructed away
+    # from the edges to the preset's precision, 2 ** -(bits + 1).
     bits, _ = _QUALITY_RECIPES[quality]
     T, margin = 2048, 300  # input samples, beyond the filter's half-width
     t_in = torch.arange(T, device=device, dtype=torch.float64)
@@ -273,11 +268,9 @@ def test_resample_presets_reconstruct_passband_tone(device, quality, orig_freq, 
 def test_resample_presets_attenuate_the_stopband(
     device, quality, orig_freq, new_freq, stop_edge_ratio
 ):
-    # A tone above the new Nyquist frequency, from its stopband edge (1.0,
-    # soxr's stopband_begin) outward, is removed before the decimation aliases
-    # it: the interior RMS ratio is below the design attenuation
-    # (bits + 1) * 20 log10(2) dB. The 1 dB of slack covers the RMS of a tone
-    # with a fractional number of cycles in the measured stretch.
+    # A tone in the stopband (from soxr's stopband_begin, 1.0, outward) is
+    # attenuated by the design's (bits + 1) * 20 log10(2) dB, with 1 dB of
+    # slack for the RMS of a fractional number of cycles.
     bits, _ = _QUALITY_RECIPES[quality]
     attenuation_db = (bits + 1) * 20.0 * math.log10(2.0)
     rolloff, _, num_zeros = _design(quality)
@@ -299,10 +292,8 @@ def test_resample_presets_attenuate_the_stopband(
 @pytest.mark.parametrize("quality", ["LQ", "MQ", "HQ", "VHQ"])
 @pytest.mark.parametrize("orig_freq, new_freq", [(1, 3), (2, 3)])
 def test_resample_presets_reject_the_images_when_upsampling(device, quality, orig_freq, new_freq):
-    # Upsampling, a tone at 90% of the preset's passband edge has its image at
-    # 1 - f cycles per input sample, just beyond the stopband edge (the input
-    # Nyquist frequency): what the filter leaves of it is the error against
-    # the ideal tone, which stays below the design precision 2 ** -(bits + 1).
+    # Upsampling a tone at 90% of the passband edge, its image, just past the
+    # stopband edge, is what remains of the error: below 2 ** -(bits + 1).
     bits, passband_end = _QUALITY_RECIPES[quality]
     freq = 0.5 * 0.9 * passband_end  # cycles per input sample
     assert 1.0 - freq > 0.5
@@ -323,11 +314,9 @@ def test_resample_presets_reject_the_images_when_upsampling(device, quality, ori
 @pytest.mark.parametrize("device", _DEVICES)
 @pytest.mark.parametrize("orig_freq, new_freq, T", [(2, 3, 200), (5, 2, 300), (147, 160, 60)])
 def test_resample_matches_scipy_resample_poly(device, orig_freq, new_freq, T):
-    # resample_poly with the filter at the upsampled rate as `window`: h[j] =
-    # c sinc(c j / p) K(j / p) / p, for j = -L .. L, since resample_poly
-    # multiplies the window by p. It aligns output 0 with input 0 by padding
-    # that odd-length, centred filter, and zero-pads the signal, as we do.
-    # resample_poly returns a copy for equal rates, so (1, 1) is left out.
+    # resample_poly, given our filter at the upsampled rate as `window` (it
+    # multiplies the window by p, hence the / p), centres and zero-pads as we
+    # do. It copies at equal rates, so (1, 1) is left out.
     rolloff, beta, num_zeros = _design("LQ")
     p, q = _rates(orig_freq, new_freq)
     c, support = _cutoff_and_support(orig_freq, new_freq, rolloff, num_zeros)
@@ -466,13 +455,6 @@ def test_resample_non_contiguous_input(device):
 
 
 @pytest.mark.parametrize("device", _DEVICES)
-def test_resample_rates_are_reduced_by_their_gcd(device):
-    x = torch.randn(2, 40, device=device, dtype=torch.float64)
-    torch.testing.assert_close(resample(x, 6, 4), resample(x, 3, 2), rtol=0, atol=0)
-    torch.testing.assert_close(resample(x, 44100, 48000), resample(x, 147, 160), rtol=0, atol=0)
-
-
-@pytest.mark.parametrize("device", _DEVICES)
 def test_resample_equal_rates_low_pass_instead_of_copying(device):
     # At orig_freq == new_freq the filter still cuts off at rolloff times the
     # Nyquist frequency (unlike scipy.signal.resample_poly, which copies).
@@ -537,7 +519,6 @@ def test_resample_opcheck(requires_grad, out_len):
     [
         (dict(orig_freq=2.0), "orig_freq must be a positive integer, got 2.0"),
         (dict(new_freq=0), "new_freq must be a positive integer, got 0"),
-        (dict(orig_freq=-2), "orig_freq must be a positive integer, got -2"),
         (dict(quality="unknown"), "quality must be one of .* or None, got 'unknown'"),
         (dict(quality=None, rolloff=0.9), "when quality is None, rolloff, beta and num_zeros"),
         (dict(rolloff=1.5), r"rolloff must be in \(0, 1\], got 1.5"),

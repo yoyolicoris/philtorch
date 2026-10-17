@@ -1,4 +1,5 @@
 #include <ATen/ATen.h>
+#include <ATen/OpMathType.h>
 #include <ATen/ceil_div.h>
 #include <ATen/cuda/CUDAContext.h>
 #include <ATen/cuda/DeviceUtils.cuh>
@@ -21,30 +22,21 @@
 // int64) holds the first input of each phase in frame 0 and may be negative.
 // table_t and first_t, the table and offsets of the transposed operator, are
 // not read: they are inputs so that the backward pass, which Python
-// registers, can call this op again with them.  The filter design is done in
-// Python, and there is no CPU kernel (the CPU path is a conv1d).
+// registers, can call this op again with them.  There is no CPU kernel.
 //
-// float64 inputs accumulate in double; float32, float16 and bfloat16 in
-// float.  x and the table are converted to that type once, before the kernel,
-// and the result is cast back to x's dtype.
+// The table is real and the weights are accumulated in at::opmath_type of x's
+// dtype (double for float64, float for float32, float16 and bfloat16).
 //
-// The kernel (tile_kernel) is a register tiling.  Neighbouring outputs share
-// most of their taps, so a group of kGroupLanes lanes computes a tile of R
-// consecutive outputs for BB batch rows at once: the lanes stride over the
-// inputs n = nlo_0 + u that the tile reads, and each lane loads x[b][n] once
-// for the R outputs that read it and the weight of output j at n once for the
-// BB rows, which makes R + BB loads for R BB multiply-adds (a warp per output
-// would need one load per multiply-add).  The weights of output j at n are
-// table[i_j][u - d_j] with d_j = nlo_j - nlo_0; the zero padding of the table
-// rows lets every lane run the same loop over u whichever outputs read n.
-// Every lane sums its inputs in R BB accumulators and a butterfly reduction
-// over the group (A - A / kGroupLanes shuffles for A accumulators, where a
-// plain tree would take A log2 kGroupLanes) gives each its total.  A warp
-// holds 32 / kGroupLanes such groups, on neighbouring tiles.
+// tile_kernel is a register tiling: a group of kGroupLanes lanes computes R
+// consecutive outputs for BB batch rows.  The lanes stride over the inputs the
+// tile reads, each x value is loaded once for the R outputs that read it and
+// each weight once for the BB rows, and a butterfly reduction over the group
+// totals the A = R BB accumulators.  The zero padding of the table rows lets
+// every lane run the same loop whichever outputs read an input.
 //
-// The padded table, the converted x and the output come from ATen ops and the
-// kernel arguments are plain values: no host-to-device copy or
-// synchronization, so a call can be captured in a CUDA graph.
+// The padded table and the output come from ATen ops and the kernel arguments
+// are plain values: no host-to-device copy or synchronization, so a call can be
+// captured in a CUDA graph.
 
 namespace {
 
@@ -85,17 +77,17 @@ inline int pow2_rows(int64_t B, int max) {
         std::min<int64_t>(std::bit_floor(static_cast<uint64_t>(B)), max));
 }
 
-// Calls launch(args, grid) for the chunks of the batch of at most gridDim.y
-// blocks along y (the batch rows of a block: rows_per_block), with `args` the
-// kernel arguments for that chunk, which has fields x, out (B, out_len), B, T
-// and out_len.  Outputs per block: outputs_per_block, along x.
+// Calls launch(chunk, grid) for the chunks of the batch that fit the y extent
+// of a grid, a chunk being the kernel arguments (fields x, out, B, out_len, T)
+// for its rows.  A block covers rows_per_block rows and outputs_per_block
+// outputs.
 template <typename Args, typename Launch>
 void launch_chunked(const Args &a, int64_t outputs_per_block,
                     int rows_per_block, Launch &&launch) {
     const auto *prop = at::cuda::getCurrentDeviceProperties();
     const int64_t grid_x = at::ceil_div<int64_t>(a.out_len, outputs_per_block);
-    TORCH_CHECK_VALUE(grid_x <= prop->maxGridSize[0], "out_len ", a.out_len,
-                      " exceeds the CUDA grid dimension limit");
+    TORCH_CHECK(grid_x <= prop->maxGridSize[0], "out_len ", a.out_len,
+                " exceeds the CUDA grid dimension limit");
     const int64_t rows = int64_t{prop->maxGridSize[1]} * rows_per_block;
     for (int64_t b_off = 0; b_off < a.B; b_off += rows) {
         Args chunk = a;
@@ -108,14 +100,15 @@ void launch_chunked(const Args &a, int64_t outputs_per_block,
     }
 }
 
-template <typename AccT>
+template <typename scalar_t>
 struct TileArgs {
-    const AccT *x;             // (B, T), contiguous, B of this launch
-    AccT *out;                 // (B, out_len)
+    using acc_t = at::opmath_type<scalar_t>;
+    const scalar_t *x;         // (B, T), contiguous, B of this launch
+    scalar_t *out;             // (B, out_len)
     int64_t B, T, out_len;
     int64_t p, q, taps;
     int64_t ts, pad;           // table row stride, zero padding on either side
-    const AccT *table;         // (p, ts)
+    const acc_t *table;        // (p, ts)
     const int64_t *first;      // (p)
 };
 
@@ -140,8 +133,9 @@ __device__ __forceinline__ void scatter_levels(AccT (&a)[A], int lg, int &idx) {
 
 // A group of kGroupLanes lanes computes the tile of R consecutive outputs
 // m0 .. m0 + R - 1 for the BB rows of blockIdx.y.
-template <typename AccT, int R, int BB>
-__global__ void __launch_bounds__(kBlock) tile_kernel(const TileArgs<AccT> a) {
+template <typename scalar_t, int R, int BB>
+__global__ void __launch_bounds__(kBlock) tile_kernel(const TileArgs<scalar_t> a) {
+    using acc_t = at::opmath_type<scalar_t>;
     constexpr int G = kGroupLanes;
     constexpr int A = R * BB;
     constexpr int TPW = kWarp / G;  // tiles per warp
@@ -166,7 +160,7 @@ __global__ void __launch_bounds__(kBlock) tile_kernel(const TileArgs<AccT> a) {
     const int64_t nlo_i0 = a.first[i];
     const int64_t nlo0 = a.q * f0 + nlo_i0;
     int d[R];
-    const AccT *wp[R];  // wp[j][u] is the weight of output j at input nlo0 + u
+    const acc_t *wp[R];  // wp[j][u] is the weight of output j at input nlo0 + u
     {
         const int q = static_cast<int>(a.q);
         int df = 0;
@@ -187,30 +181,31 @@ __global__ void __launch_bounds__(kBlock) tile_kernel(const TileArgs<AccT> a) {
     // The u range, with inputs in [0, T), that any output of the tile reads.
     const int64_t ulo64 = max(int64_t{0}, -nlo0);
     const int64_t uhi64 = min(static_cast<int64_t>(dlast) + taps, a.T - nlo0);
-    AccT acc[A];
+    acc_t acc[A];
 #pragma unroll
     for (int e = 0; e < A; ++e) {
-        acc[e] = static_cast<AccT>(0);
+        acc[e] = acc_t(0);
     }
     if (ulo64 < uhi64) {
         const int ulo = static_cast<int>(ulo64), uhi = static_cast<int>(uhi64);
-        const AccT *xp[BB];
+        const scalar_t *xp[BB];
 #pragma unroll
         for (int bb = 0; bb < BB; ++bb) {
             xp[bb] = a.x + min(b0 + bb, a.B - 1) * a.T + nlo0;
         }
-// Unrolled four times, so that the loads of the next iterations are issued
-        // while the multiply-adds of this one run (measured: 1 to 3% in float).
+        // Unrolled four times, so that the loads of the next iterations are
+        // issued while the multiply-adds of this one run (measured: 1 to 3% in
+        // float).
 #pragma unroll 4
         for (int u = ulo + lg; u < uhi; u += G) {
-            AccT xv[BB];
+            acc_t xv[BB];
 #pragma unroll
             for (int bb = 0; bb < BB; ++bb) {
-                xv[bb] = xp[bb][u];
+                xv[bb] = static_cast<acc_t>(xp[bb][u]);
             }
 #pragma unroll
             for (int j = 0; j < R; ++j) {
-                const AccT w = wp[j][u];
+                const acc_t w = wp[j][u];
 #pragma unroll
                 for (int bb = 0; bb < BB; ++bb) {
                     acc[j * BB + bb] = fma(w, xv[bb], acc[j * BB + bb]);
@@ -229,7 +224,7 @@ __global__ void __launch_bounds__(kBlock) tile_kernel(const TileArgs<AccT> a) {
         const int j = ai / BB, bb = ai - j * BB;
         const int64_t m = m0 + j, b = b0 + bb;
         if (m < a.out_len && b < a.B) {
-            a.out[b * a.out_len + m] = acc[e];
+            a.out[b * a.out_len + m] = static_cast<scalar_t>(acc[e]);
         }
     }
 }
@@ -240,53 +235,54 @@ constexpr int tile_outputs(int bb) {
     return std::min(kTileAcc / bb, kMaxTileOutputs);
 }
 
-template <typename AccT, int BB>
-void launch_tile(const TileArgs<AccT> &a, cudaStream_t stream) {
+template <typename scalar_t, int BB>
+void launch_tile(const TileArgs<scalar_t> &a, cudaStream_t stream) {
     constexpr int R = tile_outputs(BB);
     constexpr int tiles_per_block = kWarpsPerBlock * (kWarp / kGroupLanes);
     launch_chunked(a, int64_t{tiles_per_block} * R, BB,
-                   [&](const TileArgs<AccT> &chunk, dim3 grid) {
-                       tile_kernel<AccT, R, BB><<<grid, kBlock, 0, stream>>>(chunk);
+                   [&](const TileArgs<scalar_t> &chunk, dim3 grid) {
+                       tile_kernel<scalar_t, R, BB><<<grid, kBlock, 0, stream>>>(chunk);
                        C10_CUDA_KERNEL_LAUNCH_CHECK();
                    });
 }
 
-template <typename AccT>
-void launch_tile_rows(const TileArgs<AccT> &a, int BB, cudaStream_t stream) {
+template <typename scalar_t>
+void launch_tile_rows(const TileArgs<scalar_t> &a, int BB, cudaStream_t stream) {
     switch (BB) {
-        case 8: launch_tile<AccT, 8>(a, stream); break;
-        case 4: launch_tile<AccT, 4>(a, stream); break;
-        case 2: launch_tile<AccT, 2>(a, stream); break;
-        default: launch_tile<AccT, 1>(a, stream); break;
+        case 8: launch_tile<scalar_t, 8>(a, stream); break;
+        case 4: launch_tile<scalar_t, 4>(a, stream); break;
+        case 2: launch_tile<scalar_t, 2>(a, stream); break;
+        default: launch_tile<scalar_t, 1>(a, stream); break;
     }
 }
 
-template <typename AccT>
+// table: (p, taps), in at::opmath_type<scalar_t>.
+template <typename scalar_t>
 at::Tensor resample_run(const at::Tensor &x, const at::Tensor &table,
                         const at::Tensor &first, int64_t q, int64_t out_len) {
+    using acc_t = at::opmath_type<scalar_t>;
     const auto stream = at::cuda::getCurrentCUDAStream().stream();
     const int64_t B = x.size(0), T = x.size(1);
     const int64_t p = table.size(0), taps = table.size(1);
-    const auto acc_dtype = c10::CppTypeToScalarType<AccT>::value;
 
     // The tiles' batch rows BB and outputs R, and the zero padding pad of a
     // table row on either side: the first inputs of two outputs of a tile are
-    // at most the exact bound ceil((R - 1) q / p) apart, and pad is one more,
-    // a margin against a rounding in the offsets.
+    // at most ceil((R - 1) q / p) apart, and the + 1 covers the rounding in
+    // first.
     const int BB = pow2_rows(B, kMaxTileRows);
     const int R = tile_outputs(BB);
     const int64_t pad = at::ceil_div<int64_t>((R - 1) * q, p) + 1;
     const int64_t ts = taps + 2 * pad;
 
-    const at::Tensor xa = x.to(acc_dtype).contiguous();
+    const at::Tensor xc = x.contiguous();
     const at::Tensor padded =
-        at::constant_pad_nd(table.to(acc_dtype), {pad, pad}).contiguous();
+        at::constant_pad_nd(table, {pad, pad}).contiguous();
     const at::Tensor fa = first.contiguous();
-    at::Tensor out = at::empty({B, out_len}, x.options().dtype(acc_dtype));
+    at::Tensor out = at::empty({B, out_len}, x.options());
 
-    TileArgs<AccT> a;
-    a.x = xa.const_data_ptr<AccT>();
-    a.out = out.mutable_data_ptr<AccT>();
+    TileArgs<scalar_t> a;
+    a.x = xc.const_data_ptr<scalar_t>();
+    a.out = out.mutable_data_ptr<scalar_t>();
     a.B = B;
     a.T = T;
     a.out_len = out_len;
@@ -295,10 +291,10 @@ at::Tensor resample_run(const at::Tensor &x, const at::Tensor &table,
     a.taps = taps;
     a.ts = ts;
     a.pad = pad;
-    a.table = padded.const_data_ptr<AccT>();
+    a.table = padded.const_data_ptr<acc_t>();
     a.first = fa.const_data_ptr<int64_t>();
-    launch_tile_rows<AccT>(a, BB, stream);
-    return out.to(x.scalar_type());
+    launch_tile_rows<scalar_t>(a, BB, stream);
+    return out;
 }
 
 }  // namespace
@@ -308,36 +304,35 @@ at::Tensor sinc_resample_cuda_impl(const at::Tensor &x, const at::Tensor &table,
                                    const at::Tensor & /*table_t*/,
                                    const at::Tensor & /*first_t*/, int64_t q,
                                    int64_t out_len) {
-    TORCH_CHECK_VALUE(x.dim() == 2 && x.is_floating_point(),
-                      "resample: x must be a 2-D floating tensor");
-    TORCH_CHECK_VALUE(table.dim() == 2 && table.is_floating_point(),
-                      "resample: table must be a 2-D floating tensor");
+    TORCH_CHECK(x.dim() == 2 && x.is_floating_point(),
+                "resample: x must be a 2-D floating tensor");
+    TORCH_CHECK(table.dim() == 2 && table.is_floating_point(),
+                "resample: table must be a 2-D floating tensor");
     const int64_t p = table.size(0), taps = table.size(1);
-    TORCH_CHECK_VALUE(first.dim() == 1 && first.scalar_type() == at::kLong &&
-                          first.size(0) == p,
-                      "resample: first must be an int64 tensor of length ", p);
-    TORCH_CHECK_VALUE(x.is_cuda() && table.device() == x.device() &&
-                          first.device() == x.device(),
-                      "resample: x, table and first must be on the same CUDA "
-                      "device");
-    TORCH_CHECK_VALUE(q >= 1 && out_len >= 0,
-                      "resample: q must be at least 1 and out_len at least 0");
-    TORCH_CHECK_VALUE(p >= 1 && p <= kMaxTable && q <= kMaxTable &&
-                          taps <= kMaxTable,
-                      "resample: the number of phases (", p, "), taps (", taps,
-                      ") and q (", q, ") must be at most ", kMaxTable);
+    TORCH_CHECK(first.dim() == 1 && first.scalar_type() == at::kLong &&
+                    first.size(0) == p,
+                "resample: first must be an int64 tensor of length ", p);
+    TORCH_CHECK(x.is_cuda() && table.device() == x.device() &&
+                    first.device() == x.device(),
+                "resample: x, table and first must be on the same CUDA "
+                "device");
+    TORCH_CHECK(q >= 1 && out_len >= 0,
+                "resample: q must be at least 1 and out_len at least 0");
+    TORCH_CHECK(p >= 1 && p <= kMaxTable && q <= kMaxTable &&
+                    taps <= kMaxTable,
+                "resample: the number of phases (", p, "), taps (", taps,
+                ") and q (", q, ") must be at most ", kMaxTable);
     const at::cuda::OptionalCUDAGuard device_guard(device_of(x));
-    const int64_t B = x.size(0), T = x.size(1);
-    if (B == 0 || out_len == 0 || T == 0 || taps == 0) {
-        return at::zeros({B, out_len}, x.options());
+    if (x.numel() == 0 || table.numel() == 0 || out_len == 0) {
+        return at::zeros({x.size(0), out_len}, x.options());
     }
-    // The accumulation type: double for float64, float for the others.
-    const auto acc_dtype =
-        x.scalar_type() == at::kDouble ? at::kDouble : at::kFloat;
     at::Tensor out;
-    AT_DISPATCH_FLOATING_TYPES(acc_dtype, "resample_cuda", [&] {
-        out = resample_run<scalar_t>(x, table, first, q, out_len);
-    });
+    AT_DISPATCH_FLOATING_TYPES_AND2(
+        at::kHalf, at::kBFloat16, x.scalar_type(), "resample_cuda", [&] {
+            const at::Tensor tab =
+                table.to(at::toOpMathType(x.scalar_type()));
+            out = resample_run<scalar_t>(x, tab, first, q, out_len);
+        });
     return out;
 }
 
