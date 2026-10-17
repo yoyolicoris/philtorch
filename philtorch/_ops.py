@@ -252,7 +252,6 @@ def _pararnn_fake(block_size):
 
 def _resample_fake(x, table, first, table_t, first_t, q, out_len):
     torch._check(x.ndim == 2, lambda: f"x must be 2D (B, T), got {x.ndim}D")
-    torch._check(out_len >= 0, lambda: f"out_len must be a non-negative integer, got {out_len!r}")
     return x.new_empty((x.shape[0], out_len))
 
 
@@ -261,8 +260,8 @@ def _resample_setup_context(ctx, inputs, output):
     ctx.in_len = x.shape[1]
 
 
-def _resample_gradient(run, grad, params, in_len):
-    """The gradient of ``philtorch::resample`` in x, with ``run`` the op to call.
+def _resample_gradient(run, ctx, grad):
+    """The gradients of ``philtorch::resample``, with ``run`` the op to call.
 
     ``run`` is the autograd function's ``apply`` in eager mode, the registered
     op itself in compiled code. The operator maps x[q f + first[i] + k] to out
@@ -272,14 +271,10 @@ def _resample_gradient(run, grad, params, in_len):
     construction with the rates swapped (c' (n p / q - m) = -c (m q / p - n)
     for c = rho min(1, p / q), c' = rho min(1, q / p)): the op with the tables
     swapped, p as the stride and x's length as the output length. It is the op
-    again, so the derivatives compose to any order.
+    again, so the derivatives compose to any order. Only x has a gradient.
     """
-    table, first, table_t, first_t, _, _ = params
-    return run(grad, table_t, first_t, table, first, table.size(0), in_len)
-
-
-def _resample_backward(ctx, grad):
-    grad_x = _resample_gradient(torch.ops.philtorch.resample, grad, ctx.params, ctx.in_len)
+    table, first, table_t, first_t, _, _ = ctx.params
+    grad_x = run(grad, table_t, first_t, table, first, table.size(0), ctx.in_len)
     return (grad_x,) + (None,) * 6
 
 
@@ -315,5 +310,7 @@ for block_size in (2, 3):
 if hasattr(torch.ops.philtorch, "resample"):  # pragma: no cover - CUDA-only op
     torch.library.register_fake("philtorch::resample", _resample_fake)
     torch.library.register_autograd(
-        "philtorch::resample", _resample_backward, setup_context=_resample_setup_context
+        "philtorch::resample",
+        lambda ctx, grad: _resample_gradient(torch.ops.philtorch.resample, ctx, grad),
+        setup_context=_resample_setup_context,
     )

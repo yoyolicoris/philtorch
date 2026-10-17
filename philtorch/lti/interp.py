@@ -379,7 +379,7 @@ class _Resample(torch.autograd.Function):
 
     @staticmethod
     def backward(ctx, grad):
-        return (_resample_gradient(_Resample.apply, grad, ctx.params, ctx.in_len),) + (None,) * 6
+        return _resample_gradient(_Resample.apply, ctx, grad)
 
     @staticmethod
     def jvp(ctx, dx, *_):
@@ -402,7 +402,6 @@ def resample(
     rolloff: float | None = None,
     beta: float | None = None,
     num_zeros: int | None = None,
-    out_len: int | None = None,
 ) -> Tensor:
     r"""Resample signals between two sampling rates with a Kaiser-sinc filter.
 
@@ -480,21 +479,20 @@ def resample(
             :math:`\beta \ge 0`. Default: ``None``.
         num_zeros (int, optional): the number of zero-crossings
             :math:`N_z \ge 1` per side of the sinc mainlobe. Default: ``None``.
-        out_len (int, optional): the output sequence length
-            :math:`L_{\text{out}} \ge 0`. Default: ``None``, which uses
-            ``ceil(T * new_freq / orig_freq)``, computed in integer
-            arithmetic as in :func:`scipy.signal.resample_poly`.
 
     Returns:
-        Tensor: the resampled signals, of shape :math:`(B, L_{\text{out}})`.
+        Tensor: the resampled signals, of shape :math:`(B, L_{\text{out}})`,
+        where :math:`L_{\text{out}} = \lceil T \cdot \text{new\_freq} /
+        \text{orig\_freq} \rceil`, computed in integer arithmetic, as
+        :func:`scipy.signal.resample_poly` does.
 
     Raises:
         ValueError: if :attr:`x` is not a 2-D floating-point tensor, if
             :attr:`orig_freq` or :attr:`new_freq` is not a positive integer,
             if :attr:`quality` is unknown or ``None`` without all of
             :attr:`rolloff`, :attr:`beta` and :attr:`num_zeros`, if
-            :attr:`rolloff`, :attr:`beta`, :attr:`num_zeros` or
-            :attr:`out_len` is out of range, or if the polyphase kernel for
+            :attr:`rolloff`, :attr:`beta` or :attr:`num_zeros` is out of
+            range, or if the polyphase kernel for
             the reduced rates and the filter would hold more than
             :math:`2^{22}` coefficients.
 
@@ -545,13 +543,7 @@ def resample(
         if num_zeros < 1:
             raise ValueError(message.format("num_zeros", num_zeros))
 
-    if out_len is None:
-        out_len = -(-x.size(1) * new // orig)
-    else:
-        message = "out_len must be a non-negative integer, got {!r}"
-        out_len = _as_int(out_len, message.format(out_len))
-        if out_len < 0:
-            raise ValueError(message.format(out_len))
+    out_len = -(-x.size(1) * new // orig)
 
     taps = _filter_taps(new, orig, rolloff, num_zeros)[1]
     if new * (orig + taps) > _MAX_KERNEL:

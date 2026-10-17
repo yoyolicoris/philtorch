@@ -341,31 +341,31 @@ def test_resample_matches_scipy_resample_poly(device, orig_freq, new_freq, T):
     torch.testing.assert_close(actual, torch.from_numpy(expected), **_TOLS[torch.float64])
 
 
-# (orig_freq, new_freq, T, out_len): a pair of rates each way, a short out_len
-# (fewer outputs than phases) and a rate with many phases.
-_GRAD_CASES = [(2, 3, 24, None), (5, 2, 30, None), (2, 3, 24, 2), (147, 160, 20, None)]
+# (orig_freq, new_freq, T): a pair of rates each way, fewer outputs than phases
+# (T = 1) and a rate with many phases.
+_GRAD_CASES = [(2, 3, 24), (5, 2, 30), (2, 3, 1), (147, 160, 20)]
 
 
-def _grad_fn(orig_freq, new_freq, out_len):
+def _grad_fn(orig_freq, new_freq):
     def fn(x):
-        return resample(x, orig_freq, new_freq, out_len=out_len, **_GRAD_DESIGN)
+        return resample(x, orig_freq, new_freq, **_GRAD_DESIGN)
 
     return fn
 
 
 @pytest.mark.parametrize("device", _DEVICES)
-@pytest.mark.parametrize("orig_freq, new_freq, T, out_len", _GRAD_CASES)
-def test_resample_gradcheck_and_gradgradcheck(device, orig_freq, new_freq, T, out_len):
+@pytest.mark.parametrize("orig_freq, new_freq, T", _GRAD_CASES)
+def test_resample_gradcheck_and_gradgradcheck(device, orig_freq, new_freq, T):
     x = torch.randn(2, T, device=device, dtype=torch.float64, requires_grad=True)
-    fn = _grad_fn(orig_freq, new_freq, out_len)
+    fn = _grad_fn(orig_freq, new_freq)
     assert torch.autograd.gradcheck(fn, (x,))
     assert torch.autograd.gradgradcheck(fn, (x,))
 
 
 @pytest.mark.parametrize("device", _DEVICES)
-@pytest.mark.parametrize("orig_freq, new_freq, T, out_len", _GRAD_CASES)
-def test_resample_forward_mode_and_forward_over_reverse(device, orig_freq, new_freq, T, out_len):
-    fn = _grad_fn(orig_freq, new_freq, out_len)
+@pytest.mark.parametrize("orig_freq, new_freq, T", _GRAD_CASES)
+def test_resample_forward_mode_and_forward_over_reverse(device, orig_freq, new_freq, T):
+    fn = _grad_fn(orig_freq, new_freq)
     x = torch.randn(2, T, device=device, dtype=torch.float64)
     dx = torch.randn_like(x)
 
@@ -385,9 +385,9 @@ def test_resample_forward_mode_and_forward_over_reverse(device, orig_freq, new_f
 
 
 @pytest.mark.parametrize("device", _DEVICES)
-@pytest.mark.parametrize("orig_freq, new_freq, T, out_len", _GRAD_CASES)
-def test_resample_vmap_folds_into_the_batch(device, orig_freq, new_freq, T, out_len):
-    fn = _grad_fn(orig_freq, new_freq, out_len)
+@pytest.mark.parametrize("orig_freq, new_freq, T", _GRAD_CASES)
+def test_resample_vmap_folds_into_the_batch(device, orig_freq, new_freq, T):
+    fn = _grad_fn(orig_freq, new_freq)
     x = torch.randn(3, 2, T, device=device, dtype=torch.float64)
     vy = torch.func.vmap(fn)(x)
     torch.testing.assert_close(vy, fn(x.reshape(6, T)).reshape(3, 2, -1))
@@ -397,9 +397,9 @@ def test_resample_vmap_folds_into_the_batch(device, orig_freq, new_freq, T, out_
 
 
 @pytest.mark.parametrize("device", _DEVICES)
-@pytest.mark.parametrize("orig_freq, new_freq, T, out_len", _GRAD_CASES)
-def test_resample_vmap_of_grad_gives_per_sample_gradients(device, orig_freq, new_freq, T, out_len):
-    fn = _grad_fn(orig_freq, new_freq, out_len)
+@pytest.mark.parametrize("orig_freq, new_freq, T", _GRAD_CASES)
+def test_resample_vmap_of_grad_gives_per_sample_gradients(device, orig_freq, new_freq, T):
+    fn = _grad_fn(orig_freq, new_freq)
     x = torch.randn(3, T, device=device, dtype=torch.float64)
 
     def loss(row):
@@ -437,43 +437,23 @@ def test_resample_compiled_gradient_matches_eager(monkeypatch, device, orig_freq
 @pytest.mark.parametrize("device", _DEVICES)
 def test_resample_empty_inputs_and_outputs(device):
     assert resample(torch.empty(0, 16, device=device), 2, 3).shape == (0, 24)
-    assert resample(torch.empty(2, 16, device=device), 2, 3, out_len=0).shape == (2, 0)
-    zero_time = resample(torch.empty(2, 0, device=device), 2, 3, out_len=5)
-    assert zero_time.shape == (2, 5) and (zero_time == 0).all()
-    assert resample(torch.empty(2, 0, device=device), 2, 3).shape == (2, 0)
 
-    # The gradient of an empty output is zeros of x's shape.
-    x = torch.randn(2, 16, device=device, requires_grad=True)
-    (grad,) = torch.autograd.grad(resample(x, 2, 3, out_len=0).sum(), x)
-    assert grad.shape == x.shape and (grad == 0).all()
+    # An empty signal gives an empty output, which stays in x's graph.
+    x = torch.empty(2, 0, device=device, requires_grad=True)
+    y = resample(x, 2, 3)
+    assert y.shape == (2, 0)
+    (grad,) = torch.autograd.grad(y.sum(), x)
+    assert grad.shape == x.shape
 
 
 @pytest.mark.parametrize(
     "T, orig_freq, new_freq, out_len",
     [(441, 44100, 48000, 480), (7, 2, 3, 11), (7, 3, 2, 5), (7, 1, 1, 7), (6, 3, 2, 4)],
 )
-def test_resample_default_out_len_is_the_exact_ceiling(T, orig_freq, new_freq, out_len):
+def test_resample_output_length_is_the_exact_ceiling(T, orig_freq, new_freq, out_len):
     # ceil(T * new_freq / orig_freq), in integers: 7 * 3 / 2 = 10.5 rounds up,
     # where Python's round would go to the even 10.
     assert resample(torch.zeros(1, T), orig_freq, new_freq).shape == (1, out_len)
-
-
-@pytest.mark.parametrize("device", _DEVICES)
-@pytest.mark.parametrize("orig_freq, new_freq", [(2, 3), (147, 160)])
-def test_resample_out_len_beyond_the_default(device, orig_freq, new_freq):
-    T = 30
-    x = torch.randn(2, T, device=device, dtype=torch.float64)
-    default = resample(x, orig_freq, new_freq)
-    assert default.size(1) == _default_out_len(T, orig_freq, new_freq)
-
-    longer = resample(x, orig_freq, new_freq, out_len=default.size(1) + 700)
-    torch.testing.assert_close(longer[:, : default.size(1)], default, **_TOLS[torch.float64])
-    # Past the filter's reach of the last input, there is nothing to read.
-    rolloff, _, num_zeros = _design("HQ")
-    reach = _cutoff_and_support(orig_freq, new_freq, rolloff, num_zeros)[1]
-    first_zero = math.ceil((T - 1 + reach) * new_freq / orig_freq) + 1
-    assert first_zero < longer.size(1)
-    assert (longer[:, first_zero:] == 0).all()
 
 
 @pytest.mark.parametrize("device", _DEVICES)
@@ -565,7 +545,6 @@ def test_resample_opcheck(requires_grad, out_len):
         (dict(rolloff=float("nan")), "rolloff must be finite, got nan"),
         (dict(beta=-1.0), "beta must be non-negative, got -1.0"),
         (dict(num_zeros=0), "num_zeros must be a positive integer, got 0"),
-        (dict(out_len=-1), "out_len must be a non-negative integer, got -1"),
         (dict(orig_freq=999983, new_freq=1000003), "limit_denominator"),
         # The table alone (5001 phases of about 194 taps) would fit; the dense
         # kernel, about 5001 x 5194, does not.
