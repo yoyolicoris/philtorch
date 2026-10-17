@@ -331,9 +331,14 @@ at::Tensor sinc_resample_cuda_impl(const at::Tensor &x, const at::Tensor &table,
     if (B == 0 || out_len == 0 || T == 0 || taps == 0) {
         return at::zeros({B, out_len}, x.options());
     }
-    return x.scalar_type() == at::kDouble
-               ? resample_run<double>(x, table, first, q, out_len)
-               : resample_run<float>(x, table, first, q, out_len);
+    // The accumulation type: double for float64, float for the others.
+    const auto acc_dtype =
+        x.scalar_type() == at::kDouble ? at::kDouble : at::kFloat;
+    at::Tensor out;
+    AT_DISPATCH_FLOATING_TYPES(acc_dtype, "resample_cuda", [&] {
+        out = resample_run<scalar_t>(x, table, first, q, out_len);
+    });
+    return out;
 }
 
 TORCH_LIBRARY_FRAGMENT(philtorch, m) {
