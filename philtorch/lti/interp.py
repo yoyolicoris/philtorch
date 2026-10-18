@@ -261,9 +261,16 @@ def _constant_cache(fn):
     """Cache ``fn``, and make Dynamo run it and take its result as a constant.
 
     The lambda matters: Dynamo traces through an ``lru_cache`` wrapper, even a
-    marked one, into the table's construction, which it can't compile.
+    marked one, into the table's construction, which it can't compile. The
+    result is built outside inference mode, so that a later call that needs
+    gradients can save it for backward.
     """
-    cached = functools.lru_cache(maxsize=16)(fn)
+
+    @functools.lru_cache(maxsize=16)
+    def cached(*args):
+        with torch.inference_mode(False):
+            return fn(*args)
+
     return torch.compiler.assume_constant_result(lambda *args: cached(*args))
 
 

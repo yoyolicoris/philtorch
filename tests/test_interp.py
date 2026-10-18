@@ -1,4 +1,6 @@
 import math
+import subprocess
+import sys
 
 import pytest
 import torch
@@ -403,10 +405,9 @@ def test_resample_vmap_of_grad_gives_per_sample_gradients(device, orig_freq, new
 
 @pytest.mark.parametrize("device", _DEVICES)
 @pytest.mark.parametrize("orig_freq, new_freq, T", [(2, 3, 30), (5, 2, 40), (147, 160, 20)])
-def test_resample_compiled_gradient_matches_eager(monkeypatch, device, orig_freq, new_freq, T):
-    # The on-disk compile caches replay old backwards: bypass them.
-    monkeypatch.setattr(torch._inductor.config, "fx_graph_cache", False)
-    monkeypatch.setattr(torch._functorch.config, "enable_autograd_cache", False)
+def test_resample_compiled_gradient_matches_eager(device, orig_freq, new_freq, T):
+    # aot_eager, which needs no C++ compiler (Windows CI has none for Inductor)
+    # and has no on-disk cache to replay an old backward.
     torch._dynamo.reset()
 
     def loss(t):
@@ -416,11 +417,23 @@ def test_resample_compiled_gradient_matches_eager(monkeypatch, device, orig_freq
         )
 
     x = torch.randn(2, T, device=device, dtype=torch.float64, requires_grad=True)
-    compiled = torch.compile(loss, fullgraph=True)
+    compiled = torch.compile(loss, backend="aot_eager", fullgraph=True)
     (grad_compiled,) = torch.autograd.grad(compiled(x), x)
     (grad_eager,) = torch.autograd.grad(loss(x), x)
     torch.testing.assert_close(grad_compiled, grad_eager)
     torch.testing.assert_close(compiled(x), loss(x))
+
+
+@pytest.mark.parametrize("device", _DEVICES)
+def test_resample_trains_after_an_inference_mode_call(device):
+    # The first call caches the filter, here in inference mode, and a later
+    # call must still save it for backward. Rates no other test uses, so that
+    # the cache is cold.
+    x = torch.randn(2, 40, device=device, dtype=torch.float64, requires_grad=True)
+    with torch.inference_mode():
+        resample(x, 13, 17)
+    (grad,) = torch.autograd.grad(resample(x, 13, 17).sum(), x)
+    assert grad.shape == x.shape
 
 
 @pytest.mark.parametrize("device", _DEVICES)
@@ -472,13 +485,42 @@ def test_resample_equal_rates_low_pass_instead_of_copying(device):
 @pytest.mark.cuda
 @pytest.mark.parametrize("orig_freq, new_freq", [(2, 3), (147, 160)])
 def test_resample_cuda_large_batch(orig_freq, new_freq):
-    # More rows than a CUDA grid dimension holds (65535 blocks): the launch
-    # is chunked. 70000 rows of 8 samples, against the CPU convolution.
-    gen = torch.Generator().manual_seed(1)
-    x = torch.randn(70000, 8, dtype=torch.float64, generator=gen)
-    expected = resample(x, orig_freq, new_freq)
-    actual = resample(x.cuda(), orig_freq, new_freq)
+    # 2**19 rows, more than the 65535 blocks of 8 rows a grid's y dimension
+    # holds: the launch is split in two. The rows on either side of the split,
+    # against the CPU convolution.
+    x = torch.randn(2**19, 4, dtype=torch.float64, device="cuda")
+    rows = slice(65535 * 8 - 8, None)
+    expected = resample(x[rows].cpu(), orig_freq, new_freq)
+    actual = resample(x, orig_freq, new_freq)[rows]
     torch.testing.assert_close(actual.cpu(), expected, **_TOLS[torch.float64])
+
+
+@pytest.mark.cuda
+def test_resample_cuda_longest_filter():
+    # 6000 -> 1 in HQ: 1,153,761 taps, within the bound on the filter.
+    x = torch.randn(1, 12000, dtype=torch.float64)
+    expected = resample(x, 6000, 1)
+    actual = resample(x.cuda(), 6000, 1)
+    torch.testing.assert_close(actual.cpu(), expected, **_TOLS[torch.float64])
+
+
+@pytest.mark.cuda
+def test_resample_op_asserts_offsets_within_the_padding(tmp_path):
+    # Offsets of a tile further apart than the table's padding would read past
+    # it. A device-side assert ends the CUDA context: run in a subprocess.
+    code = """
+import torch, philtorch
+x = torch.zeros(1, 1001, device="cuda")
+table = torch.zeros(2, 1, device="cuda")
+first = torch.tensor([0, 1000], device="cuda")
+torch.ops.philtorch.resample(x, table, first, table, first, 1, 2)
+torch.cuda.synchronize()
+"""
+    result = subprocess.run(
+        [sys.executable, "-c", code], cwd=tmp_path, capture_output=True, text=True
+    )
+    assert result.returncode != 0
+    assert "device-side assert" in result.stderr
 
 
 @pytest.mark.cuda

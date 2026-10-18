@@ -1,14 +1,14 @@
 #include <ATen/ATen.h>
 #include <ATen/OpMathType.h>
 #include <ATen/ceil_div.h>
-#include <ATen/cuda/CUDAContext.h>
 #include <ATen/cuda/DeviceUtils.cuh>
 #include <c10/cuda/CUDAException.h>
+#include <c10/cuda/CUDAFunctions.h>
 #include <c10/cuda/CUDAGuard.h>
+#include <c10/cuda/CUDAStream.h>
 #include <torch/library.h>
 
 #include <algorithm>
-#include <bit>
 #include <cstdint>
 
 // philtorch::resample(x, table, first, table_t, first_t, q, out_len): the
@@ -40,12 +40,13 @@
 
 namespace {
 
-// The largest p, q and taps.  It keeps the int arithmetic of tile_kernel (the
-// offsets within a tile, p, q, taps) from overflowing, whatever T is: the zero
-// padding of a table row is at most (R - 1) q / p + 1 <= 7 kMaxTable + 1
+// The largest p, q and taps, as large as Python's bound on the filter, p (q +
+// taps) <= 2^22, lets them be.  It keeps the int arithmetic of tile_kernel
+// (the offsets within a tile, p, q, taps) from overflowing, whatever T is: the
+// zero padding of a table row is at most (R - 1) q / p + 2 <= 7 kMaxTable + 2
 // entries on either side, so the padded row length, the offsets d_j and the
 // range of u all fit in 32 bits.
-constexpr int64_t kMaxTable = int64_t(1) << 20;
+constexpr int64_t kMaxTable = int64_t(1) << 22;
 
 constexpr int kWarp = C10_WARP_SIZE;
 // The shuffle code (full masks, groups of lanes that divide a warp) is written
@@ -57,8 +58,8 @@ constexpr int kBlock = kWarp * kWarpsPerBlock;  // 128 threads, any architecture
 // for A accumulators, and a load of one group covers kGroupLanes consecutive
 // elements (a 32-byte sector in float), so fewer lanes cut the reduction at
 // the price of wider loads, which are then split among the groups of a warp.
-constexpr int kGroupLanes = 8;
-constexpr int kGroupLaneLevels = std::bit_width(static_cast<unsigned>(kGroupLanes)) - 1;  // log2
+constexpr int kGroupLaneLevels = 3;
+constexpr int kGroupLanes = 1 << kGroupLaneLevels;  // 8
 // Accumulators (R BB) of a lane: with R + BB loads per R BB multiply-adds, 32
 // gives a load per 2.7 multiply-adds at a register count (about 128) that
 // still lets several blocks share a multiprocessor.
@@ -73,8 +74,11 @@ constexpr int kMaxTileOutputs = 8;
 
 // The largest power of two that is at most max and at most B >= 1.
 inline int pow2_rows(int64_t B, int max) {
-    return static_cast<int>(
-        std::min<int64_t>(std::bit_floor(static_cast<uint64_t>(B)), max));
+    int rows = 1;
+    while (rows < max && 2 * rows <= B) {
+        rows *= 2;
+    }
+    return rows;
 }
 
 // Calls launch(chunk, grid) for the chunks of the batch that fit the y extent
@@ -84,11 +88,14 @@ inline int pow2_rows(int64_t B, int max) {
 template <typename Args, typename Launch>
 void launch_chunked(const Args &a, int64_t outputs_per_block,
                     int rows_per_block, Launch &&launch) {
-    const auto *prop = at::cuda::getCurrentDeviceProperties();
+    const int device = c10::cuda::current_device();
+    int max_x = 0, max_y = 0;
+    C10_CUDA_CHECK(cudaDeviceGetAttribute(&max_x, cudaDevAttrMaxGridDimX, device));
+    C10_CUDA_CHECK(cudaDeviceGetAttribute(&max_y, cudaDevAttrMaxGridDimY, device));
     const int64_t grid_x = at::ceil_div<int64_t>(a.out_len, outputs_per_block);
-    TORCH_CHECK(grid_x <= prop->maxGridSize[0], "out_len ", a.out_len,
+    TORCH_CHECK(grid_x <= max_x, "out_len ", a.out_len,
                 " exceeds the CUDA grid dimension limit");
-    const int64_t rows = int64_t{prop->maxGridSize[1]} * rows_per_block;
+    const int64_t rows = int64_t{max_y} * rows_per_block;
     for (int64_t b_off = 0; b_off < a.B; b_off += rows) {
         Args chunk = a;
         chunk.B = std::min<int64_t>(a.B - b_off, rows);
@@ -162,8 +169,7 @@ __global__ void __launch_bounds__(kBlock) tile_kernel(const TileArgs<scalar_t> a
     int d[R];
     const acc_t *wp[R];  // wp[j][u] is the weight of output j at input nlo0 + u
     {
-        const int q = static_cast<int>(a.q);
-        int df = 0;
+        int64_t df = 0;
 #pragma unroll
         for (int j = 0; j < R; ++j) {
             if (j > 0 && m0c + j < a.out_len) {
@@ -172,7 +178,11 @@ __global__ void __launch_bounds__(kBlock) tile_kernel(const TileArgs<scalar_t> a
                     ++df;
                 }
             }
-            d[j] = df * q + static_cast<int>(a.first[i] - nlo_i0);
+            const int64_t dj = df * a.q + (a.first[i] - nlo_i0);
+            // The padding covers the reads of the tile only for offsets in
+            // [0, pad], which the table of interp.py gives.
+            CUDA_KERNEL_ASSERT(dj >= 0 && dj <= a.pad);
+            d[j] = static_cast<int>(dj);
             wp[j] = a.table + static_cast<int64_t>(i) * a.ts + a.pad - d[j];
         }
     }
@@ -261,7 +271,7 @@ template <typename scalar_t>
 at::Tensor resample_run(const at::Tensor &x, const at::Tensor &table,
                         const at::Tensor &first, int64_t q, int64_t out_len) {
     using acc_t = at::opmath_type<scalar_t>;
-    const auto stream = at::cuda::getCurrentCUDAStream().stream();
+    const auto stream = c10::cuda::getCurrentCUDAStream().stream();
     const int64_t B = x.size(0), T = x.size(1);
     const int64_t p = table.size(0), taps = table.size(1);
 
