@@ -4,6 +4,7 @@ import pytest
 import torch
 from scipy.interpolate import CubicSpline
 from scipy.signal import cspline1d, cspline1d_eval, kaiser_beta, kaiserord, resample_poly
+from torch.utils._python_dispatch import TorchDispatchMode
 
 from philtorch.lti.interp import (
     _QUALITY_PRESETS,
@@ -485,6 +486,23 @@ def test_resample_forward_mode_in_the_parameters(device, orig_freq, new_freq, T)
 
 
 @pytest.mark.cuda
+def test_resample_jvp_runs_one_op_call_per_tangent():
+    # An x-only tangent is one call besides the forward: no zero tangent of the
+    # table is materialized and resampled.
+    calls = []
+
+    class Count(TorchDispatchMode):
+        def __torch_dispatch__(self, func, types, args=(), kwargs=None):
+            calls.extend([func] if func.name().startswith("philtorch::resample") else [])
+            return func(*args, **(kwargs or {}))
+
+    x = torch.randn(2, 40, device="cuda", dtype=torch.float64)
+    with Count():
+        torch.func.jvp(lambda t: resample(t, 2, 3), (x,), (torch.randn_like(x),))
+    assert len(calls) == 2
+
+
+@pytest.mark.cuda
 def test_resample_vmap_over_the_parameters_is_not_supported():
     x = torch.randn(3, 2, 12, device="cuda", dtype=torch.float64)
     betas = torch.tensor([6.0, 7.0, 8.0], device="cuda", dtype=torch.float64)
@@ -641,6 +659,9 @@ def test_resample_op_with_no_outputs():
         (dict(beta=-1.0), "beta must be non-negative, got -1.0"),
         (dict(num_zeros=0), "num_zeros must be a positive integer, got 0"),
         (dict(orig_freq=999983, new_freq=1000003), "limit_denominator"),
+        # A cutoff so small that the filter's span overflows, or that underflows.
+        (dict(rolloff=1e-309), "limit_denominator"),
+        (dict(orig_freq=2, new_freq=1, rolloff=5e-324), "limit_denominator"),
         # The table alone (5001 phases of 196 taps) would fit; the dense kernel,
         # 5001 x (5000 + 196), does not.
         (dict(orig_freq=5000, new_freq=5001), "limit_denominator"),

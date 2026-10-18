@@ -238,11 +238,13 @@ def _cutoff(p: int, q: int, rolloff: float | Tensor) -> float | Tensor:
     return rolloff * p / q if p < q else rolloff
 
 
-def _num_taps(p: int, q: int, rolloff: float, num_zeros: int) -> int:
-    """The number of taps of one output of the resampler."""
+def _num_taps(p: int, q: int, rolloff: float, num_zeros: int) -> float:
+    """The taps of one output of the resampler; inf when the cutoff underflows."""
     # The window is open, |t - n| < S = N_z / c: with K = ceil(S), the taps
     # n = floor(t) - K .. floor(t) + K + 1 hold it, 2 K + 2 in all.
-    return 2 * math.ceil(num_zeros / _cutoff(p, q, rolloff)) + 2
+    c = _cutoff(p, q, rolloff)
+    S = num_zeros / c if c > 0 else math.inf
+    return 2 * math.ceil(S) + 2 if math.isfinite(S) else math.inf
 
 
 def _polyphase_table(
@@ -311,9 +313,14 @@ class _Resample(torch.autograd.Function):
     def setup_context(ctx, inputs, output):
         _resample_setup_context(ctx, inputs, output)
         ctx.save_for_forward(*inputs[:2])
+        # Inputs without a tangent reach the jvp as None, not zeros, so that it
+        # skips their term; so does an output without a gradient reach backward.
+        ctx.set_materialize_grads(False)
 
     @staticmethod
     def backward(ctx, grad):
+        if grad is None:  # no gradient reached the output; see setup_context
+            return None, None, None, None
         return _resample_gradient(_Resample.apply, ctx, grad)
 
     @staticmethod
