@@ -64,6 +64,19 @@ Benchmarks live in `benchmarks/` and run as `pixi run python benchmarks/<name>.p
 - Kernels are prototyped and tuned in Helion, a development tool the package never imports, and shipped as Triton with their configurations fixed: there is no autotuning at runtime. The algorithms in `estimation/` and `align/` ship only parallel implementations; sequential recursions belong in tests, as references.
 - `philtorch/prototype/` holds unreleased research code.
 
+## Native ops
+
+- **Autograd in two places, one gradient.** An op's eager path is an `autograd.Function`, which also defines `jvp` and `vmap`; under `torch.compile` code calls the op itself, whose `torch.library.register_autograd` serves Dynamo, which can't trace an `autograd.Function` with a `jvp`. Both call one gradient function, as `_recur.py` does with `_gradients(run, ...)`, `run` being the function's `apply` or the op. Write a backward with the op and differentiable PyTorch ops, never a backward-only kernel, so that derivatives exist to any order.
+- **Accumulation:** kernels read and write `scalar_t` and compute in `at::opmath_type<scalar_t>`, so float16 and bfloat16 are summed in float32. Dispatch with the `AT_DISPATCH_*` macros the op's dtypes need (no complex when it takes none), and report errors with `TORCH_CHECK`.
+- **Portable C++:** C++17, as the oldest supported PyTorch builds use (no `<bit>`); include the `c10/cuda` headers, not `ATen/cuda/CUDAContext.h`, whose `cusparse.h` the CUDA CI image lacks.
+- **Graph-capturable launches:** no host-to-device copy or synchronization in the launch path. Prefer arguments that are valid by construction, such as offsets computed from shapes, to device-side asserts, whose tests need a subprocess, as an assert ends the CUDA context.
+- **Cached device tensors** (a filter table, an index):
+  - Under Dynamo, wrap the `lru_cache` in `torch.compiler.assume_constant_result` through a lambda, or Dynamo traces into it.
+  - Build them under `torch.inference_mode(False)`, or a later training call can't save them for backward.
+  - Use the cache only for plain tensors (`type(t) is torch.Tensor`): traced code (`torch.compile`, `opcheck`) passes fake or functional tensors, which the cache would keep, and SymInt shapes, which it can't hash.
+  - Make a CUDA entry complete before it is cached (synchronize its stream on a miss), and call `record_stream` on each use, so that other streams read it whole and its memory isn't reused under their work. A miss during CUDA graph capture is an error: warm the caches up first.
+  - A test of another stream's use: autograd runs a backward on its forward's stream, and CUDA's lazy module loading synchronizes on a kernel's first launch and hides races, so launch the kernels once first.
+
 ## Conventions
 
 - **Coefficients:** the denominator `a` excludes `a0`, so SciPy-equivalent calls prepend `1.0` (in tests, `[1.0] + a.tolist()`). `lfilter_zi` takes `(a, b)`, the reverse of SciPy's order.
@@ -77,6 +90,7 @@ Benchmarks live in `benchmarks/` and run as `pixi run python benchmarks/<name>.p
   - math in reStructuredText;
   - `Raises:` lists the errors bad input triggers; argument errors are `ValueError`s, not asserts.
 - **New public functions** need an entry on their page in `docs/api/*.rst`.
+- **Third-party code:** never port GPL or LGPL code, not even into a comment: philtorch is MIT. Take values measured from such a library, or derive them anew, and cite the source; squash-merge a branch whose history held such a port.
 - **Docstring examples:** if a module's docstrings have examples, add the module to `MODULES` in `tests/test_docstrings.py`, or, for Triton code, to `CUDA_MODULES` in `tests/test_docstrings_cuda.py` (checked only on CUDA machines). Load it with `importlib.import_module` when a function of the same name shadows it, as `philtorch.align.dtw` does.
 
 ## Tests and CI
@@ -89,3 +103,4 @@ Benchmarks live in `benchmarks/` and run as `pixi run python benchmarks/<name>.p
 
 - Branch from `dev` and open pull requests against `dev`; PR bodies follow `.github/pull_request_template.md`.
 - Never merge into `main`. A release fast-forwards `main` to a `dev` commit and tags it with a three-part `vX.Y.Z` tag (setuptools_scm), as described in `CONTRIBUTING.md`.
+- **Copilot reviews** arrive as comments: "Approval recommended" in the summary is its approval. The summary can also list issues it previously missed, outside any review thread, so read the review body as well as its threads.
