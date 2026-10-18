@@ -566,11 +566,12 @@ def test_resample_cuda_row_blocks(orig_freq, new_freq):
 
 
 @pytest.mark.cuda
-def test_resample_empty_input_with_cuda_parameters():
-    x = torch.empty(2, 0, dtype=torch.float64, requires_grad=True)
+def test_resample_takes_parameters_on_another_device():
+    x = torch.randn(2, 12, dtype=torch.float64)
     params = _params("cuda", requires_grad=True)
     y = _grad_fn(2, 3)(x, *params)
-    assert all(g == 0 for g in torch.autograd.grad(y.sum(), params))
+    torch.testing.assert_close(y, _grad_fn(2, 3)(x))
+    assert all(g.device.type == "cuda" for g in torch.autograd.grad(y.sum(), params))
 
 
 @pytest.mark.cuda
