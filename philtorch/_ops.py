@@ -256,8 +256,36 @@ def _resample_fake(x, table, first, table_t, first_t, q, out_len):
 
 
 def _resample_setup_context(ctx, inputs, output):
-    x, *ctx.params = inputs
-    ctx.in_len = x.shape[1]
+    x, table, first, table_t, first_t, q, _ = inputs
+    # x is read by the table's gradient only.
+    ctx.save_for_backward(x if ctx.needs_input_grad[1] else None, table, first, table_t, first_t)
+    ctx.q, ctx.in_len, ctx.out_len = q, x.shape[1], output.shape[1]
+
+
+def _resample_table_gradient(x, grad, table, first, q):
+    """The gradient in ``table`` of ``philtorch::resample``, from x and grad.
+
+    It is ``sum_{b, f} grad[b, f p + i] x[b, q f + first[i] + k]`` for the
+    entry (i, k) of the table. Frame f of the convolution of ``x``, padded by
+    the taps on the left, with the dense kernel of width ``q + 2 taps``, has
+    ``f p + i`` as output i, so the weight gradient of that convolution
+    holds the sum at column ``first[i] + taps + k``. The tables of
+    :mod:`philtorch.lti.interp` have ``-taps < first[i] <= q`` for every
+    phase, so these columns lie within the kernel.
+    """
+    p, taps = table.shape
+    B, out_len = grad.shape
+    frames = -(-out_len // p)
+    width = q + 2 * taps
+    # The op accumulates in float32 for the 16-bit dtypes.
+    acc = torch.promote_types(x.dtype, torch.float32)
+    g = F.pad(grad.to(acc), (0, frames * p - out_len)).reshape(B, frames, p).mT
+    # The right pad crops, or adds zeros, to the length the frames read.
+    right = q * (frames - 1) + width - taps - x.size(1)
+    xp = F.pad(x.to(acc), (taps, right)).unsqueeze(1)
+    dense = torch.nn.grad.conv1d_weight(xp, (p, 1, width), g, stride=q).squeeze(1)
+    columns = first.unsqueeze(1) + taps + torch.arange(taps, device=first.device)
+    return dense.gather(1, columns).to(table.dtype)
 
 
 def _resample_gradient(run, ctx, grad):
@@ -267,12 +295,21 @@ def _resample_gradient(run, ctx, grad):
     compiled code. The weights are scale g(c (t - n)) for an even g, so the
     transpose, entry [n, m], is the same construction with the rates swapped
     (c' (n p / q - m) = -c (m q / p - n), c = rho min(1, p / q) and
-    c' = rho min(1, q / p)): the op with the tables swapped, p as the stride
-    and x's length as the output length. Only x has a gradient.
+    c' = rho min(1, q / p)): the gradient in x is the op with the tables
+    swapped, p as the stride and x's length as the output length. The op is
+    linear in the table as well: the gradient in ``table`` is
+    :func:`_resample_table_gradient`. ``table_t`` gets none, as the forward
+    never reads it: its gradient comes through this function's own call of
+    ``run``, which passes it as the table.
     """
-    table, first, table_t, first_t, _, _ = ctx.params
-    grad_x = run(grad, table_t, first_t, table, first, table.size(0), ctx.in_len)
-    return (grad_x,) + (None,) * 6
+    x, table, first, table_t, first_t = ctx.saved_tensors
+    needs_x, needs_table = ctx.needs_input_grad[:2]
+    grad_x = grad_table = None
+    if needs_x:
+        grad_x = run(grad, table_t, first_t, table, first, table.size(0), ctx.in_len)
+    if needs_table:
+        grad_table = _resample_table_gradient(x, grad, table, first, ctx.q)
+    return grad_x, grad_table, None, None, None, None, None
 
 
 for name, order, time_invariant in [

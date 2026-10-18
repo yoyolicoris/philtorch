@@ -91,6 +91,18 @@ def _as_float(value: Any, name: str) -> float:
     return value
 
 
+def _as_param(value: Any, name: str) -> float | Tensor:
+    """A float or a 0-D floating-point tensor, as a design parameter."""
+    if isinstance(value, Tensor):
+        if value.dim() != 0 or not value.is_floating_point():
+            raise ValueError(
+                f"{name} must be a real number or a 0-D floating-point tensor, "
+                f"got a {value.dim()}-D tensor of {value.dtype}"
+            )
+        return value
+    return _as_float(value, name)
+
+
 def _first_order_filt(
     x: Tensor, a: Tensor, zi: Tensor, b: Tensor | None = None, **kwargs
 ) -> Tensor:
@@ -249,9 +261,14 @@ def cubic_spline(x: Tensor, m: int, scipy_padding: bool = False, **kwargs) -> Te
     return interped[..., : -(m - 1)]
 
 
+def _cutoff(p: int, q: int, rolloff: float | Tensor) -> float | Tensor:
+    """The cutoff c of the resampler for the rates q -> p."""
+    return rolloff * p / q if p < q else rolloff
+
+
 def _filter_taps(p: int, q: int, rolloff: float, num_zeros: int) -> tuple[float, int]:
     """The cutoff c and the number of taps of one output of the resampler."""
-    c = rolloff * p / q if p < q else rolloff
+    c = _cutoff(p, q, rolloff)
     # The window is open, |c (frac - k)| < N_z: at most floor(2 S) + 1 taps for
     # S = N_z / c; one more is a guard against rounding at the edge.
     return c, math.floor(2 * num_zeros / c) + 2
@@ -275,7 +292,14 @@ def _constant_cache(fn):
 
 
 def _polyphase_table(
-    p: int, q: int, rolloff: float, beta: float, num_zeros: int, scale: float
+    p: int,
+    q: int,
+    rolloff: float | Tensor,
+    beta: float | Tensor,
+    num_zeros: int,
+    scale: float | Tensor,
+    device: torch.device | None = None,
+    layout: float | None = None,
 ) -> tuple[Tensor, Tensor]:
     """The weights of the resampler in the polyphase form, for rates q -> p.
 
@@ -284,20 +308,36 @@ def _polyphase_table(
     ``scale * g(c (t - n))`` for the window g of :func:`resample`, at the input
     time ``t = (i q) / p`` of phase i and the n of its taps. The integer part
     of t and the remainder (i q mod p) / p are computed exactly.
+
+    ``rolloff``, ``beta`` and ``scale`` are floats, or 0-D float64 tensors on
+    ``device`` that the table is differentiable in. The layout (``first`` and
+    the number of taps) follows ``layout``, the float value of ``rolloff``,
+    which is ``rolloff`` itself if left out.
     """
-    c, taps = _filter_taps(p, q, rolloff, num_zeros)
-    i = torch.arange(p, dtype=torch.int64)
+    c_layout, taps = _filter_taps(p, q, rolloff if layout is None else layout, num_zeros)
+    c = _cutoff(p, q, rolloff)
+    i = torch.arange(p, dtype=torch.int64, device=device)
     whole = (i * q) // p
     frac = ((i * q) % p).double() / p
-    first = whole + torch.ceil(frac - num_zeros / c).long()
-    k = torch.arange(taps, dtype=torch.float64)
+    first = whole + torch.ceil(frac - num_zeros / c_layout).long()
+    k = torch.arange(taps, dtype=torch.float64, device=device)
     z = c * (frac - (first - whole).double()).unsqueeze(1) - c * k
+    inside = z.abs() < num_zeros
     # I0(beta sqrt(1 - u^2)) / I0(beta) from the scaled i0e, which cannot
-    # overflow for a large beta.
-    arg = beta * torch.sqrt((1 - (z / num_zeros) ** 2).clamp(min=0))
-    window = torch.special.i0e(arg) / torch.special.i0e(torch.tensor(beta, dtype=torch.float64))
-    window = window * torch.exp(arg - beta)
-    table = torch.where(z.abs() < num_zeros, scale * torch.sinc(z) * window, 0.0)
+    # overflow for a large beta. i0e is even, and |arg| - |beta| is the
+    # exponent of the scaling, so a negative beta gives the window of |beta|.
+    # Outside the window the argument is 1, where the square root has a finite
+    # derivative.
+    beta = torch.as_tensor(beta, dtype=torch.float64, device=device)
+    arg = beta * torch.sqrt(torch.where(inside, 1 - (z / num_zeros) ** 2, 1.0))
+    window = torch.special.i0e(arg) / torch.special.i0e(beta)
+    window = window * torch.exp(arg.abs() - beta.abs())
+    # sinc by hand: torch.sinc's second derivative is NaN at 0, where z = 0
+    # for every c (it is c times an integer).
+    nonzero = z != 0
+    z_pi = math.pi * torch.where(nonzero, z, 1.0)
+    sinc = torch.where(nonzero, torch.sin(z_pi) / z_pi, 1.0)
+    table = torch.where(inside, scale * sinc * window, 0.0)
     return table, first
 
 
@@ -324,6 +364,18 @@ def _tables_on(
     )
 
 
+def _dense_kernel(table: Tensor, first: Tensor) -> tuple[Tensor, int]:
+    """The (p, 1, L) kernel of :func:`_polyphase_conv`, and ``min(first)``.
+
+    The first tap of a phase grows with the phase, so ``first[0]`` is the
+    smallest and ``first[-1]`` the largest.
+    """
+    shift, last = int(first[0]), int(first[-1])
+    offset = (first - shift).unsqueeze(1) + torch.arange(table.size(1), device=first.device)
+    kernel = table.new_zeros(table.size(0), last - shift + table.size(1))
+    return kernel.scatter(1, offset, table).unsqueeze(1), shift
+
+
 @_constant_cache
 def _conv_kernel(
     p: int,
@@ -332,16 +384,9 @@ def _conv_kernel(
     device: torch.device,
     dtype: torch.dtype,
 ) -> tuple[Tensor, int]:
-    """The (p, 1, L) kernel of :func:`_polyphase_conv`, and ``min(first)``.
-
-    The first tap of a phase grows with the phase, so ``first[0]`` is the
-    smallest and ``first[-1]`` the largest.
-    """
-    table, first = _polyphase_table(p, q, *design)
-    shift, last = int(first[0]), int(first[-1])
-    offset = (first - shift).unsqueeze(1) + torch.arange(table.size(1))
-    kernel = table.new_zeros(p, last - shift + table.size(1)).scatter_(1, offset, table)
-    return kernel.unsqueeze(1).to(device=device, dtype=dtype), shift
+    """The kernel of :func:`_polyphase_conv` for q -> p, and its shift."""
+    kernel, shift = _dense_kernel(*_polyphase_table(p, q, *design))
+    return kernel.to(device=device, dtype=dtype), shift
 
 
 def _polyphase_conv(x: Tensor, kernel: Tensor, shift: int, q: int, out_len: int) -> Tensor:
@@ -361,10 +406,12 @@ def _polyphase_conv(x: Tensor, kernel: Tensor, shift: int, q: int, out_len: int)
 class _Resample(torch.autograd.Function):
     """The CUDA op in eager mode, with its ``jvp`` and ``vmap``.
 
-    Resampling is linear: the tangent is the op applied to ``dx``, and the
-    gradient is :func:`philtorch._ops._resample_gradient`, which the op's
-    registered autograd, used under :func:`torch.compile` (Dynamo can't trace
-    an autograd function with a ``jvp``), shares.
+    Resampling is bilinear in the signal and the table: the tangent is the op
+    applied to ``dx`` and to ``dtable``, and the gradients are
+    :func:`philtorch._ops._resample_gradient`, which the op's registered
+    autograd, used under :func:`torch.compile` (Dynamo can't trace an autograd
+    function with a ``jvp``), shares. ``table_t``, read only by the backward
+    pass, has no tangent in the forward and no gradient from this call.
     """
 
     @staticmethod
@@ -379,18 +426,30 @@ class _Resample(torch.autograd.Function):
     ) -> Tensor:
         return torch.ops.philtorch.resample(x, table, first, table_t, first_t, q, out_len)
 
-    setup_context = staticmethod(_resample_setup_context)
+    @staticmethod
+    def setup_context(ctx, inputs, output):
+        _resample_setup_context(ctx, inputs, output)
+        ctx.save_for_forward(*inputs[:5])
 
     @staticmethod
     def backward(ctx, grad):
         return _resample_gradient(_Resample.apply, ctx, grad)
 
     @staticmethod
-    def jvp(ctx, dx, *_):
-        return _Resample.apply(dx, *ctx.params)
+    def jvp(ctx, dx, dtable, *_):
+        x, table, first, table_t, first_t = ctx.saved_tensors
+        rest = (first, table_t, first_t, ctx.q, ctx.out_len)
+        tangents = []
+        if dx is not None:
+            tangents.append(_Resample.apply(dx, table, *rest))
+        if dtable is not None:
+            tangents.append(_Resample.apply(x, dtable, *rest))
+        return sum(tangents) if tangents else None
 
     @staticmethod
     def vmap(info, in_dims, x, *params):
+        if any(d is not None for d in in_dims[1:5]):
+            raise NotImplementedError("resample: vmap over rolloff or beta is not supported")
         x = x.movedim(in_dims[0], 0)
         V, B, T = x.shape
         y = _Resample.apply(x.reshape(V * B, T), *params)
@@ -403,8 +462,8 @@ def resample(
     new_freq: int,
     quality: str | None = "HQ",
     *,
-    rolloff: float | None = None,
-    beta: float | None = None,
+    rolloff: float | Tensor | None = None,
+    beta: float | Tensor | None = None,
     num_zeros: int | None = None,
 ) -> Tensor:
     r"""Resample signals between two sampling rates with a Kaiser-sinc filter.
@@ -443,9 +502,15 @@ def resample(
     can miss the 20-bit target of ``"HQ"``, about -126 dB, and misses the
     28-bit target of ``"VHQ"``, about -175 dB: use ``float64`` for them.
 
-    Gradients and forward-mode derivatives exist in :attr:`x` to any order.
-    On CUDA, :func:`torch.func.jvp` and :func:`torch.func.vmap` work in eager
-    mode; :func:`torch.compile` supports reverse mode.
+    Gradients and forward-mode derivatives exist in :attr:`x` to any order,
+    and in :attr:`rolloff` and :attr:`beta` when they are 0-D tensors. The
+    value of :attr:`rolloff` sets which taps the filter has, so its gradient
+    holds them fixed and ignores the jump when a tap enters or leaves the
+    window; a tensor :attr:`rolloff` also costs a device synchronization and
+    a graph break under :func:`torch.compile`. A tensor :attr:`beta` is not
+    range-checked, and a negative one acts as its absolute value. On CUDA,
+    :func:`torch.func.jvp` and :func:`torch.func.vmap` (over :attr:`x` only)
+    work in eager mode; :func:`torch.compile` supports reverse mode.
 
     Args:
         x (Tensor): signals, of shape :math:`(B, T)`, in a floating-point
@@ -469,10 +534,13 @@ def resample(
 
             Explicit :attr:`rolloff`, :attr:`beta` or :attr:`num_zeros`
             override the preset's values. Default: ``"HQ"``.
-        rolloff (float, optional): the filter cutoff :math:`\rho \in (0, 1]` as
-            a fraction of the lower Nyquist frequency. Default: ``None``.
-        beta (float, optional): the Kaiser window shape parameter
-            :math:`\beta \ge 0`. Default: ``None``.
+        rolloff (float or Tensor, optional): the filter cutoff
+            :math:`\rho \in (0, 1]` as a fraction of the lower Nyquist
+            frequency; a float, or a 0-D floating-point tensor. Default:
+            ``None``.
+        beta (float or Tensor, optional): the Kaiser window shape parameter
+            :math:`\beta \ge 0`; a float, or a 0-D floating-point tensor.
+            Default: ``None``.
         num_zeros (int, optional): the number of zero-crossings
             :math:`N_z \ge 1` per side of the sinc mainlobe. Default: ``None``.
 
@@ -487,9 +555,10 @@ def resample(
             :attr:`orig_freq` or :attr:`new_freq` is not a positive integer,
             if :attr:`quality` is unknown or ``None`` without all of
             :attr:`rolloff`, :attr:`beta` and :attr:`num_zeros`, if
-            :attr:`rolloff`, :attr:`beta` or :attr:`num_zeros` is out of
-            range, or if the polyphase filter would hold more than
-            :math:`2^{22}` coefficients.
+            :attr:`rolloff` or :attr:`beta` is a tensor that is not 0-D and
+            floating-point, if :attr:`rolloff`, :attr:`beta` or
+            :attr:`num_zeros` is out of range, or if the polyphase filter would
+            hold more than :math:`2^{22}` coefficients.
 
     Example::
 
@@ -516,15 +585,17 @@ def resample(
     preset = _QUALITY_PRESETS.get(quality, (None, None, None))
     if quality is None and any(v is None for v in (rolloff, beta, num_zeros)):
         raise ValueError("when quality is None, rolloff, beta and num_zeros must all be given")
-    rolloff = preset[0] if rolloff is None else _as_float(rolloff, "rolloff")
-    if not 0.0 < rolloff <= 1.0:
-        raise ValueError(f"rolloff must be in (0, 1], got {rolloff}")
-    beta = preset[1] if beta is None else _as_float(beta, "beta")
-    if beta < 0.0:
+    rolloff = preset[0] if rolloff is None else _as_param(rolloff, "rolloff")
+    # The filter's length follows rolloff's value: a sync for a CUDA tensor.
+    layout = float(rolloff.detach() if isinstance(rolloff, Tensor) else rolloff)
+    if not 0.0 < layout <= 1.0:
+        raise ValueError(f"rolloff must be in (0, 1], got {layout}")
+    beta = preset[1] if beta is None else _as_param(beta, "beta")
+    if not isinstance(beta, Tensor) and beta < 0.0:
         raise ValueError(f"beta must be non-negative, got {beta}")
     num_zeros = preset[2] if num_zeros is None else _positive_int(num_zeros, "num_zeros")
 
-    c, taps = _filter_taps(new, orig, rolloff, num_zeros)
+    c, taps = _filter_taps(new, orig, layout, num_zeros)
     if new * (orig + taps) > _MAX_KERNEL:
         raise ValueError(
             f"the filter for the reduced rates {orig} -> {new} needs {new} phases "
@@ -537,14 +608,34 @@ def resample(
     if x.numel() == 0 or out_len == 0:
         # Nothing to compute; the pad keeps the output in x's graph, with zero gradient.
         return F.pad(x[:, :0], (0, out_len))
-    # The transpose uses the same scale, the cutoff c of this direction.
-    design = (rolloff, beta, num_zeros, c)
     dtype = torch.float64 if x.dtype == torch.float64 else torch.float32
-    if x.is_cuda and _HAS_RESAMPLE_OP:
-        tables = _tables_on(new, orig, design, x.device, dtype)
+    on_cuda = x.is_cuda and _HAS_RESAMPLE_OP
+    if isinstance(rolloff, Tensor) or isinstance(beta, Tensor):
+        # Tables the gradient reaches the tensors through: built on x's device
+        # in float64, uncached.
+        rolloff, beta = (
+            torch.as_tensor(v, dtype=torch.float64, device=x.device) for v in (rolloff, beta)
+        )
+        # The transpose uses the same scale, the cutoff c of this direction.
+        design = (rolloff, beta, num_zeros, _cutoff(new, orig, rolloff), x.device, layout)
+
+        def table(p: int, q: int) -> tuple[Tensor, Tensor]:
+            weights, first = _polyphase_table(p, q, *design)
+            return weights.to(dtype), first
+
+        if on_cuda:
+            tables = (*table(new, orig), *table(orig, new))
+        else:
+            kernel, shift = _dense_kernel(*table(new, orig))
+    else:
+        design = (rolloff, beta, num_zeros, c)
+        if on_cuda:
+            tables = _tables_on(new, orig, design, x.device, dtype)
+        else:
+            kernel, shift = _conv_kernel(new, orig, design, x.device, dtype)
+    if on_cuda:
         # Dynamo can't trace an autograd.Function with a jvp: compiled code
         # calls the registered op, whose autograd is the same transpose.
         apply = torch.ops.philtorch.resample if torch.compiler.is_compiling() else _Resample.apply
         return apply(x, *tables, orig, out_len)
-    kernel, shift = _conv_kernel(new, orig, design, x.device, dtype)
     return _polyphase_conv(x.to(dtype), kernel, shift, orig, out_len).to(x.dtype)
