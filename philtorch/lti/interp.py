@@ -14,11 +14,11 @@ from .delay import _as_int
 from .recur import linear_recurrence
 
 # (precision in bits, passband_end) of libsoxr's presets, with stopband_begin
-# = 1: the values soxr_quality_spec returns in libsoxr 0.1.3 (LQ's is soxr.c's
-# LOW_Q_BW0, 1385 / 2048), taken from the library rather than ported, as its
-# code is LGPL.
+# = 1: the values soxr_quality_spec returns in libsoxr 0.1.3 (LQ's, exactly
+# 1385 / 2048, is soxr.c's LOW_Q_BW0), taken from the library rather than
+# ported, as its code is LGPL.
 _QUALITY_RECIPES: dict[str, tuple[int, float]] = {
-    "LQ": (16, 1385 / 2048),
+    "LQ": (16, 0.67626953125),
     "MQ": (16, 0.9158810491765671),
     "HQ": (20, 0.9137436532733066),
     "VHQ": (28, 0.9113283198951663),
