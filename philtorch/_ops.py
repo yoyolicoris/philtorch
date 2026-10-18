@@ -8,6 +8,7 @@ defines the gradients once; torchlpc's ``lpc``, an all-pole filter, keeps its
 own.
 """
 
+import functools
 from typing import Any
 
 import torch
@@ -250,66 +251,101 @@ def _pararnn_fake(block_size):
     return fake
 
 
-def _resample_fake(x, table, first, table_t, first_t, q, out_len):
+def _resample_fake(x, table, q, out_len):
     torch._check(x.ndim == 2, lambda: f"x must be 2D (B, T), got {x.ndim}D")
     return x.new_empty((x.shape[0], out_len))
 
 
 def _resample_setup_context(ctx, inputs, output):
-    x, table, first, table_t, first_t, q, _ = inputs
+    x, table, q, _ = inputs
     # x is read by the table's gradient only.
-    ctx.save_for_backward(x if ctx.needs_input_grad[1] else None, table, first, table_t, first_t)
+    ctx.save_for_backward(x if ctx.needs_input_grad[1] else None, table)
     ctx.q, ctx.in_len, ctx.out_len = q, x.shape[1], output.shape[1]
 
 
-def _resample_table_gradient(x, grad, table, first, q):
+def _resample_table_gradient(x, grad, table, q):
     """The gradient in ``table`` of ``philtorch::resample``, from x and grad.
 
-    It is ``sum_{b, f} grad[b, f p + i] x[b, q f + first[i] + k]`` for the
-    entry (i, k) of the table. Frame f of the convolution of ``x``, padded by
-    the taps on the left, with the dense kernel of width ``q + 2 taps``, has
-    ``f p + i`` as output i, so the weight gradient of that convolution
-    holds the sum at column ``first[i] + taps + k``. The tables of
-    :mod:`philtorch.lti.interp` have ``-taps < first[i] <= q`` for every
-    phase, so these columns lie within the kernel.
+    It is ``sum_{b, f} grad[b, f p + i] x[b, q f + first_i + k]`` for the entry
+    (i, k) of the table, with ``first_i = (i q) // p - K`` and
+    ``taps = 2 K + 2``. Frame f of the convolution of ``x``, padded by K on the
+    left, with the dense kernel of width ``q + taps - 1``, has ``f p + i`` as
+    output i, so the weight gradient of that convolution holds the sum at column
+    ``(i q) // p + k``, which is below ``q - 1 + taps``.
     """
     p, taps = table.shape
+    K = (taps - 2) // 2
     B, out_len = grad.shape
     frames = -(-out_len // p)
-    width = q + 2 * taps
+    width = q + taps - 1
     # The op accumulates in float32 for the 16-bit dtypes.
     acc = torch.promote_types(x.dtype, torch.float32)
     g = F.pad(grad.to(acc), (0, frames * p - out_len)).reshape(B, frames, p).mT
     # The right pad crops, or adds zeros, to the length the frames read.
-    right = q * (frames - 1) + width - taps - x.size(1)
-    xp = F.pad(x.to(acc), (taps, right)).unsqueeze(1)
+    right = q * (frames - 1) + width - K - x.size(1)
+    xp = F.pad(x.to(acc), (K, right)).unsqueeze(1)
     dense = torch.nn.grad.conv1d_weight(xp, (p, 1, width), g, stride=q).squeeze(1)
-    columns = first.unsqueeze(1) + taps + torch.arange(taps, device=first.device)
+    phase = torch.arange(p, device=table.device)
+    columns = (phase * q // p).unsqueeze(1) + torch.arange(taps, device=table.device)
     return dense.gather(1, columns).to(table.dtype)
+
+
+def _transpose_index(p, q, taps, device):
+    """The index of :func:`_transposed_table` into the flattened table."""
+    K = (taps - 2) // 2
+    K_t = -(-K * p // q)
+    j = torch.arange(q, device=device).unsqueeze(1)
+    m = j * p // q - K_t + torch.arange(2 * K_t + 2, device=device)
+    phase = m % p
+    column = j - (q * (m // p) + phase * q // p - K)
+    # Entries off the taps of their row point at the zero appended to the table.
+    inside = (column >= 0) & (column < taps)
+    return torch.where(inside, phase * taps + column, p * taps)
+
+
+@functools.lru_cache(maxsize=16)
+def _cached_transpose_index(p, q, taps, device):
+    # Built outside inference mode, so that a later backward can save it.
+    with torch.inference_mode(False):
+        return _transpose_index(p, q, taps, device)
+
+
+def _transposed_table(table, q):
+    """The table of the transposed resampler, of stride p and q phases.
+
+    The operator is ``M[m, n] = table[m mod p, n - first(m)]``, zero outside the
+    taps, with ``first(m) = q (m // p) + (m mod p) q // p - K``. Its transpose
+    has the same entries, in the layout of ``table`` with the roles of p and q
+    swapped: ``K' = ceil(K p / q)`` and ``first'_j = (j p) // q - K'``. The
+    entries are gathered from ``table`` (and zeros), so they are differentiable
+    in it. Eager calls cache the index, whose dozen small ops would otherwise
+    dominate a backward pass at small batches. Traced code (torch.compile,
+    opcheck) builds it in the graph: its table is a fake or functional tensor,
+    and so would be the cached index.
+    """
+    p, taps = table.shape
+    index_of = _cached_transpose_index if type(table) is torch.Tensor else _transpose_index
+    index = index_of(p, q, taps, table.device)
+    return torch.cat([table.flatten(), table.new_zeros(1)])[index]
 
 
 def _resample_gradient(run, ctx, grad):
     """The gradients of ``philtorch::resample``, with ``run`` the op to call.
 
     ``run`` is the autograd function's ``apply`` in eager mode and the op in
-    compiled code. The weights are scale g(c (t - n)) for an even g, so the
-    transpose, entry [n, m], is the same construction with the rates swapped
-    (c' (n p / q - m) = -c (m q / p - n), c = rho min(1, p / q) and
-    c' = rho min(1, q / p)): the gradient in x is the op with the tables
-    swapped, p as the stride and x's length as the output length. The op is
-    linear in the table as well: the gradient in ``table`` is
-    :func:`_resample_table_gradient`. ``table_t`` gets none, as the forward
-    never reads it: its gradient comes through this function's own call of
-    ``run``, which passes it as the table.
+    compiled code. The gradient in x is the op with the transposed table, p as
+    the stride and x's length as the output length; the table is a function of
+    ``table``, so the derivatives of any order follow. The op is linear in the
+    table as well: the gradient in ``table`` is :func:`_resample_table_gradient`.
     """
-    x, table, first, table_t, first_t = ctx.saved_tensors
+    x, table = ctx.saved_tensors
     needs_x, needs_table = ctx.needs_input_grad[:2]
     grad_x = grad_table = None
     if needs_x:
-        grad_x = run(grad, table_t, first_t, table, first, table.size(0), ctx.in_len)
+        grad_x = run(grad, _transposed_table(table, ctx.q), table.size(0), ctx.in_len)
     if needs_table:
-        grad_table = _resample_table_gradient(x, grad, table, first, ctx.q)
-    return grad_x, grad_table, None, None, None, None, None
+        grad_table = _resample_table_gradient(x, grad, table, ctx.q)
+    return grad_x, grad_table, None, None
 
 
 for name, order, time_invariant in [

@@ -68,7 +68,7 @@ _QUALITY_PRESETS = {name: _kaiser_design(*recipe) for name, recipe in _QUALITY_R
 
 # The most coefficients of the dense polyphase kernel of the conv1d path, p rows
 # of about q + taps (32 MB in float64). It bounds the table, p * taps, as well,
-# and the transpose's kernel is the same size.
+# and the transpose's table is about the same size.
 _MAX_KERNEL = 2**22
 
 _HAS_RESAMPLE_OP = hasattr(torch.ops.philtorch, "resample")
@@ -269,9 +269,9 @@ def _cutoff(p: int, q: int, rolloff: float | Tensor) -> float | Tensor:
 def _filter_taps(p: int, q: int, rolloff: float, num_zeros: int) -> tuple[float, int]:
     """The cutoff c and the number of taps of one output of the resampler."""
     c = _cutoff(p, q, rolloff)
-    # The window is open, |c (frac - k)| < N_z: at most floor(2 S) + 1 taps for
-    # S = N_z / c; one more is a guard against rounding at the edge.
-    return c, math.floor(2 * num_zeros / c) + 2
+    # The window is open, |t - n| < S = N_z / c: with K = ceil(S), the taps
+    # n = floor(t) - K .. floor(t) + K + 1 hold it, 2 K + 2 in all.
+    return c, 2 * math.ceil(num_zeros / c) + 2
 
 
 def _constant_cache(fn):
@@ -300,28 +300,27 @@ def _polyphase_table(
     scale: float | Tensor,
     device: torch.device | None = None,
     layout: float | None = None,
-) -> tuple[Tensor, Tensor]:
+) -> Tensor:
     """The weights of the resampler in the polyphase form, for rates q -> p.
 
-    Output ``f p + i`` is ``sum_k table[i, k] x[q f + first[i] + k]``, with x
-    zero outside the signal. The table, of shape (p, taps) in float64, holds
-    ``scale * g(c (t - n))`` for the window g of :func:`resample`, at the input
-    time ``t = (i q) / p`` of phase i and the n of its taps. The integer part
-    of t and the remainder (i q mod p) / p are computed exactly.
+    Output ``f p + i`` is ``sum_k table[i, k] x[q f + (i q) // p - K + k]``,
+    with x zero outside the signal and ``taps = 2 K + 2``. The table, of shape
+    (p, taps) in float64, holds ``scale * g(c (t - n))`` for the window g of
+    :func:`resample`, at the input time ``t = (i q) / p`` of phase i and the n
+    of its taps. The integer part of t and the remainder (i q mod p) / p are
+    computed exactly.
 
     ``rolloff``, ``beta`` and ``scale`` are floats, or 0-D float64 tensors on
-    ``device`` that the table is differentiable in. The layout (``first`` and
-    the number of taps) follows ``layout``, the float value of ``rolloff``,
-    which is ``rolloff`` itself if left out.
+    ``device`` that the table is differentiable in. The number of taps follows
+    ``layout``, the float value of ``rolloff``, which is ``rolloff`` itself if
+    left out.
     """
-    c_layout, taps = _filter_taps(p, q, rolloff if layout is None else layout, num_zeros)
+    _, taps = _filter_taps(p, q, rolloff if layout is None else layout, num_zeros)
     c = _cutoff(p, q, rolloff)
-    i = torch.arange(p, dtype=torch.int64, device=device)
-    whole = (i * q) // p
-    frac = ((i * q) % p).double() / p
-    first = whole + torch.ceil(frac - num_zeros / c_layout).long()
+    frac = (((torch.arange(p, dtype=torch.int64, device=device) * q) % p).double() / p).unsqueeze(1)
     k = torch.arange(taps, dtype=torch.float64, device=device)
-    z = c * (frac - (first - whole).double()).unsqueeze(1) - c * k
+    # t - n = frac + K - k for the tap k of the phase starting at floor(t) - K.
+    z = c * (frac + ((taps - 2) // 2 - k))
     inside = z.abs() < num_zeros
     # I0(beta sqrt(1 - u^2)) / I0(beta) from the scaled i0e, which cannot
     # overflow for a large beta. i0e is even, and |arg| - |beta| is the
@@ -332,48 +331,37 @@ def _polyphase_table(
     arg = beta * torch.sqrt(torch.where(inside, 1 - (z / num_zeros) ** 2, 1.0))
     window = torch.special.i0e(arg) / torch.special.i0e(beta)
     window = window * torch.exp(arg.abs() - beta.abs())
-    # sinc by hand: torch.sinc's second derivative is NaN at 0, where z = 0
-    # for every c (it is c times an integer).
+    # sinc by hand: torch.sinc's second derivative is NaN at 0 (pytorch/pytorch#196703),
+    # where z = 0 for every c (it is c times an integer).
     nonzero = z != 0
     z_pi = math.pi * torch.where(nonzero, z, 1.0)
     sinc = torch.where(nonzero, torch.sin(z_pi) / z_pi, 1.0)
-    table = torch.where(inside, scale * sinc * window, 0.0)
-    return table, first
+    return torch.where(inside, scale * sinc * window, 0.0)
 
 
 @_constant_cache
-def _tables_on(
+def _table_on(
     p: int,
     q: int,
     design: tuple[float, float, int, float],
     device: torch.device,
     dtype: torch.dtype,
-) -> tuple[Tensor, Tensor, Tensor, Tensor]:
-    """The table of q -> p and its transpose's (p -> q), on ``device``.
+) -> Tensor:
+    """The table of q -> p on ``device``."""
+    return _polyphase_table(p, q, *design).to(device=device, dtype=dtype)
 
-    The transpose of the resampling is the resampling with the rates swapped
-    and the same scale, see :func:`philtorch._ops._resample_gradient`.
+
+def _dense_kernel(table: Tensor, q: int) -> tuple[Tensor, int]:
+    """The (p, 1, L) kernel of :func:`_polyphase_conv`, and its shift ``-K``.
+
+    The first tap of phase i is ``(i q) // p - K`` for ``taps = 2 K + 2``, so
+    ``-K`` is the smallest and the kernel spans ``((p - 1) q) // p + taps``.
     """
-    table, first = _polyphase_table(p, q, *design)
-    table_t, first_t = _polyphase_table(q, p, *design)
-    return (
-        table.to(device=device, dtype=dtype),
-        first.to(device),
-        table_t.to(device=device, dtype=dtype),
-        first_t.to(device),
-    )
-
-
-def _dense_kernel(table: Tensor, first: Tensor) -> tuple[Tensor, int]:
-    """The (p, 1, L) kernel of :func:`_polyphase_conv`, and ``min(first)``.
-
-    The first tap of a phase grows with the phase, so ``first[0]`` is the
-    smallest and ``first[-1]`` the largest.
-    """
-    shift, last = int(first[0]), int(first[-1])
-    offset = (first - shift).unsqueeze(1) + torch.arange(table.size(1), device=first.device)
-    kernel = table.new_zeros(table.size(0), last - shift + table.size(1))
-    return kernel.scatter(1, offset, table).unsqueeze(1), shift
+    p, taps = table.shape
+    start = torch.arange(p, device=table.device) * q // p
+    offset = start.unsqueeze(1) + torch.arange(taps, device=table.device)
+    kernel = table.new_zeros(p, ((p - 1) * q) // p + taps)
+    return kernel.scatter(1, offset, table).unsqueeze(1), -((taps - 2) // 2)
 
 
 @_constant_cache
@@ -385,7 +373,7 @@ def _conv_kernel(
     dtype: torch.dtype,
 ) -> tuple[Tensor, int]:
     """The kernel of :func:`_polyphase_conv` for q -> p, and its shift."""
-    kernel, shift = _dense_kernel(*_polyphase_table(p, q, *design))
+    kernel, shift = _dense_kernel(_polyphase_table(p, q, *design), q)
     return kernel.to(device=device, dtype=dtype), shift
 
 
@@ -410,26 +398,17 @@ class _Resample(torch.autograd.Function):
     applied to ``dx`` and to ``dtable``, and the gradients are
     :func:`philtorch._ops._resample_gradient`, which the op's registered
     autograd, used under :func:`torch.compile` (Dynamo can't trace an autograd
-    function with a ``jvp``), shares. ``table_t``, read only by the backward
-    pass, has no tangent in the forward and no gradient from this call.
+    function with a ``jvp``), shares.
     """
 
     @staticmethod
-    def forward(
-        x: Tensor,
-        table: Tensor,
-        first: Tensor,
-        table_t: Tensor,
-        first_t: Tensor,
-        q: int,
-        out_len: int,
-    ) -> Tensor:
-        return torch.ops.philtorch.resample(x, table, first, table_t, first_t, q, out_len)
+    def forward(x: Tensor, table: Tensor, q: int, out_len: int) -> Tensor:
+        return torch.ops.philtorch.resample(x, table, q, out_len)
 
     @staticmethod
     def setup_context(ctx, inputs, output):
         _resample_setup_context(ctx, inputs, output)
-        ctx.save_for_forward(*inputs[:5])
+        ctx.save_for_forward(*inputs[:2])
 
     @staticmethod
     def backward(ctx, grad):
@@ -437,8 +416,8 @@ class _Resample(torch.autograd.Function):
 
     @staticmethod
     def jvp(ctx, dx, dtable, *_):
-        x, table, first, table_t, first_t = ctx.saved_tensors
-        rest = (first, table_t, first_t, ctx.q, ctx.out_len)
+        x, table = ctx.saved_tensors
+        rest = (ctx.q, ctx.out_len)
         tangents = []
         if dx is not None:
             tangents.append(_Resample.apply(dx, table, *rest))
@@ -448,7 +427,7 @@ class _Resample(torch.autograd.Function):
 
     @staticmethod
     def vmap(info, in_dims, x, *params):
-        if any(d is not None for d in in_dims[1:5]):
+        if in_dims[1] is not None:
             raise NotImplementedError("resample: vmap over rolloff or beta is not supported")
         x = x.movedim(in_dims[0], 0)
         V, B, T = x.shape
@@ -611,31 +590,24 @@ def resample(
     dtype = torch.float64 if x.dtype == torch.float64 else torch.float32
     on_cuda = x.is_cuda and _HAS_RESAMPLE_OP
     if isinstance(rolloff, Tensor) or isinstance(beta, Tensor):
-        # Tables the gradient reaches the tensors through: built on x's device
-        # in float64, uncached.
+        # The table the gradient reaches the tensors through: built on x's
+        # device in float64, uncached.
         rolloff, beta = (
             torch.as_tensor(v, dtype=torch.float64, device=x.device) for v in (rolloff, beta)
         )
-        # The transpose uses the same scale, the cutoff c of this direction.
         design = (rolloff, beta, num_zeros, _cutoff(new, orig, rolloff), x.device, layout)
-
-        def table(p: int, q: int) -> tuple[Tensor, Tensor]:
-            weights, first = _polyphase_table(p, q, *design)
-            return weights.to(dtype), first
-
-        if on_cuda:
-            tables = (*table(new, orig), *table(orig, new))
-        else:
-            kernel, shift = _dense_kernel(*table(new, orig))
+        table = _polyphase_table(new, orig, *design).to(dtype)
+        if not on_cuda:
+            kernel, shift = _dense_kernel(table, orig)
     else:
         design = (rolloff, beta, num_zeros, c)
         if on_cuda:
-            tables = _tables_on(new, orig, design, x.device, dtype)
+            table = _table_on(new, orig, design, x.device, dtype)
         else:
             kernel, shift = _conv_kernel(new, orig, design, x.device, dtype)
     if on_cuda:
         # Dynamo can't trace an autograd.Function with a jvp: compiled code
         # calls the registered op, whose autograd is the same transpose.
         apply = torch.ops.philtorch.resample if torch.compiler.is_compiling() else _Resample.apply
-        return apply(x, *tables, orig, out_len)
+        return apply(x, table, orig, out_len)
     return _polyphase_conv(x.to(dtype), kernel, shift, orig, out_len).to(x.dtype)

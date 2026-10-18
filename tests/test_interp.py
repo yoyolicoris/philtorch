@@ -1,6 +1,4 @@
 import math
-import subprocess
-import sys
 
 import pytest
 import torch
@@ -12,7 +10,7 @@ from philtorch.lti.interp import (
     _QUALITY_RECIPES,
     _kaiser_design,
     _soxr_passband_end,
-    _tables_on,
+    _table_on,
     cspline,
     cubic_spline,
     resample,
@@ -625,30 +623,11 @@ def test_resample_cuda_large_batch(orig_freq, new_freq):
 
 @pytest.mark.cuda
 def test_resample_cuda_longest_filter():
-    # 6000 -> 1 in HQ: 1,153,761 taps, within the bound on the filter.
+    # 6000 -> 1 in HQ: 1,153,762 taps, within the bound on the filter.
     x = torch.randn(1, 12000, dtype=torch.float64)
     expected = resample(x, 6000, 1)
     actual = resample(x.cuda(), 6000, 1)
     torch.testing.assert_close(actual.cpu(), expected, **_TOLS[torch.float64])
-
-
-@pytest.mark.cuda
-def test_resample_op_asserts_offsets_within_the_padding(tmp_path):
-    # Offsets of a tile further apart than the table's padding would read past
-    # it. A device-side assert ends the CUDA context: run in a subprocess.
-    code = """
-import torch, philtorch
-x = torch.zeros(1, 1001, device="cuda")
-table = torch.zeros(2, 1, device="cuda")
-first = torch.tensor([0, 1000], device="cuda")
-torch.ops.philtorch.resample(x, table, first, table, first, 1, 2)
-torch.cuda.synchronize()
-"""
-    result = subprocess.run(
-        [sys.executable, "-c", code], cwd=tmp_path, capture_output=True, text=True
-    )
-    assert result.returncode != 0
-    assert "device-side assert" in result.stderr
 
 
 @pytest.mark.cuda
@@ -676,14 +655,14 @@ def test_resample_cuda_graph_capture(dtype, T):
 @pytest.mark.parametrize("requires_grad", [True, False])
 @pytest.mark.parametrize("out_len", [20, 2])
 def test_resample_opcheck(requires_grad, out_len):
-    # The tables of 2 -> 3 and their transpose's, as resample builds them.
+    # The table of 2 -> 3, as resample builds it.
     rolloff, beta, num_zeros = _design("LQ")
     design = (rolloff, beta, num_zeros, rolloff)
-    tables = _tables_on(3, 2, design, torch.device("cuda"), torch.float64)
-    # The tables are cached: differentiate copies of them.
-    tables = [t.clone().requires_grad_(requires_grad and t.is_floating_point()) for t in tables]
+    # The table is cached: differentiate a copy of it.
+    table = _table_on(3, 2, design, torch.device("cuda"), torch.float64).clone()
+    table.requires_grad_(requires_grad)
     x = torch.randn(2, 12, device="cuda", dtype=torch.float64, requires_grad=requires_grad)
-    torch.library.opcheck(torch.ops.philtorch.resample, (x, *tables, 2, out_len))
+    torch.library.opcheck(torch.ops.philtorch.resample, (x, table, 2, out_len))
 
 
 @pytest.mark.parametrize(

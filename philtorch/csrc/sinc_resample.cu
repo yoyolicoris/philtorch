@@ -11,18 +11,16 @@
 #include <algorithm>
 #include <cstdint>
 
-// philtorch::resample(x, table, first, table_t, first_t, q, out_len): the
-// CUDA kernel of band-limited resampling by a rational factor, applying a
-// precomputed polyphase table.  With p = table.size(0) phases and
-// taps = table.size(1),
+// philtorch::resample(x, table, q, out_len): the CUDA kernel of band-limited
+// resampling by a rational factor, applying a precomputed polyphase table.
+// With p = table.size(0) phases, taps = table.size(1) = 2 K + 2 and
+// first_i = (i q) / p - K (integer division),
 //
-//   out[b, f p + i] = sum_{k < taps} table[i, k] x[b, q f + first[i] + k],
+//   out[b, f p + i] = sum_{k < taps} table[i, k] x[b, q f + first_i + k],
 //
-// for 0 <= f p + i < out_len, and x[b, n] = 0 outside [0, T).  `first` (p,
-// int64) holds the first input of each phase in frame 0 and may be negative.
-// table_t and first_t, the table and offsets of the transposed operator, are
-// not read: they are inputs so that the backward pass, which Python
-// registers, can call this op again with them.  There is no CPU kernel.
+// for 0 <= f p + i < out_len, and x[b, n] = 0 outside [0, T).  The first
+// input of a phase in frame 0 is negative for the first phases.  There is no
+// CPU kernel.
 //
 // The table is real and the weights are accumulated in at::opmath_type of x's
 // dtype (double for float64, float for float32, float16 and bfloat16).
@@ -43,7 +41,7 @@ namespace {
 // The largest p, q and taps, as large as Python's bound on the filter, p (q +
 // taps) <= 2^22, lets them be.  It keeps the int arithmetic of tile_kernel
 // (the offsets within a tile, p, q, taps) from overflowing, whatever T is: the
-// zero padding of a table row is at most (R - 1) q / p + 2 <= 7 kMaxTable + 2
+// zero padding of a table row is at most (R - 1) q / p + 1 <= 7 kMaxTable + 1
 // entries on either side, so the padded row length, the offsets d_j and the
 // range of u all fit in 32 bits.
 constexpr int64_t kMaxTable = int64_t(1) << 22;
@@ -116,7 +114,6 @@ struct TileArgs {
     int64_t p, q, taps;
     int64_t ts, pad;           // table row stride, zero padding on either side
     const acc_t *table;        // (p, ts)
-    const int64_t *first;      // (p)
 };
 
 // Butterfly reduction over the lanes of a group.  A accumulators per lane,
@@ -164,8 +161,10 @@ __global__ void __launch_bounds__(kBlock) tile_kernel(const TileArgs<scalar_t> a
     const int64_t f0 = m0c / a.p;
     int i = static_cast<int>(m0c - f0 * a.p);
     const int p = static_cast<int>(a.p);
-    const int64_t nlo_i0 = a.first[i];
-    const int64_t nlo0 = a.q * f0 + nlo_i0;
+    // The first input of phase i in frame 0 is (i q) / p - K, for taps = 2 K + 2.
+    const int64_t K = (a.taps - 2) / 2;
+    const int64_t first_i0 = static_cast<int64_t>(i) * a.q / a.p;
+    const int64_t nlo0 = a.q * f0 + first_i0 - K;
     int d[R];
     const acc_t *wp[R];  // wp[j][u] is the weight of output j at input nlo0 + u
     {
@@ -178,10 +177,10 @@ __global__ void __launch_bounds__(kBlock) tile_kernel(const TileArgs<scalar_t> a
                     ++df;
                 }
             }
-            const int64_t dj = df * a.q + (a.first[i] - nlo_i0);
-            // The padding covers the reads of the tile only for offsets in
-            // [0, pad], which the table of interp.py gives.
-            CUDA_KERNEL_ASSERT(dj >= 0 && dj <= a.pad);
+            // The input of output m0c + j is floor(q (m0c + j) / p) - K, so d_j
+            // is the difference of two floors, in [0, ceil((R - 1) q / p)]:
+            // within the padding.
+            const int64_t dj = df * a.q + static_cast<int64_t>(i) * a.q / a.p - first_i0;
             d[j] = static_cast<int>(dj);
             wp[j] = a.table + static_cast<int64_t>(i) * a.ts + a.pad - d[j];
         }
@@ -269,7 +268,7 @@ void launch_tile_rows(const TileArgs<scalar_t> &a, int BB, cudaStream_t stream) 
 // table: (p, taps), in at::opmath_type<scalar_t>.
 template <typename scalar_t>
 at::Tensor resample_run(const at::Tensor &x, const at::Tensor &table,
-                        const at::Tensor &first, int64_t q, int64_t out_len) {
+                        int64_t q, int64_t out_len) {
     using acc_t = at::opmath_type<scalar_t>;
     const auto stream = c10::cuda::getCurrentCUDAStream().stream();
     const int64_t B = x.size(0), T = x.size(1);
@@ -277,17 +276,15 @@ at::Tensor resample_run(const at::Tensor &x, const at::Tensor &table,
 
     // The tiles' batch rows BB and outputs R, and the zero padding pad of a
     // table row on either side: the first inputs of two outputs of a tile are
-    // at most ceil((R - 1) q / p) apart, and the + 1 covers the rounding in
-    // first.
+    // at most ceil((R - 1) q / p) apart.
     const int BB = pow2_rows(B, kMaxTileRows);
     const int R = tile_outputs(BB);
-    const int64_t pad = at::ceil_div<int64_t>((R - 1) * q, p) + 1;
+    const int64_t pad = at::ceil_div<int64_t>((R - 1) * q, p);
     const int64_t ts = taps + 2 * pad;
 
     const at::Tensor xc = x.contiguous();
     const at::Tensor padded =
         at::constant_pad_nd(table, {pad, pad}).contiguous();
-    const at::Tensor fa = first.contiguous();
     at::Tensor out = at::empty({B, out_len}, x.options());
 
     TileArgs<scalar_t> a;
@@ -302,7 +299,6 @@ at::Tensor resample_run(const at::Tensor &x, const at::Tensor &table,
     a.ts = ts;
     a.pad = pad;
     a.table = padded.const_data_ptr<acc_t>();
-    a.first = fa.const_data_ptr<int64_t>();
     launch_tile_rows<scalar_t>(a, BB, stream);
     return out;
 }
@@ -310,22 +306,17 @@ at::Tensor resample_run(const at::Tensor &x, const at::Tensor &table,
 }  // namespace
 
 at::Tensor sinc_resample_cuda_impl(const at::Tensor &x, const at::Tensor &table,
-                                   const at::Tensor &first,
-                                   const at::Tensor & /*table_t*/,
-                                   const at::Tensor & /*first_t*/, int64_t q,
-                                   int64_t out_len) {
+                                   int64_t q, int64_t out_len) {
     TORCH_CHECK(x.dim() == 2 && x.is_floating_point(),
                 "resample: x must be a 2-D floating tensor");
     TORCH_CHECK(table.dim() == 2 && table.is_floating_point(),
                 "resample: table must be a 2-D floating tensor");
     const int64_t p = table.size(0), taps = table.size(1);
-    TORCH_CHECK(first.dim() == 1 && first.scalar_type() == at::kLong &&
-                    first.size(0) == p,
-                "resample: first must be an int64 tensor of length ", p);
-    TORCH_CHECK(x.is_cuda() && table.device() == x.device() &&
-                    first.device() == x.device(),
-                "resample: x, table and first must be on the same CUDA "
-                "device");
+    TORCH_CHECK(taps >= 2 && taps % 2 == 0,
+                "resample: the number of taps must be even and at least 2, got ",
+                taps);
+    TORCH_CHECK(x.is_cuda() && table.device() == x.device(),
+                "resample: x and table must be on the same CUDA device");
     TORCH_CHECK(q >= 1 && out_len >= 0,
                 "resample: q must be at least 1 and out_len at least 0");
     TORCH_CHECK(p >= 1 && p <= kMaxTable && q <= kMaxTable &&
@@ -341,15 +332,14 @@ at::Tensor sinc_resample_cuda_impl(const at::Tensor &x, const at::Tensor &table,
         at::kHalf, at::kBFloat16, x.scalar_type(), "resample_cuda", [&] {
             const at::Tensor tab =
                 table.to(at::toOpMathType(x.scalar_type()));
-            out = resample_run<scalar_t>(x, tab, first, q, out_len);
+            out = resample_run<scalar_t>(x, tab, q, out_len);
         });
     return out;
 }
 
 TORCH_LIBRARY_FRAGMENT(philtorch, m) {
     m.def(
-        "resample(Tensor x, Tensor table, Tensor first, Tensor table_t, "
-        "Tensor first_t, int q, int out_len) -> Tensor",
+        "resample(Tensor x, Tensor table, int q, int out_len) -> Tensor",
         {at::Tag::pt2_compliant_tag});
 }
 
