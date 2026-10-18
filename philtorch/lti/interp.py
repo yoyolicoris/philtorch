@@ -294,7 +294,7 @@ def _polyphase_conv(x: Tensor, table: Tensor, q: int, out_len: int) -> Tensor:
     columns = _tap_columns(p, q, taps, table.device)
     kernel = table.new_zeros(p, width).scatter(1, columns, table)
     y = F.conv1d(xp, kernel.unsqueeze(1), stride=q)
-    return y.mT.reshape(x.size(0), -1)[:, :out_len]
+    return y.mT.flatten(1)[:, :out_len]
 
 
 class _Resample(torch.autograd.Function):
@@ -481,14 +481,6 @@ def resample(
         )
 
     out_len = -(-x.size(1) * new // orig)
-    if x.numel() == 0 or out_len == 0:
-        # Nothing to compute; the output stays in the graph of x and of tensor
-        # parameters, with zero gradients.
-        y = F.pad(x[:, :0], (0, out_len))
-        for v in (rolloff, beta):
-            if isinstance(v, Tensor):
-                y = y + 0 * v.to(y.device, y.dtype)
-        return y
     dtype = torch.float64 if x.dtype == torch.float64 else torch.float32
     # The table, built at each call in float64 on x's device (on the CPU for MPS,
     # which has no float64), so that gradients reach tensor parameters.
