@@ -558,15 +558,13 @@ def test_resample_equal_rates_low_pass_instead_of_copying(device):
 
 @pytest.mark.cuda
 @pytest.mark.parametrize("orig_freq, new_freq", [(2, 3), (147, 160)])
-def test_resample_cuda_large_batch(orig_freq, new_freq):
-    # 2**19 rows, more than the 65535 blocks of 8 rows a grid's y dimension
-    # holds: the launch is split in two. The rows on either side of the split,
-    # against the CPU convolution.
-    x = torch.randn(2**19, 4, dtype=torch.float64, device="cuda")
-    rows = slice(65535 * 8 - 8, None)
-    expected = resample(x[rows].cpu(), orig_freq, new_freq)
-    actual = resample(x, orig_freq, new_freq)[rows]
-    torch.testing.assert_close(actual.cpu(), expected, **_TOLS[torch.float64])
+def test_resample_cuda_row_blocks(orig_freq, new_freq):
+    # 9 rows: blocks of 8 rows and a partial one, against the CPU convolution.
+    x = torch.randn(9, 40, dtype=torch.float64)
+    actual = resample(x.cuda(), orig_freq, new_freq)
+    torch.testing.assert_close(
+        actual.cpu(), resample(x, orig_freq, new_freq), **_TOLS[torch.float64]
+    )
 
 
 @pytest.mark.cuda
