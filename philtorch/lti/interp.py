@@ -9,7 +9,7 @@ import torch
 import torch.nn.functional as F
 from torch import Tensor
 
-from .._ops import _resample_gradient, _resample_setup_context, _tap_columns
+from .._ops import _conv_input, _resample_gradient, _resample_setup_context, _tap_columns
 from .delay import _as_int
 from .recur import linear_recurrence
 
@@ -34,7 +34,7 @@ def _kaiser_design(bits: int, passband_end: float) -> tuple[float, float, int]:
     more than 50 dB) and :func:`scipy.signal.kaiserord` (a length of
     (A - 7.95) / (2.285 w) + 1, for a transition width w in rad/sample).
     """
-    # soxr's cr.c: att = (bits1 + 1) * linear_to_dB(2.)
+    # As soxr does, the attenuation is that of one bit beyond the precision.
     att = (bits + 1) * 20.0 * math.log10(2.0)
     # Every preset's att is above 50 dB (102 to 175 dB), where the beta formula
     # holds; a test pins the presets.
@@ -329,42 +329,17 @@ def _table_on(
     return _polyphase_table(p, q, *design).to(device=device, dtype=dtype)
 
 
-def _dense_kernel(table: Tensor, q: int) -> tuple[Tensor, int]:
-    """The (p, 1, L) kernel of :func:`_polyphase_conv`, and its shift ``-K``.
-
-    The first tap of phase i is ``(i q) // p - K`` for ``taps = 2 K + 2``, so
-    ``-K`` is the smallest and the kernel spans ``((p - 1) q) // p + taps``.
-    """
-    p, taps = table.shape
-    offset = _tap_columns(p, q, taps, table.device)
-    kernel = table.new_zeros(p, ((p - 1) * q) // p + taps)
-    return kernel.scatter(1, offset, table).unsqueeze(1), -((taps - 2) // 2)
-
-
-@_constant_cache
-def _conv_kernel(
-    p: int,
-    q: int,
-    design: tuple[float, float, int, int],
-    device: torch.device,
-    dtype: torch.dtype,
-) -> tuple[Tensor, int]:
-    """The kernel of :func:`_polyphase_conv` for q -> p, and its shift."""
-    kernel, shift = _dense_kernel(_polyphase_table(p, q, *design), q)
-    return kernel.to(device=device, dtype=dtype), shift
-
-
-def _polyphase_conv(x: Tensor, kernel: Tensor, shift: int, q: int, out_len: int) -> Tensor:
+def _polyphase_conv(x: Tensor, table: Tensor, q: int, out_len: int) -> Tensor:
     """Resample with one strided convolution, for devices without the op.
 
-    Frame f of the convolution, of stride q, reads ``x[q f + shift + j]`` for
-    the kernel's taps j, and gives p outputs, one per row of the kernel.
+    The table's rows, placed at their tap columns, make the dense kernel of
+    :func:`philtorch._ops._conv_input`'s frames, each of which gives p outputs.
     """
-    p, _, width = kernel.shape
-    needed = q * (-(-out_len // p) - 1) + width
-    # Negative pads crop: x[shift : shift + needed], zero outside the signal.
-    x = F.pad(x, (-shift, needed + shift - x.size(1)))
-    y = F.conv1d(x.unsqueeze(1), kernel, stride=q)
+    p, taps = table.shape
+    xp, width = _conv_input(x, p, q, taps, out_len)
+    columns = _tap_columns(p, q, taps, table.device)
+    kernel = table.new_zeros(p, width).scatter(1, columns, table)
+    y = F.conv1d(xp, kernel.unsqueeze(1), stride=q)
     return y.mT.reshape(x.size(0), -1)[:, :out_len]
 
 
@@ -565,26 +540,18 @@ def resample(
         # Nothing to compute; the pad keeps the output in x's graph, with zero gradient.
         return F.pad(x[:, :0], (0, out_len))
     dtype = torch.float64 if x.dtype == torch.float64 else torch.float32
-    on_cuda = x.is_cuda and _HAS_RESAMPLE_OP
     if isinstance(rolloff, Tensor) or isinstance(beta, Tensor):
         # The table the gradient reaches the tensors through: built on x's
         # device in float64, uncached.
         rolloff, beta = (
             torch.as_tensor(v, dtype=torch.float64, device=x.device) for v in (rolloff, beta)
         )
-        design = (rolloff, beta, num_zeros, taps, x.device)
-        table = _polyphase_table(new, orig, *design).to(dtype)
-        if not on_cuda:
-            kernel, shift = _dense_kernel(table, orig)
+        table = _polyphase_table(new, orig, rolloff, beta, num_zeros, taps, x.device).to(dtype)
     else:
-        design = (rolloff, beta, num_zeros, taps)
-        if on_cuda:
-            table = _table_on(new, orig, design, x.device, dtype)
-        else:
-            kernel, shift = _conv_kernel(new, orig, design, x.device, dtype)
-    if on_cuda:
+        table = _table_on(new, orig, (rolloff, beta, num_zeros, taps), x.device, dtype)
+    if x.is_cuda and _HAS_RESAMPLE_OP:
         # Dynamo can't trace an autograd.Function with a jvp: compiled code
         # calls the registered op, whose autograd is the same transpose.
         apply = torch.ops.philtorch.resample if torch.compiler.is_compiling() else _Resample.apply
         return apply(x, table, orig, out_len)
-    return _polyphase_conv(x.to(dtype), kernel, shift, orig, out_len).to(x.dtype)
+    return _polyphase_conv(x.to(dtype), table, orig, out_len).to(x.dtype)

@@ -269,28 +269,37 @@ def _tap_columns(p, q, taps, device):
     return start.unsqueeze(1) + torch.arange(taps, device=device)
 
 
+def _conv_input(x, p, q, taps, out_len):
+    """x framed for the resampler as one strided convolution, and the width.
+
+    Frame f, of stride q, reads ``x[q f - K + j]`` for the columns j of a dense
+    (p, width) kernel, ``width = ((p - 1) q) // p + taps``, and gives the p
+    outputs ``f p + i``: x padded by K on the left, and padded or cropped on
+    the right to the length the frames read.
+    """
+    K = (taps - 2) // 2
+    width = ((p - 1) * q) // p + taps
+    needed = q * (-(-out_len // p) - 1) + width
+    return F.pad(x, (K, needed - K - x.size(1))).unsqueeze(1), width
+
+
 def _resample_table_gradient(x, grad, table, q):
     """The gradient in ``table`` of ``philtorch::resample``, from x and grad.
 
-    It is the weight gradient of the CPU path's strided convolution, with the
-    dense kernel of width ``((p - 1) q) // p + taps``, gathered at the tap
-    columns: ``sum_{b, f} grad[b, f p + i] x[b, q f + (i q) // p - K + k]`` for
-    the entry (i, k) of the table, with ``taps = 2 K + 2``.
+    It is the weight gradient of the strided convolution of
+    :func:`_conv_input`, gathered at the tap columns:
+    ``sum_{b, f} grad[b, f p + i] x[b, q f + (i q) // p - K + k]`` for the
+    entry (i, k) of the table.
     """
     p, taps = table.shape
-    K = (taps - 2) // 2
     B, out_len = grad.shape
     frames = -(-out_len // p)
-    width = ((p - 1) * q) // p + taps
     # The op accumulates in float32 for the 16-bit dtypes.
     acc = torch.promote_types(x.dtype, torch.float32)
     g = F.pad(grad.to(acc), (0, frames * p - out_len)).reshape(B, frames, p).mT
-    # The right pad crops, or adds zeros, to the length the frames read.
-    right = q * (frames - 1) + width - K - x.size(1)
-    xp = F.pad(x.to(acc), (K, right)).unsqueeze(1)
+    xp, width = _conv_input(x.to(acc), p, q, taps, out_len)
     dense = torch.nn.grad.conv1d_weight(xp, (p, 1, width), g, stride=q).squeeze(1)
-    columns = _tap_columns(p, q, taps, table.device)
-    return dense.gather(1, columns).to(table.dtype)
+    return dense.gather(1, _tap_columns(p, q, taps, table.device)).to(table.dtype)
 
 
 def _transpose_index(p, q, taps, device):

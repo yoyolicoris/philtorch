@@ -78,32 +78,6 @@ inline int pow2_rows(int64_t B, int max) {
     return rows;
 }
 
-// Calls launch(chunk, grid) for the chunks of the batch that fit the y extent
-// of a grid, a chunk being the kernel arguments (fields x, out, B, out_len, T)
-// for its rows.  A block covers rows_per_block rows and outputs_per_block
-// outputs.
-template <typename Args, typename Launch>
-void launch_chunked(const Args &a, int64_t outputs_per_block,
-                    int rows_per_block, Launch &&launch) {
-    const int device = c10::cuda::current_device();
-    int max_x = 0, max_y = 0;
-    C10_CUDA_CHECK(cudaDeviceGetAttribute(&max_x, cudaDevAttrMaxGridDimX, device));
-    C10_CUDA_CHECK(cudaDeviceGetAttribute(&max_y, cudaDevAttrMaxGridDimY, device));
-    const int64_t grid_x = at::ceil_div<int64_t>(a.out_len, outputs_per_block);
-    TORCH_CHECK(grid_x <= max_x, "out_len ", a.out_len,
-                " exceeds the CUDA grid dimension limit");
-    const int64_t rows = int64_t{max_y} * rows_per_block;
-    for (int64_t b_off = 0; b_off < a.B; b_off += rows) {
-        Args chunk = a;
-        chunk.B = std::min<int64_t>(a.B - b_off, rows);
-        chunk.x = a.x + b_off * a.T;
-        chunk.out = a.out + b_off * a.out_len;
-        launch(chunk, dim3(static_cast<unsigned int>(grid_x),
-                           static_cast<unsigned int>(
-                               at::ceil_div<int64_t>(chunk.B, rows_per_block))));
-    }
-}
-
 template <typename scalar_t>
 struct TileArgs {
     using acc_t = at::opmath_type<scalar_t>;
@@ -243,15 +217,30 @@ constexpr int tile_outputs(int bb) {
     return std::min(kTileAcc / bb, kMaxTileOutputs);
 }
 
+// Launches tile_kernel over the batch in chunks of rows that fit the y extent
+// of a grid; a block covers BB rows and the R outputs of each of its tiles.
 template <typename scalar_t, int BB>
 void launch_tile(const TileArgs<scalar_t> &a, cudaStream_t stream) {
     constexpr int R = tile_outputs(BB);
     constexpr int tiles_per_block = kWarpsPerBlock * (kWarp / kGroupLanes);
-    launch_chunked(a, int64_t{tiles_per_block} * R, BB,
-                   [&](const TileArgs<scalar_t> &chunk, dim3 grid) {
-                       tile_kernel<scalar_t, R, BB><<<grid, kBlock, 0, stream>>>(chunk);
-                       C10_CUDA_KERNEL_LAUNCH_CHECK();
-                   });
+    const int device = c10::cuda::current_device();
+    int max_x = 0, max_y = 0;
+    C10_CUDA_CHECK(cudaDeviceGetAttribute(&max_x, cudaDevAttrMaxGridDimX, device));
+    C10_CUDA_CHECK(cudaDeviceGetAttribute(&max_y, cudaDevAttrMaxGridDimY, device));
+    const int64_t grid_x = at::ceil_div<int64_t>(a.out_len, int64_t{tiles_per_block} * R);
+    TORCH_CHECK(grid_x <= max_x, "out_len ", a.out_len,
+                " exceeds the CUDA grid dimension limit");
+    const int64_t rows = int64_t{max_y} * BB;
+    for (int64_t b_off = 0; b_off < a.B; b_off += rows) {
+        TileArgs<scalar_t> chunk = a;
+        chunk.B = std::min<int64_t>(a.B - b_off, rows);
+        chunk.x = a.x + b_off * a.T;
+        chunk.out = a.out + b_off * a.out_len;
+        const dim3 grid(static_cast<unsigned int>(grid_x),
+                        static_cast<unsigned int>(at::ceil_div<int64_t>(chunk.B, BB)));
+        tile_kernel<scalar_t, R, BB><<<grid, kBlock, 0, stream>>>(chunk);
+        C10_CUDA_KERNEL_LAUNCH_CHECK();
+    }
 }
 
 template <typename scalar_t>
@@ -323,7 +312,7 @@ at::Tensor sinc_resample_cuda_impl(const at::Tensor &x, const at::Tensor &table,
                 "resample: the number of phases (", p, "), taps (", taps,
                 ") and q (", q, ") must be at most ", kMaxTable);
     const at::cuda::OptionalCUDAGuard device_guard(device_of(x));
-    if (x.numel() == 0 || table.numel() == 0 || out_len == 0) {
+    if (x.numel() == 0 || out_len == 0) {
         return at::zeros({x.size(0), out_len}, x.options());
     }
     at::Tensor out;
