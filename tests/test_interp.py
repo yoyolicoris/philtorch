@@ -346,8 +346,10 @@ def test_resample_gradcheck_and_gradgradcheck(device, tensor_params, orig_freq, 
     x = torch.randn(2, T, device=device, dtype=torch.float64, requires_grad=True)
     inputs = (x, *_params(device, requires_grad=True)) if tensor_params else (x,)
     fn = _grad_fn(orig_freq, new_freq)
-    assert torch.autograd.gradcheck(fn, inputs)
-    assert torch.autograd.gradgradcheck(fn, inputs)
+    # The table's gradient is a convolution's weight gradient, which cuDNN
+    # computes nondeterministically.
+    assert torch.autograd.gradcheck(fn, inputs, nondet_tol=1e-12)
+    assert torch.autograd.gradgradcheck(fn, inputs, nondet_tol=1e-12)
 
 
 @pytest.mark.parametrize("device", _DEVICES)

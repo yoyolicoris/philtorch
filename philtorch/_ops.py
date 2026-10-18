@@ -294,7 +294,7 @@ def _resample_table_gradient(x, grad, table, q):
 
 
 def _transpose_index(p, q, taps, device):
-    """The index of :func:`_transposed_table` into the flattened table."""
+    """The index of the transposed table into the flattened table and a zero."""
     # Phase taps span floor(t) - K .. floor(t) + K + 1, which K' covers.
     K = (taps - 2) // 2
     K_t = -(-(K + 1) * p // q)
@@ -325,20 +325,6 @@ def _use_on_current_stream(cached):
     return cached
 
 
-def _transposed_table(table, q):
-    """The table of the transposed resampler (q phases, stride p).
-
-    Gathered from ``table``, so differentiable in it. Eager calls cache the
-    index; traced code, whose tables are fake, builds it in the graph.
-    """
-    p, taps = table.shape
-    if type(table) is torch.Tensor:
-        index = _use_on_current_stream(_cached_transpose_index(p, q, taps, table.device))
-    else:
-        index = _transpose_index(p, q, taps, table.device)
-    return torch.cat([table.flatten(), table.new_zeros(1)])[index]
-
-
 def _resample_gradient(run, ctx, grad):
     """The gradients of ``philtorch::resample``, with ``run`` the op to call.
 
@@ -349,7 +335,15 @@ def _resample_gradient(run, ctx, grad):
     needs_x, needs_table = ctx.needs_input_grad[:2]
     grad_x = grad_table = None
     if needs_x:
-        grad_x = run(grad, _transposed_table(table, ctx.q), table.size(0), ctx.in_len)
+        # The transposed table (q phases, stride p), gathered from table: eager
+        # calls cache the index; traced code, whose tables are fake, builds it.
+        p, taps = table.shape
+        if type(table) is torch.Tensor:
+            index = _use_on_current_stream(_cached_transpose_index(p, ctx.q, taps, table.device))
+        else:
+            index = _transpose_index(p, ctx.q, taps, table.device)
+        table_t = torch.cat([table.flatten(), table.new_zeros(1)])[index]
+        grad_x = run(grad, table_t, p, ctx.in_len)
     if needs_table:
         grad_table = _resample_table_gradient(x, grad, table, ctx.q)
     return grad_x, grad_table, None, None

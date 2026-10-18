@@ -43,15 +43,6 @@ constexpr int kMaxTileRows = 8;
 // Outputs per tile, at most: longer tiles waste lanes and registers.
 constexpr int kMaxTileOutputs = 8;
 
-// The largest power of two that is at most max and at most B >= 1.
-inline int pow2_rows(int64_t B, int max) {
-    int rows = 1;
-    while (rows < max && 2 * rows <= B) {
-        rows *= 2;
-    }
-    return rows;
-}
-
 template <typename scalar_t>
 struct TileArgs {
     using acc_t = at::opmath_type<scalar_t>;
@@ -188,20 +179,29 @@ __global__ void __launch_bounds__(kBlock)
     }
 }
 
-// The shape of a tile for B rows: BB rows (pow2_rows), and the R outputs that
-// make kTileAcc accumulators, at most kMaxTileOutputs.
-constexpr int tile_outputs(int bb) {
-    return std::min(kTileAcc / bb, kMaxTileOutputs);
-}
-
 // Launches tile_kernel on a 1-D grid of output blocks by row blocks, whose x
 // extent holds 2^31 - 1 blocks; a block covers BB rows and R outputs per tile.
+// table: (p, taps), in at::opmath_type<scalar_t>.
 template <typename scalar_t, int BB>
-void launch_tile(const TileArgs<scalar_t> &a, cudaStream_t stream) {
-    constexpr int R = tile_outputs(BB);
+void launch_tile(const at::Tensor &x, const at::Tensor &table, at::Tensor &out,
+                 int64_t q, cudaStream_t stream) {
+    using acc_t = at::opmath_type<scalar_t>;
+    // The outputs that make kTileAcc accumulators, at most kMaxTileOutputs.
+    constexpr int R = std::min(kTileAcc / BB, kMaxTileOutputs);
     constexpr int tiles_per_block = kWarpsPerBlock * (kWarp / kGroupLanes);
-    const int64_t out_blocks = at::ceil_div<int64_t>(a.out_len, int64_t{tiles_per_block} * R);
-    const int64_t blocks = out_blocks * at::ceil_div<int64_t>(a.B, BB);
+    const int64_t B = x.size(0), T = x.size(1), out_len = out.size(1);
+    const int64_t p = table.size(0), taps = table.size(1);
+    // The zero padding of a table row on either side: the first inputs of two
+    // outputs of a tile are at most ceil((R - 1) q / p) apart.
+    const int64_t pad = at::ceil_div<int64_t>((R - 1) * q, p);
+    const at::Tensor padded = at::constant_pad_nd(table, {pad, pad}).contiguous();
+    const TileArgs<scalar_t> a{x.const_data_ptr<scalar_t>(),
+                               out.mutable_data_ptr<scalar_t>(),
+                               B, T, out_len, p, q, taps, taps + 2 * pad, pad,
+                               padded.const_data_ptr<acc_t>()};
+
+    const int64_t out_blocks = at::ceil_div<int64_t>(out_len, int64_t{tiles_per_block} * R);
+    const int64_t blocks = out_blocks * at::ceil_div<int64_t>(B, BB);
     TORCH_CHECK(blocks <= std::numeric_limits<int>::max(),
                 "resample: the output exceeds the CUDA grid limit");
     tile_kernel<scalar_t, R, BB>
@@ -210,43 +210,24 @@ void launch_tile(const TileArgs<scalar_t> &a, cudaStream_t stream) {
     C10_CUDA_KERNEL_LAUNCH_CHECK();
 }
 
-template <typename scalar_t>
-void launch_tile_rows(const TileArgs<scalar_t> &a, int BB, cudaStream_t stream) {
-    switch (BB) {
-        case 8: launch_tile<scalar_t, 8>(a, stream); break;
-        case 4: launch_tile<scalar_t, 4>(a, stream); break;
-        case 2: launch_tile<scalar_t, 2>(a, stream); break;
-        default: launch_tile<scalar_t, 1>(a, stream); break;
-    }
-}
-
 // table: (p, taps), in at::opmath_type<scalar_t>.
 template <typename scalar_t>
 at::Tensor resample_run(const at::Tensor &x, const at::Tensor &table,
                         int64_t q, int64_t out_len) {
-    using acc_t = at::opmath_type<scalar_t>;
     const auto stream = c10::cuda::getCurrentCUDAStream().stream();
-    const int64_t B = x.size(0), T = x.size(1);
-    const int64_t p = table.size(0), taps = table.size(1);
-
-    // The tiles' batch rows BB and outputs R, and the zero padding pad of a
-    // table row on either side: the first inputs of two outputs of a tile are
-    // at most ceil((R - 1) q / p) apart.
-    const int BB = pow2_rows(B, kMaxTileRows);
-    const int R = tile_outputs(BB);
-    const int64_t pad = at::ceil_div<int64_t>((R - 1) * q, p);
-    const int64_t ts = taps + 2 * pad;
-
     const at::Tensor xc = x.contiguous();
-    const at::Tensor padded =
-        at::constant_pad_nd(table, {pad, pad}).contiguous();
-    at::Tensor out = at::empty({B, out_len}, x.options());
-
-    const TileArgs<scalar_t> a{xc.const_data_ptr<scalar_t>(),
-                               out.mutable_data_ptr<scalar_t>(),
-                               B, T, out_len, p, q, taps, ts, pad,
-                               padded.const_data_ptr<acc_t>()};
-    launch_tile_rows<scalar_t>(a, BB, stream);
+    at::Tensor out = at::empty({x.size(0), out_len}, x.options());
+    // The tiles' batch rows: the largest power of two up to B and kMaxTileRows.
+    int BB = 1;
+    while (BB < kMaxTileRows && 2 * BB <= x.size(0)) {
+        BB *= 2;
+    }
+    switch (BB) {
+        case 8: launch_tile<scalar_t, 8>(xc, table, out, q, stream); break;
+        case 4: launch_tile<scalar_t, 4>(xc, table, out, q, stream); break;
+        case 2: launch_tile<scalar_t, 2>(xc, table, out, q, stream); break;
+        default: launch_tile<scalar_t, 1>(xc, table, out, q, stream); break;
+    }
     return out;
 }
 
