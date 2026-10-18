@@ -1,5 +1,9 @@
+#include <ATen/OpMathType.h>
 #include <torch/script.h>
 #include <torch/torch.h>
+
+#include <utility>
+#include <vector>
 
 #include "host_dot.h"
 
@@ -9,24 +13,28 @@ void host_lti_batch_mat_recur_N_order(int B, int T, int N,
                                       scalar_t *H_out    // [B][T][N]
 )
 {
+    using acc_t = at::opmath_type<scalar_t>; // the state stays in the accumulation type
 // Process each batch in parallel
 #pragma omp parallel for
     for (int b = 0; b < B; ++b)
     {
         const scalar_t *A_b = A + b * N * N;
         scalar_t *H_b = H_out + b * T * N;
+        std::vector<acc_t> H_prev(H_b, H_b + N), H_curr(N);
 
         // t loop
         for (int t = 1; t < T; ++t)
         {
-            const scalar_t *H_prev = H_b + (t - 1) * N;
-            scalar_t *H_curr = H_b + t * N;
+            scalar_t *H_t = H_b + t * N;
 
             for (int i = 0; i < N; ++i)
             {
                 const scalar_t *Arow = A_b + i * N;
-                H_curr[i] += host_dot(Arow, H_prev, N);
+                H_curr[i] = static_cast<acc_t>(H_t[i]) +
+                            host_dot(Arow, H_prev.data(), N);
+                H_t[i] = static_cast<scalar_t>(H_curr[i]);
             }
+            std::swap(H_prev, H_curr);
         }
     }
 }
@@ -37,21 +45,25 @@ void host_lti_share_mat_recur_N_order(int B, int T, int N,
                                       scalar_t *H_out    // [B][T][N]
 )
 {
+    using acc_t = at::opmath_type<scalar_t>; // the state stays in the accumulation type
 // Process each batch in parallel
 #pragma omp parallel for
     for (int b = 0; b < B; ++b)
     {
         scalar_t *H_b = H_out + b * T * N;
+        std::vector<acc_t> H_prev(H_b, H_b + N), H_curr(N);
         // t loop
         for (int t = 1; t < T; ++t)
         {
-            const scalar_t *H_prev = H_b + (t - 1) * N;
-            scalar_t *H_curr = H_b + t * N;
+            scalar_t *H_t = H_b + t * N;
             for (int i = 0; i < N; ++i)
             {
                 const scalar_t *Arow = A + i * N;
-                H_curr[i] += host_dot(Arow, H_prev, N);
+                H_curr[i] = static_cast<acc_t>(H_t[i]) +
+                            host_dot(Arow, H_prev.data(), N);
+                H_t[i] = static_cast<scalar_t>(H_curr[i]);
             }
+            std::swap(H_prev, H_curr);
         }
     }
 }

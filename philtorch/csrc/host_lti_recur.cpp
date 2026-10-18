@@ -1,3 +1,4 @@
+#include <ATen/OpMathType.h>
 #include <torch/script.h>
 #include <torch/torch.h>
 
@@ -6,17 +7,20 @@ void host_lti_batch_linear_recurrence(int B, int T,
                                       const scalar_t *a,
                                       scalar_t *out)
 {
+    using acc_t = at::opmath_type<scalar_t>; // the state stays in the accumulation type
 // Process each batch in parallel
 #pragma omp parallel for
     for (int b = 0; b < B; ++b)
     {
-        const scalar_t a_b = a[b];
+        const acc_t a_b = a[b];
         scalar_t *out_b = out + b * T;
+        acc_t h = out_b[0];
 
         // t loop
         for (int t = 1; t < T; ++t)
         {
-            out_b[t] += a_b * out_b[t - 1];
+            h = static_cast<acc_t>(out_b[t]) + a_b * h;
+            out_b[t] = static_cast<scalar_t>(h);
         }
     }
 }
@@ -26,15 +30,19 @@ void host_lti_shared_linear_recurrence(int B, int T,
                                        const scalar_t a,
                                        scalar_t *out)
 {
+    using acc_t = at::opmath_type<scalar_t>; // the state stays in the accumulation type
+    const acc_t a_acc = a;
 // Process each batch in parallel
 #pragma omp parallel for
     for (int b = 0; b < B; ++b)
     {
         scalar_t *out_b = out + b * T;
+        acc_t h = out_b[0];
         // t loop
         for (int t = 1; t < T; ++t)
         {
-            out_b[t] += a * out_b[t - 1];
+            h = static_cast<acc_t>(out_b[t]) + a_acc * h;
+            out_b[t] = static_cast<scalar_t>(h);
         }
     }
 }
