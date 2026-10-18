@@ -250,6 +250,82 @@ def _pararnn_fake(block_size):
     return fake
 
 
+def _resample_fake(x, table, q, out_len):
+    torch._check(x.ndim == 2, lambda: f"x must be 2D (B, T), got {x.ndim}D")
+    return x.new_empty((x.shape[0], out_len))
+
+
+def _resample_setup_context(ctx, inputs, output):
+    x, table, q, _ = inputs
+    # x is read by the table's gradient only.
+    ctx.save_for_backward(x if ctx.needs_input_grad[1] else None, table)
+    ctx.q, ctx.in_len, ctx.out_len = q, x.shape[1], output.shape[1]
+
+
+def _tap_columns(p, q, taps, device):
+    """The column of tap k of phase i in the dense kernel: ``(i q) // p + k``."""
+    start = torch.arange(p, device=device) * q // p
+    return start.unsqueeze(1) + torch.arange(taps, device=device)
+
+
+def _conv_input(x, p, q, taps, out_len):
+    """x padded for the CPU path's strided convolution, its kernel width and frames.
+
+    Frame f reads ``x[q f - K + j]`` for the kernel's columns j.
+    """
+    K = (taps - 2) // 2
+    width = ((p - 1) * q) // p + taps
+    frames = max(-(-out_len // p), 1)  # one at least: zeros for no outputs
+    needed = q * (frames - 1) + width
+    return F.pad(x, (K, needed - K - x.size(1))).unsqueeze(1), width, frames
+
+
+def _resample_table_gradient(x, grad, table, q):
+    """The gradient in ``table``: the conv weight gradient at the taps."""
+    p, taps = table.shape
+    B, out_len = grad.shape
+    # The op accumulates in float32 for the 16-bit dtypes.
+    acc = torch.promote_types(x.dtype, torch.float32)
+    xp, width, frames = _conv_input(x.to(acc), p, q, taps, out_len)
+    g = F.pad(grad.to(acc), (0, frames * p - out_len)).reshape(B, frames, p).mT
+    dense = torch.nn.grad.conv1d_weight(xp, (p, 1, width), g, stride=q).squeeze(1)
+    return dense.gather(1, _tap_columns(p, q, taps, table.device)).to(table.dtype)
+
+
+def _transpose_index(p, q, taps, device):
+    """The index of the transposed table into the flattened table and a zero."""
+    # Phase taps span floor(t) - K .. floor(t) + K + 1, which K' covers.
+    K = (taps - 2) // 2
+    K_t = -(-(K + 1) * p // q)
+    j = torch.arange(q, device=device).unsqueeze(1)
+    m = j * p // q - K_t + torch.arange(2 * K_t + 2, device=device)
+    phase = m % p
+    column = j - (q * (m // p) + phase * q // p - K)
+    # Entries off the taps of their row point at the zero appended to the table.
+    inside = (column >= 0) & (column < taps)
+    return torch.where(inside, phase * taps + column, p * taps)
+
+
+def _resample_gradient(run, ctx, grad):
+    """The gradients of ``philtorch::resample``, with ``run`` the op to call.
+
+    In x, the op with the transposed table; in the table, the weight gradient.
+    Both are differentiable, so derivatives of any order follow.
+    """
+    x, table = ctx.saved_tensors
+    needs_x, needs_table = ctx.needs_input_grad[:2]
+    grad_x = grad_table = None
+    if needs_x:
+        # The transposed table (q phases, stride p), gathered from table.
+        p, taps = table.shape
+        index = _transpose_index(p, ctx.q, taps, table.device)
+        table_t = torch.cat([table.flatten(), table.new_zeros(1)])[index]
+        grad_x = run(grad, table_t, p, ctx.in_len)
+    if needs_table:
+        grad_table = _resample_table_gradient(x, grad, table, ctx.q)
+    return grad_x, grad_table, None, None
+
+
 for name, order, time_invariant in [
     ("recur2", 2, False),
     ("recurN", None, False),
@@ -270,6 +346,7 @@ torch.library.register_autograd(
 )
 torch.library.register_autograd("philtorch::lpc", _lpc_backward, setup_context=_lpc_setup_context)
 
+
 for block_size in (2, 3):
     op = f"parallel_reduce_block_diag_{block_size}x{block_size}_cuda"
     if hasattr(torch.ops.parallel_reduce_cuda, op):  # pragma: no cover - CUDA-only schema
@@ -277,3 +354,11 @@ for block_size in (2, 3):
         torch.library.register_autograd(
             f"parallel_reduce_cuda::{op}", _pararnn_backward, setup_context=_pararnn_setup_context
         )
+
+if hasattr(torch.ops.philtorch, "resample"):  # pragma: no cover - CUDA-only op
+    torch.library.register_fake("philtorch::resample", _resample_fake)
+    torch.library.register_autograd(
+        "philtorch::resample",
+        lambda ctx, grad: _resample_gradient(torch.ops.philtorch.resample, ctx, grad),
+        setup_context=_resample_setup_context,
+    )

@@ -40,11 +40,12 @@ Recurrences
    linear_recurrence
    state_space_recursion
 
-Interpolation
--------------
+Interpolation and resampling
+----------------------------
 
 .. autosummary::
    :toctree: generated
    :nosignatures:
 
    cubic_spline
+   resample
