@@ -10,7 +10,6 @@ from philtorch.lti.interp import (
     _QUALITY_RECIPES,
     _kaiser_design,
     _num_taps,
-    _soxr_passband_end,
     _table_on,
     cspline,
     cubic_spline,
@@ -179,15 +178,6 @@ def test_quality_presets_follow_kaiser_design():
         assert num_zeros == math.ceil(math.ceil((numtaps - 1) / 2) * rolloff)
         assert _QUALITY_PRESETS[quality] == (rolloff, kaiser_beta_, num_zeros)
         assert (round(rolloff, 4), round(kaiser_beta_, 2), num_zeros) == documented[quality]
-
-
-@pytest.mark.parametrize(
-    "bits, expected",
-    [(16, 0.9158810491765671), (20, 0.9137436532733066), (28, 0.9113283198951663)],
-)
-def test_soxr_passband_end_matches_soxr(bits, expected):
-    # The values libsoxr's formula gives, computed with soxr itself.
-    assert _soxr_passband_end(bits) == pytest.approx(expected, rel=1e-12, abs=0)
 
 
 # (orig_freq, new_freq, T): T = 64 at (7, 10) is shorter than the filter's

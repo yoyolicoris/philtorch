@@ -13,32 +13,14 @@ from .._ops import _resample_gradient, _resample_setup_context, _tap_columns
 from .delay import _as_int
 from .recur import linear_recurrence
 
-# Passband ends of libsoxr's presets, from soxr.c and filter.c: LQ is
-# 1385 / 2048, and the others are 1 - .05 / lsx_to_3dB(rej), with
-# rej = bits * 20 log10(2) and lsx_to_3dB(a) = 1 - lsx_inv_f_resp(-3, a).
-
-
-def _soxr_inv_f_resp(drop: float, a: float) -> float:
-    """Port of lsx_inv_f_resp (soxr's filter.c)."""
-    x = ((2.0517e-07 * a - 1.1303e-04) * a + 0.023154) * a + 0.55924  # sinePhi
-    power = math.log(0.5) / math.log(math.sin(x * 0.5))  # sinePow
-    drop = 10 ** (drop / 20)  # dB_to_linear
-    s = 1 - drop if drop > 0.5 else drop
-    x = math.asin(s ** (1 / power)) / x
-    return x if drop > 0.5 else 1 - x
-
-
-def _soxr_passband_end(bits: int) -> float:
-    rejection = bits * 20.0 * math.log10(2.0)
-    return 1 - 0.05 / (1 - _soxr_inv_f_resp(-3, rejection))
-
-
-# (precision in bits, passband_end), with stopband_begin = 1.
+# (precision in bits, passband_end) of libsoxr's presets, with stopband_begin
+# = 1. The passband ends are the values libsoxr gives (LQ's is 1385 / 2048),
+# measured by running it rather than ported: its code is LGPL.
 _QUALITY_RECIPES: dict[str, tuple[int, float]] = {
     "LQ": (16, 1385 / 2048),
-    "MQ": (16, _soxr_passband_end(16)),
-    "HQ": (20, _soxr_passband_end(20)),
-    "VHQ": (28, _soxr_passband_end(28)),
+    "MQ": (16, 0.9158810491765671),
+    "HQ": (20, 0.9137436532733066),
+    "VHQ": (28, 0.9113283198951663),
 }
 
 
