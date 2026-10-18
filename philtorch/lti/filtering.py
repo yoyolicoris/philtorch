@@ -11,7 +11,7 @@ from ..mat import companion
 from ..poly import polydiv
 from ..utils import chain_functions
 from .recur import linear_recurrence
-from .ssm import _ssm_B_shape_error, diag_state_space, state_space, state_space_recursion
+from .ssm import diag_state_space, state_space, state_space_recursion
 
 
 def comb_filter(a: Tensor, delay: int, x: Tensor, zi: Tensor | None = None, **kwargs) -> Tensor:
@@ -454,8 +454,16 @@ def lfilter(
         raise ValueError("Numerator coefficients b must be 1D or 2D.")
     if batched_x and b.dim() == 2 and b.size(0) == 1:
         b = b[0]  # a batch of one is shared by every signal
+    if b.dim() == 2 and b.size(0) != x.size(0):
+        raise ValueError(
+            "Batch size of b must be 1 or match batch size of x, "
+            f"got b: {b.size(0)}, x: {x.size(0)}"
+        )
     if a.dim() not in (1, 2):
         raise ValueError("Denominator coefficients a must be 1D or 2D.")
+    # The filter's coefficients, b for an empty a, and zi must match x.
+    fir = a.size(-1) == 0
+    _check_dtypes_devices(b if fir else a, x, zi, "b" if fir else "a")
 
     match backend:
         case "ssm":
@@ -505,27 +513,17 @@ def _check_unroll_factor(kwargs: dict) -> None:
         ) from None
 
 
-def _check_dtypes_devices(b: Tensor, x: Tensor, zi: Tensor | None, name: str = "b") -> None:
-    """Check that b, named ``name``, and the state share x's dtype and device.
+def _check_dtypes_devices(coeffs: Tensor, x: Tensor, zi: Tensor | None, name: str) -> None:
+    """Check that the coefficients ``name`` and zi share x's dtype and device.
 
     An empty ``a`` holds no values, so its dtype, such as the float32 of
-    ``torch.tensor([])``, does not matter.
+    ``torch.tensor([])``, does not matter: ``b`` is checked instead.
     """
-    if any(t is not None and (t.dtype != x.dtype or t.device != x.device) for t in (b, zi)):
+    if any(t is not None and (t.dtype != x.dtype or t.device != x.device) for t in (coeffs, zi)):
         raise ValueError(
             f"{name}, zi and x must share a dtype and a device, got "
-            f"{[(t.dtype, str(t.device)) for t in (b, zi, x) if t is not None]}"
+            f"{[(t.dtype, str(t.device)) for t in (coeffs, zi, x) if t is not None]}"
         )
-
-
-def _check_numerator_batch(b: Tensor, x: Tensor, M: int) -> None:
-    """Raise ``"tdf2"``'s input-matrix error for a batched b that fits no x.
-
-    The other forms would broadcast b, or read it as several outputs, or fail
-    in a pad, instead of rejecting it.
-    """
-    if b.dim() == 2 and b.size(0) != x.size(0):
-        raise _ssm_B_shape_error(b.new_empty(b.size(0), M), x, x.size(0), M)
 
 
 def _check_batch_sizes(b: Tensor, a: Tensor, x: Tensor, zi: Tensor | None) -> None:
@@ -547,7 +545,6 @@ def _ssm_lfilter(
     **kwargs,
 ) -> Tensor | tuple[Tensor, Tensor]:
     """Run :func:`lfilter` with the ``"ssm"`` backend."""
-    fir_only = a.size(-1) == 0
     if b.size(-1) < a.size(-1) + 1:
         b = F.pad(b, (0, a.size(-1) + 1 - b.size(-1)))
     elif b.size(-1) > a.size(-1) + 1:
@@ -559,11 +556,9 @@ def _ssm_lfilter(
     if a.size(-1) == 0 and form in ("df2", "tdf2", "df1", "tdf1"):
         # A pure gain has no state: the output is b0 * x, and the final state
         # is empty. The state-space functions of the general path would have
-        # checked the keyword arguments, unroll_factor, the dtypes and
-        # devices, and the batch sizes.
+        # checked the keyword arguments, unroll_factor and the batch sizes.
         _check_kwargs(kwargs, _SSM_KWARGS)
         _check_unroll_factor(kwargs)
-        _check_dtypes_devices(b, x, zi)
         _check_batch_sizes(b, a, x, zi)
         if zi is not None and zi.dim() not in (1, 2):
             raise ValueError(f"Initial conditions zi must be 1D or 2D, got {zi.shape}")
@@ -574,11 +569,6 @@ def _ssm_lfilter(
         y = b[..., :1] * x + a.sum(-1, keepdim=True).to(x)
         return y if zi is None else (y, y[:, :0] + zi.expand(y.size(0), 0))
 
-    if fir_only:
-        # The padded a is not empty, so the general path checks it, but not
-        # that b matches x: the filter would promote it.
-        _check_dtypes_devices(b, x, zi)
-    _check_numerator_batch(b, x, a.size(-1))
     A = companion(a)
 
     match form:
@@ -654,11 +644,10 @@ def _diag_ssm_lfilter(
 
     if a.size(-1) == 0:
         # With no poles, the filter is the FIR filter b. The general path
-        # would have checked the keyword arguments, unroll_factor, the dtypes
-        # and the batch sizes.
+        # would have checked the keyword arguments, unroll_factor and the
+        # batch sizes.
         _check_kwargs(kwargs, _DIAG_SSM_KWARGS)
         _check_unroll_factor(kwargs)
-        _check_dtypes_devices(b, x, zi)
         _check_batch_sizes(b, a, x, zi)
         if b.size(-1) == 0:
             # fir needs a tap: no coefficient means a zero filter, as with
@@ -672,9 +661,6 @@ def _diag_ssm_lfilter(
         if zi is None:
             return result + no_poles
         return result[0] + no_poles, result[1]
-
-    _check_dtypes_devices(a, x, zi, "A")
-    _check_numerator_batch(b, x, a.size(-1))
 
     if too_long:
         # fir takes one filter per signal.
