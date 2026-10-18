@@ -589,10 +589,7 @@ def test_resample_cuda_backward_on_another_stream():
     with torch.cuda.stream(other):
         actual = grad(23, 29)
     torch.cuda.synchronize()
-    xc = x.detach().cpu().requires_grad_()
-    y = resample(xc, 23, 29)
-    (expected,) = torch.autograd.grad(y, xc, torch.ones_like(y))
-    torch.testing.assert_close(actual.cpu(), expected, **_TOLS[torch.float64])
+    torch.testing.assert_close(actual, grad(23, 29), rtol=0, atol=0)
 
 
 @pytest.mark.cuda
@@ -643,6 +640,15 @@ def test_resample_op_with_any_table(p, q, out_len):
     torch.library.opcheck(op, (x, table, q, out_len))
     assert torch.autograd.gradcheck(lambda x, t: op(x, t, q, out_len), (x, table))
     assert torch.autograd.gradgradcheck(lambda x, t: op(x, t, q, out_len), (x, table))
+
+
+@pytest.mark.cuda
+def test_resample_op_with_no_outputs():
+    # The table's gradient is zeros, not a convolution of negative length.
+    table = torch.randn(1, 2, device="cuda", dtype=torch.float64, requires_grad=True)
+    x = torch.randn(2, 12, device="cuda", dtype=torch.float64)
+    (grad,) = torch.autograd.grad(torch.ops.philtorch.resample(x, table, 100, 0).sum(), table)
+    assert not grad.any()
 
 
 @pytest.mark.parametrize(

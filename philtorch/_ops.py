@@ -276,7 +276,7 @@ def _conv_input(x, p, q, taps, out_len):
     """
     K = (taps - 2) // 2
     width = ((p - 1) * q) // p + taps
-    needed = q * (-(-out_len // p) - 1) + width
+    needed = q * (max(-(-out_len // p), 1) - 1) + width  # one frame at least
     return F.pad(x, (K, needed - K - x.size(1))).unsqueeze(1), width
 
 
@@ -284,7 +284,7 @@ def _resample_table_gradient(x, grad, table, q):
     """The gradient in ``table``: the conv weight gradient at the taps."""
     p, taps = table.shape
     B, out_len = grad.shape
-    frames = -(-out_len // p)
+    frames = max(-(-out_len // p), 1)  # as _conv_input's: zeros for no outputs
     # The op accumulates in float32 for the 16-bit dtypes.
     acc = torch.promote_types(x.dtype, torch.float32)
     g = F.pad(grad.to(acc), (0, frames * p - out_len)).reshape(B, frames, p).mT
