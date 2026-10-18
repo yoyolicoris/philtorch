@@ -378,7 +378,8 @@ def resample(
     The rates are reduced by their greatest common divisor to :math:`q \to p`,
     and the weights are evaluated exactly, at each call, in ``float64``, as a
     polyphase filter of about :math:`p (q + 2 N_z / c)` coefficients, at most
-    :math:`2^{22}`. For a ratio beyond that, approximate it:
+    :math:`2^{22}`. Beyond that, raise :attr:`rolloff` or lower
+    :attr:`num_zeros` for fewer taps, or approximate the ratio:
     ``f = Fraction(new_freq, orig_freq).limit_denominator(1000)``, from
     :mod:`fractions`, then ``resample(x, f.denominator, f.numerator)``.
 
@@ -481,10 +482,11 @@ def resample(
     taps = _num_taps(new, orig, rolloff_value, num_zeros)
     if new * (orig + taps) > _MAX_KERNEL:
         raise ValueError(
-            f"the filter for the reduced rates {orig} -> {new} needs {new} phases "
-            f"spanning {orig + taps} inputs, more than 2**22 coefficients; approximate "
-            "the ratio, e.g. f = Fraction(new_freq, orig_freq).limit_denominator(1000), "
-            "then resample(x, f.denominator, f.numerator)"
+            f"the filter for the reduced rates {orig} -> {new} needs {new} phases of "
+            f"{taps} taps spanning {orig + taps} inputs, more than 2**22 coefficients: "
+            "raise rolloff or lower num_zeros for fewer taps, or approximate the ratio, "
+            "e.g. f = Fraction(new_freq, orig_freq).limit_denominator(1000), then "
+            "resample(x, f.denominator, f.numerator)"
         )
 
     out_len = -(-x.size(1) * new // orig)

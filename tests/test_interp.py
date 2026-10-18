@@ -660,8 +660,8 @@ def test_resample_op_with_no_outputs():
         (dict(num_zeros=0), "num_zeros must be a positive integer, got 0"),
         (dict(orig_freq=999983, new_freq=1000003), "limit_denominator"),
         # A cutoff so small that the filter's span overflows, or that underflows.
-        (dict(rolloff=1e-309), "limit_denominator"),
-        (dict(orig_freq=2, new_freq=1, rolloff=5e-324), "limit_denominator"),
+        (dict(rolloff=1e-309), "raise rolloff or lower num_zeros"),
+        (dict(orig_freq=2, new_freq=1, rolloff=5e-324), "raise rolloff or lower num_zeros"),
         # The table alone (5001 phases of 196 taps) would fit; the dense kernel,
         # 5001 x (5000 + 196), does not.
         (dict(orig_freq=5000, new_freq=5001), "limit_denominator"),
