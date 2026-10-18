@@ -61,17 +61,8 @@ def _positive_int(value: Any, name: str) -> int:
     return result
 
 
-def _as_float(value: Any, name: str) -> float:
-    if isinstance(value, bool) or not isinstance(value, numbers.Real):
-        raise ValueError(f"{name} must be a real number, got {value!r}")
-    value = float(value)
-    if not math.isfinite(value):
-        raise ValueError(f"{name} must be finite, got {value}")
-    return value
-
-
 def _as_param(value: Any, name: str) -> float | Tensor:
-    """A float or a 0-D floating-point tensor, as a design parameter."""
+    """A finite float or a 0-D floating-point tensor, as a design parameter."""
     if isinstance(value, Tensor):
         if value.dim() != 0 or not value.is_floating_point():
             raise ValueError(
@@ -79,7 +70,11 @@ def _as_param(value: Any, name: str) -> float | Tensor:
                 f"got a {value.dim()}-D tensor of {value.dtype}"
             )
         return value
-    return _as_float(value, name)
+    if isinstance(value, bool) or not isinstance(value, numbers.Real):
+        raise ValueError(f"{name} must be a real number, got {value!r}")
+    if not math.isfinite(value):
+        raise ValueError(f"{name} must be finite, got {float(value)}")
+    return float(value)
 
 
 def _first_order_filt(
@@ -282,6 +277,12 @@ def _polyphase_table(
     with ``taps = 2 K + 2``. Tensor ``rolloff`` and ``beta`` (0-D float64, on
     ``device``) make it differentiable in them.
     """
+    rolloff, beta = (
+        torch.as_tensor(
+            v.to(device) if isinstance(v, Tensor) else v, dtype=torch.float64, device=device
+        )
+        for v in (rolloff, beta)
+    )
     c = _cutoff(p, q, rolloff)
     frac = (((torch.arange(p, dtype=torch.int64, device=device) * q) % p).double() / p).unsqueeze(1)
     k = torch.arange(taps, dtype=torch.float64, device=device)
@@ -290,7 +291,6 @@ def _polyphase_table(
     inside = z.abs() < num_zeros
     # I0(beta sqrt(1 - u^2)) / I0(beta) from i0e, which can't overflow, even in
     # beta; the argument is 1 off the window, where sqrt's derivative is finite.
-    beta = torch.as_tensor(beta, dtype=torch.float64, device=device)
     arg = beta * torch.sqrt(torch.where(inside, 1 - (z / num_zeros) ** 2, 1.0))
     window = torch.special.i0e(arg) / torch.special.i0e(beta)
     window = window * torch.exp(arg.abs() - beta.abs())
@@ -317,7 +317,7 @@ def _table_on(
 def _polyphase_conv(x: Tensor, table: Tensor, q: int, out_len: int) -> Tensor:
     """Resample with one strided convolution, for devices without the op."""
     p, taps = table.shape
-    xp, width = _conv_input(x, p, q, taps, out_len)
+    xp, width, _ = _conv_input(x, p, q, taps, out_len)
     columns = _tap_columns(p, q, taps, table.device)
     kernel = table.new_zeros(p, width).scatter(1, columns, table)
     y = F.conv1d(xp, kernel.unsqueeze(1), stride=q)
@@ -345,14 +345,13 @@ class _Resample(torch.autograd.Function):
 
     @staticmethod
     def jvp(ctx, dx, dtable, *_):
+        # Bilinear in (x, table): one call per tangent.
         x, table = ctx.saved_tensors
         rest = (ctx.q, ctx.out_len)
-        tangents = []
-        if dx is not None:
-            tangents.append(_Resample.apply(dx, table, *rest))
-        if dtable is not None:
-            tangents.append(_Resample.apply(x, dtable, *rest))
-        return sum(tangents) if tangents else None
+        if dtable is None:
+            return _Resample.apply(dx, table, *rest)
+        tangent = _Resample.apply(x, dtable, *rest)
+        return tangent if dx is None else tangent + _Resample.apply(dx, table, *rest)
 
     @staticmethod
     def vmap(info, in_dims, x, *params):
@@ -522,12 +521,6 @@ def resample(
         # The table the gradient reaches the tensors through: built uncached in
         # float64, on x's device, or on the CPU for MPS, which has no float64.
         device = torch.device("cpu") if x.device.type == "mps" else x.device
-        rolloff, beta = (
-            torch.as_tensor(
-                v.to(device) if isinstance(v, Tensor) else v, dtype=torch.float64, device=device
-            )
-            for v in (rolloff, beta)
-        )
         table = _polyphase_table(new, orig, rolloff, beta, num_zeros, taps, device)
         table = table.to(device=x.device, dtype=dtype)
     else:

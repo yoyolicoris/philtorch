@@ -270,25 +270,25 @@ def _tap_columns(p, q, taps, device):
 
 
 def _conv_input(x, p, q, taps, out_len):
-    """x padded for the CPU path's strided convolution, and its kernel width.
+    """x padded for the CPU path's strided convolution, its kernel width and frames.
 
     Frame f reads ``x[q f - K + j]`` for the kernel's columns j.
     """
     K = (taps - 2) // 2
     width = ((p - 1) * q) // p + taps
-    needed = q * (max(-(-out_len // p), 1) - 1) + width  # one frame at least
-    return F.pad(x, (K, needed - K - x.size(1))).unsqueeze(1), width
+    frames = max(-(-out_len // p), 1)  # one at least: zeros for no outputs
+    needed = q * (frames - 1) + width
+    return F.pad(x, (K, needed - K - x.size(1))).unsqueeze(1), width, frames
 
 
 def _resample_table_gradient(x, grad, table, q):
     """The gradient in ``table``: the conv weight gradient at the taps."""
     p, taps = table.shape
     B, out_len = grad.shape
-    frames = max(-(-out_len // p), 1)  # as _conv_input's: zeros for no outputs
     # The op accumulates in float32 for the 16-bit dtypes.
     acc = torch.promote_types(x.dtype, torch.float32)
+    xp, width, frames = _conv_input(x.to(acc), p, q, taps, out_len)
     g = F.pad(grad.to(acc), (0, frames * p - out_len)).reshape(B, frames, p).mT
-    xp, width = _conv_input(x.to(acc), p, q, taps, out_len)
     dense = torch.nn.grad.conv1d_weight(xp, (p, 1, width), g, stride=q).squeeze(1)
     return dense.gather(1, _tap_columns(p, q, taps, table.device)).to(table.dtype)
 
