@@ -951,3 +951,87 @@ def test_lfilter_every_input_gets_a_gradient(backend, form, num_taps, num_poles,
         inputs.append(kwargs["zi"])
     outputs = lfilter(b, a, x, **kwargs)
     _assert_every_input_gets_a_gradient(outputs, inputs)
+
+
+@pytest.mark.parametrize("backend", ["ssm", "diag_ssm"])
+@pytest.mark.parametrize("form", ["df2", "tdf2"])
+def test_lfilter_batched_b_with_unbatched_x_raises_in_both_forms(backend: str, form: str):
+    # x is of shape (N), so its batch size is 1 and a batched b can't match it:
+    # the output must have the shape of x, as documented, and "df2" once read
+    # b as three outputs and returned (1, N, 3).
+    b, a, x = torch.rand(3, 2), torch.rand(1) * 0.5, torch.randn(10)
+    with pytest.raises(ValueError, match="Input matrix B must be of shape"):
+        lfilter(b, a, x, form=form, backend=backend)
+
+
+@pytest.mark.parametrize("form", ["df1", "tdf1", "df2", "tdf2"])
+@pytest.mark.parametrize("a_size", [0, 1])
+def test_lfilter_batched_b_batch_mismatch_raises_value_error(form: str, a_size: int):
+    # An empty a pads to the general path, as a_size=1 takes it.
+    with pytest.raises(ValueError, match="Input matrix B must be of shape"):
+        lfilter(torch.randn(4, 2), torch.zeros(a_size), torch.randn(3, 6), form=form)
+
+
+@pytest.mark.parametrize("batched", [False, True])
+def test_filtfilt_df2_empty_a_is_a_gain(batched: bool):
+    # SciPy's filtfilt rejects a = [1.0], so the reference is the squared gain.
+    rng = np.random.default_rng(0)
+    b = torch.from_numpy(rng.standard_normal((2, 1) if batched else (1,)))
+    x = torch.from_numpy(rng.standard_normal((2, 30)))
+    a = torch.zeros(0, dtype=torch.float64)
+    y = filtfilt(b, a, x, form="df2")
+    assert torch.allclose(y, filtfilt(b, a, x, form="tdf2"))
+    assert torch.allclose(y, b.reshape(-1, 1) ** 2 * x)
+
+
+@pytest.mark.parametrize("shape", [(), (3,)])
+def test_lfilter_zi_empty_a_is_empty(shape: tuple[int, ...]):
+    a = torch.zeros(*shape, 0, dtype=torch.float64)
+    assert lfilter_zi(a, transpose=False).shape == (*shape, 0)
+
+
+_MIXED_DTYPE_CASES = {
+    "complex": (torch.complex128, torch.complex128, torch.float64),
+    "single-precision": (torch.float32, torch.float32, torch.float64),
+    "gain-complex": (torch.complex128, None, torch.float64),
+    "gain-single-precision": (torch.float32, None, torch.float64),
+    "fir-single-precision": (torch.float32, None, torch.float64),
+}
+
+
+@pytest.mark.parametrize("backend", ["ssm", "diag_ssm"])
+@pytest.mark.parametrize("form", ["df2", "tdf2"])
+@pytest.mark.parametrize("case", list(_MIXED_DTYPE_CASES))
+def test_lfilter_mixed_dtypes_raise_the_same_error_in_every_backend(
+    backend: str, form: str, case: str
+):
+    # b and a, or b alone with an empty a, against a signal of another dtype.
+    b_dtype, a_dtype, x_dtype = _MIXED_DTYPE_CASES[case]
+    num_taps = 3 if case.startswith("fir") else (1 if case.startswith("gain") else 2)
+    b = torch.ones(num_taps, dtype=b_dtype)
+    a = torch.zeros(0, dtype=x_dtype) if a_dtype is None else 0.3 * torch.ones(1, dtype=a_dtype)
+    with pytest.raises(ValueError, match="share a dtype and a device"):
+        lfilter(b, a, torch.randn(10, dtype=x_dtype), form=form, backend=backend)
+
+
+@pytest.mark.parametrize(
+    ("form", "backend"),
+    [
+        ("df2", "ssm"),
+        ("tdf2", "ssm"),
+        ("df1", "ssm"),
+        ("tdf1", "ssm"),
+        ("df2", "diag_ssm"),
+        ("tdf2", "diag_ssm"),
+    ],
+)
+@pytest.mark.parametrize("a_size", [0, 1, 2])
+def test_lfilter_b_with_batch_of_one_is_shared(form: str, backend: str, a_size: int):
+    rng = np.random.default_rng(0)
+    b = torch.from_numpy(rng.standard_normal(3))
+    a = 0.3 * torch.from_numpy(rng.standard_normal(a_size))
+    x = torch.from_numpy(rng.standard_normal((4, 12)))
+    y = lfilter(b, a, x, form=form, backend=backend)
+    y_one = lfilter(b[None], a, x, form=form, backend=backend)
+    assert y_one.shape == y.shape == x.shape
+    assert torch.allclose(y_one, y)
