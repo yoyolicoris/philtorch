@@ -310,8 +310,12 @@ def _table_on(
     device: torch.device,
     dtype: torch.dtype,
 ) -> Tensor:
-    """The table of q -> p on ``device``."""
-    return _polyphase_table(p, q, *design).to(device=device, dtype=dtype)
+    """The table of q -> p on ``device``.
+
+    Built on the CPU, not the default device: the blocking copy to ``device``
+    completes it before any stream reads it, and MPS has no float64.
+    """
+    return _polyphase_table(p, q, *design, torch.device("cpu")).to(device=device, dtype=dtype)
 
 
 def _polyphase_conv(x: Tensor, table: Tensor, q: int, out_len: int) -> Tensor:

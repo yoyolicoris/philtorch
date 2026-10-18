@@ -498,6 +498,14 @@ def test_resample_vmap_over_the_parameters_is_not_supported():
     torch.testing.assert_close(vy, fn(x.reshape(6, 12), rolloff, betas[1]).reshape(3, 2, -1))
 
 
+def test_resample_builds_its_table_on_the_cpu():
+    # Not on the default device: on meta, a table has no values to copy.
+    x = torch.randn(2, 40, dtype=torch.float64)
+    with torch.device("meta"):
+        actual = resample(x, 11, 13)
+    torch.testing.assert_close(actual, resample(x, 11, 13))
+
+
 @pytest.mark.parametrize("device", _DEVICES)
 def test_resample_trains_after_an_inference_mode_call(device):
     # The first call caches the filter, here in inference mode, and a later
