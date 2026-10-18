@@ -36,8 +36,7 @@ struct output_unary_op
     __host__ __device__ cuda::std::tuple<T, T> operator()(
         const sqm2_pair<acc_t> &state) const
     {
-        return thrust::make_tuple(static_cast<T>(thrust::get<4>(state)),
-                                  static_cast<T>(thrust::get<5>(state)));
+        return thrust::make_tuple(thrust::get<4>(state), thrust::get<5>(state));
     }
 };
 
@@ -48,10 +47,7 @@ struct batch_A_input_op
         const T &a, const T &b, const T &c, const T &d, const T &x_0,
         const T &x_1) const
     {
-        return thrust::make_tuple(
-            static_cast<acc_t>(a), static_cast<acc_t>(b),
-            static_cast<acc_t>(c), static_cast<acc_t>(d),
-            static_cast<acc_t>(x_0), static_cast<acc_t>(x_1));
+        return thrust::make_tuple(a, b, c, d, x_0, x_1);
     }
 };
 
@@ -67,11 +63,9 @@ struct share_A_input_op
         // 4 * n_steps can exceed INT_MAX.
         int64_t idx = i % n_steps;
         int64_t stride = n_steps;
-        return thrust::make_tuple(
-            static_cast<acc_t>(A[idx]), static_cast<acc_t>(A[idx + stride]),
-            static_cast<acc_t>(A[idx + stride * 2]),
-            static_cast<acc_t>(A[idx + stride * 3]), static_cast<acc_t>(x_0),
-            static_cast<acc_t>(x_1));
+        return thrust::make_tuple(A[idx], A[idx + stride],
+                                  A[idx + stride * 2], A[idx + stride * 3],
+                                  x_0, x_1);
     }
 };
 
@@ -86,13 +80,8 @@ struct lti_batch_A_input_op
         int64_t idx = static_cast<int64_t>(i / n_steps) * 4;
         int offset = i % n_steps;
         if (offset > 0)
-            return thrust::make_tuple(
-                static_cast<acc_t>(A[idx]), static_cast<acc_t>(A[idx + 1]),
-                static_cast<acc_t>(A[idx + 2]), static_cast<acc_t>(A[idx + 3]),
-                static_cast<acc_t>(x_0), static_cast<acc_t>(x_1));
-        return thrust::make_tuple(acc_t(0), acc_t(0), acc_t(0), acc_t(0),
-                                  static_cast<acc_t>(x_0),
-                                  static_cast<acc_t>(x_1));
+            return thrust::make_tuple(A[idx], A[idx + 1], A[idx + 2], A[idx + 3], x_0, x_1);
+        return thrust::make_tuple(0, 0, 0, 0, x_0, x_1);
     }
 };
 
@@ -106,13 +95,8 @@ struct lti_share_A_input_op
     {
         int offset = i % n_steps;
         if (offset > 0)
-            return thrust::make_tuple(
-                static_cast<acc_t>(A[0]), static_cast<acc_t>(A[1]),
-                static_cast<acc_t>(A[2]), static_cast<acc_t>(A[3]),
-                static_cast<acc_t>(x_0), static_cast<acc_t>(x_1));
-        return thrust::make_tuple(acc_t(0), acc_t(0), acc_t(0), acc_t(0),
-                                  static_cast<acc_t>(x_0),
-                                  static_cast<acc_t>(x_1));
+            return thrust::make_tuple(A[0], A[1], A[2], A[3], x_0, x_1);
+        return thrust::make_tuple(0, 0, 0, 0, x_0, x_1);
     }
 };
 

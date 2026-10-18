@@ -38,7 +38,7 @@ template <typename scalar_t>
 void lti_share_mat_recur_second_order(const scalar_t *A, const scalar_t *x,
                                       scalar_t *out, int n_steps, int64_t total_steps)
 {
-    using acc_t = at::opmath_type<scalar_t>; // the state stays in the accumulation type
+    using acc_t = at::opmath_type<scalar_t>;
     thrust::counting_iterator<int> iter(0);
     auto share_input_op =
         thrust::make_zip_function(lti_share_A_input_op<scalar_t, acc_t>{A, n_steps});

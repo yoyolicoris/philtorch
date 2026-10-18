@@ -32,7 +32,7 @@ struct take_second
 {
     __host__ __device__ T operator()(const cuda::std::tuple<acc_t, acc_t> &state) const
     {
-        return static_cast<T>(thrust::get<1>(state));
+        return thrust::get<1>(state);
     }
 };
 
@@ -46,8 +46,8 @@ struct lti_batch_recur_input_op
         int idx = i / n_steps;
         int offset = i % n_steps;
         if (offset > 0)
-            return thrust::make_tuple(static_cast<acc_t>(decays[idx]), static_cast<acc_t>(x));
-        return thrust::make_tuple(acc_t(0), static_cast<acc_t>(x));
+            return thrust::make_tuple(decays[idx], x);
+        return thrust::make_tuple(0, x);
     }
 };
 
@@ -61,8 +61,8 @@ struct lti_shared_recur_input_op
     {
         int offset = i % n_steps;
         if (offset > 0)
-            return thrust::make_tuple(static_cast<acc_t>(*decay), static_cast<acc_t>(x));
-        return thrust::make_tuple(acc_t(0), static_cast<acc_t>(x));
+            return thrust::make_tuple(*decay, x);
+        return thrust::make_tuple(0, x);
     }
 };
 
@@ -89,7 +89,7 @@ void lti_shared_linear_recurrence(const scalar_t *decay,
                                   const scalar_t *impulses,
                                   scalar_t *out, int n_steps, int64_t total_steps)
 {
-    using acc_t = at::opmath_type<scalar_t>; // the state stays in the accumulation type
+    using acc_t = at::opmath_type<scalar_t>;
     thrust::counting_iterator<int> it(0);
     auto shared_input_op = thrust::make_zip_function(lti_shared_recur_input_op<scalar_t, acc_t>{decay, n_steps});
     index2key key_op{n_steps};

@@ -14,11 +14,11 @@ inline acc_t host_dot(const scalar_t *left, const acc_t *right, int size)
         {
 #pragma omp simd reduction(+ : sum)
             for (int index = 0; index < size; ++index)
-                sum += static_cast<acc_t>(left[index]) * right[index];
+                sum += left[index] * right[index];
             return sum;
         }
     }
     for (int index = 0; index < size; ++index)
-        sum += static_cast<acc_t>(left[index]) * right[index];
+        sum += left[index] * right[index];
     return sum;
 }

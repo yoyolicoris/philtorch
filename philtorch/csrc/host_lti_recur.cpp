@@ -19,19 +19,18 @@ void host_lti_batch_linear_recurrence(int B, int T,
         // t loop
         for (int t = 1; t < T; ++t)
         {
-            h = static_cast<acc_t>(out_b[t]) + a_b * h;
-            out_b[t] = static_cast<scalar_t>(h);
+            h = out_b[t] + a_b * h;
+            out_b[t] = h;
         }
     }
 }
 
 template <typename scalar_t>
 void host_lti_shared_linear_recurrence(int B, int T,
-                                       const scalar_t a,
+                                       const at::opmath_type<scalar_t> a,
                                        scalar_t *out)
 {
-    using acc_t = at::opmath_type<scalar_t>; // the state stays in the accumulation type
-    const acc_t a_acc = a;
+    using acc_t = at::opmath_type<scalar_t>;
 // Process each batch in parallel
 #pragma omp parallel for
     for (int b = 0; b < B; ++b)
@@ -41,8 +40,8 @@ void host_lti_shared_linear_recurrence(int B, int T,
         // t loop
         for (int t = 1; t < T; ++t)
         {
-            h = static_cast<acc_t>(out_b[t]) + a_acc * h;
-            out_b[t] = static_cast<scalar_t>(h);
+            h = out_b[t] + a * h;
+            out_b[t] = h;
         }
     }
 }

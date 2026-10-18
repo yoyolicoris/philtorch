@@ -43,7 +43,7 @@ void share_mat_recur_second_order(const scalar_t *A,
                                   scalar_t *out, int n_steps,
                                   int64_t total_steps)
 {
-    using acc_t = at::opmath_type<scalar_t>; // the state stays in the accumulation type
+    using acc_t = at::opmath_type<scalar_t>;
     thrust::counting_iterator<int> iter(0);
     index2key key_op{n_steps};
     auto share_input_op =

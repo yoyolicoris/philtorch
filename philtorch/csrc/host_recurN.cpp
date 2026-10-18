@@ -105,9 +105,9 @@ void host_batch_mat_recur_N_order_omp(int B, int T, int N,
                 acc_t sum = 0;
                 const scalar_t *Arow = A_bt + i * N;
                 for (int j = 0; j < N; ++j)
-                    sum += static_cast<acc_t>(Arow[j]) * H_prev[j];
-                H_curr[i] = static_cast<acc_t>(H_t[i]) + sum;
-                H_t[i] = static_cast<scalar_t>(H_curr[i]);
+                    sum += Arow[j] * H_prev[j];
+                H_curr[i] = H_t[i] + sum;
+                H_t[i] = H_curr[i];
             }
             std::swap(H_prev, H_curr);
         }
@@ -120,7 +120,7 @@ void host_share_mat_recur_N_order_omp(int B, int T, int N,
                                       scalar_t *H_out    // [B][T][N]
 )
 {
-    using acc_t = at::opmath_type<scalar_t>; // the state stays in the accumulation type
+    using acc_t = at::opmath_type<scalar_t>;
 // Process each batch in parallel
 #pragma omp parallel for
     for (int b = 0; b < B; ++b)
@@ -137,9 +137,9 @@ void host_share_mat_recur_N_order_omp(int B, int T, int N,
                 acc_t sum = 0;
                 const scalar_t *Arow = A_bt + i * N;
                 for (int j = 0; j < N; ++j)
-                    sum += static_cast<acc_t>(Arow[j]) * H_prev[j];
-                H_curr[i] = static_cast<acc_t>(H_t[i]) + sum;
-                H_t[i] = static_cast<scalar_t>(H_curr[i]);
+                    sum += Arow[j] * H_prev[j];
+                H_curr[i] = H_t[i] + sum;
+                H_t[i] = H_curr[i];
             }
             std::swap(H_prev, H_curr);
         }
