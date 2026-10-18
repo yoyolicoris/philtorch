@@ -9,7 +9,7 @@ import torch
 import torch.nn.functional as F
 from torch import Tensor
 
-from .._ops import _resample_gradient, _resample_setup_context
+from .._ops import _resample_gradient, _resample_setup_context, _tap_columns
 from .delay import _as_int
 from .recur import linear_recurrence
 
@@ -266,12 +266,11 @@ def _cutoff(p: int, q: int, rolloff: float | Tensor) -> float | Tensor:
     return rolloff * p / q if p < q else rolloff
 
 
-def _filter_taps(p: int, q: int, rolloff: float, num_zeros: int) -> tuple[float, int]:
-    """The cutoff c and the number of taps of one output of the resampler."""
-    c = _cutoff(p, q, rolloff)
+def _num_taps(p: int, q: int, rolloff: float, num_zeros: int) -> int:
+    """The number of taps of one output of the resampler."""
     # The window is open, |t - n| < S = N_z / c: with K = ceil(S), the taps
     # n = floor(t) - K .. floor(t) + K + 1 hold it, 2 K + 2 in all.
-    return c, 2 * math.ceil(num_zeros / c) + 2
+    return 2 * math.ceil(num_zeros / _cutoff(p, q, rolloff)) + 2
 
 
 def _constant_cache(fn):
@@ -297,25 +296,21 @@ def _polyphase_table(
     rolloff: float | Tensor,
     beta: float | Tensor,
     num_zeros: int,
-    scale: float | Tensor,
+    taps: int,
     device: torch.device | None = None,
-    layout: float | None = None,
 ) -> Tensor:
     """The weights of the resampler in the polyphase form, for rates q -> p.
 
     Output ``f p + i`` is ``sum_k table[i, k] x[q f + (i q) // p - K + k]``,
-    with x zero outside the signal and ``taps = 2 K + 2``. The table, of shape
-    (p, taps) in float64, holds ``scale * g(c (t - n))`` for the window g of
-    :func:`resample`, at the input time ``t = (i q) / p`` of phase i and the n
-    of its taps. The integer part of t and the remainder (i q mod p) / p are
-    computed exactly.
+    with x zero outside the signal and ``taps = 2 K + 2``, as :func:`_num_taps`
+    gives it. The table, of shape (p, taps) in float64, holds
+    ``c g(c (t - n))`` for the cutoff c and the window g of :func:`resample`, at
+    the input time ``t = (i q) / p`` of phase i and the n of its taps. Only the
+    fractional part of t, (i q mod p) / p, is computed in floating point.
 
-    ``rolloff``, ``beta`` and ``scale`` are floats, or 0-D float64 tensors on
-    ``device`` that the table is differentiable in. The number of taps follows
-    ``layout``, the float value of ``rolloff``, which is ``rolloff`` itself if
-    left out.
+    ``rolloff`` and ``beta`` are floats, or 0-D float64 tensors on ``device``
+    that the table is differentiable in.
     """
-    _, taps = _filter_taps(p, q, rolloff if layout is None else layout, num_zeros)
     c = _cutoff(p, q, rolloff)
     frac = (((torch.arange(p, dtype=torch.int64, device=device) * q) % p).double() / p).unsqueeze(1)
     k = torch.arange(taps, dtype=torch.float64, device=device)
@@ -336,14 +331,14 @@ def _polyphase_table(
     nonzero = z != 0
     z_pi = math.pi * torch.where(nonzero, z, 1.0)
     sinc = torch.where(nonzero, torch.sin(z_pi) / z_pi, 1.0)
-    return torch.where(inside, scale * sinc * window, 0.0)
+    return torch.where(inside, c * sinc * window, 0.0)
 
 
 @_constant_cache
 def _table_on(
     p: int,
     q: int,
-    design: tuple[float, float, int, float],
+    design: tuple[float, float, int, int],
     device: torch.device,
     dtype: torch.dtype,
 ) -> Tensor:
@@ -358,8 +353,7 @@ def _dense_kernel(table: Tensor, q: int) -> tuple[Tensor, int]:
     ``-K`` is the smallest and the kernel spans ``((p - 1) q) // p + taps``.
     """
     p, taps = table.shape
-    start = torch.arange(p, device=table.device) * q // p
-    offset = start.unsqueeze(1) + torch.arange(taps, device=table.device)
+    offset = _tap_columns(p, q, taps, table.device)
     kernel = table.new_zeros(p, ((p - 1) * q) // p + taps)
     return kernel.scatter(1, offset, table).unsqueeze(1), -((taps - 2) // 2)
 
@@ -368,7 +362,7 @@ def _dense_kernel(table: Tensor, q: int) -> tuple[Tensor, int]:
 def _conv_kernel(
     p: int,
     q: int,
-    design: tuple[float, float, int, float],
+    design: tuple[float, float, int, int],
     device: torch.device,
     dtype: torch.dtype,
 ) -> tuple[Tensor, int]:
@@ -566,15 +560,15 @@ def resample(
         raise ValueError("when quality is None, rolloff, beta and num_zeros must all be given")
     rolloff = preset[0] if rolloff is None else _as_param(rolloff, "rolloff")
     # The filter's length follows rolloff's value: a sync for a CUDA tensor.
-    layout = float(rolloff.detach() if isinstance(rolloff, Tensor) else rolloff)
-    if not 0.0 < layout <= 1.0:
-        raise ValueError(f"rolloff must be in (0, 1], got {layout}")
+    rolloff_value = float(rolloff.detach() if isinstance(rolloff, Tensor) else rolloff)
+    if not 0.0 < rolloff_value <= 1.0:
+        raise ValueError(f"rolloff must be in (0, 1], got {rolloff_value}")
     beta = preset[1] if beta is None else _as_param(beta, "beta")
     if not isinstance(beta, Tensor) and beta < 0.0:
         raise ValueError(f"beta must be non-negative, got {beta}")
     num_zeros = preset[2] if num_zeros is None else _positive_int(num_zeros, "num_zeros")
 
-    c, taps = _filter_taps(new, orig, layout, num_zeros)
+    taps = _num_taps(new, orig, rolloff_value, num_zeros)
     if new * (orig + taps) > _MAX_KERNEL:
         raise ValueError(
             f"the filter for the reduced rates {orig} -> {new} needs {new} phases "
@@ -595,12 +589,12 @@ def resample(
         rolloff, beta = (
             torch.as_tensor(v, dtype=torch.float64, device=x.device) for v in (rolloff, beta)
         )
-        design = (rolloff, beta, num_zeros, _cutoff(new, orig, rolloff), x.device, layout)
+        design = (rolloff, beta, num_zeros, taps, x.device)
         table = _polyphase_table(new, orig, *design).to(dtype)
         if not on_cuda:
             kernel, shift = _dense_kernel(table, orig)
     else:
-        design = (rolloff, beta, num_zeros, c)
+        design = (rolloff, beta, num_zeros, taps)
         if on_cuda:
             table = _table_on(new, orig, design, x.device, dtype)
         else:

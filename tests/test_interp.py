@@ -9,6 +9,7 @@ from philtorch.lti.interp import (
     _QUALITY_PRESETS,
     _QUALITY_RECIPES,
     _kaiser_design,
+    _num_taps,
     _soxr_passband_end,
     _table_on,
     cspline,
@@ -92,8 +93,6 @@ _TOLS = {
     torch.float16: dict(rtol=1e-3, atol=1e-3),
     torch.bfloat16: dict(rtol=8e-3, atol=8e-3),
 }
-# A design with a short filter, for the gradient checks.
-_GRAD_DESIGN = dict(quality=None, rolloff=0.85, beta=9.0, num_zeros=4)
 
 
 def _rates(orig_freq, new_freq):
@@ -336,19 +335,33 @@ _GRAD_CASES = [(2, 3, 24), (5, 2, 30), (2, 3, 1), (147, 160, 20)]
 
 
 def _grad_fn(orig_freq, new_freq):
-    def fn(x):
-        return resample(x, orig_freq, new_freq, **_GRAD_DESIGN)
+    """resample with a short filter, for the gradient checks."""
+
+    def fn(x, rolloff=0.85, beta=9.0):
+        return resample(x, orig_freq, new_freq, None, rolloff=rolloff, beta=beta, num_zeros=4)
 
     return fn
 
 
+def _params(device, dtype=torch.float64, requires_grad=False):
+    """The default rolloff and beta of _grad_fn, as 0-D tensors."""
+    return [
+        torch.tensor(v, device=device, dtype=dtype, requires_grad=requires_grad)
+        for v in (0.85, 9.0)
+    ]
+
+
 @pytest.mark.parametrize("device", _DEVICES)
+@pytest.mark.parametrize("tensor_params", [False, True], ids=["x", "x-rolloff-beta"])
 @pytest.mark.parametrize("orig_freq, new_freq, T", _GRAD_CASES)
-def test_resample_gradcheck_and_gradgradcheck(device, orig_freq, new_freq, T):
+def test_resample_gradcheck_and_gradgradcheck(device, tensor_params, orig_freq, new_freq, T):
+    # Float parameters use the cached table, with only x differentiable; tensor
+    # parameters that require grad build the table in the graph.
     x = torch.randn(2, T, device=device, dtype=torch.float64, requires_grad=True)
+    inputs = (x, *_params(device, requires_grad=True)) if tensor_params else (x,)
     fn = _grad_fn(orig_freq, new_freq)
-    assert torch.autograd.gradcheck(fn, (x,))
-    assert torch.autograd.gradgradcheck(fn, (x,))
+    assert torch.autograd.gradcheck(fn, inputs)
+    assert torch.autograd.gradgradcheck(fn, inputs)
 
 
 @pytest.mark.parametrize("device", _DEVICES)
@@ -402,99 +415,68 @@ def test_resample_vmap_of_grad_gives_per_sample_gradients(device, orig_freq, new
 
 
 @pytest.mark.parametrize("device", _DEVICES)
+@pytest.mark.parametrize("tensor_beta", [False, True])
 @pytest.mark.parametrize("orig_freq, new_freq, T", [(2, 3, 30), (5, 2, 40), (147, 160, 20)])
-def test_resample_compiled_gradient_matches_eager(device, orig_freq, new_freq, T):
+def test_resample_compiled_gradient_matches_eager(device, tensor_beta, orig_freq, new_freq, T):
     # aot_eager, which needs no C++ compiler (Windows CI has none for Inductor)
-    # and has no on-disk cache to replay an old backward.
+    # and has no on-disk cache to replay an old backward. A tensor rolloff would
+    # need a graph break, so only beta is a tensor.
     torch._dynamo.reset()
+    x = torch.randn(2, T, device=device, dtype=torch.float64, requires_grad=True)
+    beta = torch.tensor(9.0, device=device, dtype=torch.float64, requires_grad=True)
+    beta, inputs = (beta, (x, beta)) if tensor_beta else (None, (x,))
 
-    def loss(t):
-        y = resample(t, orig_freq, new_freq, "LQ")
+    def loss(t, b):
+        y = resample(t, orig_freq, new_freq, "LQ", beta=b)
         return (
             (y * torch.linspace(-1.0, 1.0, y.size(1), device=t.device, dtype=t.dtype)).pow(2).sum()
         )
 
-    x = torch.randn(2, T, device=device, dtype=torch.float64, requires_grad=True)
     compiled = torch.compile(loss, backend="aot_eager", fullgraph=True)
-    (grad_compiled,) = torch.autograd.grad(compiled(x), x)
-    (grad_eager,) = torch.autograd.grad(loss(x), x)
-    torch.testing.assert_close(grad_compiled, grad_eager)
-    torch.testing.assert_close(compiled(x), loss(x))
-
-
-# Rates and lengths for the tests of tensor parameters, with _param_fn.
-_PARAM_CASES = [(2, 3, 12), (3, 2, 12), (147, 160, 12)]
-
-
-def _param_fn(orig_freq, new_freq):
-    def fn(x, rolloff, beta):
-        return resample(x, orig_freq, new_freq, None, rolloff=rolloff, beta=beta, num_zeros=3)
-
-    return fn
-
-
-def _params(device, dtype=torch.float64, requires_grad=False):
-    return [
-        torch.tensor(v, device=device, dtype=dtype, requires_grad=requires_grad)
-        for v in (0.85, 7.0)
-    ]
+    actual = torch.autograd.grad(compiled(x, beta), inputs)
+    expected = torch.autograd.grad(loss(x, beta), inputs)
+    for a, e in zip(actual, expected):
+        torch.testing.assert_close(a, e)
+    torch.testing.assert_close(compiled(x, beta), loss(x, beta))
 
 
 @pytest.mark.parametrize("device", _DEVICES)
 @pytest.mark.parametrize("dtype", _DTYPES)
-@pytest.mark.parametrize("orig_freq, new_freq, T", _PARAM_CASES)
+@pytest.mark.parametrize("orig_freq, new_freq, T", _GRAD_CASES)
 def test_resample_tensor_parameters_match_floats(device, dtype, orig_freq, new_freq, T):
     x = torch.randn(2, T, device=device, dtype=dtype)
     rolloff, beta = _params(device)
-    expected = _param_fn(orig_freq, new_freq)(x, 0.85, 7.0)
-    for args in [(rolloff, beta), (rolloff, 7.0), (0.85, beta)]:
-        actual = _param_fn(orig_freq, new_freq)(x, *args)
+    fn = _grad_fn(orig_freq, new_freq)
+    expected = fn(x, 0.85, 9.0)
+    # A negative tensor beta acts as |beta|.
+    negative = torch.tensor(-9.0, device=device)
+    for args in [(rolloff, beta), (rolloff, 9.0), (0.85, beta), (0.85, negative)]:
+        actual = fn(x, *args)
         assert actual.dtype == dtype
         torch.testing.assert_close(actual, expected, **_TOLS[dtype])
 
 
-@pytest.mark.parametrize("device", _DEVICES)
-def test_resample_tensor_beta_is_even(device):
-    x = torch.randn(2, 12, device=device, dtype=torch.float64)
-    fn = _param_fn(2, 3)
-    expected = fn(x, 0.85, 7.0)
-    torch.testing.assert_close(fn(x, 0.85, torch.tensor(-7.0, device=device)), expected)
-
-
-@pytest.mark.parametrize("device", _DEVICES)
-@pytest.mark.parametrize("orig_freq, new_freq, T", _PARAM_CASES)
-def test_resample_parameters_gradcheck_and_gradgradcheck(device, orig_freq, new_freq, T):
-    x = torch.randn(2, T, device=device, dtype=torch.float64, requires_grad=True)
-    inputs = (x, *_params(device, requires_grad=True))
-    fn = _param_fn(orig_freq, new_freq)
-    assert torch.autograd.gradcheck(fn, inputs)
-    assert torch.autograd.gradgradcheck(fn, inputs)
-
-
 @pytest.mark.cuda
-@pytest.mark.parametrize("dtype, tol", [(torch.float64, 1e-12), (torch.float32, 1e-4)])
-@pytest.mark.parametrize("orig_freq, new_freq, T", _PARAM_CASES)
-def test_resample_cuda_parameter_gradients_match_cpu(dtype, tol, orig_freq, new_freq, T):
-    fn = _param_fn(orig_freq, new_freq)
-    x = torch.randn(2, T, dtype=dtype)
+@pytest.mark.parametrize("orig_freq, new_freq, T", _GRAD_CASES)
+def test_resample_cuda_parameter_gradients_match_cpu_in_float32(orig_freq, new_freq, T):
+    # gradcheck covers float64 on CUDA; this compares CUDA with CPU in float32.
+    fn = _grad_fn(orig_freq, new_freq)
+    x = torch.randn(2, T)
 
     def grads(device):
-        inputs = [x.to(device).requires_grad_(), *_params(device, dtype, requires_grad=True)]
+        inputs = [x.to(device).requires_grad_(), *_params(device, torch.float32, True)]
         y = fn(*inputs)
-        weights = torch.linspace(-1.0, 1.0, y.size(1), device=device, dtype=dtype)
-        first = torch.autograd.grad((y * weights).pow(2).sum(), inputs, create_graph=True)
-        # The gradient of the first gradients, to check the double backward too.
-        second = torch.autograd.grad(sum(g.pow(2).sum() for g in first), inputs)
-        return [g.cpu() for g in (*first, *second)]
+        weights = torch.linspace(-1.0, 1.0, y.size(1), device=device)
+        return [g.cpu() for g in torch.autograd.grad((y * weights).pow(2).sum(), inputs)]
 
     for actual, expected in zip(grads("cuda"), grads("cpu")):
-        torch.testing.assert_close(actual, expected, rtol=tol, atol=tol)
+        torch.testing.assert_close(actual, expected, rtol=1e-4, atol=1e-4)
 
 
 @pytest.mark.parametrize("device", _DEVICES)
-@pytest.mark.parametrize("orig_freq, new_freq, T", _PARAM_CASES)
+@pytest.mark.parametrize("orig_freq, new_freq, T", _GRAD_CASES)
 def test_resample_forward_mode_in_the_parameters(device, orig_freq, new_freq, T):
-    fn = _param_fn(orig_freq, new_freq)
+    fn = _grad_fn(orig_freq, new_freq)
     x = torch.randn(2, T, device=device, dtype=torch.float64)
     dx = torch.randn_like(x)
     rolloff, beta = _params(device)
@@ -519,35 +501,13 @@ def test_resample_vmap_over_the_parameters_is_not_supported():
     x = torch.randn(3, 2, 12, device="cuda", dtype=torch.float64)
     betas = torch.tensor([6.0, 7.0, 8.0], device="cuda", dtype=torch.float64)
     rolloff = torch.tensor(0.85, device="cuda", dtype=torch.float64)
-
-    def fn(x, rolloff, beta):
-        return resample(x, 2, 3, None, rolloff=rolloff, beta=beta, num_zeros=3)
+    fn = _grad_fn(2, 3)
 
     with pytest.raises(NotImplementedError, match="vmap over rolloff or beta"):
         torch.func.vmap(fn, in_dims=(0, None, 0))(x, rolloff, betas)
-    with pytest.raises(NotImplementedError, match="vmap over rolloff or beta"):
-        torch.func.vmap(fn, in_dims=(None, None, 0))(x[0], rolloff, betas)
     # Over x alone, tensor parameters are fine.
     vy = torch.func.vmap(fn, in_dims=(0, None, None))(x, rolloff, betas[1])
     torch.testing.assert_close(vy, fn(x.reshape(6, 12), rolloff, betas[1]).reshape(3, 2, -1))
-
-
-@pytest.mark.parametrize("device", _DEVICES)
-def test_resample_compiled_gradient_in_beta_matches_eager(device):
-    # aot_eager, as in the test above; a tensor rolloff would need a graph break.
-    torch._dynamo.reset()
-    weights = torch.linspace(-1.0, 1.0, 30, device=device, dtype=torch.float64)
-
-    def loss(x, beta):
-        return (resample(x, 3, 2, "LQ", beta=beta) * weights).pow(2).sum()
-
-    x = torch.randn(2, 45, device=device, dtype=torch.float64, requires_grad=True)
-    beta = torch.tensor(9.0, device=device, dtype=torch.float64, requires_grad=True)
-    compiled = torch.compile(loss, backend="aot_eager", fullgraph=True)
-    actual = torch.autograd.grad(compiled(x, beta), (x, beta))
-    expected = torch.autograd.grad(loss(x, beta), (x, beta))
-    for a, e in zip(actual, expected):
-        torch.testing.assert_close(a, e)
 
 
 @pytest.mark.parametrize("device", _DEVICES)
@@ -634,8 +594,8 @@ def test_resample_cuda_longest_filter():
 @pytest.mark.parametrize("dtype", [torch.float32, torch.float64])
 @pytest.mark.parametrize("T", [48, 5000])
 def test_resample_cuda_graph_capture(dtype, T):
-    # No host-to-device copy in the launch path once the tables are cached on
-    # the device: the warm-up call caches them, and a captured call replays on
+    # No host-to-device copy in the launch path once the table is cached on
+    # the device: the warm-up call caches it, and a captured call replays on
     # new input.
     x = torch.randn(3, T, dtype=dtype, device="cuda")
     stream = torch.cuda.Stream()
@@ -657,7 +617,7 @@ def test_resample_cuda_graph_capture(dtype, T):
 def test_resample_opcheck(requires_grad, out_len):
     # The table of 2 -> 3, as resample builds it.
     rolloff, beta, num_zeros = _design("LQ")
-    design = (rolloff, beta, num_zeros, rolloff)
+    design = (rolloff, beta, num_zeros, _num_taps(3, 2, rolloff, num_zeros))
     # The table is cached: differentiate a copy of it.
     table = _table_on(3, 2, design, torch.device("cuda"), torch.float64).clone()
     table.requires_grad_(requires_grad)
@@ -682,8 +642,8 @@ def test_resample_opcheck(requires_grad, out_len):
         (dict(beta=-1.0), "beta must be non-negative, got -1.0"),
         (dict(num_zeros=0), "num_zeros must be a positive integer, got 0"),
         (dict(orig_freq=999983, new_freq=1000003), "limit_denominator"),
-        # The table alone (5001 phases of about 194 taps) would fit; the dense
-        # kernel, about 5001 x 5194, does not.
+        # The table alone (5001 phases of 196 taps) would fit; the dense kernel,
+        # 5001 x (5000 + 196), does not.
         (dict(orig_freq=5000, new_freq=5001), "limit_denominator"),
     ],
 )

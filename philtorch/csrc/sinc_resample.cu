@@ -18,12 +18,11 @@
 //
 //   out[b, f p + i] = sum_{k < taps} table[i, k] x[b, q f + first_i + k],
 //
-// for 0 <= f p + i < out_len, and x[b, n] = 0 outside [0, T).  The first
-// input of a phase in frame 0 is negative for the first phases.  There is no
-// CPU kernel.
+// for 0 <= f p + i < out_len, and x[b, n] = 0 outside [0, T).  first_i may
+// be negative.  There is no CPU kernel.
 //
-// The table is real and the weights are accumulated in at::opmath_type of x's
-// dtype (double for float64, float for float32, float16 and bfloat16).
+// The weights are accumulated in at::opmath_type of x's dtype (double for
+// float64, float for float32, float16 and bfloat16).
 //
 // tile_kernel is a register tiling: a group of kGroupLanes lanes computes R
 // consecutive outputs for BB batch rows.  The lanes stride over the inputs the

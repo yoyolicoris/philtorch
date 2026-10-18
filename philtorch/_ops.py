@@ -263,21 +263,25 @@ def _resample_setup_context(ctx, inputs, output):
     ctx.q, ctx.in_len, ctx.out_len = q, x.shape[1], output.shape[1]
 
 
+def _tap_columns(p, q, taps, device):
+    """The column of tap k of phase i in the dense kernel: ``(i q) // p + k``."""
+    start = torch.arange(p, device=device) * q // p
+    return start.unsqueeze(1) + torch.arange(taps, device=device)
+
+
 def _resample_table_gradient(x, grad, table, q):
     """The gradient in ``table`` of ``philtorch::resample``, from x and grad.
 
-    It is ``sum_{b, f} grad[b, f p + i] x[b, q f + first_i + k]`` for the entry
-    (i, k) of the table, with ``first_i = (i q) // p - K`` and
-    ``taps = 2 K + 2``. Frame f of the convolution of ``x``, padded by K on the
-    left, with the dense kernel of width ``q + taps - 1``, has ``f p + i`` as
-    output i, so the weight gradient of that convolution holds the sum at column
-    ``(i q) // p + k``, which is below ``q - 1 + taps``.
+    It is the weight gradient of the CPU path's strided convolution, with the
+    dense kernel of width ``((p - 1) q) // p + taps``, gathered at the tap
+    columns: ``sum_{b, f} grad[b, f p + i] x[b, q f + (i q) // p - K + k]`` for
+    the entry (i, k) of the table, with ``taps = 2 K + 2``.
     """
     p, taps = table.shape
     K = (taps - 2) // 2
     B, out_len = grad.shape
     frames = -(-out_len // p)
-    width = q + taps - 1
+    width = ((p - 1) * q) // p + taps
     # The op accumulates in float32 for the 16-bit dtypes.
     acc = torch.promote_types(x.dtype, torch.float32)
     g = F.pad(grad.to(acc), (0, frames * p - out_len)).reshape(B, frames, p).mT
@@ -285,8 +289,7 @@ def _resample_table_gradient(x, grad, table, q):
     right = q * (frames - 1) + width - K - x.size(1)
     xp = F.pad(x.to(acc), (K, right)).unsqueeze(1)
     dense = torch.nn.grad.conv1d_weight(xp, (p, 1, width), g, stride=q).squeeze(1)
-    phase = torch.arange(p, device=table.device)
-    columns = (phase * q // p).unsqueeze(1) + torch.arange(taps, device=table.device)
+    columns = _tap_columns(p, q, taps, table.device)
     return dense.gather(1, columns).to(table.dtype)
 
 
