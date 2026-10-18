@@ -1,6 +1,5 @@
 """Signal interpolation and band-limited resampling."""
 
-import functools
 import math
 import numbers
 from typing import Any
@@ -14,7 +13,6 @@ from .._ops import (
     _resample_gradient,
     _resample_setup_context,
     _tap_columns,
-    _use_on_current_stream,
 )
 from .delay import _as_int
 from .recur import linear_recurrence
@@ -247,21 +245,6 @@ def _num_taps(p: int, q: int, rolloff: float, num_zeros: int) -> int:
     return 2 * math.ceil(num_zeros / _cutoff(p, q, rolloff)) + 2
 
 
-def _constant_cache(fn):
-    """Cache ``fn`` and make Dynamo take its result as a constant.
-
-    Through a lambda: Dynamo would trace into an ``lru_cache`` wrapper. Built
-    outside inference mode, so that later calls can save it for backward.
-    """
-
-    @functools.lru_cache(maxsize=16)
-    def cached(*args):
-        with torch.inference_mode(False):
-            return fn(*args)
-
-    return torch.compiler.assume_constant_result(lambda *args: cached(*args))
-
-
 def _polyphase_table(
     p: int,
     q: int,
@@ -269,18 +252,20 @@ def _polyphase_table(
     beta: float | Tensor,
     num_zeros: int,
     taps: int,
-    device: torch.device | None = None,
+    device: torch.device,
 ) -> Tensor:
     """The (p, taps) float64 table of the resampler for rates q -> p.
 
     Output ``f p + i`` is ``sum_k table[i, k] x[q f + (i q) // p - K + k]``,
-    with ``taps = 2 K + 2``. Tensor ``rolloff`` and ``beta`` (0-D float64, on
-    ``device``) make it differentiable in them.
+    with ``taps = 2 K + 2``, built on ``device`` and differentiable in tensor
+    ``rolloff`` and ``beta``.
     """
+    # Floats become device scalars by a fill, not a host-to-device copy, so that
+    # a call can be captured in a CUDA graph.
     rolloff, beta = (
-        torch.as_tensor(
-            v.to(device) if isinstance(v, Tensor) else v, dtype=torch.float64, device=device
-        )
+        v.to(device, torch.float64)
+        if isinstance(v, Tensor)
+        else torch.full((), v, dtype=torch.float64, device=device)
         for v in (rolloff, beta)
     )
     c = _cutoff(p, q, rolloff)
@@ -300,22 +285,6 @@ def _polyphase_table(
     z_pi = math.pi * torch.where(nonzero, z, 1.0)
     sinc = torch.where(nonzero, torch.sin(z_pi) / z_pi, 1.0)
     return torch.where(inside, c * sinc * window, 0.0)
-
-
-@_constant_cache
-def _table_on(
-    p: int,
-    q: int,
-    design: tuple[float, float, int, int],
-    device: torch.device,
-    dtype: torch.dtype,
-) -> Tensor:
-    """The table of q -> p on ``device``.
-
-    Built on the CPU, not the default device: the blocking copy to ``device``
-    completes it before any stream reads it, and MPS has no float64.
-    """
-    return _polyphase_table(p, q, *design, torch.device("cpu")).to(device=device, dtype=dtype)
 
 
 def _polyphase_conv(x: Tensor, table: Tensor, q: int, out_len: int) -> Tensor:
@@ -400,7 +369,7 @@ def resample(
     :func:`scipy.signal.resample_poly`, which then copies the input.
 
     The rates are reduced by their greatest common divisor to :math:`q \to p`,
-    and the weights are evaluated exactly, once, in ``float64``, as a
+    and the weights are evaluated exactly, at each call, in ``float64``, as a
     polyphase filter of about :math:`p (q + 2 N_z / c)` coefficients, at most
     :math:`2^{22}`. For a ratio beyond that, approximate it:
     ``f = Fraction(new_freq, orig_freq).limit_denominator(1000)``, from
@@ -521,16 +490,11 @@ def resample(
                 y = y + 0 * v.to(y.device, y.dtype)
         return y
     dtype = torch.float64 if x.dtype == torch.float64 else torch.float32
-    if isinstance(rolloff, Tensor) or isinstance(beta, Tensor):
-        # The table the gradient reaches the tensors through: built uncached in
-        # float64, on x's device, or on the CPU for MPS, which has no float64.
-        device = torch.device("cpu") if x.device.type == "mps" else x.device
-        table = _polyphase_table(new, orig, rolloff, beta, num_zeros, taps, device)
-        table = table.to(device=x.device, dtype=dtype)
-    else:
-        table = _table_on(new, orig, (rolloff, beta, num_zeros, taps), x.device, dtype)
-        if not torch.compiler.is_compiling():
-            table = _use_on_current_stream(table)
+    # The table, built at each call in float64 on x's device (on the CPU for MPS,
+    # which has no float64), so that gradients reach tensor parameters.
+    device = torch.device("cpu") if x.device.type == "mps" else x.device
+    table = _polyphase_table(new, orig, rolloff, beta, num_zeros, taps, device)
+    table = table.to(device=x.device, dtype=dtype)
     if x.is_cuda and _HAS_RESAMPLE_OP:
         # Dynamo can't trace an autograd.Function with a jvp: compiled code
         # calls the registered op, whose autograd is the same transpose.

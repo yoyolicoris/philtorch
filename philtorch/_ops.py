@@ -8,7 +8,6 @@ defines the gradients once; torchlpc's ``lpc``, an all-pole filter, keeps its
 own.
 """
 
-import functools
 from typing import Any
 
 import torch
@@ -307,24 +306,6 @@ def _transpose_index(p, q, taps, device):
     return torch.where(inside, phase * taps + column, p * taps)
 
 
-@functools.lru_cache(maxsize=16)
-def _cached_transpose_index(p, q, taps, device):
-    # Built outside inference mode, so that a later backward can save it, and
-    # complete before it is cached, so that any stream can read it.
-    with torch.inference_mode(False):
-        index = _transpose_index(p, q, taps, device)
-    if index.is_cuda:
-        torch.cuda.current_stream(device).synchronize()
-    return index
-
-
-def _use_on_current_stream(cached):
-    """Keep a cached CUDA tensor's memory from reuse until this stream is done."""
-    if cached.is_cuda:
-        cached.record_stream(torch.cuda.current_stream(cached.device))
-    return cached
-
-
 def _resample_gradient(run, ctx, grad):
     """The gradients of ``philtorch::resample``, with ``run`` the op to call.
 
@@ -335,13 +316,9 @@ def _resample_gradient(run, ctx, grad):
     needs_x, needs_table = ctx.needs_input_grad[:2]
     grad_x = grad_table = None
     if needs_x:
-        # The transposed table (q phases, stride p), gathered from table: eager
-        # calls cache the index; traced code, whose tables are fake, builds it.
+        # The transposed table (q phases, stride p), gathered from table.
         p, taps = table.shape
-        if type(table) is torch.Tensor:
-            index = _use_on_current_stream(_cached_transpose_index(p, ctx.q, taps, table.device))
-        else:
-            index = _transpose_index(p, ctx.q, taps, table.device)
+        index = _transpose_index(p, ctx.q, taps, table.device)
         table_t = torch.cat([table.flatten(), table.new_zeros(1)])[index]
         grad_x = run(grad, table_t, p, ctx.in_len)
     if needs_table:

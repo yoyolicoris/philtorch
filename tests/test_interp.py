@@ -498,24 +498,12 @@ def test_resample_vmap_over_the_parameters_is_not_supported():
     torch.testing.assert_close(vy, fn(x.reshape(6, 12), rolloff, betas[1]).reshape(3, 2, -1))
 
 
-def test_resample_builds_its_table_on_the_cpu():
-    # Not on the default device: on meta, a table has no values to copy.
+def test_resample_ignores_the_default_device():
+    # The table is built on x's device: on meta, it would have no values.
     x = torch.randn(2, 40, dtype=torch.float64)
     with torch.device("meta"):
         actual = resample(x, 11, 13)
     torch.testing.assert_close(actual, resample(x, 11, 13))
-
-
-@pytest.mark.parametrize("device", _DEVICES)
-def test_resample_trains_after_an_inference_mode_call(device):
-    # The first call caches the filter, here in inference mode, and a later
-    # call must still save it for backward. Rates no other test uses, so that
-    # the cache is cold.
-    x = torch.randn(2, 40, device=device, dtype=torch.float64, requires_grad=True)
-    with torch.inference_mode():
-        resample(x, 13, 17)
-    (grad,) = torch.autograd.grad(resample(x, 13, 17).sum(), x)
-    assert grad.shape == x.shape
 
 
 @pytest.mark.parametrize("device", _DEVICES)
@@ -578,29 +566,6 @@ def test_resample_cuda_row_blocks(orig_freq, new_freq):
 
 
 @pytest.mark.cuda
-def test_resample_cuda_backward_on_another_stream():
-    # The transposed index, cached by a backward on a busy stream, is complete
-    # before another stream's backward reads it.
-    x = torch.randn(3, 400, device="cuda", dtype=torch.float64, requires_grad=True)
-
-    def grad(orig_freq, new_freq):
-        y = resample(x, orig_freq, new_freq)
-        return torch.autograd.grad(y, x, torch.ones_like(y))[0]
-
-    grad(19, 31)  # loads the kernels, as lazy loading synchronizes
-    resample(x, 23, 29)  # caches the table, not the index
-    torch.cuda.synchronize()
-    busy, other = torch.cuda.Stream(), torch.cuda.Stream()
-    with torch.cuda.stream(busy):
-        torch.cuda._sleep(1_000_000_000)
-        grad(23, 29)
-    with torch.cuda.stream(other):
-        actual = grad(23, 29)
-    torch.cuda.synchronize()
-    torch.testing.assert_close(actual, grad(23, 29), rtol=0, atol=0)
-
-
-@pytest.mark.cuda
 def test_resample_empty_input_with_cuda_parameters():
     x = torch.empty(2, 0, dtype=torch.float64, requires_grad=True)
     params = _params("cuda", requires_grad=True)
@@ -621,9 +586,8 @@ def test_resample_cuda_longest_filter():
 @pytest.mark.parametrize("dtype", [torch.float32, torch.float64])
 @pytest.mark.parametrize("T", [48, 5000])
 def test_resample_cuda_graph_capture(dtype, T):
-    # No host-to-device copy in the launch path once the table is cached on
-    # the device: the warm-up call caches it, and a captured call replays on
-    # new input.
+    # The table is built on the device with no host-to-device copy, so the
+    # whole call, table included, is captured and replays on new input.
     x = torch.randn(3, T, dtype=dtype, device="cuda")
     stream = torch.cuda.Stream()
     stream.wait_stream(torch.cuda.current_stream())
