@@ -295,8 +295,9 @@ def _resample_table_gradient(x, grad, table, q):
 
 def _transpose_index(p, q, taps, device):
     """The index of :func:`_transposed_table` into the flattened table."""
+    # Phase taps span floor(t) - K .. floor(t) + K + 1, which K' covers.
     K = (taps - 2) // 2
-    K_t = -(-K * p // q)
+    K_t = -(-(K + 1) * p // q)
     j = torch.arange(q, device=device).unsqueeze(1)
     m = j * p // q - K_t + torch.arange(2 * K_t + 2, device=device)
     phase = m % p

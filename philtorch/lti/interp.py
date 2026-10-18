@@ -504,16 +504,26 @@ def resample(
 
     out_len = -(-x.size(1) * new // orig)
     if x.numel() == 0 or out_len == 0:
-        # Nothing to compute; the pad keeps the output in x's graph, with zero gradient.
-        return F.pad(x[:, :0], (0, out_len))
+        # Nothing to compute; the output stays in the graph of x and of tensor
+        # parameters, with zero gradients.
+        y = F.pad(x[:, :0], (0, out_len))
+        for v in (rolloff, beta):
+            if isinstance(v, Tensor):
+                y = y + 0 * v.to(y.dtype)
+        return y
     dtype = torch.float64 if x.dtype == torch.float64 else torch.float32
     if isinstance(rolloff, Tensor) or isinstance(beta, Tensor):
-        # The table the gradient reaches the tensors through: built on x's
-        # device in float64, uncached.
+        # The table the gradient reaches the tensors through: built uncached in
+        # float64, on x's device, or on the CPU for MPS, which has no float64.
+        device = torch.device("cpu") if x.device.type == "mps" else x.device
         rolloff, beta = (
-            torch.as_tensor(v, dtype=torch.float64, device=x.device) for v in (rolloff, beta)
+            torch.as_tensor(
+                v.to(device) if isinstance(v, Tensor) else v, dtype=torch.float64, device=device
+            )
+            for v in (rolloff, beta)
         )
-        table = _polyphase_table(new, orig, rolloff, beta, num_zeros, taps, x.device).to(dtype)
+        table = _polyphase_table(new, orig, rolloff, beta, num_zeros, taps, device)
+        table = table.to(device=x.device, dtype=dtype)
     else:
         table = _table_on(new, orig, (rolloff, beta, num_zeros, taps), x.device, dtype)
     if x.is_cuda and _HAS_RESAMPLE_OP:

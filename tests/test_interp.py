@@ -9,8 +9,6 @@ from philtorch.lti.interp import (
     _QUALITY_PRESETS,
     _QUALITY_RECIPES,
     _kaiser_design,
-    _num_taps,
-    _table_on,
     cspline,
     cubic_spline,
     resample,
@@ -516,12 +514,14 @@ def test_resample_trains_after_an_inference_mode_call(device):
 def test_resample_empty_inputs_and_outputs(device):
     assert resample(torch.empty(0, 16, device=device), 2, 3).shape == (0, 24)
 
-    # An empty signal gives an empty output, which stays in x's graph.
-    x = torch.empty(2, 0, device=device, requires_grad=True)
-    y = resample(x, 2, 3)
+    # An empty signal gives an empty output, which stays in the graph of x and
+    # of tensor parameters, with zero gradients.
+    x = torch.empty(2, 0, device=device, dtype=torch.float64, requires_grad=True)
+    params = _params(device, requires_grad=True)
+    y = _grad_fn(2, 3)(x, *params)
     assert y.shape == (2, 0)
-    (grad,) = torch.autograd.grad(y.sum(), x)
-    assert grad.shape == x.shape
+    grad_x, *grad_params = torch.autograd.grad(y.sum(), (x, *params))
+    assert grad_x.shape == x.shape and all(g == 0 for g in grad_params)
 
 
 @pytest.mark.parametrize(
@@ -602,17 +602,15 @@ def test_resample_cuda_graph_capture(dtype, T):
 
 
 @pytest.mark.cuda
-@pytest.mark.parametrize("requires_grad", [True, False])
-@pytest.mark.parametrize("out_len", [20, 2])
-def test_resample_opcheck(requires_grad, out_len):
-    # The table of 2 -> 3, as resample builds it.
-    rolloff, beta, num_zeros = _design("LQ")
-    design = (rolloff, beta, num_zeros, _num_taps(3, 2, rolloff, num_zeros))
-    # The table is cached: differentiate a copy of it.
-    table = _table_on(3, 2, design, torch.device("cuda"), torch.float64).clone()
-    table.requires_grad_(requires_grad)
-    x = torch.randn(2, 12, device="cuda", dtype=torch.float64, requires_grad=requires_grad)
-    torch.library.opcheck(torch.ops.philtorch.resample, (x, table, 2, out_len))
+@pytest.mark.parametrize("p, q, out_len", [(3, 2, 20), (3, 2, 2), (2, 3, 7), (1, 1, 5)])
+def test_resample_op_with_any_table(p, q, out_len):
+    # A random table, unlike resample's, has nonzero end taps.
+    table = torch.randn(p, 6, device="cuda", dtype=torch.float64, requires_grad=True)
+    x = torch.randn(2, 12, device="cuda", dtype=torch.float64, requires_grad=True)
+    op = torch.ops.philtorch.resample
+    torch.library.opcheck(op, (x, table, q, out_len))
+    assert torch.autograd.gradcheck(lambda x, t: op(x, t, q, out_len), (x, table))
+    assert torch.autograd.gradgradcheck(lambda x, t: op(x, t, q, out_len), (x, table))
 
 
 @pytest.mark.parametrize(
