@@ -309,9 +309,20 @@ def _transpose_index(p, q, taps, device):
 
 @functools.lru_cache(maxsize=16)
 def _cached_transpose_index(p, q, taps, device):
-    # Built outside inference mode, so that a later backward can save it.
+    # Built outside inference mode, so that a later backward can save it, and
+    # complete before it is cached, so that any stream can read it.
     with torch.inference_mode(False):
-        return _transpose_index(p, q, taps, device)
+        index = _transpose_index(p, q, taps, device)
+    if index.is_cuda:
+        torch.cuda.current_stream(device).synchronize()
+    return index
+
+
+def _use_on_current_stream(cached):
+    """Keep a cached CUDA tensor's memory from reuse until this stream is done."""
+    if cached.is_cuda:
+        cached.record_stream(torch.cuda.current_stream(cached.device))
+    return cached
 
 
 def _transposed_table(table, q):
@@ -321,8 +332,10 @@ def _transposed_table(table, q):
     index; traced code, whose tables are fake, builds it in the graph.
     """
     p, taps = table.shape
-    index_of = _cached_transpose_index if type(table) is torch.Tensor else _transpose_index
-    index = index_of(p, q, taps, table.device)
+    if type(table) is torch.Tensor:
+        index = _use_on_current_stream(_cached_transpose_index(p, q, taps, table.device))
+    else:
+        index = _transpose_index(p, q, taps, table.device)
     return torch.cat([table.flatten(), table.new_zeros(1)])[index]
 
 

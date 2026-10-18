@@ -9,7 +9,13 @@ import torch
 import torch.nn.functional as F
 from torch import Tensor
 
-from .._ops import _conv_input, _resample_gradient, _resample_setup_context, _tap_columns
+from .._ops import (
+    _conv_input,
+    _resample_gradient,
+    _resample_setup_context,
+    _tap_columns,
+    _use_on_current_stream,
+)
 from .delay import _as_int
 from .recur import linear_recurrence
 
@@ -509,7 +515,7 @@ def resample(
         y = F.pad(x[:, :0], (0, out_len))
         for v in (rolloff, beta):
             if isinstance(v, Tensor):
-                y = y + 0 * v.to(y.dtype)
+                y = y + 0 * v.to(y.device, y.dtype)
         return y
     dtype = torch.float64 if x.dtype == torch.float64 else torch.float32
     if isinstance(rolloff, Tensor) or isinstance(beta, Tensor):
@@ -526,6 +532,8 @@ def resample(
         table = table.to(device=x.device, dtype=dtype)
     else:
         table = _table_on(new, orig, (rolloff, beta, num_zeros, taps), x.device, dtype)
+        if not torch.compiler.is_compiling():
+            table = _use_on_current_stream(table)
     if x.is_cuda and _HAS_RESAMPLE_OP:
         # Dynamo can't trace an autograd.Function with a jvp: compiled code
         # calls the registered op, whose autograd is the same transpose.

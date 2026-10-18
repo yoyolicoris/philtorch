@@ -570,6 +570,40 @@ def test_resample_cuda_large_batch(orig_freq, new_freq):
 
 
 @pytest.mark.cuda
+def test_resample_cuda_backward_on_another_stream():
+    # The transposed index, cached by a backward on a busy stream, is complete
+    # before another stream's backward reads it.
+    x = torch.randn(3, 400, device="cuda", dtype=torch.float64, requires_grad=True)
+
+    def grad(orig_freq, new_freq):
+        y = resample(x, orig_freq, new_freq)
+        return torch.autograd.grad(y, x, torch.ones_like(y))[0]
+
+    grad(19, 31)  # loads the kernels, as lazy loading synchronizes
+    resample(x, 23, 29)  # caches the table, not the index
+    torch.cuda.synchronize()
+    busy, other = torch.cuda.Stream(), torch.cuda.Stream()
+    with torch.cuda.stream(busy):
+        torch.cuda._sleep(1_000_000_000)
+        grad(23, 29)
+    with torch.cuda.stream(other):
+        actual = grad(23, 29)
+    torch.cuda.synchronize()
+    xc = x.detach().cpu().requires_grad_()
+    y = resample(xc, 23, 29)
+    (expected,) = torch.autograd.grad(y, xc, torch.ones_like(y))
+    torch.testing.assert_close(actual.cpu(), expected, **_TOLS[torch.float64])
+
+
+@pytest.mark.cuda
+def test_resample_empty_input_with_cuda_parameters():
+    x = torch.empty(2, 0, dtype=torch.float64, requires_grad=True)
+    params = _params("cuda", requires_grad=True)
+    y = _grad_fn(2, 3)(x, *params)
+    assert all(g == 0 for g in torch.autograd.grad(y.sum(), params))
+
+
+@pytest.mark.cuda
 def test_resample_cuda_longest_filter():
     # 6000 -> 1 in HQ: 1,153,762 taps, within the bound on the filter.
     x = torch.randn(1, 12000, dtype=torch.float64)
