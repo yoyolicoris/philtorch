@@ -270,12 +270,9 @@ def _tap_columns(p, q, taps, device):
 
 
 def _conv_input(x, p, q, taps, out_len):
-    """x framed for the resampler as one strided convolution, and the width.
+    """x padded for the CPU path's strided convolution, and its kernel width.
 
-    Frame f, of stride q, reads ``x[q f - K + j]`` for the columns j of a dense
-    (p, width) kernel, ``width = ((p - 1) q) // p + taps``, and gives the p
-    outputs ``f p + i``: x padded by K on the left, and padded or cropped on
-    the right to the length the frames read.
+    Frame f reads ``x[q f - K + j]`` for the kernel's columns j.
     """
     K = (taps - 2) // 2
     width = ((p - 1) * q) // p + taps
@@ -284,13 +281,7 @@ def _conv_input(x, p, q, taps, out_len):
 
 
 def _resample_table_gradient(x, grad, table, q):
-    """The gradient in ``table`` of ``philtorch::resample``, from x and grad.
-
-    It is the weight gradient of the strided convolution of
-    :func:`_conv_input`, gathered at the tap columns:
-    ``sum_{b, f} grad[b, f p + i] x[b, q f + (i q) // p - K + k]`` for the
-    entry (i, k) of the table.
-    """
+    """The gradient in ``table``: the conv weight gradient at the taps."""
     p, taps = table.shape
     B, out_len = grad.shape
     frames = -(-out_len // p)
@@ -323,17 +314,10 @@ def _cached_transpose_index(p, q, taps, device):
 
 
 def _transposed_table(table, q):
-    """The table of the transposed resampler, of stride p and q phases.
+    """The table of the transposed resampler (q phases, stride p).
 
-    The operator is ``M[m, n] = table[m mod p, n - first(m)]``, zero outside the
-    taps, with ``first(m) = q (m // p) + (m mod p) q // p - K``. Its transpose
-    has the same entries, in the layout of ``table`` with the roles of p and q
-    swapped: ``K' = ceil(K p / q)`` and ``first'_j = (j p) // q - K'``. The
-    entries are gathered from ``table`` (and zeros), so they are differentiable
-    in it. Eager calls cache the index, whose dozen small ops would otherwise
-    dominate a backward pass at small batches. Traced code (torch.compile,
-    opcheck) builds it in the graph: its table is a fake or functional tensor,
-    and so would be the cached index.
+    Gathered from ``table``, so differentiable in it. Eager calls cache the
+    index; traced code, whose tables are fake, builds it in the graph.
     """
     p, taps = table.shape
     index_of = _cached_transpose_index if type(table) is torch.Tensor else _transpose_index
@@ -344,11 +328,8 @@ def _transposed_table(table, q):
 def _resample_gradient(run, ctx, grad):
     """The gradients of ``philtorch::resample``, with ``run`` the op to call.
 
-    ``run`` is the autograd function's ``apply`` in eager mode and the op in
-    compiled code. The gradient in x is the op with the transposed table, p as
-    the stride and x's length as the output length; the table is a function of
-    ``table``, so the derivatives of any order follow. The op is linear in the
-    table as well: the gradient in ``table`` is :func:`_resample_table_gradient`.
+    In x, the op with the transposed table; in the table, the weight gradient.
+    Both are differentiable, so derivatives of any order follow.
     """
     x, table = ctx.saved_tensors
     needs_x, needs_table = ctx.needs_input_grad[:2]

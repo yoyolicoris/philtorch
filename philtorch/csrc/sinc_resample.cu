@@ -11,62 +11,36 @@
 #include <algorithm>
 #include <cstdint>
 
-// philtorch::resample(x, table, q, out_len): the CUDA kernel of band-limited
-// resampling by a rational factor, applying a precomputed polyphase table.
-// With p = table.size(0) phases, taps = table.size(1) = 2 K + 2 and
-// first_i = (i q) / p - K (integer division),
+// philtorch::resample(x, table, q, out_len): resampling with a polyphase table
+// of p = table.size(0) phases and taps = table.size(1) = 2 K + 2,
 //
-//   out[b, f p + i] = sum_{k < taps} table[i, k] x[b, q f + first_i + k],
+//   out[b, f p + i] = sum_k table[i, k] x[b, q f + (i q) / p - K + k],
 //
-// for 0 <= f p + i < out_len, and x[b, n] = 0 outside [0, T).  first_i may
-// be negative.  There is no CPU kernel.
+// with x zero outside [0, T), accumulated in at::opmath_type.  CUDA only.
 //
-// The weights are accumulated in at::opmath_type of x's dtype (double for
-// float64, float for float32, float16 and bfloat16).
-//
-// tile_kernel is a register tiling: a group of kGroupLanes lanes computes R
-// consecutive outputs for BB batch rows.  The lanes stride over the inputs the
-// tile reads, each x value is loaded once for the R outputs that read it and
-// each weight once for the BB rows, and a butterfly reduction over the group
-// totals the A = R BB accumulators.  The zero padding of the table rows lets
-// every lane run the same loop whichever outputs read an input.
-//
-// The padded table and the output come from ATen ops and the kernel arguments
-// are plain values: no host-to-device copy or synchronization, so a call can be
-// captured in a CUDA graph.
+// tile_kernel: a group of kGroupLanes lanes computes R outputs for BB rows,
+// loading each x value once for the R outputs and each weight once for the BB
+// rows, and sums the R BB accumulators by a butterfly reduction.  The zero
+// padding of the table rows lets every lane run the same loop.  There is no
+// host-to-device copy or sync, so calls can be captured in CUDA graphs.
 
 namespace {
 
-// The largest p, q and taps, as large as Python's bound on the filter, p (q +
-// taps) <= 2^22, lets them be.  It keeps the int arithmetic of tile_kernel
-// (the offsets within a tile, p, q, taps) from overflowing, whatever T is: the
-// zero padding of a table row is at most (R - 1) q / p + 1 <= 7 kMaxTable + 1
-// entries on either side, so the padded row length, the offsets d_j and the
-// range of u all fit in 32 bits.
+// The largest p, q and taps (Python bounds p (q + taps) by 2^22): padded table
+// rows, under 16 kMaxTable, and the tile offsets then fit in int.
 constexpr int64_t kMaxTable = int64_t(1) << 22;
 
-constexpr int kWarp = C10_WARP_SIZE;
-// The shuffle code (full masks, groups of lanes that divide a warp) is written
-// for 32.
-static_assert(kWarp == 32);
+constexpr int kWarp = 32;  // the shuffle masks assume 32 lanes
 constexpr int kWarpsPerBlock = 4;
-constexpr int kBlock = kWarp * kWarpsPerBlock;  // 128 threads, any architecture
-// Lanes per group (a tile): the reduction costs A - A / kGroupLanes shuffles
-// for A accumulators, and a load of one group covers kGroupLanes consecutive
-// elements (a 32-byte sector in float), so fewer lanes cut the reduction at
-// the price of wider loads, which are then split among the groups of a warp.
+constexpr int kBlock = kWarp * kWarpsPerBlock;
+// Lanes per tile: fewer cut the reduction's shuffles but widen each load.
 constexpr int kGroupLaneLevels = 3;
 constexpr int kGroupLanes = 1 << kGroupLaneLevels;  // 8
-// Accumulators (R BB) of a lane: with R + BB loads per R BB multiply-adds, 32
-// gives a load per 2.7 multiply-adds at a register count (about 128) that
-// still lets several blocks share a multiprocessor.
+// Accumulators (R BB) per lane: a load per 2.7 multiply-adds, ~128 registers.
 constexpr int kTileAcc = 32;
-// Batch rows per lane: more rows share the weight loads, but a tile of
-// kTileAcc accumulators then has fewer outputs to share the x loads.
+// Rows per tile, at most: more rows share the weights, fewer outputs share x.
 constexpr int kMaxTileRows = 8;
-// Outputs per tile, at most: the u range of a tile exceeds the taps by the span
-// of its outputs, so long tiles of few rows spend lanes on inputs that few
-// outputs read and need many registers for their pointers.
+// Outputs per tile, at most: longer tiles waste lanes and registers.
 constexpr int kMaxTileOutputs = 8;
 
 // The largest power of two that is at most max and at most B >= 1.
@@ -275,18 +249,10 @@ at::Tensor resample_run(const at::Tensor &x, const at::Tensor &table,
         at::constant_pad_nd(table, {pad, pad}).contiguous();
     at::Tensor out = at::empty({B, out_len}, x.options());
 
-    TileArgs<scalar_t> a;
-    a.x = xc.const_data_ptr<scalar_t>();
-    a.out = out.mutable_data_ptr<scalar_t>();
-    a.B = B;
-    a.T = T;
-    a.out_len = out_len;
-    a.p = p;
-    a.q = q;
-    a.taps = taps;
-    a.ts = ts;
-    a.pad = pad;
-    a.table = padded.const_data_ptr<acc_t>();
+    const TileArgs<scalar_t> a{xc.const_data_ptr<scalar_t>(),
+                               out.mutable_data_ptr<scalar_t>(),
+                               B, T, out_len, p, q, taps, ts, pad,
+                               padded.const_data_ptr<acc_t>()};
     launch_tile_rows<scalar_t>(a, BB, stream);
     return out;
 }

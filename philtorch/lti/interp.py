@@ -13,10 +13,8 @@ from .._ops import _conv_input, _resample_gradient, _resample_setup_context, _ta
 from .delay import _as_int
 from .recur import linear_recurrence
 
-# (precision in bits, passband_end) of libsoxr's presets, with stopband_begin
-# = 1: the values soxr_quality_spec returns in libsoxr 0.1.3 (LQ's, exactly
-# 1385 / 2048, is soxr.c's LOW_Q_BW0), taken from the library rather than
-# ported, as its code is LGPL.
+# (precision in bits, passband_end) of libsoxr 0.1.3's presets, as its
+# soxr_quality_spec returns them (LQ's is 1385 / 2048): not ported, it is LGPL.
 _QUALITY_RECIPES: dict[str, tuple[int, float]] = {
     "LQ": (16, 0.67626953125),
     "MQ": (16, 0.9158810491765671),
@@ -26,22 +24,16 @@ _QUALITY_RECIPES: dict[str, tuple[int, float]] = {
 
 
 def _kaiser_design(bits: int, passband_end: float) -> tuple[float, float, int]:
-    """Compute (rolloff, beta, num_zeros) from libsoxr's bits and passband.
+    """(rolloff, beta, num_zeros) for soxr's precision and passband end.
 
-    The window follows Kaiser's design formulas (J. F. Kaiser, "Nonrecursive
-    digital filter design using the I0-sinh window function", 1974), as in
-    :func:`scipy.signal.kaiser_beta` (0.1102 (A - 8.7), for an attenuation A of
-    more than 50 dB) and :func:`scipy.signal.kaiserord` (a length of
-    (A - 7.95) / (2.285 w) + 1, for a transition width w in rad/sample).
+    Kaiser's formulas (J. F. Kaiser, 1974), as in
+    :func:`scipy.signal.kaiser_beta` and :func:`scipy.signal.kaiserord`.
     """
     # As soxr does, the attenuation is that of one bit beyond the precision.
     att = (bits + 1) * 20.0 * math.log10(2.0)
-    # Every preset's att is above 50 dB (102 to 175 dB), where the beta formula
-    # holds; a test pins the presets.
     rolloff = 0.5 * (passband_end + 1.0)
-    beta = 0.1102 * (att - 8.7)
-    # Half of kaiserord's length for a transition pi (1 - passband_end)
-    # rad/sample wide.
+    beta = 0.1102 * (att - 8.7)  # for att > 50 dB, as every preset has
+    # Half of kaiserord's length, for a transition pi (1 - passband_end) wide.
     half_taps = math.ceil((att - 7.95) / (2.285 * 2.0 * math.pi * (1.0 - passband_end)))
     num_zeros = math.ceil(half_taps * rolloff)
     return rolloff, beta, num_zeros
@@ -49,9 +41,7 @@ def _kaiser_design(bits: int, passband_end: float) -> tuple[float, float, int]:
 
 _QUALITY_PRESETS = {name: _kaiser_design(*recipe) for name, recipe in _QUALITY_RECIPES.items()}
 
-# The most coefficients of the dense polyphase kernel of the conv1d path, p rows
-# of about q + taps (32 MB in float64). It bounds the table, p * taps, as well,
-# and the transpose's table is about the same size.
+# The most coefficients of the CPU path's dense kernel, p (q + taps).
 _MAX_KERNEL = 2**22
 
 _HAS_RESAMPLE_OP = hasattr(torch.ops.philtorch, "resample")
@@ -257,12 +247,10 @@ def _num_taps(p: int, q: int, rolloff: float, num_zeros: int) -> int:
 
 
 def _constant_cache(fn):
-    """Cache ``fn``, and make Dynamo run it and take its result as a constant.
+    """Cache ``fn`` and make Dynamo take its result as a constant.
 
-    The lambda matters: Dynamo traces through an ``lru_cache`` wrapper, even a
-    marked one, into the table's construction, which it can't compile. The
-    result is built outside inference mode, so that a later call that needs
-    gradients can save it for backward.
+    Through a lambda: Dynamo would trace into an ``lru_cache`` wrapper. Built
+    outside inference mode, so that later calls can save it for backward.
     """
 
     @functools.lru_cache(maxsize=16)
@@ -282,17 +270,11 @@ def _polyphase_table(
     taps: int,
     device: torch.device | None = None,
 ) -> Tensor:
-    """The weights of the resampler in the polyphase form, for rates q -> p.
+    """The (p, taps) float64 table of the resampler for rates q -> p.
 
     Output ``f p + i`` is ``sum_k table[i, k] x[q f + (i q) // p - K + k]``,
-    with x zero outside the signal and ``taps = 2 K + 2``, as :func:`_num_taps`
-    gives it. The table, of shape (p, taps) in float64, holds
-    ``c g(c (t - n))`` for the cutoff c and the window g of :func:`resample`, at
-    the input time ``t = (i q) / p`` of phase i and the n of its taps. Only the
-    fractional part of t, (i q mod p) / p, is computed in floating point.
-
-    ``rolloff`` and ``beta`` are floats, or 0-D float64 tensors on ``device``
-    that the table is differentiable in.
+    with ``taps = 2 K + 2``. Tensor ``rolloff`` and ``beta`` (0-D float64, on
+    ``device``) make it differentiable in them.
     """
     c = _cutoff(p, q, rolloff)
     frac = (((torch.arange(p, dtype=torch.int64, device=device) * q) % p).double() / p).unsqueeze(1)
@@ -300,11 +282,8 @@ def _polyphase_table(
     # t - n = frac + K - k for the tap k of the phase starting at floor(t) - K.
     z = c * (frac + ((taps - 2) // 2 - k))
     inside = z.abs() < num_zeros
-    # I0(beta sqrt(1 - u^2)) / I0(beta) from the scaled i0e, which cannot
-    # overflow for a large beta. i0e is even, and |arg| - |beta| is the
-    # exponent of the scaling, so a negative beta gives the window of |beta|.
-    # Outside the window the argument is 1, where the square root has a finite
-    # derivative.
+    # I0(beta sqrt(1 - u^2)) / I0(beta) from i0e, which can't overflow, even in
+    # beta; the argument is 1 off the window, where sqrt's derivative is finite.
     beta = torch.as_tensor(beta, dtype=torch.float64, device=device)
     arg = beta * torch.sqrt(torch.where(inside, 1 - (z / num_zeros) ** 2, 1.0))
     window = torch.special.i0e(arg) / torch.special.i0e(beta)
@@ -330,11 +309,7 @@ def _table_on(
 
 
 def _polyphase_conv(x: Tensor, table: Tensor, q: int, out_len: int) -> Tensor:
-    """Resample with one strided convolution, for devices without the op.
-
-    The table's rows, placed at their tap columns, make the dense kernel of
-    :func:`philtorch._ops._conv_input`'s frames, each of which gives p outputs.
-    """
+    """Resample with one strided convolution, for devices without the op."""
     p, taps = table.shape
     xp, width = _conv_input(x, p, q, taps, out_len)
     columns = _tap_columns(p, q, taps, table.device)
@@ -344,13 +319,9 @@ def _polyphase_conv(x: Tensor, table: Tensor, q: int, out_len: int) -> Tensor:
 
 
 class _Resample(torch.autograd.Function):
-    """The CUDA op in eager mode, with its ``jvp`` and ``vmap``.
+    """The CUDA op in eager mode, with ``jvp`` and ``vmap``.
 
-    Resampling is bilinear in the signal and the table: the tangent is the op
-    applied to ``dx`` and to ``dtable``, and the gradients are
-    :func:`philtorch._ops._resample_gradient`, which the op's registered
-    autograd, used under :func:`torch.compile` (Dynamo can't trace an autograd
-    function with a ``jvp``), shares.
+    Compiled code calls the op, whose autograd shares ``_resample_gradient``.
     """
 
     @staticmethod
@@ -433,15 +404,13 @@ def resample(
     can miss the 20-bit target of ``"HQ"``, about -126 dB, and misses the
     28-bit target of ``"VHQ"``, about -175 dB: use ``float64`` for them.
 
-    Gradients and forward-mode derivatives exist in :attr:`x` to any order,
-    and in :attr:`rolloff` and :attr:`beta` when they are 0-D tensors. The
-    value of :attr:`rolloff` sets which taps the filter has, so its gradient
-    holds them fixed and ignores the jump when a tap enters or leaves the
-    window; a tensor :attr:`rolloff` also costs a device synchronization and
-    a graph break under :func:`torch.compile`. A tensor :attr:`beta` is not
-    range-checked, and a negative one acts as its absolute value. On CUDA,
-    :func:`torch.func.jvp` and :func:`torch.func.vmap` (over :attr:`x` only)
-    work in eager mode; :func:`torch.compile` supports reverse mode.
+    Derivatives of any order exist in :attr:`x`, and in :attr:`rolloff` and
+    :attr:`beta` when they are 0-D tensors. :attr:`rolloff`'s value sets the
+    filter's taps, which its gradient holds fixed; a tensor :attr:`rolloff`
+    costs a sync and a graph break under :func:`torch.compile`. A negative
+    tensor :attr:`beta` acts as its absolute value. On CUDA,
+    :func:`torch.func.jvp` and :func:`torch.func.vmap` (over :attr:`x`) work
+    in eager mode; :func:`torch.compile` supports reverse mode.
 
     Args:
         x (Tensor): signals, of shape :math:`(B, T)`, in a floating-point
@@ -467,11 +436,9 @@ def resample(
             override the preset's values. Default: ``"HQ"``.
         rolloff (float or Tensor, optional): the filter cutoff
             :math:`\rho \in (0, 1]` as a fraction of the lower Nyquist
-            frequency; a float, or a 0-D floating-point tensor. Default:
-            ``None``.
+            frequency. Default: ``None``.
         beta (float or Tensor, optional): the Kaiser window shape parameter
-            :math:`\beta \ge 0`; a float, or a 0-D floating-point tensor.
-            Default: ``None``.
+            :math:`\beta \ge 0`. Default: ``None``.
         num_zeros (int, optional): the number of zero-crossings
             :math:`N_z \ge 1` per side of the sinc mainlobe. Default: ``None``.
 
