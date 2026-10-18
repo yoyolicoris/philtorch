@@ -229,32 +229,30 @@ def test_resample_design_overrides_match_reference(device, orig_freq, new_freq, 
     torch.testing.assert_close(actual, expected, **_TOLS[torch.float64])
 
 
-@pytest.mark.parametrize("device", _DEVICES)
+# The presets' tests run on the CPU: the design doesn't depend on the device,
+# and the dense reference checks the CUDA kernel.
 @pytest.mark.parametrize("quality", ["LQ", "MQ", "HQ", "VHQ"])
 @pytest.mark.parametrize("orig_freq, new_freq", [(2, 3), (1, 3)])
-def test_resample_presets_reconstruct_passband_tone(device, quality, orig_freq, new_freq):
+def test_resample_presets_reconstruct_passband_tone(quality, orig_freq, new_freq):
     # A tone at 30% of Nyquist, inside every passband, is reconstructed away
     # from the edges to the preset's precision, 2 ** -(bits + 1).
     bits, _ = _QUALITY_RECIPES[quality]
     T, margin = 2048, 300  # input samples, beyond the filter's half-width
-    t_in = torch.arange(T, device=device, dtype=torch.float64)
+    t_in = torch.arange(T, dtype=torch.float64)
     x = torch.sin(2.0 * torch.pi * 0.15 * t_in).unsqueeze(0)
     y = resample(x, orig_freq, new_freq, quality)
     m_lo, m_hi = -(-margin * new_freq // orig_freq), (T - margin) * new_freq // orig_freq
-    t_out = torch.arange(m_lo, m_hi, device=device, dtype=torch.float64) * orig_freq / new_freq
+    t_out = torch.arange(m_lo, m_hi, dtype=torch.float64) * orig_freq / new_freq
     expected = torch.sin(2.0 * torch.pi * 0.15 * t_out).unsqueeze(0)
     rolloff, _, num_zeros = _design(quality)
     assert margin > _cutoff_and_support(orig_freq, new_freq, rolloff, num_zeros)[1]
     torch.testing.assert_close(y[:, m_lo:m_hi], expected, rtol=0, atol=2.0 ** -(bits + 1))
 
 
-@pytest.mark.parametrize("device", _DEVICES)
 @pytest.mark.parametrize("quality", ["LQ", "MQ", "HQ", "VHQ"])
 @pytest.mark.parametrize("orig_freq, new_freq", [(4, 1), (3, 2)])
 @pytest.mark.parametrize("stop_edge_ratio", [1.0, 1.5])
-def test_resample_presets_attenuate_the_stopband(
-    device, quality, orig_freq, new_freq, stop_edge_ratio
-):
+def test_resample_presets_attenuate_the_stopband(quality, orig_freq, new_freq, stop_edge_ratio):
     # A tone in the stopband (from soxr's stopband_begin, 1.0, outward) is
     # attenuated by the design's (bits + 1) * 20 log10(2) dB, with 1 dB of
     # slack for the RMS of a fractional number of cycles.
@@ -264,7 +262,7 @@ def test_resample_presets_attenuate_the_stopband(
     support = _cutoff_and_support(orig_freq, new_freq, rolloff, num_zeros)[1]
     T = int(4 * support) + 400
     freq = stop_edge_ratio * 0.5 * new_freq / orig_freq  # cycles per input sample
-    t = torch.arange(T, device=device, dtype=torch.float64)
+    t = torch.arange(T, dtype=torch.float64)
     x = torch.sin(2.0 * torch.pi * freq * t + 0.3).unsqueeze(0)
     y = resample(x, orig_freq, new_freq, quality)
 
@@ -275,10 +273,9 @@ def test_resample_presets_attenuate_the_stopband(
     assert 20.0 * math.log10(ratio.item()) < -(attenuation_db - 1.0)
 
 
-@pytest.mark.parametrize("device", _DEVICES)
 @pytest.mark.parametrize("quality", ["LQ", "MQ", "HQ", "VHQ"])
 @pytest.mark.parametrize("orig_freq, new_freq", [(1, 3), (2, 3)])
-def test_resample_presets_reject_the_images_when_upsampling(device, quality, orig_freq, new_freq):
+def test_resample_presets_reject_the_images_when_upsampling(quality, orig_freq, new_freq):
     # Upsampling a tone at 90% of the passband edge, its image, just past the
     # stopband edge, is what remains of the error: below 2 ** -(bits + 1).
     bits, passband_end = _QUALITY_RECIPES[quality]
@@ -287,13 +284,13 @@ def test_resample_presets_reject_the_images_when_upsampling(device, quality, ori
     rolloff, _, num_zeros = _design(quality)
     support = _cutoff_and_support(orig_freq, new_freq, rolloff, num_zeros)[1]
     T = int(4 * support) + 400
-    t_in = torch.arange(T, device=device, dtype=torch.float64)
+    t_in = torch.arange(T, dtype=torch.float64)
     x = torch.sin(2.0 * torch.pi * freq * t_in + 0.3).unsqueeze(0)
     y = resample(x, orig_freq, new_freq, quality)
 
     lo = int(support) + 5
     m_lo, m_hi = -(-lo * new_freq // orig_freq), (T - lo) * new_freq // orig_freq
-    t_out = torch.arange(m_lo, m_hi, device=device, dtype=torch.float64) * orig_freq / new_freq
+    t_out = torch.arange(m_lo, m_hi, dtype=torch.float64) * orig_freq / new_freq
     expected = torch.sin(2.0 * torch.pi * freq * t_out + 0.3).unsqueeze(0)
     torch.testing.assert_close(y[:, m_lo:m_hi], expected, rtol=0, atol=2.0 ** -(bits + 1))
 
@@ -318,7 +315,8 @@ def test_resample_matches_scipy_resample_poly(device, orig_freq, new_freq, T):
 
 
 # (orig_freq, new_freq, T): a pair of rates each way, fewer outputs than phases
-# (T = 1) and a rate with many phases.
+# (T = 1) and a rate with many phases, the one case of the checks that don't
+# depend on the rates.
 _GRAD_CASES = [(2, 3, 24), (5, 2, 30), (2, 3, 1), (147, 160, 20)]
 
 
@@ -353,7 +351,7 @@ def test_resample_gradcheck_and_gradgradcheck(device, tensor_params, orig_freq, 
 
 
 @pytest.mark.parametrize("device", _DEVICES)
-@pytest.mark.parametrize("orig_freq, new_freq, T", _GRAD_CASES)
+@pytest.mark.parametrize("orig_freq, new_freq, T", _GRAD_CASES[-1:])
 def test_resample_forward_mode_and_forward_over_reverse(device, orig_freq, new_freq, T):
     fn = _grad_fn(orig_freq, new_freq)
     x = torch.randn(2, T, device=device, dtype=torch.float64)
@@ -375,7 +373,7 @@ def test_resample_forward_mode_and_forward_over_reverse(device, orig_freq, new_f
 
 
 @pytest.mark.parametrize("device", _DEVICES)
-@pytest.mark.parametrize("orig_freq, new_freq, T", _GRAD_CASES)
+@pytest.mark.parametrize("orig_freq, new_freq, T", _GRAD_CASES[-1:])
 def test_resample_vmap_folds_into_the_batch(device, orig_freq, new_freq, T):
     fn = _grad_fn(orig_freq, new_freq)
     x = torch.randn(3, 2, T, device=device, dtype=torch.float64)
@@ -387,7 +385,7 @@ def test_resample_vmap_folds_into_the_batch(device, orig_freq, new_freq, T):
 
 
 @pytest.mark.parametrize("device", _DEVICES)
-@pytest.mark.parametrize("orig_freq, new_freq, T", _GRAD_CASES)
+@pytest.mark.parametrize("orig_freq, new_freq, T", _GRAD_CASES[-1:])
 def test_resample_vmap_of_grad_gives_per_sample_gradients(device, orig_freq, new_freq, T):
     fn = _grad_fn(orig_freq, new_freq)
     x = torch.randn(3, T, device=device, dtype=torch.float64)
@@ -404,7 +402,7 @@ def test_resample_vmap_of_grad_gives_per_sample_gradients(device, orig_freq, new
 
 @pytest.mark.parametrize("device", _DEVICES)
 @pytest.mark.parametrize("tensor_beta", [False, True])
-@pytest.mark.parametrize("orig_freq, new_freq, T", [(2, 3, 30), (5, 2, 40), (147, 160, 20)])
+@pytest.mark.parametrize("orig_freq, new_freq, T", _GRAD_CASES[-1:])
 def test_resample_compiled_gradient_matches_eager(device, tensor_beta, orig_freq, new_freq, T):
     # aot_eager, which needs no C++ compiler (Windows CI has none for Inductor)
     # and has no on-disk cache to replay an old backward. A tensor rolloff would
@@ -430,7 +428,7 @@ def test_resample_compiled_gradient_matches_eager(device, tensor_beta, orig_freq
 
 @pytest.mark.parametrize("device", _DEVICES)
 @pytest.mark.parametrize("dtype", _DTYPES)
-@pytest.mark.parametrize("orig_freq, new_freq, T", _GRAD_CASES)
+@pytest.mark.parametrize("orig_freq, new_freq, T", _GRAD_CASES[-1:])
 def test_resample_tensor_parameters_match_floats(device, dtype, orig_freq, new_freq, T):
     x = torch.randn(2, T, device=device, dtype=dtype)
     rolloff, beta = _params(device)
@@ -445,7 +443,7 @@ def test_resample_tensor_parameters_match_floats(device, dtype, orig_freq, new_f
 
 
 @pytest.mark.cuda
-@pytest.mark.parametrize("orig_freq, new_freq, T", _GRAD_CASES)
+@pytest.mark.parametrize("orig_freq, new_freq, T", _GRAD_CASES[-1:])
 def test_resample_cuda_parameter_gradients_match_cpu_in_float32(orig_freq, new_freq, T):
     # gradcheck covers float64 on CUDA; this compares CUDA with CPU in float32.
     fn = _grad_fn(orig_freq, new_freq)
@@ -462,7 +460,7 @@ def test_resample_cuda_parameter_gradients_match_cpu_in_float32(orig_freq, new_f
 
 
 @pytest.mark.parametrize("device", _DEVICES)
-@pytest.mark.parametrize("orig_freq, new_freq, T", _GRAD_CASES)
+@pytest.mark.parametrize("orig_freq, new_freq, T", _GRAD_CASES[-1:])
 def test_resample_forward_mode_in_the_parameters(device, orig_freq, new_freq, T):
     fn = _grad_fn(orig_freq, new_freq)
     x = torch.randn(2, T, device=device, dtype=torch.float64)
