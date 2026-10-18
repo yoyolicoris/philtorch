@@ -41,17 +41,6 @@ struct output_unary_op
 };
 
 template <typename T, typename acc_t>
-struct batch_A_input_op
-{
-    __host__ __device__ sqm2_pair<acc_t> operator()(
-        const T &a, const T &b, const T &c, const T &d, const T &x_0,
-        const T &x_1) const
-    {
-        return thrust::make_tuple(a, b, c, d, x_0, x_1);
-    }
-};
-
-template <typename T, typename acc_t>
 struct share_A_input_op
 {
     const T *A;

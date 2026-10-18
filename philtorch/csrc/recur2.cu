@@ -21,16 +21,12 @@ void batch_mat_recur_second_order(const scalar_t *A, const scalar_t *x,
     using acc_t = at::opmath_type<scalar_t>; // the state stays in the accumulation type
     thrust::counting_iterator<int> iter(0);
     index2key key_op{n_steps};
-    auto batch_input_op =
-        thrust::make_zip_function(batch_A_input_op<scalar_t, acc_t>{});
 
     scan_by_key_on_current_stream(
         thrust::make_transform_iterator(iter, key_op),
-        thrust::make_transform_iterator(
-            thrust::make_zip_iterator(
-                A, A + total_steps, A + total_steps * 2, A + total_steps * 3,
-                x, x + total_steps),
-            batch_input_op),
+        thrust::make_zip_iterator(
+            A, A + total_steps, A + total_steps * 2, A + total_steps * 3,
+            x, x + total_steps),
         thrust::make_transform_output_iterator(
             thrust::make_zip_iterator(out, out + total_steps),
             output_unary_op<scalar_t, acc_t>()),
