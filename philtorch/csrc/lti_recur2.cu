@@ -7,6 +7,7 @@
 #include <thrust/iterator/transform_output_iterator.h>
 #include <thrust/iterator/zip_iterator.h>
 #include <thrust/zip_function.h>
+#include <ATen/OpMathType.h>
 #include <torch/script.h>
 #include <torch/torch.h>
 
@@ -16,9 +17,10 @@ template <typename scalar_t>
 void lti_batch_mat_recur_second_order(const scalar_t *A, const scalar_t *x,
                                       scalar_t *out, int n_steps, int64_t total_steps)
 {
+    using acc_t = at::opmath_type<scalar_t>; // the state stays in the accumulation type
     thrust::counting_iterator<int> iter(0);
     auto batch_input_op =
-        thrust::make_zip_function(lti_batch_A_input_op<scalar_t>{A, n_steps});
+        thrust::make_zip_function(lti_batch_A_input_op<scalar_t, acc_t>{A, n_steps});
     index2key key_op{n_steps};
 
     scan_by_key_on_current_stream(
@@ -28,17 +30,18 @@ void lti_batch_mat_recur_second_order(const scalar_t *A, const scalar_t *x,
             batch_input_op),
         thrust::make_transform_output_iterator(
             thrust::make_zip_iterator(out, out + total_steps),
-            output_unary_op<scalar_t>()),
-        recur2_binary_op<scalar_t>(), total_steps);
+            output_unary_op<scalar_t, acc_t>()),
+        recur2_binary_op<acc_t>(), total_steps);
 }
 
 template <typename scalar_t>
 void lti_share_mat_recur_second_order(const scalar_t *A, const scalar_t *x,
                                       scalar_t *out, int n_steps, int64_t total_steps)
 {
+    using acc_t = at::opmath_type<scalar_t>;
     thrust::counting_iterator<int> iter(0);
     auto share_input_op =
-        thrust::make_zip_function(lti_share_A_input_op<scalar_t>{A, n_steps});
+        thrust::make_zip_function(lti_share_A_input_op<scalar_t, acc_t>{A, n_steps});
     index2key key_op{n_steps};
 
     scan_by_key_on_current_stream(
@@ -48,8 +51,8 @@ void lti_share_mat_recur_second_order(const scalar_t *A, const scalar_t *x,
             share_input_op),
         thrust::make_transform_output_iterator(
             thrust::make_zip_iterator(out, out + total_steps),
-            output_unary_op<scalar_t>()),
-        recur2_binary_op<scalar_t>(), total_steps);
+            output_unary_op<scalar_t, acc_t>()),
+        recur2_binary_op<acc_t>(), total_steps);
 }
 
 at::Tensor lti_mat_recur_second_order_cuda_impl(const at::Tensor &A,

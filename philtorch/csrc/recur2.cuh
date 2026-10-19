@@ -30,23 +30,23 @@ struct recur2_binary_op
     }
 };
 
-template <typename T>
+template <typename T, typename acc_t>
 struct output_unary_op
 {
     __host__ __device__ cuda::std::tuple<T, T> operator()(
-        const sqm2_pair<T> &state) const
+        const sqm2_pair<acc_t> &state) const
     {
         return thrust::make_tuple(thrust::get<4>(state), thrust::get<5>(state));
     }
 };
 
-template <typename T>
+template <typename T, typename acc_t>
 struct share_A_input_op
 {
     const T *A;
     int n_steps;
-    __host__ __device__ sqm2_pair<T> operator()(int i, const T &x_0,
-                                                const T &x_1) const
+    __host__ __device__ sqm2_pair<acc_t> operator()(int i, const T &x_0,
+                                                    const T &x_1) const
     {
         // A holds four rows of n_steps entries; index in 64 bits, since
         // 4 * n_steps can exceed INT_MAX.
@@ -58,13 +58,13 @@ struct share_A_input_op
     }
 };
 
-template <typename T>
+template <typename T, typename acc_t>
 struct lti_batch_A_input_op
 {
     const T *A;
     int n_steps;
-    __host__ __device__ sqm2_pair<T> operator()(int i, const T &x_0,
-                                                const T &x_1) const
+    __host__ __device__ sqm2_pair<acc_t> operator()(int i, const T &x_0,
+                                                    const T &x_1) const
     {
         int64_t idx = static_cast<int64_t>(i / n_steps) * 4;
         int offset = i % n_steps;
@@ -74,13 +74,13 @@ struct lti_batch_A_input_op
     }
 };
 
-template <typename T>
+template <typename T, typename acc_t>
 struct lti_share_A_input_op
 {
     const T *A;
     int n_steps;
-    __host__ __device__ sqm2_pair<T> operator()(int i, const T &x_0,
-                                                const T &x_1) const
+    __host__ __device__ sqm2_pair<acc_t> operator()(int i, const T &x_0,
+                                                    const T &x_1) const
     {
         int offset = i % n_steps;
         if (offset > 0)

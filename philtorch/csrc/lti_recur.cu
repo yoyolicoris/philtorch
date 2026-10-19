@@ -7,6 +7,7 @@
 #include <thrust/iterator/transform_output_iterator.h>
 #include <thrust/iterator/zip_iterator.h>
 #include <thrust/zip_function.h>
+#include <ATen/OpMathType.h>
 #include <torch/script.h>
 #include <torch/torch.h>
 
@@ -26,21 +27,21 @@ struct recur_binary_op
     }
 };
 
-template <typename T>
+template <typename T, typename acc_t>
 struct take_second
 {
-    __host__ __device__ T operator()(const cuda::std::tuple<T, T> &state) const
+    __host__ __device__ T operator()(const cuda::std::tuple<acc_t, acc_t> &state) const
     {
         return thrust::get<1>(state);
     }
 };
 
-template <typename T>
+template <typename T, typename acc_t>
 struct lti_batch_recur_input_op
 {
     const T *decays;
     int n_steps;
-    __host__ __device__ cuda::std::tuple<T, T> operator()(int i, const T &x) const
+    __host__ __device__ cuda::std::tuple<acc_t, acc_t> operator()(int i, const T &x) const
     {
         int idx = i / n_steps;
         int offset = i % n_steps;
@@ -50,13 +51,13 @@ struct lti_batch_recur_input_op
     }
 };
 
-template <typename T>
+template <typename T, typename acc_t>
 struct lti_shared_recur_input_op
 {
     // Read on the device, so the host doesn't wait for a to be computed.
     const T *decay;
     int n_steps;
-    __host__ __device__ cuda::std::tuple<T, T> operator()(int i, const T &x) const
+    __host__ __device__ cuda::std::tuple<acc_t, acc_t> operator()(int i, const T &x) const
     {
         int offset = i % n_steps;
         if (offset > 0)
@@ -70,16 +71,17 @@ void lti_batch_linear_recurrence(const scalar_t *decays,
                                  const scalar_t *impulses,
                                  scalar_t *out, int n_steps, int64_t total_steps)
 {
+    using acc_t = at::opmath_type<scalar_t>; // the state stays in the accumulation type
     thrust::counting_iterator<int> it(0);
-    auto batch_input_op = thrust::make_zip_function(lti_batch_recur_input_op<scalar_t>{decays, n_steps});
+    auto batch_input_op = thrust::make_zip_function(lti_batch_recur_input_op<scalar_t, acc_t>{decays, n_steps});
     index2key key_op{n_steps};
 
     scan_by_key_on_current_stream(
         thrust::make_transform_iterator(it, key_op),
         thrust::make_transform_iterator(
             thrust::make_zip_iterator(it, impulses), batch_input_op),
-        thrust::make_transform_output_iterator(out, take_second<scalar_t>()),
-        recur_binary_op<scalar_t>(), total_steps);
+        thrust::make_transform_output_iterator(out, take_second<scalar_t, acc_t>()),
+        recur_binary_op<acc_t>(), total_steps);
 }
 
 template <typename scalar_t>
@@ -87,16 +89,17 @@ void lti_shared_linear_recurrence(const scalar_t *decay,
                                   const scalar_t *impulses,
                                   scalar_t *out, int n_steps, int64_t total_steps)
 {
+    using acc_t = at::opmath_type<scalar_t>;
     thrust::counting_iterator<int> it(0);
-    auto shared_input_op = thrust::make_zip_function(lti_shared_recur_input_op<scalar_t>{decay, n_steps});
+    auto shared_input_op = thrust::make_zip_function(lti_shared_recur_input_op<scalar_t, acc_t>{decay, n_steps});
     index2key key_op{n_steps};
 
     scan_by_key_on_current_stream(
         thrust::make_transform_iterator(it, key_op),
         thrust::make_transform_iterator(
             thrust::make_zip_iterator(it, impulses), shared_input_op),
-        thrust::make_transform_output_iterator(out, take_second<scalar_t>()),
-        recur_binary_op<scalar_t>(), total_steps);
+        thrust::make_transform_output_iterator(out, take_second<scalar_t, acc_t>()),
+        recur_binary_op<acc_t>(), total_steps);
 }
 
 at::Tensor lti_recur_cuda_impl(const at::Tensor &a,

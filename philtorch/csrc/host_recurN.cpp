@@ -1,3 +1,4 @@
+#include <ATen/OpMathType.h>
 #include <torch/script.h>
 #include <torch/torch.h>
 
@@ -84,28 +85,31 @@ void host_batch_mat_recur_N_order_omp(int B, int T, int N,
                                       scalar_t *H_out    // [B][T][N]
 )
 {
+    using acc_t = at::opmath_type<scalar_t>; // the state stays in the accumulation type
 // Process each batch in parallel
 #pragma omp parallel for
     for (int b = 0; b < B; ++b)
     {
         const scalar_t *A_b = A + b * T * N * N;
         scalar_t *H_b = H_out + b * T * N;
+        std::vector<acc_t> H_prev(H_b, H_b + N), H_curr(N);
 
         // t loop
         for (int t = 1; t < T; ++t)
         {
             const scalar_t *A_bt = A_b + t * N * N;
-            const scalar_t *H_prev = H_b + (t - 1) * N;
-            scalar_t *H_curr = H_b + t * N;
+            scalar_t *H_t = H_b + t * N;
 
             for (int i = 0; i < N; ++i)
             {
-                scalar_t sum = 0;
+                acc_t sum = 0;
                 const scalar_t *Arow = A_bt + i * N;
                 for (int j = 0; j < N; ++j)
                     sum += Arow[j] * H_prev[j];
-                H_curr[i] += sum;
+                H_curr[i] = H_t[i] + sum;
+                H_t[i] = H_curr[i];
             }
+            std::swap(H_prev, H_curr);
         }
     }
 }
@@ -116,25 +120,28 @@ void host_share_mat_recur_N_order_omp(int B, int T, int N,
                                       scalar_t *H_out    // [B][T][N]
 )
 {
+    using acc_t = at::opmath_type<scalar_t>;
 // Process each batch in parallel
 #pragma omp parallel for
     for (int b = 0; b < B; ++b)
     {
         scalar_t *H_b = H_out + b * T * N;
+        std::vector<acc_t> H_prev(H_b, H_b + N), H_curr(N);
         // t loop
         for (int t = 1; t < T; ++t)
         {
             const scalar_t *A_bt = A + t * N * N;
-            const scalar_t *H_prev = H_b + (t - 1) * N;
-            scalar_t *H_curr = H_b + t * N;
+            scalar_t *H_t = H_b + t * N;
             for (int i = 0; i < N; ++i)
             {
-                scalar_t sum = 0;
+                acc_t sum = 0;
                 const scalar_t *Arow = A_bt + i * N;
                 for (int j = 0; j < N; ++j)
                     sum += Arow[j] * H_prev[j];
-                H_curr[i] += sum;
+                H_curr[i] = H_t[i] + sum;
+                H_t[i] = H_curr[i];
             }
+            std::swap(H_prev, H_curr);
         }
     }
 }

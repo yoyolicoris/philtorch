@@ -442,3 +442,56 @@ def test_recurrence_raises_past_the_largest_triton_state():
     A, zi, x = _problem(2, 7, 129, "one", device="cuda")
     with pytest.raises(NotImplementedError, match="take M up to 128"):
         recurrence(A, zi, x)
+
+
+def _near_unit_problem(B, T, M, sharing, dtype, device):
+    """Poles at radius ~0.99 (M = 2: rotated by small angles) and x ~ 0.01 N(0, 1)."""
+    gen = torch.Generator().manual_seed(0)
+    Ba = B if sharing in ("per_item", "both") else 1
+    Ta = T if sharing in ("per_step", "both") else 1
+    radius = 0.985 + 0.01 * torch.rand(Ba, Ta, 1, 1, dtype=torch.float64, generator=gen)
+    angle = 0.3 * torch.rand(Ba, Ta, 1, 1, dtype=torch.float64, generator=gen)
+    rotation = torch.cat([angle.cos(), -angle.sin(), angle.sin(), angle.cos()], -1)
+    A = radius * (rotation.view(Ba, Ta, 2, 2) if M == 2 else torch.ones(Ba, Ta, 1, 1))
+    x = 0.01 * torch.randn(B, T, M, dtype=torch.float64, generator=gen)
+    zi = 0.01 * torch.randn(B, M, dtype=torch.float64, generator=gen)
+    return (t.to(device, dtype) for t in (A, zi, x))
+
+
+# Operators whose kernels take float16 and bfloat16: (time_invariant, M, device, kernel).
+LOW_PRECISION_OPERATORS = [
+    (True, 1, "cpu", "_lti_recur"),
+    (True, 2, "cpu", "_lti_recurN"),
+    (False, 1, "cpu", "_recurN"),
+    (False, 2, "cpu", "_recurN"),
+    *(
+        pytest.param(*case, marks=pytest.mark.cuda)
+        for case in [
+            (True, 1, "cuda", "_lti_recur"),
+            (True, 2, "cuda", "_lti_recur2"),
+            (False, 2, "cuda", "_recur2"),
+        ]
+    ),
+]
+
+
+@pytest.mark.parametrize("time_invariant, M, device, kernel", LOW_PRECISION_OPERATORS)
+@pytest.mark.parametrize("batched_A", [False, True])
+@pytest.mark.parametrize("dtype, tolerance", [(torch.float16, 2**-11), (torch.bfloat16, 2**-8)])
+def test_native_kernels_accumulate_low_precision_in_float32(
+    time_invariant, M, device, kernel, batched_A, dtype, tolerance
+):
+    # The kernels' state is float32: the error is that of rounding each output once.
+    sharing = (
+        ("per_item" if batched_A else "one")
+        if time_invariant
+        else ("both" if batched_A else "per_step")
+    )
+    A, zi, x = _near_unit_problem(4, 4000, M, sharing, dtype, device)
+    assert _kernel(time_invariant, M, dtype, device) is getattr(_recur, kernel)
+    # The reference runs in float64 on the same 16-bit inputs.
+    expected = _sequential(*(t.cpu().double() for t in (A, zi, x)))
+    actual = recurrence(A, zi, x)
+    assert actual.dtype == dtype
+    error = (actual.cpu().double() - expected).norm() / expected.norm()
+    assert error < tolerance
