@@ -372,9 +372,7 @@ def lfilter(
 
     Args:
         b (Tensor): numerator coefficients :math:`b_0, \dots, b_{M_b}`, of
-            shape :math:`(B, M_b + 1)` or :math:`(M_b + 1)`. A batch of one,
-            :math:`(1, M_b + 1)`, is shared by every signal of a batched
-            :attr:`x`.
+            shape :math:`(B, M_b + 1)` or :math:`(M_b + 1)`.
         a (Tensor): denominator coefficients :math:`a_1, \dots, a_{M_a}`,
             without the leading 1, of shape :math:`(B, M_a)` or :math:`(M_a)`.
             :math:`M_a` may be 0, for an FIR filter.
@@ -415,7 +413,7 @@ def lfilter(
             :attr:`b` or :attr:`a` is not 1-D or 2-D, :attr:`x` has more
             than 2 dimensions, :attr:`zi` is not 1-D or 2-D or is given to a
             form or backend that does not take it, ``unroll_factor`` is below
-            1, a batched :attr:`b` has a batch size other than 1 or that of
+            1, a batched :attr:`b` has a batch size other than that of
             :attr:`x`, or a non-empty :attr:`a` or :attr:`zi` has a dtype or
             device other than that of :attr:`x`. For an empty :attr:`a`, also
             if :attr:`b` has a dtype or device other than that of :attr:`x`.
@@ -444,8 +442,6 @@ def lfilter(
     squeeze_first = (
         (x.dim() == 1) & (b.dim() == 1) & (a.dim() == 1) & ((zi is None) or (zi.dim() == 1))
     )
-    if x.dim() == 2 and b.dim() == 2 and b.size(0) == 1:
-        b = b[0]  # a batch of one is shared by every signal
     if x.dim() == 1:
         x = x.unsqueeze(0)
     elif x.dim() != 2:
@@ -455,8 +451,7 @@ def lfilter(
         raise ValueError("Numerator coefficients b must be 1D or 2D.")
     if b.dim() == 2 and b.size(0) != x.size(0):
         raise ValueError(
-            "Batch size of b must be 1 or match batch size of x, "
-            f"got b: {b.size(0)}, x: {x.size(0)}"
+            f"Batch size of b must match batch size of x, got b: {b.size(0)}, x: {x.size(0)}"
         )
     if a.dim() not in (1, 2):
         raise ValueError("Denominator coefficients a must be 1D or 2D.")

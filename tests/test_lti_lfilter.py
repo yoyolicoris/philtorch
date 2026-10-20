@@ -953,18 +953,13 @@ def test_lfilter_every_input_gets_a_gradient(backend, form, num_taps, num_poles,
     _assert_every_input_gets_a_gradient(outputs, inputs)
 
 
-@pytest.mark.parametrize("x_shape", [(10,), (3, 10)])
-def test_lfilter_batched_b_that_fits_no_x_raises(x_shape: tuple[int, ...]):
-    # "df2" once returned (1, 10, 4) for an unbatched x, and "df1" and "tdf1"
-    # raised a RuntimeError; lfilter now checks before any form runs.
-    with pytest.raises(ValueError, match="Batch size of b must be 1 or match"):
-        lfilter(torch.randn(4, 2), 0.3 * torch.ones(1), torch.randn(x_shape))
-
-
-def test_lfilter_b_with_batch_of_one_is_shared():
-    # "df2" rejected it.
-    b, a, x = torch.randn(3), 0.3 * torch.ones(2), torch.randn(4, 12)
-    torch.testing.assert_close(lfilter(b[None], a, x), lfilter(b, a, x))
+@pytest.mark.parametrize("b_batch, x_shape", [(4, (10,)), (4, (3, 10)), (1, (3, 10))])
+def test_lfilter_batched_b_that_fits_no_x_raises(b_batch: int, x_shape: tuple[int, ...]):
+    # "df2" once returned (1, 10, 4) for an unbatched x, "df1" and "tdf1"
+    # raised a RuntimeError, and they broadcast a batch of one: lfilter now
+    # checks before any form runs.
+    with pytest.raises(ValueError, match="Batch size of b must match batch size of x"):
+        lfilter(torch.randn(b_batch, 2), 0.3 * torch.ones(1), torch.randn(x_shape), form="df1")
 
 
 def test_filtfilt_df2_empty_a_is_a_gain():

@@ -279,7 +279,9 @@ def lfilter(
     Raises:
         ValueError: if :attr:`x` has more than 2 dimensions, :attr:`form` or
             :attr:`backend` is unknown, :attr:`zi` is given with ``"df1"``
-            or ``"tdf1"``, or the other shapes do not match.
+            or ``"tdf1"``, a batched :attr:`b` or :attr:`a` has a batch size
+            other than that of a batched :attr:`x`, or the other shapes do
+            not match.
         NotImplementedError: for ``form="tdf2"`` with ``backend="torchlpc"``.
 
     Note:
@@ -301,6 +303,14 @@ def lfilter(
         (x.dim() == 1) & (b.dim() == 2) & (a.dim() == 2) & ((zi is None) or (zi.dim() == 1))
     )
 
+    if x.dim() == 2:
+        # Batched coefficients must match batched signals: none is broadcast.
+        for name, t in (("b", b), ("a", a)):
+            if t.dim() == 3 and t.size(0) != x.size(0):
+                raise ValueError(
+                    f"Batch size of {name} must match batch size of x, "
+                    f"got {name}: {t.size(0)}, x: {x.size(0)}"
+                )
     if x.dim() == 1:
         x = x.unsqueeze(0)
     elif x.dim() > 2:

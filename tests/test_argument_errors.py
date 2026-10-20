@@ -156,6 +156,17 @@ def test_kalman_rejects_bad_arguments(call, match):
             "number of time steps in b and a",
             id="torchlpc-b-time-mismatch",
         ),
+        # A batch of one isn't broadcast to a batched x: torchlpc did.
+        pytest.param(
+            lambda: lpv.lfilter(_ones(1, 4, 2), _zeros(4, 1), _ones(3, 4), backend="torchlpc"),
+            "Batch size of b must match batch size of x",
+            id="lfilter-b-batch-of-one",
+        ),
+        pytest.param(
+            lambda: lpv.lfilter(_ones(4, 2), _zeros(1, 4, 1), _ones(3, 4), backend="torchlpc"),
+            "Batch size of a must match batch size of x",
+            id="lfilter-a-batch-of-one",
+        ),
         pytest.param(
             lambda: lpv.lfilter(
                 _ones(4, 2), _zeros(4, 1), _ones(4), zi=_zeros(2), backend="torchlpc"
@@ -201,6 +212,11 @@ def test_lpv_filtering_rejects_bad_arguments(call, match):
             lambda: lpv.linear_recurrence(_zeros(4), _zeros(1, 1), _ones(1, 4), unroll_factor=2),
             "Initial state init must be 1D or 0D",
             id="init-2d",
+        ),
+        pytest.param(
+            lambda: lpv.linear_recurrence(_zeros(1, 4), _zeros(()), _ones(3, 4)),
+            "Batch size of a must match batch size of x",
+            id="a-batch-of-one",
         ),
     ],
 )
