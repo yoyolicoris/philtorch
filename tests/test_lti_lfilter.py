@@ -951,3 +951,38 @@ def test_lfilter_every_input_gets_a_gradient(backend, form, num_taps, num_poles,
         inputs.append(kwargs["zi"])
     outputs = lfilter(b, a, x, **kwargs)
     _assert_every_input_gets_a_gradient(outputs, inputs)
+
+
+@pytest.mark.parametrize("b_batch, x_shape", [(4, (10,)), (4, (3, 10)), (1, (3, 10))])
+def test_lfilter_batched_b_that_fits_no_x_raises(b_batch: int, x_shape: tuple[int, ...]):
+    # "df1" broadcast a batch of one, and raised a RuntimeError for the others.
+    with pytest.raises(ValueError, match="Batch size of b must match batch size of x"):
+        lfilter(torch.randn(b_batch, 2), 0.3 * torch.ones(1), torch.randn(x_shape), form="df1")
+
+
+def test_lfilter_diag_ssm_zi_that_fits_no_x_raises():
+    # "diag_ssm" raised a RuntimeError.
+    b, a, x = torch.ones(3), 0.3 * torch.ones(2), torch.randn(3, 10)
+    with pytest.raises(ValueError, match="Batch size of zi must match batch size of x"):
+        lfilter(b, a, x, torch.zeros(2, 2), backend="diag_ssm")
+
+
+def test_filtfilt_df2_empty_a_is_a_gain():
+    # lfilter_zi indexed the empty state of an empty a.
+    b = torch.randn(1, dtype=torch.float64)
+    x = torch.randn(2, 30, dtype=torch.float64)
+    y = filtfilt(b, torch.zeros(0, dtype=torch.float64), x, form="df2")
+    torch.testing.assert_close(y, b**2 * x)
+
+
+@pytest.mark.parametrize(
+    "b_dtype, a",
+    [(torch.float64, 0.3 * torch.ones(1)), (torch.float32, torch.zeros(0, dtype=torch.float64))],
+    ids=["a", "fir-b"],
+)
+def test_lfilter_mixed_dtypes_raise_a_value_error(b_dtype, a):
+    # a, or b when a is empty, of another dtype than x: "diag_ssm" promoted or
+    # raised a RuntimeError, where "ssm" raised this error.
+    b = torch.ones(3, dtype=b_dtype)
+    with pytest.raises(ValueError, match="share a dtype and a device"):
+        lfilter(b, a, torch.randn(10, dtype=torch.float64), backend="diag_ssm")

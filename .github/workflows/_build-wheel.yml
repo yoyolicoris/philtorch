@@ -31,7 +31,9 @@ jobs:
 
       - uses: actions/setup-python@v7
         with:
-          python-version: "3.x"
+          # The interpreter cibuildwheel runs on, not the wheels' (CIBW_BUILD):
+          # its pinned virtualenv can't seed pip on Python 3.15.
+          python-version: "3.13"
 
       - name: Install Homebrew dependencies for OpenMP (macOS)
         if: runner.os == 'macOS'

@@ -214,7 +214,7 @@ def lfilter_zi(a: Tensor, b: Tensor | None = None, transpose: bool = True) -> Te
         n = a.size(-1) + 1
         A = companion(a)
         B = a.new_zeros(n - 1)
-        B[0] = 1.0
+        B[:1] = 1.0  # a slice, as an empty a has no first state
     elif b is not None:
         if b.dim() < 1:
             raise ValueError("Numerator coefficients b must be at least 1D.")
@@ -413,13 +413,11 @@ def lfilter(
             :attr:`b` or :attr:`a` is not 1-D or 2-D, :attr:`x` has more
             than 2 dimensions, :attr:`zi` is not 1-D or 2-D or is given to a
             form or backend that does not take it, ``unroll_factor`` is below
-            1, or, with ``backend="ssm"``, a non-empty :attr:`a` or :attr:`zi`
-            has a dtype or device other than that of :attr:`x`. For a pure
-            gain (one coefficient in :attr:`b` and an empty :attr:`a`), also
-            if :attr:`b` has a dtype or device other than that of :attr:`x`,
-            if :attr:`zi` has states, or if a batched :attr:`b`, :attr:`a` or
-            :attr:`zi` does not match the batch size of :attr:`x`; the batch
-            check holds for any empty :attr:`a` with ``backend="diag_ssm"``.
+            1, a batched :attr:`b`, :attr:`a` or :attr:`zi` has a batch size
+            other than that of :attr:`x`, :attr:`a` (:attr:`b` when :attr:`a`
+            is empty) or :attr:`zi` has a dtype or device other than that of
+            :attr:`x`, or :attr:`zi` has states for a pure gain (one
+            coefficient in :attr:`b` and an empty :attr:`a`).
         TypeError: if a keyword argument is not one the backend takes, or
             ``unroll_factor`` is not an integer.
 
@@ -449,6 +447,20 @@ def lfilter(
         raise ValueError("Numerator coefficients b must be 1D or 2D.")
     if a.dim() not in (1, 2):
         raise ValueError("Denominator coefficients a must be 1D or 2D.")
+    for name, t in (("b", b), ("a", a), ("zi", zi)):
+        if t is not None and t.dim() == 2 and t.size(0) != x.size(0):
+            raise ValueError(
+                f"Batch size of {name} must match batch size of x, "
+                f"got {name}: {t.size(0)}, x: {x.size(0)}"
+            )
+    # a, or b when a is empty (an empty a holds no values), and zi must share
+    # x's dtype and device.
+    coeffs, name = (b, "b") if a.size(-1) == 0 else (a, "a")
+    if any(t is not None and (t.dtype != x.dtype or t.device != x.device) for t in (coeffs, zi)):
+        raise ValueError(
+            f"{name}, zi and x must share a dtype and a device, got "
+            f"{[(t.dtype, str(t.device)) for t in (coeffs, zi, x) if t is not None]}"
+        )
 
     match backend:
         case "ssm":
@@ -498,29 +510,6 @@ def _check_unroll_factor(kwargs: dict) -> None:
         ) from None
 
 
-def _check_dtypes_devices(b: Tensor, x: Tensor, zi: Tensor | None) -> None:
-    """Check that b and the state share x's dtype and device.
-
-    An empty ``a`` holds no values, so its dtype, such as the float32 of
-    ``torch.tensor([])``, does not matter.
-    """
-    if any(t is not None and (t.dtype != x.dtype or t.device != x.device) for t in (b, zi)):
-        raise ValueError(
-            "b, zi and x must share a dtype and a device, got "
-            f"{[(t.dtype, str(t.device)) for t in (b, zi, x) if t is not None]}"
-        )
-
-
-def _check_batch_sizes(b: Tensor, a: Tensor, x: Tensor, zi: Tensor | None) -> None:
-    """Check that batched coefficients and states match the batch size of x."""
-    for name, t in (("b", b), ("a", a), ("zi", zi)):
-        if t is not None and t.dim() == 2 and t.size(0) != x.size(0):
-            raise ValueError(
-                f"Batch size of {name} must match batch size of x, "
-                f"got {name}: {t.size(0)}, x: {x.size(0)}"
-            )
-
-
 def _ssm_lfilter(
     b: Tensor,
     a: Tensor,
@@ -541,12 +530,9 @@ def _ssm_lfilter(
     if a.size(-1) == 0 and form in ("df2", "tdf2", "df1", "tdf1"):
         # A pure gain has no state: the output is b0 * x, and the final state
         # is empty. The state-space functions of the general path would have
-        # checked the keyword arguments, unroll_factor, the dtypes and
-        # devices, and the batch sizes.
+        # checked the keyword arguments and unroll_factor.
         _check_kwargs(kwargs, _SSM_KWARGS)
         _check_unroll_factor(kwargs)
-        _check_dtypes_devices(b, x, zi)
-        _check_batch_sizes(b, a, x, zi)
         if zi is not None and zi.dim() not in (1, 2):
             raise ValueError(f"Initial conditions zi must be 1D or 2D, got {zi.shape}")
         if zi is not None and zi.size(-1) != 0:
@@ -631,11 +617,9 @@ def _diag_ssm_lfilter(
 
     if a.size(-1) == 0:
         # With no poles, the filter is the FIR filter b. The general path
-        # would have checked the keyword arguments, unroll_factor and the
-        # batch sizes.
+        # would have checked the keyword arguments and unroll_factor.
         _check_kwargs(kwargs, _DIAG_SSM_KWARGS)
         _check_unroll_factor(kwargs)
-        _check_batch_sizes(b, a, x, zi)
         if b.size(-1) == 0:
             # fir needs a tap: no coefficient means a zero filter, as with
             # backend="ssm", which pads b to len(a) + 1.

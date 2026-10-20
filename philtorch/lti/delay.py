@@ -45,6 +45,10 @@ def _initial_queues(
             raise TypeError(f"zi[{index}] must be a Tensor")
         if state.dim() not in (1, 2):
             raise ValueError(f"Initial delay state zi[{index}] must be 1D or 2D, got {state.shape}")
+        if state.dtype != x.dtype:
+            raise ValueError(
+                f"zi[{index}] must have the dtype of x, got {state.dtype}, x: {x.dtype}"
+            )
         if state.size(-1) != delay:
             raise ValueError(
                 f"Last dimension of zi[{index}] must match delay {delay}, got {state.size(-1)}"
@@ -313,6 +317,10 @@ def delay_state_space(
             f"Last dimension of x must match the number of delays when B is None, "
             f"got x: {x.size(-1)}, delays: {M}"
         )
+    matrices = {"A": A, "B": B, "C": C, "D": D}
+    if any(t is not None and t.dtype != x.dtype for t in matrices.values()):
+        got = ", ".join(f"{name}: {t.dtype}" for name, t in matrices.items() if t is not None)
+        raise ValueError(f"A, B, C and D must have the dtype of x, got {got}, x: {x.dtype}")
     Bx = _ssm_B(B, x, batch_size, M)
     if absorb:
         filter_A, filter_B, filter_D, K, absorption_state = _absorption_filters(

@@ -449,6 +449,23 @@ def test_delay_state_space_validates_initial_states(zi, error, message):
         delay_state_space(torch.zeros(2, 2), torch.zeros(2, 4), (2, 3), zi=zi)
 
 
+@pytest.mark.parametrize(
+    "kwargs",
+    [
+        pytest.param({"D": torch.ones(1, dtype=torch.float32)}, id="matrix"),
+        pytest.param(
+            {"zi": (torch.zeros(2, dtype=torch.float64), torch.zeros(3, dtype=torch.float32))},
+            id="zi",
+        ),
+    ],
+)
+def test_delay_state_space_rejects_other_dtypes_than_x(kwargs):
+    # The matmul would raise a RuntimeError, or the queues be promoted.
+    kwargs = {"A": torch.zeros(2, 2, dtype=torch.float64), **kwargs}
+    with pytest.raises(ValueError, match="dtype of x"):
+        delay_state_space(x=torch.zeros(2, 4, dtype=torch.float64), delays=(2, 3), **kwargs)
+
+
 # --- absorption filters ---------------------------------------------------
 
 POSITIONS = [False, True]
