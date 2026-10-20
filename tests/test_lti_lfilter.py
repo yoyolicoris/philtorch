@@ -955,11 +955,16 @@ def test_lfilter_every_input_gets_a_gradient(backend, form, num_taps, num_poles,
 
 @pytest.mark.parametrize("b_batch, x_shape", [(4, (10,)), (4, (3, 10)), (1, (3, 10))])
 def test_lfilter_batched_b_that_fits_no_x_raises(b_batch: int, x_shape: tuple[int, ...]):
-    # "df2" once returned (1, 10, 4) for an unbatched x, "df1" and "tdf1"
-    # raised a RuntimeError, and they broadcast a batch of one: lfilter now
-    # checks before any form runs.
+    # "df1" broadcast a batch of one, and raised a RuntimeError for the others.
     with pytest.raises(ValueError, match="Batch size of b must match batch size of x"):
         lfilter(torch.randn(b_batch, 2), 0.3 * torch.ones(1), torch.randn(x_shape), form="df1")
+
+
+def test_lfilter_diag_ssm_zi_that_fits_no_x_raises():
+    # "diag_ssm" raised a RuntimeError.
+    b, a, x = torch.ones(3), 0.3 * torch.ones(2), torch.randn(3, 10)
+    with pytest.raises(ValueError, match="Batch size of zi must match batch size of x"):
+        lfilter(b, a, x, torch.zeros(2, 2), backend="diag_ssm")
 
 
 def test_filtfilt_df2_empty_a_is_a_gain():

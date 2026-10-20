@@ -7,7 +7,7 @@ Guidance for coding agents working in this repository. It is the one shared sour
 Agree on the task with the maintainer before carrying it out. Where the request leaves its details, scope or changes open, ask: don't assume the maintainer sees it the way you do, and don't settle it yourself by building on a guess. Questions are welcome; a question costs less than work done on the wrong reading. Ask in particular before:
 
 - widening or narrowing the scope, or adding work that wasn't asked for;
-- changing behaviour users see, such as the dtypes, devices or shapes a function takes;
+- changing behaviour users see, such as the dtypes, devices or shapes a function takes, even in a run the maintainer left to you: ask, or leave the change out, rather than decide it and mention it in a report;
 - renaming, moving or deleting files or public names;
 - choosing between designs with real trade-offs: give the options and a recommendation, and let the maintainer decide.
 
@@ -80,7 +80,7 @@ Benchmarks live in `benchmarks/` and run as `pixi run python benchmarks/<name>.p
 ## Conventions
 
 - **Coefficients:** the denominator `a` excludes `a0`, so SciPy-equivalent calls prepend `1.0` (in tests, `[1.0] + a.tolist()`). `lfilter_zi` takes `(a, b)`, the reverse of SciPy's order.
-- **Shapes:** LTI functions take static coefficients, e.g. `(N,)` or `(B, N)`. LPV functions take time-varying ones, e.g. `(B, T, M)`. The alignment and estimation APIs are batch first: `(B, T, C)`, not PyTorch's `(T, B, C)`.
+- **Shapes:** LTI functions take static coefficients, e.g. `(N,)` or `(B, N)`. LPV functions take time-varying ones, e.g. `(B, T, M)`. The alignment and estimation APIs are batch first: `(B, T, C)`, not PyTorch's `(T, B, C)`. A function takes exactly the shapes its docstring lists: a batched coefficient (`b`, `a`) has the batch size of `x`, never a batch of one broadcast to it. Code that accepts an unlisted shape is a bug to report, not a feature to keep.
 - **Choices are explicit arguments:**
   - filter forms: `df2`, `tdf2`, `df1`, `tdf1`;
   - LTI `lfilter` backends: `"ssm"`, `"diag_ssm"`;

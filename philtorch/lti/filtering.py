@@ -413,15 +413,11 @@ def lfilter(
             :attr:`b` or :attr:`a` is not 1-D or 2-D, :attr:`x` has more
             than 2 dimensions, :attr:`zi` is not 1-D or 2-D or is given to a
             form or backend that does not take it, ``unroll_factor`` is below
-            1, a batched :attr:`b` has a batch size other than that of
-            :attr:`x`, or a non-empty :attr:`a` or :attr:`zi` has a dtype or
-            device other than that of :attr:`x`. For an empty :attr:`a`, also
-            if :attr:`b` has a dtype or device other than that of :attr:`x`.
-            For a pure gain (one coefficient in :attr:`b` and an empty
-            :attr:`a`), and for any empty :attr:`a` with
-            ``backend="diag_ssm"``, also if a batched :attr:`a` or :attr:`zi`
-            does not match the batch size of :attr:`x`; for a pure gain, also
-            if :attr:`zi` has states.
+            1, a batched :attr:`b`, :attr:`a` or :attr:`zi` has a batch size
+            other than that of :attr:`x`, :attr:`a` (:attr:`b` when :attr:`a`
+            is empty) or :attr:`zi` has a dtype or device other than that of
+            :attr:`x`, or :attr:`zi` has states for a pure gain (one
+            coefficient in :attr:`b` and an empty :attr:`a`).
         TypeError: if a keyword argument is not one the backend takes, or
             ``unroll_factor`` is not an integer.
 
@@ -449,12 +445,14 @@ def lfilter(
 
     if b.dim() not in (1, 2):
         raise ValueError("Numerator coefficients b must be 1D or 2D.")
-    if b.dim() == 2 and b.size(0) != x.size(0):
-        raise ValueError(
-            f"Batch size of b must match batch size of x, got b: {b.size(0)}, x: {x.size(0)}"
-        )
     if a.dim() not in (1, 2):
         raise ValueError("Denominator coefficients a must be 1D or 2D.")
+    for name, t in (("b", b), ("a", a), ("zi", zi)):
+        if t is not None and t.dim() == 2 and t.size(0) != x.size(0):
+            raise ValueError(
+                f"Batch size of {name} must match batch size of x, "
+                f"got {name}: {t.size(0)}, x: {x.size(0)}"
+            )
     # a, or b when a is empty (an empty a holds no values), and zi must share
     # x's dtype and device.
     coeffs, name = (b, "b") if a.size(-1) == 0 else (a, "a")
@@ -512,16 +510,6 @@ def _check_unroll_factor(kwargs: dict) -> None:
         ) from None
 
 
-def _check_batch_sizes(a: Tensor, x: Tensor, zi: Tensor | None) -> None:
-    """Check that a batched a and zi match x's batch size; lfilter checks b."""
-    for name, t in (("a", a), ("zi", zi)):
-        if t is not None and t.dim() == 2 and t.size(0) != x.size(0):
-            raise ValueError(
-                f"Batch size of {name} must match batch size of x, "
-                f"got {name}: {t.size(0)}, x: {x.size(0)}"
-            )
-
-
 def _ssm_lfilter(
     b: Tensor,
     a: Tensor,
@@ -542,10 +530,9 @@ def _ssm_lfilter(
     if a.size(-1) == 0 and form in ("df2", "tdf2", "df1", "tdf1"):
         # A pure gain has no state: the output is b0 * x, and the final state
         # is empty. The state-space functions of the general path would have
-        # checked the keyword arguments, unroll_factor and the batch sizes.
+        # checked the keyword arguments and unroll_factor.
         _check_kwargs(kwargs, _SSM_KWARGS)
         _check_unroll_factor(kwargs)
-        _check_batch_sizes(a, x, zi)
         if zi is not None and zi.dim() not in (1, 2):
             raise ValueError(f"Initial conditions zi must be 1D or 2D, got {zi.shape}")
         if zi is not None and zi.size(-1) != 0:
@@ -630,11 +617,9 @@ def _diag_ssm_lfilter(
 
     if a.size(-1) == 0:
         # With no poles, the filter is the FIR filter b. The general path
-        # would have checked the keyword arguments, unroll_factor and the
-        # batch sizes.
+        # would have checked the keyword arguments and unroll_factor.
         _check_kwargs(kwargs, _DIAG_SSM_KWARGS)
         _check_unroll_factor(kwargs)
-        _check_batch_sizes(a, x, zi)
         if b.size(-1) == 0:
             # fir needs a tap: no coefficient means a zero filter, as with
             # backend="ssm", which pads b to len(a) + 1.
