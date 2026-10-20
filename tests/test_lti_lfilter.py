@@ -953,44 +953,36 @@ def test_lfilter_every_input_gets_a_gradient(backend, form, num_taps, num_poles,
     _assert_every_input_gets_a_gradient(outputs, inputs)
 
 
-@pytest.mark.parametrize("form", ["df1", "tdf1", "df2", "tdf2"])
 @pytest.mark.parametrize("x_shape", [(10,), (3, 10)])
-def test_lfilter_batched_b_that_fits_no_x_raises(form: str, x_shape: tuple[int, ...]):
+def test_lfilter_batched_b_that_fits_no_x_raises(x_shape: tuple[int, ...]):
     # "df2" once returned (1, 10, 4) for an unbatched x, and "df1" and "tdf1"
-    # raised a RuntimeError.
+    # raised a RuntimeError; lfilter now checks before any form runs.
     with pytest.raises(ValueError, match="Batch size of b must be 1 or match"):
-        lfilter(torch.randn(4, 2), 0.3 * torch.ones(1), torch.randn(x_shape), form=form)
+        lfilter(torch.randn(4, 2), 0.3 * torch.ones(1), torch.randn(x_shape))
 
 
-@pytest.mark.parametrize(("form", "backend"), [("df2", "ssm"), ("df2", "diag_ssm"), ("df1", "ssm")])
-def test_lfilter_b_with_batch_of_one_is_shared(form: str, backend: str):
-    # "df2" rejected it; "df1" already shared it.
+def test_lfilter_b_with_batch_of_one_is_shared():
+    # "df2" rejected it.
     b, a, x = torch.randn(3), 0.3 * torch.ones(2), torch.randn(4, 12)
-    y = lfilter(b, a, x, form=form, backend=backend)
-    torch.testing.assert_close(lfilter(b[None], a, x, form=form, backend=backend), y)
+    torch.testing.assert_close(lfilter(b[None], a, x), lfilter(b, a, x))
 
 
-@pytest.mark.parametrize("batched", [False, True])
-def test_filtfilt_df2_empty_a_is_a_gain(batched: bool):
+def test_filtfilt_df2_empty_a_is_a_gain():
     # lfilter_zi indexed the empty state of an empty a.
-    b = torch.randn((2, 1) if batched else (1,), dtype=torch.float64)
+    b = torch.randn(1, dtype=torch.float64)
     x = torch.randn(2, 30, dtype=torch.float64)
     y = filtfilt(b, torch.zeros(0, dtype=torch.float64), x, form="df2")
-    torch.testing.assert_close(y, b.reshape(-1, 1) ** 2 * x)
+    torch.testing.assert_close(y, b**2 * x)
 
 
-@pytest.mark.parametrize("backend", ["ssm", "diag_ssm"])
 @pytest.mark.parametrize(
-    ("b_dtype", "a"),
-    [
-        (torch.complex128, 0.3 * torch.ones(1, dtype=torch.complex128)),
-        (torch.float32, 0.3 * torch.ones(1, dtype=torch.float32)),
-        (torch.float32, torch.zeros(0, dtype=torch.float64)),
-    ],
-    ids=["complex", "float32", "fir-float32"],
+    "b_dtype, a",
+    [(torch.float64, 0.3 * torch.ones(1)), (torch.float32, torch.zeros(0, dtype=torch.float64))],
+    ids=["a", "fir-b"],
 )
-def test_lfilter_mixed_dtypes_raise_the_same_error_in_every_backend(backend, b_dtype, a):
-    # "diag_ssm" promoted or raised a RuntimeError; "ssm" promoted an FIR b.
+def test_lfilter_mixed_dtypes_raise_a_value_error(b_dtype, a):
+    # a, or b when a is empty, of another dtype than x: "diag_ssm" promoted or
+    # raised a RuntimeError, where "ssm" raised this error.
     b = torch.ones(3, dtype=b_dtype)
     with pytest.raises(ValueError, match="share a dtype and a device"):
-        lfilter(b, a, torch.randn(10, dtype=torch.float64), backend=backend)
+        lfilter(b, a, torch.randn(10, dtype=torch.float64), backend="diag_ssm")

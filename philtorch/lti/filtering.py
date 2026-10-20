@@ -444,7 +444,8 @@ def lfilter(
     squeeze_first = (
         (x.dim() == 1) & (b.dim() == 1) & (a.dim() == 1) & ((zi is None) or (zi.dim() == 1))
     )
-    batched_x = x.dim() == 2
+    if x.dim() == 2 and b.dim() == 2 and b.size(0) == 1:
+        b = b[0]  # a batch of one is shared by every signal
     if x.dim() == 1:
         x = x.unsqueeze(0)
     elif x.dim() != 2:
@@ -452,8 +453,6 @@ def lfilter(
 
     if b.dim() not in (1, 2):
         raise ValueError("Numerator coefficients b must be 1D or 2D.")
-    if batched_x and b.dim() == 2 and b.size(0) == 1:
-        b = b[0]  # a batch of one is shared by every signal
     if b.dim() == 2 and b.size(0) != x.size(0):
         raise ValueError(
             "Batch size of b must be 1 or match batch size of x, "
@@ -461,9 +460,14 @@ def lfilter(
         )
     if a.dim() not in (1, 2):
         raise ValueError("Denominator coefficients a must be 1D or 2D.")
-    # The filter's coefficients, b for an empty a, and zi must match x.
-    fir = a.size(-1) == 0
-    _check_dtypes_devices(b if fir else a, x, zi, "b" if fir else "a")
+    # a, or b when a is empty (an empty a holds no values), and zi must share
+    # x's dtype and device.
+    coeffs, name = (b, "b") if a.size(-1) == 0 else (a, "a")
+    if any(t is not None and (t.dtype != x.dtype or t.device != x.device) for t in (coeffs, zi)):
+        raise ValueError(
+            f"{name}, zi and x must share a dtype and a device, got "
+            f"{[(t.dtype, str(t.device)) for t in (coeffs, zi, x) if t is not None]}"
+        )
 
     match backend:
         case "ssm":
@@ -513,22 +517,9 @@ def _check_unroll_factor(kwargs: dict) -> None:
         ) from None
 
 
-def _check_dtypes_devices(coeffs: Tensor, x: Tensor, zi: Tensor | None, name: str) -> None:
-    """Check that the coefficients ``name`` and zi share x's dtype and device.
-
-    An empty ``a`` holds no values, so its dtype, such as the float32 of
-    ``torch.tensor([])``, does not matter: ``b`` is checked instead.
-    """
-    if any(t is not None and (t.dtype != x.dtype or t.device != x.device) for t in (coeffs, zi)):
-        raise ValueError(
-            f"{name}, zi and x must share a dtype and a device, got "
-            f"{[(t.dtype, str(t.device)) for t in (coeffs, zi, x) if t is not None]}"
-        )
-
-
-def _check_batch_sizes(b: Tensor, a: Tensor, x: Tensor, zi: Tensor | None) -> None:
-    """Check that batched coefficients and states match the batch size of x."""
-    for name, t in (("b", b), ("a", a), ("zi", zi)):
+def _check_batch_sizes(a: Tensor, x: Tensor, zi: Tensor | None) -> None:
+    """Check that a batched a and zi match x's batch size; lfilter checks b."""
+    for name, t in (("a", a), ("zi", zi)):
         if t is not None and t.dim() == 2 and t.size(0) != x.size(0):
             raise ValueError(
                 f"Batch size of {name} must match batch size of x, "
@@ -559,7 +550,7 @@ def _ssm_lfilter(
         # checked the keyword arguments, unroll_factor and the batch sizes.
         _check_kwargs(kwargs, _SSM_KWARGS)
         _check_unroll_factor(kwargs)
-        _check_batch_sizes(b, a, x, zi)
+        _check_batch_sizes(a, x, zi)
         if zi is not None and zi.dim() not in (1, 2):
             raise ValueError(f"Initial conditions zi must be 1D or 2D, got {zi.shape}")
         if zi is not None and zi.size(-1) != 0:
@@ -648,7 +639,7 @@ def _diag_ssm_lfilter(
         # batch sizes.
         _check_kwargs(kwargs, _DIAG_SSM_KWARGS)
         _check_unroll_factor(kwargs)
-        _check_batch_sizes(b, a, x, zi)
+        _check_batch_sizes(a, x, zi)
         if b.size(-1) == 0:
             # fir needs a tap: no coefficient means a zero filter, as with
             # backend="ssm", which pads b to len(a) + 1.
