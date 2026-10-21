@@ -259,6 +259,26 @@ def test_hmm_em_step_is_baum_welch():
     assert bool((history.diff() >= -1e-9).all())
 
 
+@pytest.mark.cuda
+def test_hmm_em_step_gradients():
+    log_emit, log_trans, log_init = _model(2, 5, 3, time_varying=False)
+
+    def flat(*inputs):
+        log_likelihood, (new_trans, new_init), posteriors = hmm_em_step(*inputs)
+        return log_likelihood, new_trans, new_init, posteriors
+
+    inputs = (log_emit, log_trans, log_init[0])
+    torch.autograd.gradcheck(flat, tuple(x.clone().requires_grad_() for x in inputs))
+    # An impossible transition stays impossible, with finite gradients.
+    log_trans = log_trans.clone()
+    log_trans[0, 1] = float("-inf")
+    inputs = tuple(x.clone().requires_grad_() for x in (log_emit, log_trans, log_init[0]))
+    _, (new_trans, _), _ = hmm_em_step(*inputs)
+    assert new_trans[0, 1] == float("-inf")
+    new_trans.exp().sum().backward()
+    assert all(x.grad.isfinite().all() for x in inputs)
+
+
 def test_estimation_imports_without_triton(tmp_path):
     # The kernels are imported on first use, so the Kalman functions, and
     # the package, still import where Triton is missing. Run outside the

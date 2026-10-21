@@ -84,6 +84,12 @@ def _logsumexp(x: Tensor, dim: int, keepdim: bool = False) -> Tensor:
     return out if keepdim else out.squeeze(dim)
 
 
+def _log(x: Tensor) -> Tensor:
+    """The log of x >= 0, with a zero gradient, not NaN, where x is 0."""
+    positive = x > 0
+    return torch.where(positive, torch.where(positive, x, 1).log(), float("-inf"))
+
+
 # The transition gradient's sum over the batch and time runs over blocks of
 # this many terms in parallel, then over the blocks.
 _REDUCE_BLOCK = 256
@@ -514,7 +520,8 @@ def hmm_em_step(
 
     The emissions belong to the caller: the state posteriors, the gradient
     with respect to :attr:`log_emit`, are returned to re-estimate their model.
-    The results are not differentiable. To iterate, pass the step to
+    The results are differentiable to any order in reverse mode, as those
+    of :func:`hmm_filter` are. To iterate, pass the step to
     :func:`em`, e.g. ``em(lambda t, i: hmm_em_step(log_emit, t, i)[:2],
     (log_trans, log_init))``.
 
@@ -552,12 +559,17 @@ def hmm_em_step(
             f"log_trans must be (K, K) and log_init (K), got {tuple(log_trans.shape)} "
             f"and {tuple(log_init.shape)}"
         )
+    inputs = (log_emit, log_trans, log_init)
+    differentiable = torch.is_grad_enabled() and any(x.requires_grad for x in inputs)
     with torch.enable_grad():
-        emit, trans, init = (x.detach().requires_grad_() for x in (log_emit, log_trans, log_init))
+        emit, trans, init = (x if x.requires_grad else x.detach().requires_grad_() for x in inputs)
         log_likelihood, _ = hmm_filter(emit, trans, init)
         # Fisher's identity: the gradients are the expected counts and posteriors.
-        counts, starts, posteriors = torch.autograd.grad(log_likelihood.sum(), (trans, init, emit))
+        counts, starts, posteriors = torch.autograd.grad(
+            log_likelihood.sum(), (trans, init, emit), create_graph=differentiable
+        )
+    if not differentiable:
+        log_likelihood = log_likelihood.detach()
     rows = counts.sum(-1, keepdim=True)
-    new_trans = torch.where(rows > 0, counts.log() - rows.log(), log_trans.detach())
-    new_init = (starts / log_emit.size(0)).log()
-    return log_likelihood.detach(), (new_trans, new_init), posteriors
+    new_trans = torch.where(rows > 0, _log(counts) - _log(rows), log_trans)
+    return log_likelihood, (new_trans, _log(starts / log_emit.size(0))), posteriors
