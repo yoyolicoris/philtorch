@@ -321,14 +321,11 @@ def kalman_filter(
     in its generic mode, which needs PyTorch 2.11 or later.
 
     Each of :attr:`A`, :attr:`C`, :attr:`Q` and :attr:`R` may be constant or
-    time-varying, and shared or one per signal: its base shape below can be
-    prefixed with its number of steps :math:`T` (:math:`N` for :attr:`C` and
-    :attr:`R`, :math:`N - 1` for :attr:`A` and :attr:`Q`) for time-varying
-    values, :math:`B` for one per signal, or :math:`(B, T)` for both. When
-    two readings fit, such as :math:`T = B`, the time-varying one is taken.
-    Even with constant matrices, the Kalman gain varies over time. Complex
-    tensors describe circularly symmetric complex Gaussian noise, with
-    conjugate transposes in place of transposes.
+    time-varying, and shared or one per signal, as listed below. When a 3-D
+    one fits both readings, as when :math:`B` equals its number of steps, it
+    is taken as time-varying. Even with constant matrices, the Kalman gain
+    varies over time. Complex tensors describe circularly symmetric complex
+    Gaussian noise, with conjugate transposes in place of transposes.
 
     Note:
         Known inputs need no extra arguments. For
@@ -369,11 +366,18 @@ def kalman_filter(
         y (Tensor): measurements :math:`\mathbf{y}[n]`, of shape
             :math:`(B, N, P)`.
         A (Tensor): state transition matrices, each taking a state to the
-            next, of base shape :math:`(M, M)`.
-        C (Tensor): measurement matrices, of base shape :math:`(P, M)`.
-        Q (Tensor): process noise covariances, of base shape :math:`(M, M)`.
-        R (Tensor): measurement noise covariances, of base shape
-            :math:`(P, P)`.
+            next: shared, of shape :math:`(M, M)`; per step,
+            :math:`(N - 1, M, M)`; per signal, :math:`(B, M, M)`; or both,
+            :math:`(B, N - 1, M, M)`.
+        C (Tensor): measurement matrices: shared, of shape :math:`(P, M)`;
+            per step, :math:`(N, P, M)`; per signal, :math:`(B, P, M)`; or
+            both, :math:`(B, N, P, M)`.
+        Q (Tensor): process noise covariances: shared, of shape
+            :math:`(M, M)`; per step, :math:`(N - 1, M, M)`; per signal,
+            :math:`(B, M, M)`; or both, :math:`(B, N - 1, M, M)`.
+        R (Tensor): measurement noise covariances: shared, of shape
+            :math:`(P, P)`; per step, :math:`(N, P, P)`; per signal,
+            :math:`(B, P, P)`; or both, :math:`(B, N, P, P)`.
         m0 (Tensor): the prior mean of :math:`\mathbf{x}[0]`, of shape
             :math:`(M)` or :math:`(B, M)`.
         P0 (Tensor): the prior covariance of :math:`\mathbf{x}[0]`, of shape
@@ -435,11 +439,18 @@ def kalman_smoother(
         y (Tensor): measurements :math:`\mathbf{y}[n]`, of shape
             :math:`(B, N, P)`.
         A (Tensor): state transition matrices, each taking a state to the
-            next, of base shape :math:`(M, M)`.
-        C (Tensor): measurement matrices, of base shape :math:`(P, M)`.
-        Q (Tensor): process noise covariances, of base shape :math:`(M, M)`.
-        R (Tensor): measurement noise covariances, of base shape
-            :math:`(P, P)`.
+            next: shared, of shape :math:`(M, M)`; per step,
+            :math:`(N - 1, M, M)`; per signal, :math:`(B, M, M)`; or both,
+            :math:`(B, N - 1, M, M)`.
+        C (Tensor): measurement matrices: shared, of shape :math:`(P, M)`;
+            per step, :math:`(N, P, M)`; per signal, :math:`(B, P, M)`; or
+            both, :math:`(B, N, P, M)`.
+        Q (Tensor): process noise covariances: shared, of shape
+            :math:`(M, M)`; per step, :math:`(N - 1, M, M)`; per signal,
+            :math:`(B, M, M)`; or both, :math:`(B, N - 1, M, M)`.
+        R (Tensor): measurement noise covariances: shared, of shape
+            :math:`(P, P)`; per step, :math:`(N, P, P)`; per signal,
+            :math:`(B, P, P)`; or both, :math:`(B, N, P, P)`.
         m0 (Tensor): the prior mean of :math:`\mathbf{x}[0]`, of shape
             :math:`(M)` or :math:`(B, M)`.
         P0 (Tensor): the prior covariance of :math:`\mathbf{x}[0]`, of shape
