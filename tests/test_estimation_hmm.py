@@ -272,6 +272,22 @@ def test_hmm_em_step_per_signal_parameters():
 
 
 @pytest.mark.cuda
+def test_hmm_em_step_counts_are_partial_derivatives():
+    # Dependent inputs: log_init a row of log_trans, then a second step's
+    # parameters functions of log_emit. Neither dependency may enter the counts.
+    log_emit, log_trans, _ = _model(2, 5, 3, time_varying=False)
+    log_emit, log_trans = (x.clone().requires_grad_() for x in (log_emit, log_trans))
+    first = hmm_em_step(log_emit, log_trans, log_trans[0])
+    _, (trans, init), _ = first
+    second = hmm_em_step(log_emit, trans, init)
+    for results, inputs in (
+        (first, (log_emit, log_trans, log_trans[0])),
+        (second, (log_emit, trans, init)),
+    ):
+        torch.testing.assert_close(results, hmm_em_step(*(x.detach() for x in inputs)))
+
+
+@pytest.mark.cuda
 def test_hmm_em_step_gradients():
     log_emit, log_trans, log_init = _model(2, 5, 3, time_varying=False)
 

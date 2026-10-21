@@ -38,10 +38,10 @@ from .._triton import check_cuda_triton
 
 
 def _parse(
-    name: str, log_emit: Tensor, log_trans: Tensor, log_init: Tensor
+    name: str, log_emit: Tensor, log_trans: Tensor, log_init: Tensor, per_signal: bool = False
 ) -> tuple[Tensor, Tensor, Tensor]:
     """Validate the model; return log_emit, log_trans as (1 or B, 1 or N - 1, K, K), and
-    log_init as (B, K)."""
+    log_init as (B, K). With per_signal, a 3-D log_trans is never read per step."""
     if log_emit.dim() != 3:
         raise ValueError(f"log_emit must be (B, N, K), got {tuple(log_emit.shape)}")
     batch_size, N, K = log_emit.shape
@@ -50,7 +50,7 @@ def _parse(
         case 2:
             log_trans = log_trans[None, None]
         # Per step before per signal when both fit, as in kalman_filter.
-        case 3 if log_trans.size(0) == transitions:
+        case 3 if log_trans.size(0) == transitions and not per_signal:
             log_trans = log_trans[None]
         case 3 if log_trans.size(0) == batch_size:
             log_trans = log_trans[:, None]
@@ -573,10 +573,13 @@ def hmm_em_step(
     inputs = (log_emit, log_trans, log_init)
     differentiable = torch.is_grad_enabled() and any(x.requires_grad for x in inputs)
     with torch.enable_grad():
-        emit, trans, init = (x if x.requires_grad else x.detach().requires_grad_() for x in inputs)
-        # A per-signal (B, K, K) would be read as per step when B == N - 1.
-        steps = trans if trans.dim() == 2 else trans[:, None].expand(-1, emit.size(1) - 1, -1, -1)
-        log_likelihood, _ = hmm_filter(emit, steps, init)
+        # Fresh views, so that the gradients are partial derivatives even when
+        # one input depends on another.
+        emit, trans, init = (
+            x.view_as(x) if x.requires_grad else x.detach().requires_grad_() for x in inputs
+        )
+        e, t, i = _parse("hmm_em_step", emit, trans, init, per_signal=True)
+        log_likelihood = _logsumexp(_LogChain.apply(i, t, e[:, :-1])[:, -1] + e[:, -1], dim=-1)
         # Fisher's identity: the gradients are the expected counts and posteriors.
         counts, starts, posteriors = torch.autograd.grad(
             log_likelihood.sum(), (trans, init, emit), create_graph=differentiable
