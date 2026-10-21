@@ -203,7 +203,6 @@ def dtw(
     .. _Parallelizing Dynamic Time Warping Algorithm Using Prefix Computations on GPU:
         https://doi.org/10.1109/HPCC.and.EUC.2013.50
     """
-    _check_features("dtw", cost, x, y)
     _validate("dtw", cost, x, y, step_pattern, diagonal_weight, lengths)
     return _dtw(cost, x, y, gamma, step_pattern, diagonal_weight, lengths, band)[0]
 
@@ -218,6 +217,7 @@ def _validate(
     lengths: tuple[Tensor, Tensor] | None,
 ) -> tuple[int, int, int]:
     """Checks the arguments; returns the shape (B, N, M) of the costs."""
+    _check_features(name, cost, x, y)
     if cost is None:
         shape = (x.size(0), x.size(1), y.size(1))
     elif cost.dim() != 3:
@@ -386,7 +386,6 @@ def dtw_path(
                 [-1, -1],
                 [-1, -1]], device='cuda:0')
     """
-    _check_features("dtw_path", cost, x, y)
     B, N, M = _validate("dtw_path", cost, x, y, step_pattern, diagonal_weight, lengths)
     distance, grid = _dtw(cost, x, y, 0.0, step_pattern, diagonal_weight, lengths, band)
     path = torch.full((B, N + M - 1, 2), -1, dtype=torch.long, device=distance.device)
