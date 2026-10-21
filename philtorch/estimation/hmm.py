@@ -502,7 +502,7 @@ def hmm_viterbi(log_emit: Tensor, log_trans: Tensor, log_init: Tensor) -> tuple[
         RuntimeError: if Triton is not installed.
 
     .. _On the Temporal Parallelisation of the Viterbi Algorithm:
-        https://users.aalto.fi/~ssarkka/pub/eusipco_2023_viterbi.pdf
+        https://doi.org/10.23919/EUSIPCO58844.2023.10289998
     """
     log_emit, log_trans, log_init = _parse("hmm_viterbi", log_emit, log_trans, log_init)
     batch_size, N, _ = log_emit.shape
