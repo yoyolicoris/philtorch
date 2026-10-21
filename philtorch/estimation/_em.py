@@ -23,8 +23,8 @@ def em(
     Args:
         step (Callable): one step of expectation-maximization.
         params (tuple): the initial parameters.
-        max_iter (int): the most steps to run. Default: 100.
-        tol (float): the least rise of the log-likelihood to go on.
+        max_iter (int, optional): the most steps to run. Default: 100.
+        tol (float, optional): the least rise of the log-likelihood to go on.
             Default: 1e-6.
 
     Returns:
@@ -41,7 +41,9 @@ def em(
         >>> y = torch.randn(4, 50, 1, dtype=torch.float64)
         >>> one = torch.ones(1, 1, dtype=torch.float64)
         >>> m0 = torch.zeros(1, dtype=torch.float64)
-        >>> params, history = em(partial(kalman_em_step, y), (one, one, one, one, m0, one))
+        >>> params, history = em(
+        ...     partial(kalman_em_step, y), (one, one, one, one, m0, one)
+        ... )
         >>> bool((history.diff() >= 0).all())
         True
     """

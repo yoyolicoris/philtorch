@@ -346,7 +346,7 @@ def _predicted_and_backward(
 
 
 def hmm_filter(log_emit: Tensor, log_trans: Tensor, log_init: Tensor) -> tuple[Tensor, Tensor]:
-    r"""Filter a hidden Markov model: its log-likelihood and filtered state probabilities.
+    r"""Filter a hidden Markov model: its log-likelihood and filtered posteriors.
 
     For a hidden Markov model with states :math:`z[0], \dots, z[N - 1]` and
     measurements :math:`y[0], \dots, y[N - 1]`, where :math:`y[n]` is emitted

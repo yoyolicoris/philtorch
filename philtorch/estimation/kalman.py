@@ -335,7 +335,7 @@ def kalman_filter(
         \mathbf{d}[n] + \mathbf{v}[n]`, filter the part of the state that
         :math:`\mathbf{u}` doesn't drive, then add the part it does, which
         :func:`~philtorch.lpv.state_space_recursion` computes from zero. With
-        :attr:`u` of shape :math:`(B, N - 1, M)`, :attr:`d` of shape
+        ``u`` of shape :math:`(B, N - 1, M)`, ``d`` of shape
         :math:`(B, N, P)`, and :attr:`A` and :attr:`C` expanded to their full
         shapes :math:`(B, N - 1, M, M)` and :math:`(B, N, P, M)`, such as
         ``A.expand(B, N - 1, M, M)`` for a constant :attr:`A`::
