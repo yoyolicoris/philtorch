@@ -218,6 +218,15 @@ def _dtw_backtrack_calls():
     return _recorded_calls(_dtw_kernels, "backtrack", lambda: dtw_path(cost))
 
 
+def _dtw_linear_path_calls():
+    # The path search of DTW from frames, for its gradient.
+    from philtorch.align import dtw
+
+    module = importlib.import_module("philtorch.align.dtw")
+    x, y = (torch.rand(2, n, 3, device="cuda", requires_grad=True) for n in (9, 6))
+    return _recorded_calls(module, "linear_path", lambda: dtw(x=x, y=y).sum().backward())
+
+
 def _hmm_viterbi_chain_calls():
     from philtorch.estimation import hmm_viterbi
 
@@ -287,6 +296,7 @@ def _weighted_contract_calls():
         ),
         pytest.param("dtw_frontier", _dtw_frontier_calls, id="dtw_frontier"),
         pytest.param("dtw_grid_cost", _dtw_grid_cost_calls, id="dtw_grid_cost"),
+        pytest.param("dtw_linear_path", _dtw_linear_path_calls, id="dtw_linear_path"),
         pytest.param("hmm_viterbi_chain", _hmm_viterbi_chain_calls, id="hmm_viterbi_chain"),
         pytest.param("weighted_contract", _weighted_contract_calls, id="weighted_contract"),
     ],
@@ -325,6 +335,13 @@ def _soft_dtw_band(x):
     return dtw(x=x, y=x[:, :20].flip(1), gamma=0.5, band=4.0).sum()
 
 
+def _dtw_features(x):
+    # DTW from frames with gradients: the path's search is an op.
+    from philtorch.align import dtw
+
+    return dtw(x=x, y=x[:, :20].flip(1)).sum()
+
+
 def _dtw(gamma, **options):
     def loss(cost):
         from philtorch.align import dtw
@@ -346,6 +363,7 @@ _LENGTHS = (torch.tensor([6, 4]), torch.tensor([5, 3]))
         pytest.param(_dtw(0.1, lengths=_LENGTHS), (2, 6, 5), id="soft_dtw-lengths"),
         pytest.param(_dtw(0.1, step_pattern="asymmetric"), (2, 6, 5), id="soft_dtw-asymmetric"),
         pytest.param(_soft_dtw_band, (2, 30, 3), id="soft_dtw-band"),
+        pytest.param(_dtw_features, (2, 30, 3), id="dtw-features"),
         pytest.param(_soft_dtw_divergence, (2, 7, 3), id="soft_dtw_divergence"),
         pytest.param(_ctc_loss, (2, 7, 4), id="ctc_loss"),
         pytest.param(_ctc_loss_tensor_lengths, (2, 7, 4), id="ctc_loss-tensor_lengths"),
@@ -397,6 +415,12 @@ def _dtw_path(cost):
     return dtw_path(cost, lengths=_LENGTHS)
 
 
+def _dtw_path_features(x):
+    from philtorch.align import dtw_path
+
+    return dtw_path(x=x, y=x[:, :4].flip(1))
+
+
 def _forced_align(log_probs):
     from philtorch.align import forced_align
 
@@ -417,6 +441,7 @@ def _hmm_viterbi(x):
     "fn, shape",
     [
         pytest.param(_dtw_path, (2, 6, 5), id="dtw_path"),
+        pytest.param(_dtw_path_features, (2, 6, 5), id="dtw_path-features"),
         pytest.param(_forced_align, (2, 7, 4), id="forced_align"),
         pytest.param(_hmm_viterbi, (2, 7, 4), id="hmm_viterbi"),
     ],

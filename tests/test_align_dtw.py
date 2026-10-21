@@ -226,6 +226,8 @@ def test_dtw_rejects_bad_arguments():
         dtw(cost[:, :0])
     with pytest.raises(ValueError, match="diagonal_weight"):
         dtw(cost, diagonal_weight=2.0, step_pattern="orthogonal")
+    with pytest.raises(ValueError, match="diagonal_weight must be positive"):
+        dtw(cost, diagonal_weight=0.0)
     with pytest.raises(ValueError, match="lengths must be within 1 to 3"):
         dtw(cost, lengths=(torch.tensor([4]), torch.tensor([3])))
     with pytest.raises(ValueError, match="lengths must be within"):
@@ -516,6 +518,55 @@ def test_dtw_features_ignore_frames_past_the_lengths():
     torch.testing.assert_close(
         grads, (-2 * torch.ones_like(x), torch.tensor([[[2.0], [0.0]]], device="cuda"))
     )
+
+
+@pytest.mark.cuda
+def test_dtw_features_padding_keeps_the_gradients_centring():
+    # The backward centres the frames on their mean, padding included: zeros
+    # for 100 frames would move it from 1e4 to 2e2, and float32's products
+    # then give -0.0078125 for x's gradient, not -0.005859375.
+    x = torch.full((1, 1, 1), 1e4, device="cuda")
+    y = x + 2.0**-10 * torch.ones(1, 3, 1, device="cuda")
+
+    def grads(x, y, **options):
+        x, y = x.clone().requires_grad_(), y.clone().requires_grad_()
+        return torch.autograd.grad(dtw(x=x, y=y, gamma=1.0, **options).sum(), (x, y))
+
+    padded = [torch.cat([t, torch.zeros(1, 100 - t.size(1), 1, device="cuda")], 1) for t in (x, y)]
+    lengths = (torch.tensor([1]), torch.tensor([3]))
+    for actual, want in zip(grads(*padded, lengths=lengths), grads(x, y)):
+        torch.testing.assert_close(actual[:, : want.size(1)], want)
+        assert actual[:, want.size(1) :].eq(0).all()
+    torch.testing.assert_close(grads(x, y)[0], torch.tensor([[[-0.005859375]]], device="cuda"))
+
+
+@pytest.mark.cuda
+def test_dtw_split_chunks_skewed_items(monkeypatch):
+    # Padding every item of a round to the widest, one rectangle of 600 columns
+    # among 16 of 4, would give frontiers of 17 x 600, not about the sum of
+    # the widths.
+    from philtorch.align import _dtw_kernels
+
+    module = importlib.import_module("philtorch.align.dtw")
+    x, y = torch.randn(1, 40, 2, device="cuda"), torch.randn(1, 700, 2, device="cuda")
+    g = module._grid(None, x, y, 0.0, "symmetric", 1.0, None, None)
+    narrow = [[0, 8 + 2 * i, 600 + 6 * i, 2, 4] for i in range(16)]
+    items = torch.tensor([[0, 0, 0, 8, 600]] + narrow, device="cuda")
+    expected = module._cross(g, x, y, items)
+    calls, original = [], _dtw_kernels.frontier
+
+    def record(*args):
+        calls.append(args)
+        return original(*args)
+
+    monkeypatch.setattr(_dtw_kernels, "frontier", record)
+    actual = module._split(g, x, y, items)
+    assert len(calls) == 4  # two chunks, a forward and a reverse frontier each
+    for call in calls:
+        chunk, h_max, w_max = call[5], call[12], call[13]
+        assert len(chunk) * w_max <= 2 * chunk[:, 4].sum()
+        assert len(chunk) * h_max <= 2 * chunk[:, 3].sum()
+    torch.testing.assert_close(actual.unique(dim=0), expected.unique(dim=0))
 
 
 @pytest.mark.cuda
