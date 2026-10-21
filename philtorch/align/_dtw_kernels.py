@@ -53,6 +53,12 @@ row of x masks it by a large finite cost, and the shear, for the asymmetric
 steps, and the transpose, to keep the rows the shorter side, map the
 kernels' cells to those of x and y.
 
+Windows. A hard DTW skips the tiles with no cell in the window, as a band
+leaves most of the grid out, so that its work follows the window's area: a
+skipped tile's D is inf, not the costs ``big`` adds up to, and it shares
+nothing backward. A path through masked cells costs at least ``big``, which
+callers take for no path, so every other result is unchanged.
+
 Seeded grids. In feature mode, with a seed (B, L), row 0 of D is given and
 the rows below run from it, as the rows of a longer grid run from the row
 above: a grid cut into blocks of rows ``row0`` on, each seeded with the last
@@ -126,6 +132,33 @@ def _compose_affine(a_l, b_l, a_r, b_r):
 
 
 @triton.jit
+def _cell(r, cols, N, SHEAR: tl.constexpr, TRANSPOSE: tl.constexpr, row0=0):
+    """The row n of x and the column m of y of cells (r, cols): see :func:`_cost`."""
+    a = cols if TRANSPOSE else r + row0
+    s = r + row0 if TRANSPOSE else cols
+    n = tl.broadcast_to(tl.minimum(a + s if SHEAR else a, N - 1), cols.shape)
+    return n, tl.broadcast_to(a if SHEAR else s, cols.shape)
+
+
+@triton.jit
+def _window_hit(
+    win_ptr, b, r, step, rows, cols, valid, N, SHEAR: tl.constexpr, TRANSPOSE: tl.constexpr,
+    row0=0,
+):  # fmt: skip
+    """Whether a valid cell of the rows r, r + step, ... (``rows`` of them) is inside
+    the window, from the window alone."""
+    hit = tl.zeros(cols.shape, tl.int32)
+    for k in range(0, rows):
+        n, m = _cell(r + k * step, cols, N, SHEAR, TRANSPOSE, row0)
+        at = win_ptr + (b * N + n) * 2
+        inside = (m >= tl.load(at, mask=valid, other=0)) & (
+            m <= tl.load(at + 1, mask=valid, other=0)
+        )
+        hit = tl.maximum(hit, (valid & inside).to(tl.int32))
+    return tl.max(hit, axis=0) > 0
+
+
+@triton.jit
 def _cost(
     cost_ptr, fx_ptr, fy_ptr, win_ptr, b, r, cols, valid, R, L, N, M, F, big_bits, scale_bits,
     SHEAR: tl.constexpr, TRANSPOSE: tl.constexpr, BF: tl.constexpr, row0=0,
@@ -143,10 +176,7 @@ def _cost(
     if fx_ptr is None:
         c = tl.load(cost_ptr + b * R * L + r * L + cols, mask=valid, other=0.0)
     else:
-        a = cols if TRANSPOSE else r + row0
-        s = r + row0 if TRANSPOSE else cols
-        n = tl.broadcast_to(tl.minimum(a + s if SHEAR else a, N - 1), cols.shape)
-        m = tl.broadcast_to(a if SHEAR else s, cols.shape)
+        n, m = _cell(r, cols, N, SHEAR, TRANSPOSE, row0)
         f_x = fx_ptr + b * N * F + n[:, None].to(tl.int64) * F
         f_y = fy_ptr + b * M * F + m[:, None].to(tl.int64) * F
         c = tl.zeros(cols.shape, fx_ptr.dtype.element_ty)
@@ -323,6 +353,7 @@ def _dag_kernel(
     """
     SHARES: tl.constexpr = D_ptr is not None
     FORWARD: tl.constexpr = (cost_ptr is not None or fx_ptr is not None) and not SHARES
+    SKIP: tl.constexpr = win_ptr is not None and not SOFT
     b = (tl.program_id(0) // n_tiles).to(tl.int64)
     i = I_lo + tl.program_id(0) % n_tiles
     j = d - i
@@ -337,25 +368,41 @@ def _dag_kernel(
     edge = (L - j * TL) if REVERSE else (j * TL - 1)
     zero = _KERNEL_INF if FORWARD else 0.0  # the semiring's zero
     y_near = tl.load(y_ptr + batch + above * L + cols, mask=mask & (i > 0), other=zero)
+    n_rows = tl.minimum(TR, R - first)
+    below = above  # the row the shares below start from
+    if SKIP:
+        # A tile with no cell in the window holds the semiring's zero: D = inf
+        # shares nothing in either direction.
+        r_first = (R - 1 - first) if REVERSE else first
+        skipped = ~_window_hit(
+            win_ptr, b, r_first, -1 if REVERSE else 1, n_rows, cols, mask, N, SHEAR, TRANSPOSE, row0
+        )  # fmt: skip
+        for k in range(0, tl.where(skipped, n_rows, 0)):
+            row = batch + (r_first + (-k if REVERSE else k)) * L + cols
+            tl.store(y_ptr + row, tl.full([TL], zero, y_ptr.dtype.element_ty), mask=mask)
+            if SHARES and out_ptr is not None:
+                tl.store(out_ptr + row, tl.full([TL], 0.0, out_ptr.dtype.element_ty), mask=mask)
+        n_rows = tl.where(skipped, 0, n_rows)
+        below = tl.where(skipped, R, above)  # outside the grid: no work
     if SHARES:
         # The shares of the rows below, kept from earlier rows: row r + 1
         # straight down at j and diagonally at j + 1, row r + 2 by a skip at
         # j + 1. None below the last row.
         up_below, _, _, _ = _shares(
-            D_ptr, cost_ptr, fx_ptr, fy_ptr, win_ptr, skip_rows_ptr, b, above, cols, R, L, N, M, F,
+            D_ptr, cost_ptr, fx_ptr, fy_ptr, win_ptr, skip_rows_ptr, b, below, cols, R, L, N, M, F,
             big_bits, scale_bits, diag_weight, SOFT, STEPS, SHEAR, TRANSPOSE, BF, GIVEN, row0,
         )  # fmt: skip
         _, _, diag_below_next, skip_below_next = _shares(
-            D_ptr, cost_ptr, fx_ptr, fy_ptr, win_ptr, skip_rows_ptr, b, above, cols + 1, R, L, N,
+            D_ptr, cost_ptr, fx_ptr, fy_ptr, win_ptr, skip_rows_ptr, b, below, cols + 1, R, L, N,
             M, F, big_bits, scale_bits, diag_weight, SOFT, STEPS, SHEAR, TRANSPOSE, BF, GIVEN,
             row0,
         )  # fmt: skip
         _, _, _, skip_below2_next = _shares(
-            D_ptr, cost_ptr, fx_ptr, fy_ptr, win_ptr, skip_rows_ptr, b, above + 1, cols + 1, R, L,
+            D_ptr, cost_ptr, fx_ptr, fy_ptr, win_ptr, skip_rows_ptr, b, below + 1, cols + 1, R, L,
             N, M, F, big_bits, scale_bits, diag_weight, SOFT, STEPS, SHEAR, TRANSPOSE, BF, GIVEN,
             row0,
         )  # fmt: skip
-    for k in range(0, tl.minimum(TR, R - first)):
+    for k in range(0, n_rows):
         p = first + k
         r = (R - 1 - p) if REVERSE else p
         row = batch + r * L + cols
@@ -541,6 +588,7 @@ def _frontier_kernel(
     below's terms use its costs, kept.
     """
     SLOTS: tl.constexpr = 4 if REVERSE else 3
+    SKIP: tl.constexpr = win_ptr is not None and not SOFT
     s = (tl.program_id(0) // n_tiles).to(tl.int64)
     i = I_lo + tl.program_id(0) % n_tiles
     j = d - i
@@ -560,8 +608,24 @@ def _frontier_kernel(
     y_near = tl.load(rows_ptr + above + pos, mask=mask & (i > 0), other=_KERNEL_INF)
     inf = tl.full([TL], _KERNEL_INF, rows_ptr.dtype.element_ty)
     left_prev = inf
+    below = mask & (i > 0) & (n_rows > 0)  # not past the item: that row is off its grid
+    if SKIP:
+        # A tile with no cell in the window hands on inf, and does nothing else.
+        r_first = r0 + ((h - 1 - first) if REVERSE else first)
+        skipped = ~_window_hit(
+            win_ptr, b, r_first, -1 if REVERSE else 1, n_rows, cols, mask, N, SHEAR, TRANSPOSE
+        )  # fmt: skip
+        skipped &= n_rows > 0
+        tl.store(rows_ptr + own + pos, inf, mask=mask & skipped)
+        if SEEDED:
+            for kk in range(0, tl.where(skipped, n_rows, 0)):
+                tl.store(
+                    cols_ptr + s * H + first + kk + lanes * 0, inf,
+                    mask=(lanes == TL - 1) & ((j + 1) * TL < w),
+                )  # fmt: skip
+        n_rows = tl.where(skipped, 0, n_rows)
+        below &= ~skipped
     if REVERSE:
-        below = mask & (i > 0) & (n_rows > 0)  # past the item, that row is off its grid
         c_prev = _cost(
             None, fx_ptr, fy_ptr, win_ptr, b, r0 + h - first, cols, below, 0, 0, N, M, F,
             big_bits, scale_bits, SHEAR, TRANSPOSE, BF,
