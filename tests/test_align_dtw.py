@@ -485,18 +485,38 @@ def test_dtw_features_reject_bad_arguments(call, match):
 
 
 @pytest.mark.cuda
-def test_sqdist_from_differences_under_large_offsets():
-    # |x|^2 + |y|^2 - 2 x.y would lose every digit here in float32.
-    from philtorch.align._dtw_kernels import sqdist
-
-    x, y = (1e4 + torch.randn(2, n, 16, device="cuda") for n in (50, 40))
-    expected = _squared_distances(x.double(), y.double())
-    torch.testing.assert_close(sqdist(x, y).double(), expected, atol=1e-4, rtol=1e-6)
+@pytest.mark.parametrize("gamma", [0.0, 0.5])
+@pytest.mark.parametrize(
+    "step_pattern, N, M",
+    [
+        ("symmetric", 7, 9),
+        ("orthogonal", 9, 7),
+        ("asymmetric", 9, 7),  # sheared, then transposed
+        ("asymmetric", 9, 4),  # sheared, not transposed
+    ],
+)
+def test_dtw_features_with_a_band_and_each_step_pattern(gamma, step_pattern, N, M):
+    x, y = _features(3, N, M)
+    options = dict(
+        step_pattern=step_pattern,
+        band=2.0,
+        diagonal_weight=2.0 if step_pattern == "symmetric" else 1.0,
+    )
+    actual = dtw(x=x, y=y, gamma=gamma, **options)
+    expected = dtw(_squared_distances(x, y), gamma, **options)
+    assert actual.isfinite().all()
+    torch.testing.assert_close(actual, expected)
+    grads = torch.autograd.grad(actual.sum(), (x, y))
+    expected_grads = torch.autograd.grad(expected.sum(), (x, y))
+    torch.testing.assert_close(grads, expected_grads)
+    if gamma == 0:
+        path = dtw_path(x=x, y=y, **options)[1]
+        torch.testing.assert_close(path, dtw_path(_squared_distances(x, y), **options)[1])
 
 
 @pytest.mark.cuda
-def test_sqdist_second_derivatives():
-    from philtorch.align._dtw_kernels import sqdist
-
-    x, y = _features(2, 4, 5, 3)
-    assert torch.autograd.gradgradcheck(sqdist, (x, y))
+def test_dtw_features_from_differences_under_large_offsets():
+    # |x|^2 + |y|^2 - 2 x.y would lose every digit here in float32.
+    x, y = (1e4 + torch.randn(2, n, 16, device="cuda") for n in (50, 40))
+    expected = dtw(_squared_distances(x.double(), y.double()))
+    torch.testing.assert_close(dtw(x=x, y=y).double(), expected, rtol=1e-4, atol=1e-3)

@@ -26,34 +26,52 @@ def _shear(cost: Tensor, width: int) -> Tensor:
     return cost[:, (m + k).clamp(max=N - 1), m]
 
 
-def _band_mask(N: int, M: int, n_len: Tensor, m_len: Tensor, band: float) -> Tensor:
-    """Cells within ``band`` cells of the straight line between each pair's corners.
+def _band_windows(N: int, M: int, n_len: Tensor, m_len: Tensor, band: float) -> Tensor:
+    """Each row's allowed columns, (B, N, 2) int32 [lo, hi], lo > hi if none.
 
-    The distance is measured along the longer side, and the band is widened
-    where needed for consecutive rows (or columns) of it to overlap, so that
-    it always holds a path.
+    The cells within ``band`` cells of the straight line between each pair's
+    corners. The distance is measured along the longer side, and the band is
+    widened where needed for consecutive rows (or columns) of it to overlap,
+    so that it always holds a path.
     """
-    i = torch.arange(N, device=n_len.device, dtype=torch.float64)[:, None]
-    j = torch.arange(M, device=n_len.device, dtype=torch.float64)
-    n = (n_len - 1).double()[:, None, None]
-    m = (m_len - 1).double()[:, None, None]
+    i = torch.arange(N, device=n_len.device, dtype=torch.float64)
+    n = (n_len - 1).double()[:, None]
+    m = (m_len - 1).double()[:, None]
     rows_longer = n > m
     # Along the longer side, the line advances `slope` cells per cell of the other.
     slope = torch.where(rows_longer, n, m) / torch.where(rows_longer, m, n).clamp(min=1)
-    offset = torch.where(rows_longer, i - j * slope, j - i * slope).abs()
-    width = slope / 2  # the least that leaves a step between consecutive rows
+    reach = torch.maximum(slope / 2, torch.full_like(slope, band))  # slope / 2: a step between rows
     one_line = torch.minimum(n, m) == 0  # a single row or column: no band to keep
-    return (offset <= torch.maximum(width, torch.full_like(width, band))) | one_line
+
+    def inside(j):
+        offset = torch.where(rows_longer, i - j * slope, j - i * slope).abs()
+        return ((offset <= reach) | one_line) & (j >= 0) & (j < M)
+
+    # In closed form, then corrected by the test itself against rounding.
+    lo = torch.where(rows_longer, (i - reach) / slope, i * slope - reach).ceil()
+    hi = torch.where(rows_longer, (i + reach) / slope, i * slope + reach).floor()
+    lo = torch.where(one_line, 0, lo.clamp(0, M))
+    hi = torch.where(one_line, M - 1, hi.clamp(-1, M - 1))
+    lo = torch.where(inside(lo - 1), lo - 1, lo + (~inside(lo)).double())
+    hi = torch.where(inside(hi + 1), hi + 1, hi - (~inside(hi)).double())
+    return torch.stack([lo, hi], -1).int()
 
 
-def _features_cost(name: str, cost: Tensor | None, x: Tensor | None, y: Tensor | None) -> Tensor:
-    """``cost``, or the squared Euclidean distances between ``x`` and ``y``."""
+def _band_mask(N: int, M: int, n_len: Tensor, m_len: Tensor, band: float) -> Tensor:
+    """The cells of the windows, (B, N, M)."""
+    window = _band_windows(N, M, n_len, m_len, band)
+    j = torch.arange(M, device=n_len.device)
+    return (j >= window[..., :1]) & (j <= window[..., 1:])
+
+
+def _check_features(name: str, cost: Tensor | None, x: Tensor | None, y: Tensor | None) -> None:
+    """Checks that there is either the ``cost`` or ``x`` and ``y``, as frames."""
     if (x is None) != (y is None):
         raise ValueError(f"{name} needs x and y together")
     if (cost is None) == (x is None):
         raise ValueError(f"{name} needs either the cost or x and y, not both or neither")
     if cost is not None:
-        return cost
+        return
     if x.dim() != 3 or y.dim() != 3 or x.shape[::2] != y.shape[::2]:
         raise ValueError(
             f"x and y must be (B, N, F) and (B, M, F), got {tuple(x.shape)} and {tuple(y.shape)}"
@@ -61,10 +79,6 @@ def _features_cost(name: str, cost: Tensor | None, x: Tensor | None, y: Tensor |
     if x.dtype != y.dtype:
         raise ValueError(f"x and y must have one dtype, got {x.dtype} and {y.dtype}")
     check_cuda_triton(name, x, y)
-    # Imported here so that philtorch.align imports without Triton.
-    from ._dtw_kernels import sqdist
-
-    return sqdist(x, y)
 
 
 def dtw(
@@ -123,7 +137,9 @@ def dtw(
         gamma (float): 0 for DTW, positive for soft-DTW. Default: 0.
         x (Tensor, optional): the first sequences' frames, of shape
             :math:`(B, N, F)`. With :attr:`y`, the cost is the squared
-            Euclidean distances between their frames, as direct differences.
+            Euclidean distances between their frames, computed in the kernels
+            from the frames as direct differences, never stored (memory: the
+            accumulated costs only).
         y (Tensor, optional): the second sequences' frames, of shape
             :math:`(B, M, F)`, with the dtype of :attr:`x`.
         step_pattern (str): the steps a path may take, as (row, column)
@@ -187,25 +203,32 @@ def dtw(
     .. _Parallelizing Dynamic Time Warping Algorithm Using Prefix Computations on GPU:
         https://doi.org/10.1109/HPCC.and.EUC.2013.50
     """
-    cost = _features_cost("dtw", cost, x, y)
-    _validate("dtw", cost, step_pattern, diagonal_weight, lengths)
-    return _dtw(cost, gamma, step_pattern, diagonal_weight, lengths, band)[0]
+    _check_features("dtw", cost, x, y)
+    _validate("dtw", cost, x, y, step_pattern, diagonal_weight, lengths)
+    return _dtw(cost, x, y, gamma, step_pattern, diagonal_weight, lengths, band)[0]
 
 
 def _validate(
     name: str,
-    cost: Tensor,
+    cost: Tensor | None,
+    x: Tensor | None,
+    y: Tensor | None,
     step_pattern: str,
     diagonal_weight: float,
     lengths: tuple[Tensor, Tensor] | None,
-) -> None:
-    if cost.dim() != 3:
+) -> tuple[int, int, int]:
+    """Checks the arguments; returns the shape (B, N, M) of the costs."""
+    if cost is None:
+        shape = (x.size(0), x.size(1), y.size(1))
+    elif cost.dim() != 3:
         raise ValueError(f"cost must be (B, N, M), got {tuple(cost.shape)}")
+    else:
+        shape = tuple(cost.shape)
     if step_pattern not in ("symmetric", "asymmetric", "orthogonal"):
         raise ValueError(f"unknown step_pattern {step_pattern!r}")
-    B, N, M = cost.shape
+    B, N, M = shape
     if N == 0 or M == 0:
-        raise ValueError(f"cost has an empty sequence: shape {tuple(cost.shape)}")
+        raise ValueError(f"cost has an empty sequence: shape {shape}")
     if diagonal_weight != 1.0 and step_pattern != "symmetric":
         raise ValueError(f"diagonal_weight needs the symmetric steps, not {step_pattern!r}.")
     if lengths is not None:
@@ -217,33 +240,44 @@ def _validate(
             (n_len < 1).any() | (n_len > N).any() | (m_len < 1).any() | (m_len > M).any()
         ):
             raise ValueError(f"lengths must be within 1 to {N} and 1 to {M}")
-    check_cuda_triton(name, cost)
+    if cost is not None:
+        check_cuda_triton(name, cost)
+    return shape
 
 
-def _dtw(cost, gamma, step_pattern, diagonal_weight, lengths, band):
-    """dtw's distances, and for dtw_path the kernels' grid: (distance, grid), the
-    grid None if no pair has a path, else (D, its costs, steps, each pair's last
-    cell on it (B, 2), whether it was sheared, whether then transposed)."""
+def _dtw(cost, x, y, gamma, step_pattern, diagonal_weight, lengths, band):
+    """dtw's distances, and for dtw_path the way to its path: (distance, grid),
+    the grid None if no pair has a path, else (a function of no arguments that
+    backtracks the kernels' grid, whether it was sheared, whether then
+    transposed). From the cost, or from the frames x and y, which the kernels
+    compare in place."""
     # Imported here so that philtorch.align imports without Triton.
-    from ._dtw_kernels import dtw_dp
+    from ._dtw_kernels import backtrack, backtrack_features, dtw_dp, dtw_dp_features
 
-    B, N, M = cost.shape
+    features = cost is None
+    ref = x if features else cost
+    B, N = ref.shape[:2]
+    M = y.size(1) if features else cost.size(2)
     if lengths is None:
-        n_len = torch.full((B,), N, device=cost.device)
-        m_len = torch.full((B,), M, device=cost.device)
+        n_len = torch.full((B,), N, device=ref.device)
+        m_len = torch.full((B,), M, device=ref.device)
     else:
-        n_len, m_len = (t.to(cost.device, torch.long) for t in lengths)
+        n_len, m_len = (t.to(ref.device, torch.long) for t in lengths)
     # The kernels' soft-min is in base 2: costs in units of gamma / log2(e).
     scale = 1.0 / (gamma * math.log(2)) if gamma > 0 else 1.0
-    cost = cost * scale
-    if band is not None:
-        # A large finite cost, not inf, keeps soft-min's arithmetic finite; a
-        # path sums at most w (N + M) of them.
-        big = torch.finfo(cost.dtype).max / (8 * max(diagonal_weight, 1.0) * (N + M))
-        cost = torch.where(_band_mask(N, M, n_len, m_len, band), cost, big)
+    # A large finite cost outside the band, not inf, keeps soft-min's
+    # arithmetic finite; a path sums at most w (N + M) of them.
+    big = torch.finfo(ref.dtype).max / (8 * max(diagonal_weight, 1.0) * (N + M))
+    if features:
+        window = None if band is None else _band_windows(N, M, n_len, m_len, band)
+    else:
+        cost = cost * scale
+        if band is not None:
+            cost = torch.where(_band_mask(N, M, n_len, m_len, band), cost, big)
 
-    no_path = torch.zeros(B, dtype=torch.bool, device=cost.device)
+    no_path = torch.zeros(B, dtype=torch.bool, device=ref.device)
     sheared = step_pattern == "asymmetric"
+    R, L = N, M
     if sheared:
         no_path = n_len < m_len
         # From the shapes without lengths; from the lengths' values otherwise,
@@ -254,21 +288,41 @@ def _dtw(cost, gamma, step_pattern, diagonal_weight, lengths, band):
             width = int((n_len - m_len).max()) + 1 if B else 1
         if width <= 0:
             # No pair has a path; stay in the graph, with zero gradients.
-            return torch.where(no_path, float("inf"), cost[:, 0, 0]), None
-        cost = _shear(cost, width)
+            first = x.sum((1, 2)) + y.sum((1, 2)) if features else cost[:, 0, 0]
+            return torch.where(no_path, float("inf"), first), None
+        R, L = M, width
         n_len, m_len = m_len, (n_len - m_len + 1).clamp(min=1)
-    transposed = cost.size(1) > cost.size(2)
+    transposed = R > L
     if transposed:
-        cost, n_len, m_len = cost.mT, m_len, n_len
+        R, L, n_len, m_len = L, R, m_len, n_len
     # After the shear, the asymmetric steps are orthogonal ones.
     steps = "symmetric" if step_pattern == "symmetric" else "orthogonal"
-    D = dtw_dp(cost, None, gamma > 0, steps, float(diagonal_weight))
+    diag_weight = float(diagonal_weight)
+    ends = torch.stack([n_len, m_len], -1) - 1
+    if features:
+        D = dtw_dp_features(
+            x, y, window, big, scale, gamma > 0, steps, diag_weight, sheared, transposed, R, L
+        )
+
+        def trace():
+            return backtrack_features(
+                D, x, y, window, big, scale, ends, steps, diag_weight, sheared, transposed
+            )
+    else:
+        if sheared:
+            cost = _shear(cost, width)
+        if transposed:
+            cost = cost.mT
+        D = dtw_dp(cost, None, gamma > 0, steps, diag_weight)
+
+        def trace():
+            return backtrack(D, cost, ends, steps, diag_weight)
+
     distance = D[torch.arange(B, device=D.device), n_len - 1, m_len - 1]
     if band is not None:
         no_path = no_path | (distance >= big / 2)
     distance = torch.where(no_path, float("inf"), distance) / scale
-    ends = torch.stack([n_len, m_len], -1) - 1
-    return distance, (D, cost, steps, ends, sheared, transposed)
+    return distance, (trace, sheared, transposed)
 
 
 def dtw_path(
@@ -332,18 +386,15 @@ def dtw_path(
                 [-1, -1],
                 [-1, -1]], device='cuda:0')
     """
-    cost = _features_cost("dtw_path", cost, x, y)
-    _validate("dtw_path", cost, step_pattern, diagonal_weight, lengths)
-    from ._dtw_kernels import backtrack
-
-    B, N, M = cost.shape
-    distance, grid = _dtw(cost, 0.0, step_pattern, diagonal_weight, lengths, band)
-    path = torch.full((B, N + M - 1, 2), -1, dtype=torch.long, device=cost.device)
+    _check_features("dtw_path", cost, x, y)
+    B, N, M = _validate("dtw_path", cost, x, y, step_pattern, diagonal_weight, lengths)
+    distance, grid = _dtw(cost, x, y, 0.0, step_pattern, diagonal_weight, lengths, band)
+    path = torch.full((B, N + M - 1, 2), -1, dtype=torch.long, device=distance.device)
     if grid is None:
         return distance, path
-    D, grid_cost, steps, ends, sheared, transposed = grid
+    trace, sheared, transposed = grid
     with torch.no_grad():
-        cells = backtrack(D, grid_cost, ends, steps, float(diagonal_weight))
+        cells = trace()
         # From the kernels' grid back to (n, m): undo the transpose, then the
         # shear, sheared[m, k] = cost[m + k, m].
         if transposed:
@@ -415,19 +466,24 @@ def soft_dtw_divergence(
     if gamma is None or not gamma > 0:
         raise ValueError(f"the soft-DTW divergence needs gamma > 0, got {gamma}")
     name = "soft_dtw_divergence"
-    cost_xy = _features_cost(name, cost_xy, x, y)
-    cost_xx = _features_cost(name, cost_xx, x, x)
-    cost_yy = _features_cost(name, cost_yy, y, y)
-    if cost_xy.dim() == 3:
-        B, N, M = cost_xy.shape
-        if cost_xx.shape != (B, N, N) or cost_yy.shape != (B, M, M):
-            raise ValueError(
-                f"cost_xx and cost_yy must be ({B}, {N}, {N}) and ({B}, {M}, {M}), "
-                f"got {tuple(cost_xx.shape)} and {tuple(cost_yy.shape)}"
-            )
+    _check_features(name, cost_xy, x, y)
+    _check_features(name, cost_xx, x, x)
+    _check_features(name, cost_yy, y, y)
     n_len, m_len = (None, None) if lengths is None else lengths
+    if x is None:
+        if cost_xy.dim() == 3:
+            B, N, M = cost_xy.shape
+            if cost_xx.shape != (B, N, N) or cost_yy.shape != (B, M, M):
+                raise ValueError(
+                    f"cost_xx and cost_yy must be ({B}, {N}, {N}) and ({B}, {M}, {M}), "
+                    f"got {tuple(cost_xx.shape)} and {tuple(cost_yy.shape)}"
+                )
+        inputs = (dict(cost=cost_xy), dict(cost=cost_xx), dict(cost=cost_yy))
+    else:
+        inputs = (dict(x=x, y=y), dict(x=x, y=x), dict(x=y, y=y))
     xx = None if lengths is None else (n_len, n_len)
     yy = None if lengths is None else (m_len, m_len)
-    return dtw(cost_xy, gamma, lengths=lengths, **kwargs) - 0.5 * (
-        dtw(cost_xx, gamma, lengths=xx, **kwargs) + dtw(cost_yy, gamma, lengths=yy, **kwargs)
+    d_xy, d_xx, d_yy = (
+        dtw(gamma=gamma, lengths=ls, **kw, **kwargs) for kw, ls in zip(inputs, (lengths, xx, yy))
     )
+    return d_xy - 0.5 * (d_xx + d_yy)

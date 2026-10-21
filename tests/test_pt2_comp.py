@@ -148,11 +148,39 @@ def _ctc_viterbi_calls():
     )
 
 
-def _dtw_sqdist_calls():
+def _features_inputs():
+    x, y = (torch.rand(2, n, 3, device="cuda", requires_grad=True) for n in (5, 6))
+    return x, y, torch.tensor([[[0, 5]] * 5] * 2, dtype=torch.int32, device="cuda")
+
+
+def _dtw_dp_features_calls(op):
+    # The forward and, through its backward, dtw_dp_backward_features.
     from philtorch.align import _dtw_kernels
 
-    x, y = (torch.rand(2, n, 3, device="cuda", requires_grad=True) for n in (5, 6))
-    return _recorded_calls(_dtw_kernels, "sqdist", lambda: _dtw_kernels.sqdist(x, y))
+    x, y, window = _features_inputs()
+
+    def run():
+        D = _dtw_kernels.dtw_dp_features(
+            x, y, window, 1e4, 1.5, True, "symmetric", 2.0, False, False, 5, 6
+        )
+        D.sum().backward()
+
+    return _recorded_calls(_dtw_kernels, op, run)
+
+
+def _dtw_backtrack_features_calls():
+    from philtorch.align import _dtw_kernels
+
+    x, y, window = _features_inputs()
+    with torch.no_grad():
+        args = (x, y, window, 1e4, 1.5)
+        D = _dtw_kernels.dtw_dp_features(*args, False, "symmetric", 2.0, True, True, 4, 6)
+    ends = torch.tensor([[3, 5]] * 2, device="cuda")
+    return _recorded_calls(
+        _dtw_kernels,
+        "backtrack_features",
+        lambda: _dtw_kernels.backtrack_features(D, *args, ends, "symmetric", 2.0, True, True),
+    )
 
 
 def _dtw_backtrack_calls():
@@ -206,7 +234,19 @@ def _weighted_contract_calls():
         pytest.param("dtw_accumulate", _dtw_accumulate_calls, id="dtw_accumulate"),
         pytest.param("ctc_viterbi", _ctc_viterbi_calls, id="ctc_viterbi"),
         pytest.param("dtw_backtrack", _dtw_backtrack_calls, id="dtw_backtrack"),
-        pytest.param("dtw_sqdist", _dtw_sqdist_calls, id="dtw_sqdist"),
+        pytest.param(
+            "dtw_dp_features",
+            lambda: _dtw_dp_features_calls("dtw_dp_features"),
+            id="dtw_dp_features",
+        ),
+        pytest.param(
+            "dtw_dp_backward_features",
+            lambda: _dtw_dp_features_calls("dtw_dp_backward_features"),
+            id="dtw_dp_backward_features",
+        ),
+        pytest.param(
+            "dtw_backtrack_features", _dtw_backtrack_features_calls, id="dtw_backtrack_features"
+        ),
         pytest.param("hmm_viterbi_chain", _hmm_viterbi_chain_calls, id="hmm_viterbi_chain"),
         pytest.param("weighted_contract", _weighted_contract_calls, id="weighted_contract"),
     ],

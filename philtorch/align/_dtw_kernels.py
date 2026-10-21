@@ -43,11 +43,19 @@ either semiring, min-plus (or soft-min-plus) for the forward pass and
 linear for every accumulation, the first-order backward's included;
 ``_shares_kernel`` computes, for CTC's forced alignment, each cell's best
 step back over all cells at once; with the ctc steps, both take the (B, R)
-skip mask. :func:`sqdist` builds the cost matrix of two feature sequences
-from direct differences, which don't cancel as |x|^2 + |y|^2 - 2 x.y does.
+skip mask.
+
+Feature mode. With the features x (B, N, F) and y (B, M, F), the kernels
+compute each cost they need on the spot, as the squared distance of the
+two rows from direct differences, which don't cancel as |x|^2 + |y|^2 - 2 x.y
+does, so that no (B, N, M) cost is stored. A window of allowed columns per
+row of x masks it by a large finite cost, and the shear, for the asymmetric
+steps, and the transpose, to keep the rows the shorter side, map the
+kernels' cells to those of x and y.
 """
 
 import math
+import struct
 
 import torch
 import torch.nn.functional as F
@@ -104,9 +112,51 @@ def _compose_affine(a_l, b_l, a_r, b_r):
 
 
 @triton.jit
+def _cost(
+    cost_ptr, fx_ptr, fy_ptr, win_ptr, b, r, cols, valid, R, L, N, M, F, big_bits, scale_bits,
+    SHEAR: tl.constexpr, TRANSPOSE: tl.constexpr, BF: tl.constexpr,
+):  # fmt: skip
+    """The costs of cells (r, cols) of pair b, 0 where not valid: from the cost
+    tensor, or in feature mode, with ``fx_ptr``, from the features.
+
+    The cell is (a, s) = (cols, r) with TRANSPOSE, else (r, cols), of rows a
+    and columns s; with SHEAR it is x's row a + s, clamped to N - 1, and y's a,
+    else x's a and y's s. The cost is the squared distance times the scale
+    (the bits of a float64: a kernel's float scalars are float32), ``big``
+    (likewise) outside the window, columns ``lo`` to ``hi`` of each row of x.
+    """
+    if fx_ptr is None:
+        c = tl.load(cost_ptr + b * R * L + r * L + cols, mask=valid, other=0.0)
+    else:
+        a = cols if TRANSPOSE else r
+        s = r if TRANSPOSE else cols
+        n = tl.broadcast_to(tl.minimum(a + s if SHEAR else a, N - 1), cols.shape)
+        m = tl.broadcast_to(a if SHEAR else s, cols.shape)
+        f_x = fx_ptr + b * N * F + n[:, None].to(tl.int64) * F
+        f_y = fy_ptr + b * M * F + m[:, None].to(tl.int64) * F
+        c = tl.zeros(cols.shape, fx_ptr.dtype.element_ty)
+        for f0 in range(0, F, BF):
+            f = (f0 + tl.arange(0, BF))[None, :]
+            ok = valid[:, None] & (f < F)
+            d = tl.load(f_x + f, mask=ok, other=0.0) - tl.load(f_y + f, mask=ok, other=0.0)
+            c += tl.sum(d * d, axis=1)
+        dtype = c.dtype
+        c *= scale_bits.to(tl.int64).to(tl.float64, bitcast=True).to(dtype)
+        if win_ptr is not None:
+            at = win_ptr + (b * N + n) * 2
+            outside = (m < tl.load(at, mask=valid, other=0)) | (
+                m > tl.load(at + 1, mask=valid, other=0)
+            )
+            c = tl.where(outside, big_bits.to(tl.int64).to(tl.float64, bitcast=True).to(dtype), c)
+        c = tl.where(valid, c, 0.0)
+    return c
+
+
+@triton.jit
 def _shares(
-    D_ptr, cost_ptr, skip_ptr, b, r, cols, R, L, diag_weight,
-    SOFT: tl.constexpr, STEPS: tl.constexpr,
+    D_ptr, cost_ptr, fx_ptr, fy_ptr, win_ptr, skip_ptr, b, r, cols, R, L, N, M, F, big_bits,
+    scale_bits, diag_weight, SOFT: tl.constexpr, STEPS: tl.constexpr, SHEAR: tl.constexpr,
+    TRANSPOSE: tl.constexpr, BF: tl.constexpr,
 ):  # fmt: skip
     """The shares of cells (r, cols) from their up, left, up-left and skip predecessors.
 
@@ -115,7 +165,10 @@ def _shares(
     """
     valid = (cols >= 0) & (cols < L) & (r >= 0) & (r < R)
     offset = b * R * L + r * L + cols
-    c = tl.load(cost_ptr + offset, mask=valid, other=0.0)
+    c = _cost(
+        cost_ptr, fx_ptr, fy_ptr, win_ptr, b, r, cols, valid, R, L, N, M, F, big_bits, scale_bits,
+        SHEAR, TRANSPOSE, BF,
+    )  # fmt: skip
     absent = tl.full(c.shape, _KERNEL_INF, c.dtype)
     up = absent
     if STEPS != _CTC:
@@ -172,7 +225,10 @@ def _shares_kernel(D_ptr, cost_ptr, skip_ptr, back_ptr, R, L, BLOCK: tl.constexp
     b = (batch_row // R).to(tl.int64)
     r = batch_row % R
     cols = tl.program_id(1) * BLOCK + tl.arange(0, BLOCK)
-    _, _, diag, skip = _shares(D_ptr, cost_ptr, skip_ptr, b, r, cols, R, L, 1.0, False, _CTC)
+    _, _, diag, skip = _shares(
+        D_ptr, cost_ptr, None, None, None, skip_ptr, b, r, cols, R, L, 0, 0, 0, 0, 0, 1.0, False,
+        _CTC, False, False, 1,
+    )  # fmt: skip
     offset = b * R * L + r * L + cols
     tl.store(back_ptr + offset, (diag + 2 * skip).to(tl.int8), mask=cols < L)
 
@@ -190,11 +246,15 @@ def _neighbour(ptr, row, L, ROWS: tl.constexpr, COLS: tl.constexpr, REVERSE: tl.
     return ptr + row - ROWS * L - COLS
 
 
-@triton.jit(do_not_specialize=["d", "I_lo", "n_tiles", "TR"])
+@triton.jit(
+    do_not_specialize=["N", "M", "F", "big_bits", "scale_bits", "d", "I_lo", "n_tiles", "TR"]
+)
 def _dag_kernel(
     cost_ptr, D_ptr, skip_rows_ptr, up_ptr, left_ptr, diag_ptr, skip_ptr, x_ptr, y_ptr,
-    out_ptr, R, L, diag_weight, d, I_lo, n_tiles, TR, SOFT: tl.constexpr, STEPS: tl.constexpr,
-    REVERSE: tl.constexpr, TL: tl.constexpr, SEEDED: tl.constexpr,
+    out_ptr, fx_ptr, fy_ptr, win_ptr, N, M, F, big_bits, scale_bits, R, L, diag_weight, d, I_lo,
+    n_tiles, TR, SOFT: tl.constexpr, STEPS: tl.constexpr, REVERSE: tl.constexpr,
+    TL: tl.constexpr, SEEDED: tl.constexpr, SHEAR: tl.constexpr, TRANSPOSE: tl.constexpr,
+    BF: tl.constexpr,
 ):  # fmt: skip
     """y(s) = x(s) (+) the sum over steps of W(s, p) (x) y(p), predecessors p; with
     REVERSE, the transpose, over successors t of W(t, s) (x) y(t). Each edge's
@@ -202,15 +262,17 @@ def _dag_kernel(
 
     Three uses, by the pointers given:
 
-    * the forward pass, with ``cost_ptr`` alone: min-plus, or soft-min-plus
-      with ``SOFT``; every step's weight is the cost of the cell it enters,
-      the diagonal's times ``diag_weight``, the ctc steps' skips gated by
-      the (B, R) mask ``skip_rows_ptr``; D(0, 0) = c(0, 0);
-    * the first-order backward, with ``cost_ptr`` and the forward pass's
-      ``D_ptr``, REVERSE: linear, x the gradient of D, the weights the
-      shares, computed from D and the cost (soft with ``SOFT``) as each row
-      is reached and kept for the rows above; ``out_ptr``, if not None,
-      takes the cost's gradient when the diagonal is weighted;
+    * the forward pass, with ``cost_ptr`` alone, or ``fx_ptr``, ``fy_ptr``
+      and ``win_ptr`` (feature mode; see :func:`_cost`) in its place:
+      min-plus, or soft-min-plus with ``SOFT``; every step's weight is the
+      cost of the cell it enters, the diagonal's times ``diag_weight``, the
+      ctc steps' skips gated by the (B, R) mask ``skip_rows_ptr``;
+      D(0, 0) = c(0, 0);
+    * the first-order backward, with ``cost_ptr`` or the features and the
+      forward pass's ``D_ptr``, REVERSE: linear, x the gradient of D, the
+      weights the shares, computed from D and the cost (soft with ``SOFT``)
+      as each row is reached and kept for the rows above; ``out_ptr``, if not
+      None, takes the cost's gradient when the diagonal is weighted;
     * the linear accumulation, with x and the weights of the steps in the
       set, the others None.
 
@@ -227,7 +289,7 @@ def _dag_kernel(
     would cost a fifth of the time on long rows.
     """
     SHARES: tl.constexpr = D_ptr is not None
-    FORWARD: tl.constexpr = cost_ptr is not None and not SHARES
+    FORWARD: tl.constexpr = (cost_ptr is not None or fx_ptr is not None) and not SHARES
     b = (tl.program_id(0) // n_tiles).to(tl.int64)
     i = I_lo + tl.program_id(0) % n_tiles
     j = d - i
@@ -247,14 +309,17 @@ def _dag_kernel(
         # straight down at j and diagonally at j + 1, row r + 2 by a skip at
         # j + 1. None below the last row.
         up_below, _, _, _ = _shares(
-            D_ptr, cost_ptr, skip_rows_ptr, b, above, cols, R, L, diag_weight, SOFT, STEPS
-        )
+            D_ptr, cost_ptr, fx_ptr, fy_ptr, win_ptr, skip_rows_ptr, b, above, cols, R, L, N, M, F,
+            big_bits, scale_bits, diag_weight, SOFT, STEPS, SHEAR, TRANSPOSE, BF,
+        )  # fmt: skip
         _, _, diag_below_next, skip_below_next = _shares(
-            D_ptr, cost_ptr, skip_rows_ptr, b, above, cols + 1, R, L, diag_weight, SOFT, STEPS
-        )
+            D_ptr, cost_ptr, fx_ptr, fy_ptr, win_ptr, skip_rows_ptr, b, above, cols + 1, R, L, N,
+            M, F, big_bits, scale_bits, diag_weight, SOFT, STEPS, SHEAR, TRANSPOSE, BF,
+        )  # fmt: skip
         _, _, _, skip_below2_next = _shares(
-            D_ptr, cost_ptr, skip_rows_ptr, b, above + 1, cols + 1, R, L, diag_weight, SOFT, STEPS
-        )
+            D_ptr, cost_ptr, fx_ptr, fy_ptr, win_ptr, skip_rows_ptr, b, above + 1, cols + 1, R, L,
+            N, M, F, big_bits, scale_bits, diag_weight, SOFT, STEPS, SHEAR, TRANSPOSE, BF,
+        )  # fmt: skip
     for k in range(0, tl.minimum(TR, R - first)):
         p = first + k
         r = (R - 1 - p) if REVERSE else p
@@ -265,7 +330,10 @@ def _dag_kernel(
         if SEEDED:
             left = tl.load(y_ptr + batch + r * L + edge, mask=j > 0, other=zero)
         if FORWARD:
-            c = tl.load(cost_ptr + row, mask=mask, other=0.0)
+            c = _cost(
+                cost_ptr, fx_ptr, fy_ptr, win_ptr, b, r, cols, mask, R, L, N, M, F, big_bits,
+                scale_bits, SHEAR, TRANSPOSE, BF,
+            )  # fmt: skip
         else:
             base = tl.load(x_ptr + row, mask=mask, other=0.0)
         if STEPS != _CTC:
@@ -324,11 +392,13 @@ def _dag_kernel(
             # Row r's shares at j, for the rows above, and at j + 1, whose left
             # share takes e(r, j + 1) into e(r, j).
             up_here, left_here, diag_here, _ = _shares(
-                D_ptr, cost_ptr, skip_rows_ptr, b, r, cols, R, L, diag_weight, SOFT, STEPS
-            )
+                D_ptr, cost_ptr, fx_ptr, fy_ptr, win_ptr, skip_rows_ptr, b, r, cols, R, L, N, M, F,
+                big_bits, scale_bits, diag_weight, SOFT, STEPS, SHEAR, TRANSPOSE, BF,
+            )  # fmt: skip
             _, a, diag_next, skip_next = _shares(
-                D_ptr, cost_ptr, skip_rows_ptr, b, r, cols + 1, R, L, diag_weight, SOFT, STEPS
-            )
+                D_ptr, cost_ptr, fx_ptr, fy_ptr, win_ptr, skip_rows_ptr, b, r, cols + 1, R, L, N,
+                M, F, big_bits, scale_bits, diag_weight, SOFT, STEPS, SHEAR, TRANSPOSE, BF,
+            )  # fmt: skip
         else:
             a = tl.load(
                 _neighbour(left_ptr, row, L, 0 * REVERSE, 1 * REVERSE, REVERSE),
@@ -361,10 +431,11 @@ def _dag_kernel(
             skip_below_next = skip_next
 
 
-@triton.jit
+@triton.jit(do_not_specialize=["N", "M", "F", "big_bits", "scale_bits"])
 def _backtrack_kernel(
-    D_ptr, cost_ptr, ends_ptr, path_ptr, R, L, P, diag_weight,
-    STEPS: tl.constexpr, BLOCK: tl.constexpr,
+    D_ptr, cost_ptr, fx_ptr, fy_ptr, win_ptr, ends_ptr, path_ptr, N, M, F, big_bits, scale_bits,
+    R, L, P, diag_weight, STEPS: tl.constexpr, BLOCK: tl.constexpr, SHEAR: tl.constexpr,
+    TRANSPOSE: tl.constexpr, BF: tl.constexpr,
 ):  # fmt: skip
     """Each pair's optimal DTW path, walked from its end cell back to (0, 0).
 
@@ -390,7 +461,10 @@ def _backtrack_kernel(
         cols = j - (BLOCK - 1) + lanes
         valid = cols >= 0
         cell = batch + i * L + cols
-        c = tl.load(cost_ptr + cell, mask=valid, other=0.0)
+        c = _cost(
+            cost_ptr, fx_ptr, fy_ptr, win_ptr, b, i, cols, valid, R, L, N, M, F, big_bits,
+            scale_bits, SHEAR, TRANSPOSE, BF,
+        )  # fmt: skip
         up = tl.load(D_ptr + cell - L, mask=valid & (i > 0), other=_KERNEL_INF) + c
         left = tl.load(D_ptr + cell - 1, mask=valid & (cols > 0), other=_KERNEL_INF) + c
         best = tl.minimum(up, left)
@@ -422,10 +496,28 @@ def _backtrack_kernel(
         i = next_i
 
 
-@torch.library.custom_op("philtorch::dtw_backtrack", mutates_args=())
-def backtrack(D: Tensor, cost: Tensor, ends: Tensor, steps: str, diag_weight: float) -> Tensor:
-    """Each pair's optimal path on the kernels' grid, from its end cell ``ends`` (B, 2)
-    to (0, 0), as (row, column) pairs (B, R + L - 1, 2) in order, -1 past the path."""
+def _feature_block(F: int, lanes: int) -> int:
+    """The features a kernel reads at once per lane, within a register budget."""
+    return max(1, min(8, 8192 // lanes, triton.next_power_of_2(F)))
+
+
+def _features(feat, lanes: int):
+    """feat = (x, y, window, big, scale, shear, transpose), or None for the cost
+    tensor mode, as the kernels' arguments: (fx, fy, window, N, M, F, big_bits,
+    scale_bits) and (SHEAR, TRANSPOSE, BF). ``big`` and ``scale`` go as the bits of
+    a float64, as the kernels' float scalars are float32."""
+    if feat is None:
+        return (None, None, None, 0, 0, 0, 0, 0), (False, False, 1)
+    x, y, window, big, scale, shear, transpose = feat
+    x, y = x.contiguous(), y.contiguous()
+    window = None if window is None else window.contiguous()
+    bits = (struct.unpack("<q", struct.pack("<d", v))[0] for v in (big, scale))
+    N, F = x.shape[1:]
+    arguments = (x, y, window, N, y.shape[1], F, *bits)
+    return arguments, (shear, transpose, _feature_block(F, lanes))
+
+
+def _backtrack(D, cost, feat, ends, steps, diag_weight):
     D = D.contiguous()
     B, R, L = D.shape
     P = R + L - 1
@@ -436,9 +528,10 @@ def backtrack(D: Tensor, cost: Tensor, ends: Tensor, steps: str, diag_weight: fl
     # 5060 Ti.
     per_row = L / R + (steps == "orthogonal")
     block = 1 if per_row < 1.5 else min(triton.next_power_of_2(int(2 * per_row)), 128)
+    (fx, fy, window, *sizes), (shear, transpose, bf) = _features(feat, block)
     _backtrack_kernel[(B,)](
-        D, cost.contiguous(), ends.contiguous(), walk, R, L, P, diag_weight, _STEPS[steps],
-        BLOCK=block, num_warps=1,
+        D, None if cost is None else cost.contiguous(), fx, fy, window, ends.contiguous(), walk,
+        *sizes, R, L, P, diag_weight, _STEPS[steps], block, shear, transpose, bf, num_warps=1,
     )  # fmt: skip
     # The walk runs from the end: each path's cells, reversed.
     count = (walk[..., 0] >= 0).sum(1, keepdim=True)
@@ -447,8 +540,31 @@ def backtrack(D: Tensor, cost: Tensor, ends: Tensor, steps: str, diag_weight: fl
     return torch.where((t < count)[..., None], path, -1)
 
 
+@torch.library.custom_op("philtorch::dtw_backtrack", mutates_args=())
+def backtrack(D: Tensor, cost: Tensor, ends: Tensor, steps: str, diag_weight: float) -> Tensor:
+    """Each pair's optimal path on the kernels' grid, from its end cell ``ends`` (B, 2)
+    to (0, 0), as (row, column) pairs (B, R + L - 1, 2) in order, -1 past the path."""
+    return _backtrack(D, cost, None, ends, steps, diag_weight)
+
+
 @backtrack.register_fake
 def _(D, cost, ends, steps, diag_weight):
+    B, R, L = D.shape
+    return ends.new_empty(B, R + L - 1, 2)
+
+
+@torch.library.custom_op("philtorch::dtw_backtrack_features", mutates_args=())
+def backtrack_features(
+    D: Tensor, x: Tensor, y: Tensor, window: Tensor | None, big: float, scale: float,
+    ends: Tensor, steps: str, diag_weight: float, shear: bool, transpose: bool,
+) -> Tensor:  # fmt: skip
+    """:func:`backtrack` with the costs of :func:`dtw_dp_features`."""
+    feat = (x, y, window, big, scale, shear, transpose)
+    return _backtrack(D, None, feat, ends, steps, diag_weight)
+
+
+@backtrack_features.register_fake
+def _(D, x, y, window, big, scale, ends, steps, diag_weight, shear, transpose):
     B, R, L = D.shape
     return ends.new_empty(B, R + L - 1, 2)
 
@@ -497,17 +613,19 @@ _SHARES_BLOCK = 1024
 
 def _launch(
     B: int, R: int, L: int, cost, D, skip, up, left, diag, skip_share, x, y, out,
-    diag_weight: float, soft: bool, steps: str, reverse: bool, backward: bool = False,
+    diag_weight: float, soft: bool, steps: str, reverse: bool, backward: bool = False, feat=None,
 ):  # fmt: skip
-    """Run _dag_kernel over the grid, one launch per tile anti-diagonal."""
+    """Run _dag_kernel over the grid, one launch per tile anti-diagonal; ``feat``, as
+    _features takes it, in place of ``cost``."""
     TR, TL = _tile(B, R, L)
+    features, flags = _features(feat, TL)
     n_rows, n_cols = triton.cdiv(R, TR), triton.cdiv(L, TL)
     for d in range(n_rows + n_cols - 1):
         lo = max(0, d - n_cols + 1)
         n_tiles = min(n_rows - 1, d) - lo + 1
         _dag_kernel[(n_tiles * B,)](
-            cost, D, skip, up, left, diag, skip_share, x, y, out, R, L, diag_weight, d, lo,
-            n_tiles, TR, soft, _STEPS[steps], reverse, TL, n_cols > 1,
+            cost, D, skip, up, left, diag, skip_share, x, y, out, *features, R, L, diag_weight, d,
+            lo, n_tiles, TR, soft, _STEPS[steps], reverse, TL, n_cols > 1, *flags,
             num_warps=_num_warps(TL, backward),
         )  # fmt: skip
 
@@ -517,8 +635,8 @@ def _empty(t: Tensor) -> Tensor:
 
 
 def _dtw_backward(
-    D: Tensor, cost: Tensor, skip: Tensor | None, grad: Tensor, soft: bool, steps: str,
-    diag_weight: float,
+    D: Tensor, cost: Tensor | None, skip: Tensor | None, grad: Tensor, soft: bool, steps: str,
+    diag_weight: float, feat=None,
 ) -> Tensor:  # fmt: skip
     B, R, L = D.shape
     weighted = diag_weight != 1.0
@@ -526,7 +644,7 @@ def _dtw_backward(
     out = _empty(D) if weighted else e
     _launch(
         B, R, L, cost, D, skip, None, None, None, None, grad.contiguous(), e,
-        out if weighted else None, diag_weight, soft, steps, True, backward=True,
+        out if weighted else None, diag_weight, soft, steps, True, backward=True, feat=feat,
     )  # fmt: skip
     return out
 
@@ -642,16 +760,14 @@ def dtw_dp(cost: Tensor, skip: Tensor | None, soft: bool, steps: str, diag_weigh
     return _forward(cost, skip, soft, steps, diag_weight)
 
 
-def _forward(cost, skip, soft, steps, diag_weight):
-    B, R, L = cost.shape
+def _forward(cost, skip, soft, steps, diag_weight, feat=None, grid=None):
+    B, R, L = cost.shape if grid is None else grid
     if R * L > _MAX_CELLS:
-        raise ValueError(
-            f"the DTW kernels take at most 2^31 - 1 cells per pair, got {tuple(cost.shape)}"
-        )
-    D = _empty(cost)
+        raise ValueError(f"the DTW kernels take at most 2^31 - 1 cells per pair, got {(B, R, L)}")
+    D = (cost if feat is None else feat[0]).new_empty(B, R, L)
     _launch(
-        B, R, L, cost.contiguous(), None, skip, None, None, None, None, None, D, None,
-        diag_weight, soft, steps, False,
+        B, R, L, None if cost is None else cost.contiguous(), None, skip, None, None, None, None,
+        None, D, None, diag_weight, soft, steps, False, feat=feat,
     )  # fmt: skip
     return D
 
@@ -750,59 +866,120 @@ def _dtw_dp_backward_backward(ctx, grad_e):
 dtw_dp_backward.register_autograd(_dtw_dp_backward_backward, setup_context=_dtw_dp_backward_setup)
 
 
-@triton.jit
-def _sqdist_kernel(
-    x_ptr, y_ptr, out_ptr, N, M, F, BN: tl.constexpr, BM: tl.constexpr, BF: tl.constexpr
-):
-    b = tl.program_id(0).to(tl.int64)
-    n = tl.program_id(1) * BN + tl.arange(0, BN)
-    m = tl.program_id(2) * BM + tl.arange(0, BM)
-    x_ptr += b * N * F
-    y_ptr += b * M * F
-    acc = tl.zeros((BN, BM), dtype=out_ptr.dtype.element_ty)
-    for f0 in range(0, F, BF):
-        f = f0 + tl.arange(0, BF)
-        x = tl.load(
-            x_ptr + n[:, None] * F + f[None, :], mask=(n[:, None] < N) & (f[None, :] < F), other=0
+def _outside(window: Tensor, M: int) -> Tensor:
+    """(B, N, M): the cells outside window (B, N, 2), the allowed columns [lo, hi] per row."""
+    return (torch.arange(M, device=window.device) < window[..., :1]) | (
+        torch.arange(M, device=window.device) > window[..., 1:]
+    )
+
+
+def _feature_cost(x, y, window, big, scale, shear, transpose, R, L):
+    """The kernels' (B, R, L) cost grid in feature mode, from PyTorch ops that autograd
+    differentiates: see :func:`_cost` for the cells."""
+    N, M = x.size(1), y.size(1)
+    cost = x.new_zeros(x.size(0), N, M)
+    for f in range(x.size(2)):
+        cost = cost + (x[:, :, None, f] - y[:, None, :, f]) ** 2
+    cost = cost * scale
+    if window is not None:
+        cost = torch.where(_outside(window, M), big, cost)
+    if shear:
+        m = torch.arange(M, device=x.device)[:, None]
+        cost = cost[
+            :, (m + torch.arange(R if transpose else L, device=x.device)).clamp(max=N - 1), m
+        ]
+    return cost.mT if transpose else cost
+
+
+@torch.library.custom_op("philtorch::dtw_dp_features", mutates_args=())
+def dtw_dp_features(
+    x: Tensor, y: Tensor, window: Tensor | None, big: float, scale: float, soft: bool,
+    steps: str, diag_weight: float, shear: bool, transpose: bool, R: int, L: int,
+) -> Tensor:  # fmt: skip
+    """:func:`dtw_dp` over the (B, R, L) grid of the costs ``scale`` times the squared
+    distances of x (B, N, F) and y (B, M, F), computed in the kernels (see the
+    module docstring), outside ``window`` (B, N, 2), the allowed columns [lo, hi]
+    of y per row of x, ``big``. A cell (r, l) is x's row n and y's row m: (a, s)
+    = (l, r) with ``transpose``, else (r, l); n = a + s, clamped to N - 1, and m = a
+    with ``shear``, else n = a and m = s. Only the steps "orthogonal" and
+    "symmetric"."""
+    feat = (x, y, window, big, scale, shear, transpose)
+    return _forward(None, None, soft, steps, diag_weight, feat, (x.size(0), R, L))
+
+
+@dtw_dp_features.register_fake
+def _(x, y, window, big, scale, soft, steps, diag_weight, shear, transpose, R, L):
+    return x.new_empty(x.size(0), R, L)
+
+
+def _dtw_dp_features_setup(ctx, inputs, output):
+    x, y, window, *ctx.options = inputs
+    ctx.save_for_backward(x, y, window, output)
+
+
+def _dtw_dp_features_backward(ctx, grad_D):
+    x, y, window, D = ctx.saved_tensors
+    big, scale, soft, steps, diag_weight, shear, transpose, _, _ = ctx.options
+    E = dtw_dp_backward_features(
+        D, x, y, window, big, scale, grad_D, soft, steps, diag_weight, shear, transpose
+    )
+    # E, the cost's gradient on the grid, back to the (n, m) cells.
+    N, M = x.size(1), y.size(1)
+    if transpose:
+        E = E.mT
+    if shear:
+        m = torch.arange(M, device=x.device)[:, None]
+        cell = ((m + torch.arange(E.size(2), device=x.device)).clamp(max=N - 1) * M + m).flatten()
+        E = E.new_zeros(E.size(0), N * M).index_add(1, cell, E.flatten(1)).view(-1, N, M)
+    if window is not None:
+        E = torch.where(_outside(window, M), 0.0, E)
+    grad_x = 2 * scale * (x * E.sum(2, keepdim=True) - E @ y)
+    grad_y = 2 * scale * (y * E.sum(1).unsqueeze(-1) - E.mT @ x)
+    return grad_x, grad_y, *(None,) * 10
+
+
+dtw_dp_features.register_autograd(_dtw_dp_features_backward, setup_context=_dtw_dp_features_setup)
+
+
+@torch.library.custom_op("philtorch::dtw_dp_backward_features", mutates_args=())
+def dtw_dp_backward_features(
+    D: Tensor, x: Tensor, y: Tensor, window: Tensor | None, big: float, scale: float,
+    grad: Tensor, soft: bool, steps: str, diag_weight: float, shear: bool, transpose: bool,
+) -> Tensor:  # fmt: skip
+    """The gradient of the grid's cost from ``grad``, D's, through
+    :func:`dtw_dp_features`, as :func:`dtw_dp_backward` gives it."""
+    feat = (x, y, window, big, scale, shear, transpose)
+    return _dtw_backward(D.contiguous(), None, None, grad, soft, steps, diag_weight, feat)
+
+
+@dtw_dp_backward_features.register_fake
+def _(D, x, y, window, big, scale, grad, soft, steps, diag_weight, shear, transpose):
+    return _empty(D)
+
+
+def _dtw_dp_backward_features_setup(ctx, inputs, output):
+    D, x, y, window, *ctx.options = inputs
+    ctx.save_for_backward(D, x, y, window, inputs[6])
+
+
+def _dtw_dp_backward_features_backward(ctx, grad_e):
+    # As _dtw_dp_backward_backward, with the cost rebuilt from x and y.
+    D, x, y, window, grad = ctx.saved_tensors
+    big, scale, _, soft, steps, diag_weight, shear, transpose = ctx.options
+    create_graph = torch.is_grad_enabled()
+    with torch.enable_grad():
+        D, x, y, grad = (
+            t.view_as(t) if t.requires_grad else t.detach().requires_grad_()
+            for t in (D, x, y, grad)
         )
-        y = tl.load(
-            y_ptr + m[:, None] * F + f[None, :], mask=(m[:, None] < M) & (f[None, :] < F), other=0
+        cost = _feature_cost(x, y, window, big, scale, shear, transpose, *D.shape[1:])
+        e = _decomposed_backward(D, cost, None, grad, soft, steps, diag_weight)
+        grad_D, grad_x, grad_y, grad_grad = torch.autograd.grad(
+            e, (D, x, y, grad), grad_e, create_graph=create_graph, allow_unused=True
         )
-        d = x[:, None, :] - y[None, :, :]
-        acc += tl.sum(d * d, axis=2)
-    mask = (n[:, None] < N) & (m[None, :] < M)
-    tl.store(out_ptr + b * N * M + n[:, None] * M + m[None, :], acc, mask=mask)
+    return grad_D, grad_x, grad_y, None, None, None, grad_grad, *(None,) * 5
 
 
-@torch.library.custom_op("philtorch::dtw_sqdist", mutates_args=())
-def sqdist(x: Tensor, y: Tensor) -> Tensor:
-    """The squared Euclidean distances (B, N, M) between the rows of x (B, N, F)
-    and y (B, M, F), from their differences."""
-    x, y = x.contiguous(), y.contiguous()
-    (B, N, F), M = x.shape, y.shape[1]
-    out = x.new_empty(B, N, M)
-    BN = BM = 32
-    _sqdist_kernel[(B, triton.cdiv(N, BN), triton.cdiv(M, BM))](
-        x, y, out, N, M, F, BN=BN, BM=BM, BF=8, num_warps=4
-    )  # fmt: skip
-    return out
-
-
-@sqdist.register_fake
-def _(x, y):
-    return x.new_empty(x.shape[0], x.shape[1], y.shape[1])
-
-
-def _sqdist_setup(ctx, inputs, output):
-    ctx.save_for_backward(*inputs)
-
-
-def _sqdist_backward(ctx, g):
-    # d/dx of sum_f (x - y)^2 is 2 (x - y), summed over the pairs weighted by g.
-    x, y = ctx.saved_tensors
-    grad_x = 2 * (x * g.sum(2, keepdim=True) - g @ y)
-    grad_y = 2 * (y * g.sum(1).unsqueeze(-1) - g.mT @ x)
-    return grad_x, grad_y
-
-
-sqdist.register_autograd(_sqdist_backward, setup_context=_sqdist_setup)
+dtw_dp_backward_features.register_autograd(
+    _dtw_dp_backward_features_backward, setup_context=_dtw_dp_backward_features_setup
+)
