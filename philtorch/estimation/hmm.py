@@ -4,7 +4,10 @@ The forward algorithm, forward-backward smoothing and Viterbi decoding as
 parallel scans over time of per-step K x K matrices in the log or max-plus
 semiring, following Hassan, Särkkä and García-Fernández, "Temporal
 parallelization of inference in hidden Markov models" (IEEE TSP, 2021), and
-Baum-Welch re-estimation from the forward algorithm's gradients.
+for Viterbi decoding's traceback, the composition of its backpointer maps,
+Särkkä and García-Fernández, "On the temporal parallelisation of the Viterbi
+algorithm" (EUSIPCO, 2023); and Baum-Welch re-estimation from the forward
+algorithm's gradients.
 
 The model is the classical one, as in
 :func:`~philtorch.estimation.kalman_filter`: the prior describes the first
@@ -459,11 +462,12 @@ def hmm_viterbi(log_emit: Tensor, log_trans: Tensor, log_init: Tensor) -> tuple[
     r"""Decode a hidden Markov model: its most probable state sequence.
 
     For the model of :func:`hmm_filter`, this is the Viterbi algorithm with
-    both of its passes parallelized over time: a max-plus scan, as in
-    `Temporal Parallelization of Inference in Hidden Markov Models`_ (Hassan
-    et al., 2021), gives the best score of any path ending in each state and
-    records each state's best predecessor, and a traceback follows those
-    backpointers from the best last state, in chunks of steps. So the path is
+    both of its passes parallelized over time, as in `On the Temporal
+    Parallelisation of the Viterbi Algorithm`_ (Särkkä and García-Fernández,
+    2023): a max-plus scan gives the best score of any path ending in each
+    state and records each state's best predecessor, and the traceback
+    composes those backpointer maps from the best last state, in chunks of
+    steps. So the path is
     always one of the optimal paths: under ties, the one that prefers lower
     state indices, as the sequential algorithm's backpointers do. The score's
     gradient is that of the decoded path: one for its first state's prior
@@ -497,8 +501,8 @@ def hmm_viterbi(log_emit: Tensor, log_trans: Tensor, log_init: Tensor) -> tuple[
             shapes.
         RuntimeError: if Triton is not installed.
 
-    .. _Temporal Parallelization of Inference in Hidden Markov Models:
-        https://doi.org/10.1109/TSP.2021.3103338
+    .. _On the Temporal Parallelisation of the Viterbi Algorithm:
+        https://users.aalto.fi/~ssarkka/pub/eusipco_2023_viterbi.pdf
     """
     log_emit, log_trans, log_init = _parse("hmm_viterbi", log_emit, log_trans, log_init)
     batch_size, N, _ = log_emit.shape
