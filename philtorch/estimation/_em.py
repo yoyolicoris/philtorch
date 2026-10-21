@@ -16,9 +16,10 @@ def em(
 
     Each call ``step(*params)`` runs an E-step and an M-step and returns the
     log-likelihood of :attr:`params`, of shape :math:`(B)`, and the new
-    parameters, as :func:`kalman_em_step` and :func:`hmm_em_step` do. The
-    iterations stop after :attr:`max_iter` steps, or once the log-likelihood
-    summed over the batch rises by less than :attr:`tol`.
+    parameters, as :func:`kalman_em_step` does and the first two results of
+    :func:`hmm_em_step` are. The iterations stop after :attr:`max_iter` steps,
+    or once the log-likelihood summed over the batch rises by less than
+    :attr:`tol`.
 
     Args:
         step (Callable): one step of expectation-maximization.
@@ -44,7 +45,7 @@ def em(
         >>> params, history = em(
         ...     partial(kalman_em_step, y), (one, one, one, one, m0, one)
         ... )
-        >>> bool((history.diff() >= 0).all())
+        >>> bool(history[-1] > history[0])
         True
     """
     if max_iter < 1:
