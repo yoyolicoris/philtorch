@@ -59,13 +59,6 @@ def _band_windows(N: int, M: int, n_len: Tensor, m_len: Tensor, band: float) -> 
     return torch.stack([lo, hi], -1).int()
 
 
-def _band_mask(N: int, M: int, n_len: Tensor, m_len: Tensor, band: float) -> Tensor:
-    """The cells of the windows, (B, N, M)."""
-    window = _band_windows(N, M, n_len, m_len, band)
-    j = torch.arange(M, device=n_len.device)
-    return (j >= window[..., :1]) & (j <= window[..., 1:])
-
-
 def _check_features(name: str, cost: Tensor | None, x: Tensor | None, y: Tensor | None) -> None:
     """Checks that there is either the ``cost`` or ``x`` and ``y``, as frames."""
     if (x is None) != (y is None):
@@ -173,7 +166,9 @@ def dtw(
             many cells of the straight line from :math:`(0, 0)` to
             :math:`(N_b - 1, M_b - 1)`, measured along the longer sequence,
             may be on a path. Where the line is steeper than the band allows
-            a step to follow, the band widens to keep a path. Default: no band.
+            a step to follow, the band widens to keep a path. From :attr:`x`
+            and :attr:`y` only, where for DTW the kernels skip the cells
+            outside it; with a cost, make it ``inf`` there. Default: no band.
         checkpoint (int, optional): the number of rows of the kernels' grid,
             :math:`R` by :math:`L` cells (:math:`R \le L`, the shorter side,
             for the symmetric and orthogonal steps), between stored rows of
@@ -199,10 +194,10 @@ def dtw(
             unknown, if :attr:`diagonal_weight` is not 1 with steps that have
             no weighted diagonal, or if :attr:`lengths` are not of shape
             :math:`(B)` within :math:`1 \le N_b \le N` and
-            :math:`1 \le M_b \le M`, or if :attr:`checkpoint` is not an
-            integer of at least 1 or comes with :attr:`cost`; the lengths'
-            values are checked only in eager mode, as they would break a
-            :func:`torch.compile` graph.
+            :math:`1 \le M_b \le M`, if :attr:`band` comes with :attr:`cost`,
+            or if :attr:`checkpoint` is not an integer of at least 1 or comes
+            with :attr:`cost`; the lengths' values are checked only in eager
+            mode, as they would break a :func:`torch.compile` graph.
         RuntimeError: if Triton is not installed.
 
     Example::
@@ -224,7 +219,7 @@ def dtw(
     """
     if checkpoint is not None and (type(checkpoint) is not int or checkpoint < 1 or x is None):
         raise ValueError(f"checkpoint must be a positive integer, with x and y, got {checkpoint!r}")
-    _validate("dtw", cost, x, y, step_pattern, diagonal_weight, lengths)
+    _validate("dtw", cost, x, y, step_pattern, diagonal_weight, lengths, band)
     return _dtw(cost, x, y, gamma, step_pattern, diagonal_weight, lengths, band, checkpoint)[0]
 
 
@@ -236,9 +231,12 @@ def _validate(
     step_pattern: str,
     diagonal_weight: float,
     lengths: tuple[Tensor, Tensor] | None,
+    band: float | None = None,
 ) -> tuple[int, int, int]:
     """Checks the arguments; returns the shape (B, N, M) of the costs."""
     _check_features(name, cost, x, y)
+    if band is not None and cost is not None:
+        raise ValueError(f"{name}'s band needs x and y; with a cost, make it inf outside the band")
     if cost is None:
         shape = (x.size(0), x.size(1), y.size(1))
     elif cost.dim() != 3:
@@ -310,8 +308,6 @@ def _grid(cost, x, y, gamma, step_pattern, diagonal_weight, lengths, band) -> _G
             window = _band_windows(N, M, n_len, m_len, band)
     else:
         cost = cost * scale
-        if band is not None:
-            cost = torch.where(_band_mask(N, M, n_len, m_len, band), cost, big)
 
     no_path = torch.zeros(B, dtype=torch.bool, device=ref.device)
     sheared = step_pattern == "asymmetric"
@@ -624,7 +620,7 @@ def dtw_path(
                 [-1, -1],
                 [-1, -1]], device='cuda:0')
     """
-    B, N, M = _validate("dtw_path", cost, x, y, step_pattern, diagonal_weight, lengths)
+    B, N, M = _validate("dtw_path", cost, x, y, step_pattern, diagonal_weight, lengths, band)
     distance, g, D = _dtw(cost, x, y, 0.0, step_pattern, diagonal_weight, lengths, band)
     path = torch.full((B, N + M - 1, 2), -1, dtype=torch.long, device=distance.device)
     if g is None:
