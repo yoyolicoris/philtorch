@@ -164,11 +164,20 @@ def _shares(
     among the steps.
     """
     valid = (cols >= 0) & (cols < L) & (r >= 0) & (r < R)
-    offset = b * R * L + r * L + cols
     c = _cost(
         cost_ptr, fx_ptr, fy_ptr, win_ptr, b, r, cols, valid, R, L, N, M, F, big_bits, scale_bits,
         SHEAR, TRANSPOSE, BF,
     )  # fmt: skip
+    return _shares_of(D_ptr, c, skip_ptr, b, r, cols, R, L, diag_weight, SOFT, STEPS)
+
+
+@triton.jit
+def _shares_of(
+    D_ptr, c, skip_ptr, b, r, cols, R, L, diag_weight, SOFT: tl.constexpr, STEPS: tl.constexpr
+):
+    """:func:`_shares` from the cells' costs c."""
+    valid = (cols >= 0) & (cols < L) & (r >= 0) & (r < R)
+    offset = b * R * L + r * L + cols
     absent = tl.full(c.shape, _KERNEL_INF, c.dtype)
     up = absent
     if STEPS != _CTC:
@@ -391,14 +400,38 @@ def _dag_kernel(
         elif SHARES:
             # Row r's shares at j, for the rows above, and at j + 1, whose left
             # share takes e(r, j + 1) into e(r, j).
-            up_here, left_here, diag_here, _ = _shares(
-                D_ptr, cost_ptr, fx_ptr, fy_ptr, win_ptr, skip_rows_ptr, b, r, cols, R, L, N, M, F,
-                big_bits, scale_bits, diag_weight, SOFT, STEPS, SHEAR, TRANSPOSE, BF,
-            )  # fmt: skip
-            _, a, diag_next, skip_next = _shares(
-                D_ptr, cost_ptr, fx_ptr, fy_ptr, win_ptr, skip_rows_ptr, b, r, cols + 1, R, L, N,
-                M, F, big_bits, scale_bits, diag_weight, SOFT, STEPS, SHEAR, TRANSPOSE, BF,
-            )  # fmt: skip
+            if fx_ptr is None:
+                up_here, left_here, diag_here, _ = _shares(
+                    D_ptr, cost_ptr, fx_ptr, fy_ptr, win_ptr, skip_rows_ptr, b, r, cols, R, L, N,
+                    M, F, big_bits, scale_bits, diag_weight, SOFT, STEPS, SHEAR, TRANSPOSE, BF,
+                )  # fmt: skip
+                _, a, diag_next, skip_next = _shares(
+                    D_ptr, cost_ptr, fx_ptr, fy_ptr, win_ptr, skip_rows_ptr, b, r, cols + 1, R, L,
+                    N, M, F, big_bits, scale_bits, diag_weight, SOFT, STEPS, SHEAR, TRANSPOSE, BF,
+                )  # fmt: skip
+            else:
+                # Each cost once: column j + 1's is the previous lane's (REVERSE),
+                # passed through this row of y, which the row's result then
+                # overwrites; the first lane's is the next tile's, computed here.
+                c = _cost(
+                    cost_ptr, fx_ptr, fy_ptr, win_ptr, b, r, cols, mask, R, L, N, M, F, big_bits,
+                    scale_bits, SHEAR, TRANSPOSE, BF,
+                )  # fmt: skip
+                tl.store(y_ptr + row, c, mask=mask)
+                tl.debug_barrier()
+                c_next = tl.load(y_ptr + row + 1, mask=mask & (lanes > 0), other=0.0)
+                first_lane = (lanes == 0) & (cols + 1 < L)
+                c_edge = _cost(
+                    cost_ptr, fx_ptr, fy_ptr, win_ptr, b, r, cols + 1, first_lane, R, L, N, M, F,
+                    big_bits, scale_bits, SHEAR, TRANSPOSE, BF,
+                )  # fmt: skip
+                c_next = tl.where(lanes == 0, c_edge, c_next)
+                up_here, left_here, diag_here, _ = _shares_of(
+                    D_ptr, c, skip_rows_ptr, b, r, cols, R, L, diag_weight, SOFT, STEPS
+                )
+                _, a, diag_next, skip_next = _shares_of(
+                    D_ptr, c_next, skip_rows_ptr, b, r, cols + 1, R, L, diag_weight, SOFT, STEPS
+                )
         else:
             a = tl.load(
                 _neighbour(left_ptr, row, L, 0 * REVERSE, 1 * REVERSE, REVERSE),
@@ -419,6 +452,8 @@ def _dag_kernel(
             y_near, scan_c = tl.associative_scan((base, a), 0, _compose_min)
             if SEEDED:
                 y_near = tl.minimum(y_near, scan_c + left)
+        if SHARES and fx_ptr is not None:
+            tl.debug_barrier()  # every lane has read the costs passed through y
         tl.store(y_ptr + row, y_near, mask=mask)
         if SHARES:
             if out_ptr is not None:
