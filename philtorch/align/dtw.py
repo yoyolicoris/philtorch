@@ -126,8 +126,8 @@ def dtw(
     Warping Algorithm Using Prefix Computations on GPU`_ (Xiao et al.,
     2013), in tiles of the grid run as a wavefront, so that a single long
     pair fills the GPU: :math:`O(NM)` work, and the memory of the cost and
-    the accumulated costs, or from frames, without gradients,
-    :math:`O(B (N + M))`. The cost can be any
+    the accumulated costs (fewer of them with :attr:`checkpoint`), or from
+    frames, without gradients, :math:`O(B (N + M))`. The cost can be any
     tensor, from any differentiable function of the sequences, such as the
     squared Euclidean distances between their frames.
 

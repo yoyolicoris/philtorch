@@ -1164,27 +1164,19 @@ def _dtw_dp_backward_backward(ctx, grad_e):
 dtw_dp_backward.register_autograd(_dtw_dp_backward_backward, setup_context=_dtw_dp_backward_setup)
 
 
-def _outside(window: Tensor, cols: Tensor) -> Tensor:
-    """(B, N, len(cols)): the cells of the columns ``cols`` outside window (B, N, 2), the
-    allowed columns [lo, hi] per row."""
-    return (cols < window[..., :1]) | (cols > window[..., 1:])
-
-
 def _feature_cost(x, y, window, big, scale, shear, transpose, R, L, row0=0):
     """The kernels' (B, R, L) cost grid in feature mode, from PyTorch ops that autograd
-    differentiates: see :func:`_cost` for the cells."""
-    N, M = x.size(1), y.size(1)
-    cost = x.new_zeros(x.size(0), N, M)
-    for f in range(x.size(2)):
-        cost = cost + (x[:, :, None, f] - y[:, None, :, f]) ** 2
-    cost = cost * scale
+    differentiates: the cells of rows ``row0`` on, mapped as :func:`_cost` maps them."""
+    r = torch.arange(row0, row0 + R, device=x.device)[:, None]
+    col = torch.arange(L, device=x.device)
+    a, s = (col, r) if transpose else (r, col)
+    n = (a + s if shear else a).clamp(max=x.size(1) - 1).expand(R, L)
+    m = (a if shear else s).expand(R, L)
+    cost = (x[:, n] - y[:, m]).pow(2).sum(-1) * scale
     if window is not None:
-        cost = torch.where(_outside(window, torch.arange(M, device=x.device)), big, cost)
-    if shear:
-        m = torch.arange(M, device=x.device)[:, None]
-        s = torch.arange(row0 + R if transpose else L, device=x.device)
-        cost = cost[:, (m + s).clamp(max=N - 1), m]
-    return (cost.mT if transpose else cost)[:, row0 : row0 + R]
+        lo, hi = window[:, n].unbind(-1)
+        cost = torch.where((m < lo) | (m > hi), big, cost)
+    return cost
 
 
 @torch.library.custom_op("philtorch::dtw_dp_features", mutates_args=())
@@ -1246,7 +1238,8 @@ def _dtw_dp_features_backward(ctx, grad_D):
     m1 = m0 + E.size(2)
     if window is not None:
         cols = torch.arange(m0, m1, device=x.device)
-        E = torch.where(_outside(window[:, n0 : n1 + 1], cols), 0.0, E)
+        lo, hi = window[:, n0 : n1 + 1].split(1, -1)
+        E = torch.where((cols < lo) | (cols > hi), 0.0, E)
     # From frames centred on each pair's mean: the products' difference then
     # cancels only their spread, not an offset they share.
     mean = torch.cat([x, y], 1).mean(1, keepdim=True)
@@ -1276,21 +1269,9 @@ def dtw_dp_backward_features(
 
 @dtw_dp_backward_features.register_fake
 def _(
-    D,
-    x,
-    y,
-    window,
-    big,
-    scale,
-    grad,
-    soft,
-    steps,
-    diag_weight,
-    shear,
-    transpose,
-    seeded=False,
+    D, x, y, window, big, scale, grad, soft, steps, diag_weight, shear, transpose, seeded=False,
     row0=0,
-):
+):  # fmt: skip
     return _empty(D)
 
 
