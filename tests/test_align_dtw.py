@@ -1,3 +1,4 @@
+import importlib
 import subprocess
 import sys
 
@@ -538,3 +539,65 @@ def test_dtw_features_ignore_frames_past_the_lengths():
 def test_dtw_takes_integer_costs():
     cost = torch.tensor([[[0, 1], [1, 0]]], device="cuda")
     torch.testing.assert_close(dtw(cost), torch.zeros(1, device="cuda"))
+
+
+_FEATURE_CASES = [
+    # step_pattern, diagonal_weight, N, M, band, with lengths
+    ("symmetric", 1.0, 40, 30, None, False),
+    ("symmetric", 2.0, 30, 40, 3.0, True),
+    ("orthogonal", 1.0, 40, 30, None, False),
+    ("asymmetric", 1.0, 40, 30, None, False),  # sheared, then transposed
+    ("asymmetric", 1.0, 30, 8, 2.0, True),  # sheared, not transposed
+]
+
+
+def _feature_options(step_pattern, diagonal_weight, N, M, band, with_lengths):
+    options = dict(step_pattern=step_pattern, diagonal_weight=diagonal_weight, band=band)
+    if with_lengths:
+        options["lengths"] = (torch.tensor([N, N - 5, N - 2]), torch.tensor([M, M - 3, M]))
+    return options
+
+
+@pytest.mark.cuda
+@pytest.mark.parametrize("gamma", [0.0, 0.5])
+@pytest.mark.parametrize("case", _FEATURE_CASES)
+def test_dtw_features_without_gradients_equal_the_cost(monkeypatch, gamma, case):
+    from philtorch.align import _dtw_kernels
+
+    monkeypatch.setattr(_dtw_kernels, "_frontier_tile", lambda S, R, L: (3, 4))  # many tiles
+    x, y = (t.detach() for t in _features(3, *case[2:4]))
+    options = _feature_options(*case)
+    actual = dtw(x=x, y=y, gamma=gamma, **options)
+    expected = dtw(_squared_distances(x, y), gamma, **options)
+    assert actual.isfinite().all()
+    torch.testing.assert_close(actual, expected)
+
+
+@pytest.mark.cuda
+def test_dtw_features_without_gradients_stay_linear_in_memory():
+    N = M = 4096
+    x, y = torch.randn(2, 1, N, 3, device="cuda")
+    base = torch.cuda.memory_allocated()
+    torch.cuda.reset_peak_memory_stats()
+    with torch.no_grad():
+        distance = dtw(x=x, y=y, gamma=0.5)
+    assert torch.cuda.max_memory_allocated() - base < N * M * 4 / 8
+    torch.testing.assert_close(distance, dtw(_squared_distances(x, y), 0.5))
+
+
+@pytest.mark.cuda
+@pytest.mark.parametrize("case", _FEATURE_CASES)
+def test_dtw_path_features_by_divide_and_conquer(monkeypatch, case):
+    from philtorch.align import _dtw_kernels
+
+    # Leaves of at most 2 rows, in chunks of 64 cells, and frontiers of many tiles.
+    module = importlib.import_module("philtorch.align.dtw")
+    for name, value in dict(_LEAF_ROWS=2, _LEAF_CELLS=0, _CHUNK_CELLS=64).items():
+        monkeypatch.setattr(module, name, value)
+    monkeypatch.setattr(_dtw_kernels, "_frontier_tile", lambda S, R, L: (3, 4))
+    x, y = (t.detach() for t in _features(3, *case[2:4]))
+    options = _feature_options(*case)
+    distance, path = dtw_path(x=x, y=y, **options)
+    expected, expected_path = dtw_path(_squared_distances(x, y), **options)
+    torch.testing.assert_close(distance, expected)
+    torch.testing.assert_close(path, expected_path)
