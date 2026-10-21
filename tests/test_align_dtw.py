@@ -611,6 +611,18 @@ def test_dtw_features_without_gradients_stay_linear_in_memory():
 
 
 @pytest.mark.cuda
+def test_dtw_features_gradient_stays_linear_in_memory():
+    # DTW's gradient is its path's: no accumulated costs are stored, only the
+    # divide and conquer's leaves, of bounded size.
+    N = M = 8192
+    x, y = (t.requires_grad_() for t in torch.randn(2, 1, N, 3, device="cuda"))
+    base = torch.cuda.memory_allocated()
+    torch.cuda.reset_peak_memory_stats()
+    torch.autograd.grad(dtw(x=x, y=y).sum(), (x, y))
+    assert torch.cuda.max_memory_allocated() - base < N * M * 4 / 4
+
+
+@pytest.mark.cuda
 @pytest.mark.parametrize("case", _FEATURE_CASES)
 def test_dtw_path_features_by_divide_and_conquer(monkeypatch, case):
     from philtorch.align import _dtw_kernels

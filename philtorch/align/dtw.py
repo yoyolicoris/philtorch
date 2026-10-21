@@ -119,9 +119,9 @@ def dtw(
     Warping Algorithm Using Prefix Computations on GPU`_ (Xiao et al.,
     2013), in tiles of the grid run as a wavefront, so that a single long
     pair fills the GPU: :math:`O(NM)` work, and the memory of the cost and
-    the accumulated costs; from frames, of the accumulated costs only (fewer
-    of them with :attr:`checkpoint`), and without gradients
-    :math:`O(B (N + M))`. The cost can be any
+    the accumulated costs; from frames, :math:`O(B (N + M))`, but for
+    soft-DTW's gradient that of the accumulated costs (fewer of them with
+    :attr:`checkpoint`). The cost can be any
     tensor, from any differentiable function of the sequences, such as the
     squared Euclidean distances between their frames.
 
@@ -137,9 +137,9 @@ def dtw(
         x (Tensor, optional): the first sequences' frames, of shape
             :math:`(B, N, F)`. With :attr:`y`, the cost is the squared
             Euclidean distances between their frames, computed in the kernels
-            from the frames as direct differences, never stored (memory: the
-            accumulated costs only; without gradients not even those, but
-            :math:`O(B (N + M))`).
+            from the frames as direct differences, never stored. DTW's
+            gradient is then its path's, found by divide and conquer as
+            :func:`dtw_path` finds it, in :math:`O(B (N + M))` memory.
         y (Tensor, optional): the second sequences' frames, of shape
             :math:`(B, M, F)`, with the dtype of :attr:`x`.
         step_pattern (str): the steps a path may take, as (row, column)
@@ -172,8 +172,8 @@ def dtw(
         checkpoint (int, optional): the number of rows of the kernels' grid,
             :math:`R` by :math:`L` cells (:math:`R \le L`, the shorter side,
             for the symmetric and orthogonal steps), between stored rows of
-            the accumulated costs, which the gradient needs. With :math:`k`
-            rows, their memory is :math:`O(B L (R / k + k))`, not
+            the accumulated costs, which soft-DTW's gradient needs. With
+            :math:`k` rows, their memory is :math:`O(B L (R / k + k))`, not
             :math:`O(B R L)`, at the price of recomputing each block of rows
             in the backward pass: about one more forward pass, and more for a
             small :math:`k`, whose blocks the kernels' tiles fill less. From
@@ -341,12 +341,18 @@ def _grid(cost, x, y, gamma, step_pattern, diagonal_weight, lengths, band) -> _G
     )  # fmt: skip
 
 
-def _dtw(cost, x, y, gamma, step_pattern, diagonal_weight, lengths, band, checkpoint=None):
-    """dtw's distances, the kernels' grid (None if no pair has a path), and,
-    from the cost, its accumulated costs (else None).
+def _dtw(
+    cost, x, y, gamma, step_pattern, diagonal_weight, lengths, band, checkpoint=None, path=False
+):  # fmt: skip
+    """dtw's distances, the kernels' grid (None if no pair has a path), from the
+    cost its accumulated costs (else None), and from frames, for DTW with
+    gradients or ``path``, each pair's path on the grid (else None).
 
     From frames, without gradients, each pair's grid is advanced a row at a
-    time up to its end cell and the accumulated costs are never stored. With
+    time up to its end cell and the accumulated costs are never stored; so
+    too for DTW with gradients, whose distance is then its path's cost, which
+    autograd differentiates: the path, by divide and conquer, is the gradient.
+    Soft-DTW's, the expected alignment, needs the accumulated costs: with
     ``checkpoint`` rows, they are computed in blocks of that many rows, each
     seeded with the last row of the one before and recomputed in the backward
     pass; then they are not returned."""
@@ -365,19 +371,28 @@ def _dtw(cost, x, y, gamma, step_pattern, diagonal_weight, lengths, band, checkp
     if g is None:
         # No pair has a path; stay in the graph, with zero gradients.
         first = x.sum((1, 2)) + y.sum((1, 2)) if features else cost[:, 0, 0]
-        return torch.where(torch.ones_like(first, dtype=torch.bool), float("inf"), first), g, None
+        infinite = torch.where(torch.ones_like(first, dtype=torch.bool), float("inf"), first)
+        return infinite, g, None, None
     batch = torch.arange(g.ends.size(0), device=g.ends.device)
     end_row, end_col = g.ends.unbind(-1)
     soft = gamma > 0
-    D = None
-    if features and not (torch.is_grad_enabled() and (x.requires_grad or y.requires_grad)):
+    D = walk = None
+    grad = features and torch.is_grad_enabled() and (x.requires_grad or y.requires_grad)
+    if features and not (grad and soft):
         zero = torch.zeros_like(batch)
         items = torch.stack([batch, zero, zero, end_row + 1, end_col + 1], -1)
-        row = frontier(
-            x, y, g.window, g.big, g.scale, items, soft, g.steps, g.diag_weight, g.sheared,
-            g.transposed, False, g.R, g.L,
-        )  # fmt: skip
+        with torch.no_grad():
+            row = frontier(
+                x, y, g.window, g.big, g.scale, items, soft, g.steps, g.diag_weight, g.sheared,
+                g.transposed, False, g.R, g.L,
+            )  # fmt: skip
         distance = row.gather(1, end_col[:, None])[:, 0]
+        if not soft and (grad or path):
+            finite = ~g.no_path & ((distance < g.big / 2) if band is not None else True)
+            with torch.no_grad():
+                walk = _linear_path(g, x, y, finite)
+            if grad:
+                distance = _path_cost(g, x, y, walk)
     elif not features:
         D = dtw_dp(g.cost, None, soft, g.steps, g.diag_weight)
         distance = D[batch, end_row, end_col]
@@ -412,7 +427,7 @@ def _dtw(cost, x, y, gamma, step_pattern, diagonal_weight, lengths, band, checkp
     no_path = g.no_path
     if band is not None:
         no_path = no_path | (distance >= g.big / 2)
-    return torch.where(no_path, float("inf"), distance) / g.scale, g, D
+    return torch.where(no_path, float("inf"), distance) / g.scale, g, D, walk
 
 
 # The linear-memory path: items of at most this many cells, or this many rows,
@@ -433,6 +448,18 @@ def _row_costs(g: _Grid, x, y, p, r, col):
         lo, hi = g.window[p, n].unbind(-1)
         c = torch.where((m < lo) | (m > hi), g.big, c)
     return c
+
+
+def _path_cost(g: _Grid, x, y, walk: Tensor) -> Tensor:
+    """The cost of each pair's path on the grid, (B, R + L - 1, 2) with -1 past it:
+    its cells' costs from the frames, by PyTorch ops, a diagonal step's times its
+    weight."""
+    r, col = walk.unbind(-1)
+    p = torch.arange(walk.size(0), device=walk.device)[:, None].expand_as(r)
+    c = _row_costs(g, x, y, p, r.clamp(min=0), col.clamp(min=0))
+    diagonal = (r[:, 1:] - r[:, :-1] == 1) & (col[:, 1:] - col[:, :-1] == 1)
+    weight = pad(torch.where(diagonal, g.diag_weight, 1.0), (1, 0), value=1.0)
+    return torch.where(r >= 0, weight * c, 0.0).sum(1)
 
 
 def _lines(items: Tensor) -> Tensor:
@@ -577,7 +604,8 @@ def dtw_path(
     From :attr:`x` and :attr:`y`, the path is found by divide and conquer, in
     :math:`O(B (N + M))` memory and a few times the forward work: the best
     crossing of a rectangle's middle rows splits it in two between cells of
-    the path, down to rectangles backtracked whole.
+    the path, down to rectangles backtracked whole; the distance is then the
+    path's cost, from the frames, which autograd differentiates.
 
     Note:
         Runs only on CUDA GPUs, as Triton kernels: the inputs must be CUDA
@@ -621,13 +649,15 @@ def dtw_path(
                 [-1, -1]], device='cuda:0')
     """
     B, N, M = _validate("dtw_path", cost, x, y, step_pattern, diagonal_weight, lengths, band)
-    distance, g, D = _dtw(cost, x, y, 0.0, step_pattern, diagonal_weight, lengths, band)
+    distance, g, D, walk = _dtw(
+        cost, x, y, 0.0, step_pattern, diagonal_weight, lengths, band, path=True
+    )
     path = torch.full((B, N + M - 1, 2), -1, dtype=torch.long, device=distance.device)
     if g is None:
         return distance, path
     with torch.no_grad():
         if cost is None:
-            cells = _linear_path(g, x, y, distance.isfinite())
+            cells = walk
         else:
             from ._dtw_kernels import backtrack
 
