@@ -70,11 +70,11 @@ the grid.
 
 Windows. A DTW, soft or hard, skips the tiles with no cell in the window, as
 a band leaves most of the grid out, so that its work follows the window's
-area: a skipped tile's D is inf, not the costs ``big`` adds up to, and its
-gradient is zero. A path through masked cells costs at least ``big``, which
-callers take for no path, and the soft-min of inf with a finite D is that D,
-the weight of a ``big`` argument underflowing to 0, so every other result is
-unchanged.
+area, but for the tiles of a seeded grid's row 0: a skipped tile's D is inf,
+not the costs ``big`` adds up to, and its gradient is zero. A path through
+masked cells costs at least ``big``, which callers take for no path, and the
+soft-min of inf with a finite D is that D, the weight of a ``big`` argument
+underflowing to 0, so every other result is unchanged.
 
 Seeded grids. In feature mode, with a seed (B, L), row 0 of D is given and
 the rows below run from it, as the rows of a longer grid run from the row
@@ -246,14 +246,16 @@ def _frame(items_ptr, s, R, L):
 )  # fmt: skip
 def _hit_kernel(
     hit_ptr, items_ptr, win_ptr, N, S, R, L, d0, n_rows, n_cols, TR, P, row0,
-    SHEAR: tl.constexpr, TRANSPOSE: tl.constexpr, REVERSE: tl.constexpr, TL: tl.constexpr,
+    SHEAR: tl.constexpr, TRANSPOSE: tl.constexpr, REVERSE: tl.constexpr, GIVEN: tl.constexpr,
+    TL: tl.constexpr,
 ):  # fmt: skip
     """Whether each tile of the anti-diagonals d0, d0 + 1, ... (axis 1 of the
     grid) has a cell in the window, as :func:`_window_hit` says, to ``hit_ptr``
     at the slot (d - d0) * P plus the tile's program number in its launch: the
     tile decoded as in :func:`_dag_kernel` and :func:`_frontier_kernel`, whose
     grids are P wide (P >= the tiles of a diagonal); ``items_ptr`` as in
-    :func:`_frame`."""
+    :func:`_frame`. With GIVEN, the tiles holding row 0 are flagged whatever
+    the window says: its D is the seed's, and its gradient the seed's."""
     pid = tl.program_id(0)
     dd = tl.program_id(1)
     d = d0 + dd
@@ -271,6 +273,8 @@ def _hit_kernel(
         hit = _window_hit(
             win_ptr, b, r_first, -1 if REVERSE else 1, n, cols, pos < w, N, SHEAR, TRANSPOSE, row0
         )  # fmt: skip
+        if GIVEN:
+            hit |= (n > 0) & (first + n == h if REVERSE else first == 0)
         tl.store(hit_ptr + dd * P + pid, hit.to(tl.int8))
 
 
@@ -983,6 +987,9 @@ _SHARES_BLOCK = 1024
 _SCRATCH_CELLS = 2**22
 # The anti-diagonals whose costs one launch of _cost_kernel computes, at most.
 _CHUNK = 8
+# The fewest columns of y per chunk of _sheared_gradients, to keep its batch of
+# matrix products small where the shear is narrow.
+_MIN_COLUMNS = 64
 
 
 def _halo_rows(TR: int) -> int:
@@ -992,8 +999,9 @@ def _halo_rows(TR: int) -> int:
 
 
 def _diagonals(
-    S: int, R: int, L: int, TR: int, TL: int, reverse: bool, feat, items=None, row0: int = 0
-):
+    S: int, R: int, L: int, TR: int, TL: int, reverse: bool, feat, items=None, row0: int = 0,
+    given: bool = False,
+):  # fmt: skip
     """The tile anti-diagonals of S grids of R rows and L columns, in tiles of
     TR by TL, as (d, scratch, hit, slot) for the kernels' launches.
 
@@ -1001,8 +1009,9 @@ def _diagonals(
     _frame, if any), a chunk of anti-diagonals at a time, whose costs fit
     _SCRATCH_CELLS, first has its costs computed by _cost_kernel, in parallel
     over the blocks of all its tiles, into ``scratch``, and the tiles with a
-    cell in the window flagged in ``hit`` (None without a window): a tile's
-    slice is at ``slot`` plus its program number. Without, the scratch is None.
+    cell in the window flagged in ``hit`` (None without a window; with
+    ``given``, the tiles of the seeded row 0 also): a tile's slice is at
+    ``slot`` plus its program number. Without, the scratch is None.
     """
     n_rows, n_cols = triton.cdiv(R, TR), triton.cdiv(L, TL)
     n_diag = n_rows + n_cols - 1
@@ -1024,7 +1033,7 @@ def _diagonals(
         if win is not None:
             _hit_kernel[(P, k)](
                 hit, items, win, sizes[0], S, R, L, d0, n_rows, n_cols, TR, P, row0, shear,
-                transpose, reverse, TL, num_warps=_num_warps(TL),
+                transpose, reverse, given, TL, num_warps=_num_warps(TL),
             )  # fmt: skip
         _cost_kernel[(P, blocks, k)](
             scratch, hit, items, fx, fy, win, *sizes, S, R, L, d0, n_rows, n_cols, TR, P, row0,
@@ -1044,7 +1053,7 @@ def _launch(
     TR, TL = _tile(B, R, L, feat is not None)
     TR = _halo_rows(TR) if feat is not None and reverse else TR
     n_rows, n_cols = triton.cdiv(R, TR), triton.cdiv(L, TL)
-    for d, scratch, hit, slot in _diagonals(B, R, L, TR, TL, reverse, feat, None, row0):
+    for d, scratch, hit, slot in _diagonals(B, R, L, TR, TL, reverse, feat, None, row0, given):
         lo = max(0, d - n_cols + 1)
         n_tiles = min(n_rows - 1, d) - lo + 1
         _dag_kernel[(n_tiles * B,)](
@@ -1409,9 +1418,63 @@ def _dtw_dp_features_setup(ctx, inputs, output):
     ctx.save_for_backward(x, y, window, output)
 
 
+def _sheared_gradients(x, y, window, scale, E, n0, m0):
+    """:func:`_cost_gradients` for E (B, A, S), the gradient of the costs of
+    the cells (m, s), x's row n0 + m + s, clamped to N - 1, and y's column
+    m0 + m, in memory linear in E: not the dense (A + S - 1, A) block of x's
+    rows by y's columns, of which only S diagonals are cells.
+
+    The columns m go in chunks of C, each a dense block of the K = C + S - 1
+    rows of x its cells cover by its C columns, with the products of all the
+    chunks batched. A row of x is in two blocks at most, and they add up.
+    """
+    B, A, S = E.shape
+    N, M = x.size(1), y.size(1)
+    C = min(A, max(S, _MIN_COLUMNS))
+    chunks, K = -(-A // C), C + S - 1
+    E = F.pad(E, (0, 0, 0, chunks * C - A))
+    # Cell (m, s) of chunk c is the block's row m + s, column m: offset
+    # m (C + 1) + s C in rows of C.
+    E = E.new_zeros(B, chunks, K, C).as_strided_scatter(
+        E.reshape(B, chunks, C, S), (B, chunks, C, S), (chunks * K * C, K * C, C + 1, C)
+    )
+    n = (chunks - 1) * C + K
+
+    def blocks(t):
+        """The rows n0 on of t (B, N, Q), the last repeated past N, in the
+        chunks' windows of K: (B, chunks, Q, K)."""
+        t = torch.cat([t[:, n0:], t[:, -1:].expand(-1, max(0, n - N + n0), -1)], 1)
+        return t[:, :n].unfold(1, K, C)
+
+    if window is not None:
+        cols = (
+            m0
+            + torch.arange(chunks, device=x.device)[:, None] * C
+            + torch.arange(C, device=x.device)
+        )[None]
+        lo, hi = blocks(window).unbind(2)
+        E.masked_fill_(cols[..., None, :] < lo[..., None], 0.0)
+        E.masked_fill_(cols[..., None, :] > hi[..., None], 0.0)
+    # From frames centred on each pair's mean, as the unsheared case.
+    mean = torch.cat([x, y], 1).mean(1, keepdim=True)
+    x, y = x - mean, F.pad(y[:, m0 : m0 + A] - mean, (0, 0, 0, chunks * C - A))
+    x_rows, y_cols = blocks(x).mT, y.reshape(B, chunks, C, -1)
+    grad_x = 2 * scale * (x_rows * E.sum(3, keepdim=True) - E @ y_cols)
+    grad_y = 2 * scale * (y_cols * E.sum(2).unsqueeze(-1) - E.mT @ x_rows)
+    # The blocks' rows back to x's, the overlaps added: a fold.
+    grad_x = F.fold(
+        grad_x.permute(0, 3, 2, 1).flatten(1, 2), (n, 1), (K, 1), stride=(C, 1)
+    ).squeeze(3).mT  # fmt: skip
+    k = min(n, N - n0)  # the cells past x's last row are clamped to it
+    grad_x = torch.cat([grad_x[:, : k - 1], grad_x[:, k - 1 :].sum(1, keepdim=True)], 1)
+    grad_x = F.pad(grad_x, (0, 0, n0, N - n0 - k))
+    return grad_x, F.pad(grad_y.flatten(1, 2)[:, :A], (0, 0, m0, M - m0 - A))
+
+
 def _cost_gradients(x, y, window, scale, shear, transpose, row0, E):
     """The gradients of x and y from E, the gradient of the grid's costs of
-    :func:`dtw_dp_features` (B, R, L). E is masked in place."""
+    :func:`dtw_dp_features` (B, R, L). E is masked in place, but for the
+    shear's."""
     # E, the cost's gradient on the grid, back to the (n, m) cells it covers:
     # rows n0 to n1 of x, columns m0 on of y.
     N, M = x.size(1), y.size(1)
@@ -1420,17 +1483,8 @@ def _cost_gradients(x, y, window, scale, shear, transpose, row0, E):
     B, A, S = E.shape
     a0, s0 = (0, row0) if transpose else (row0, 0)
     if shear:
-        n0, n1, m0 = a0 + s0, min(a0 + s0 + A + S - 2, N - 1), a0
-        # Cell (m, s) is x's row n0 + m + s, column m: offset m (A + 1) + s A
-        # in rows of A, K rows in all.
-        K = A + S - 1
-        E = E.new_zeros(B, K, A).as_strided_scatter(E, (B, A, S), (K * A, A + 1, A))
-        k = n1 - n0 + 1
-        if k < K:  # the cells past x's last row are clamped to it
-            E[:, k - 1] += E[:, k:].sum(1)
-        E = E[:, :k]
-    else:
-        n0, n1, m0 = a0, a0 + A - 1, s0
+        return _sheared_gradients(x, y, window, scale, E, a0 + s0, a0)
+    n0, n1, m0 = a0, a0 + A - 1, s0
     m1 = m0 + E.size(2)
     if window is not None:
         cols = torch.arange(m0, m1, device=x.device)

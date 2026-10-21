@@ -1,4 +1,5 @@
 import importlib
+import math
 import subprocess
 import sys
 from functools import partial
@@ -725,3 +726,87 @@ def test_dtw_checkpoint_lowers_the_backward_peak_memory():
         torch.autograd.grad(distance.sum(), (x, y))
         peaks[checkpoint] = torch.cuda.max_memory_allocated() - base
     assert peaks[64] < peaks[None] / 2
+
+
+@pytest.mark.cuda
+@pytest.mark.parametrize("soft", [False, True])
+def test_dtw_features_seeded_row_survives_the_window(monkeypatch, soft):
+    from philtorch.align import _dtw_kernels
+
+    # The seed's row spans three tiles of columns, the window only the first.
+    monkeypatch.setattr(_dtw_kernels, "_tile", lambda *args: (3, 16))
+    B, R, L, big = 2, 8, 40, 1e3
+    x, y, seed = (torch.randn(B, n, 2, device="cuda", dtype=torch.float64) for n in (R, L, L))
+    seed = seed[..., 0].requires_grad_()
+    x, y = x.requires_grad_(), y.requires_grad_()
+    rows = torch.arange(R, device="cuda")
+    window = torch.stack([rows, rows + 3], -1).int().expand(B, R, 2).contiguous()
+    weights = torch.randn(B, L, device="cuda", dtype=torch.float64)
+
+    def loss(D):
+        # Finite on the reference, whose skipped tiles are not inf.
+        return (D[:, 0] * weights).sum() + D[:, -1, :16].sum()
+
+    def minimum(a, b):
+        both = torch.stack([a, b])
+        return -torch.logsumexp(-both * math.log(2), 0) / math.log(2) if soft else both.min(0)[0]
+
+    # The recursion in PyTorch, over the orthogonal steps.
+    cost = (x[:, :, None] - y[:, None]).pow(2).sum(-1)
+    cols = torch.arange(L, device="cuda")
+    cost = torch.where((cols < rows[:, None]) | (cols > rows[:, None] + 3), big, cost)
+    expected = [seed]
+    for i in range(1, R):
+        row = []
+        for j in range(L):
+            up = expected[i - 1][:, j]
+            row.append((minimum(up, row[-1]) if j else up) + cost[:, i, j])
+        expected.append(torch.stack(row, 1))
+    expected = torch.stack(expected, 1)
+    D = _dtw_kernels.dtw_dp_features(
+        x, y, window, big, 1.0, soft, "orthogonal", 1.0, False, False, R, L, seed, 0
+    )
+    inputs = (seed, x, y)
+    torch.testing.assert_close(D[:, 0], seed)
+    torch.testing.assert_close(
+        torch.autograd.grad(loss(D), inputs), torch.autograd.grad(loss(expected), inputs)
+    )
+
+
+@pytest.mark.cuda
+@pytest.mark.parametrize("checkpoint", [None, 5])
+@pytest.mark.parametrize("case", [*_FEATURE_CASES[3:], ("asymmetric", 1.0, 24, 20, 2.0, True)])
+def test_dtw_asymmetric_gradients_in_chunks(monkeypatch, case, checkpoint):
+    from philtorch.align import _dtw_kernels
+
+    # Chunks of the shear's width, the last one partly empty, and past x's end.
+    monkeypatch.setattr(_dtw_kernels, "_MIN_COLUMNS", 2)
+    x, y = _features(3, *case[2:4])
+    options = _feature_options(*case)
+    inputs = dict(x=x, y=y)
+
+    def banded(x, y):
+        cost, rest = _banded(x, y, options)
+        return dtw(cost, 0.5, **rest)
+
+    actual = _derivatives(partial(dtw, gamma=0.5, checkpoint=checkpoint, **options), inputs, 0.5)
+    torch.testing.assert_close(actual, _derivatives(banded, inputs, 0.5))
+
+
+@pytest.mark.cuda
+def test_dtw_asymmetric_gradient_stays_linear_in_the_block():
+    # A transposed grid: rows of the 3072 columns of y, each block of 17 of the
+    # shear's 1025 diagonals. Their cells in a dense 3088 by 3072 block of the
+    # rows of x by the columns of y would be 36 MiB.
+    N, M, checkpoint = 4096, 3072, 16
+    x, y = (torch.randn(1, n, 2, device="cuda").requires_grad_() for n in (N, M))
+
+    def run():
+        distance = dtw(x=x, y=y, gamma=0.5, step_pattern="asymmetric", checkpoint=checkpoint)
+        return torch.autograd.grad(distance.sum(), (x, y))
+
+    run()  # warm up: the kernels and the matrix products' workspaces
+    base = torch.cuda.memory_allocated()
+    torch.cuda.reset_peak_memory_stats()
+    run()
+    assert torch.cuda.max_memory_allocated() - base < (M + checkpoint) * M * 4 / 4
