@@ -452,7 +452,7 @@ def _(D, cost, ends, steps, diag_weight):
 
 
 def _num_warps(TL: int, backward: bool = False) -> int:
-    """Warps per tile by its columns, measured on an RTX 5060 Ti (whole rows).
+    """Warps per tile by its columns, measured on an RTX 5060 Ti.
 
     The backward kernel keeps more of each row live.
     """
