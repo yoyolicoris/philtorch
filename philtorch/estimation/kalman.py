@@ -1,4 +1,5 @@
-"""Kalman filters and smoothers parallelized over time with associative scans.
+"""Kalman filters and smoothers parallelized over time with associative scans,
+and their expectation-maximization step.
 
 These follow Särkkä and García-Fernández, "On the performance of prefix-sum
 parallel Kalman filters and smoothers on GPUs" (arXiv:2511.10363).

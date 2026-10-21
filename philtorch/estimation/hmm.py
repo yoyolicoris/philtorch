@@ -3,7 +3,8 @@
 The forward algorithm, forward-backward smoothing and Viterbi decoding as
 parallel scans over time of per-step K x K matrices in the log or max-plus
 semiring, following Hassan, Särkkä and García-Fernández, "Temporal
-parallelization of inference in hidden Markov models" (IEEE TSP, 2021).
+parallelization of inference in hidden Markov models" (IEEE TSP, 2021), and
+Baum-Welch re-estimation from the forward algorithm's gradients.
 
 The model is the classical one, as in
 :func:`~philtorch.estimation.kalman_filter`: the prior describes the first
