@@ -567,18 +567,22 @@ def kalman_em_step(
     def avg(t: Tensor, per_signal: bool) -> Tensor:
         return t.mean(1) if per_signal else t.mean((0, 1))
 
-    outer = V + m.unsqueeze(-1) @ m.unsqueeze(-2).conj()  # E[x[n] x[n]^H]
-    cross = V10 + m[:, 1:].unsqueeze(-1) @ m[:, :-1].unsqueeze(-2).conj()
-    E00, E11, E10 = avg(outer[:, :-1], per_A), avg(outer[:, 1:], per_A), avg(cross, per_A)
-    A = torch.linalg.solve(E00, E10.mH).mH
-    Q = E11 - A @ E10.mH
-    Exx, Eyx = avg(outer, per_C), avg(y.unsqueeze(-1) @ m.unsqueeze(-2).conj(), per_C)
-    Eyy = avg(y.unsqueeze(-1) @ y.unsqueeze(-2).conj(), per_C)
-    C = torch.linalg.solve(Exx, Eyx.mH).mH
-    R = Eyy - C @ Eyx.mH
+    def outer(u: Tensor, v: Tensor) -> Tensor:
+        return u.unsqueeze(-1) @ v.unsqueeze(-2).conj()
+
+    # A and C from the second moments E[x[n] x[n]^H] = V + m m^H; the
+    # covariances from the residuals, as differences of second moments would
+    # round them away under large means.
+    Exx = V + outer(m, m)
+    E10 = avg(V10 + outer(m[:, 1:], m[:, :-1]), per_A)
+    A = torch.linalg.solve(avg(Exx[:, :-1], per_A), E10.mH).mH
+    C = torch.linalg.solve(avg(Exx, per_C), avg(outer(y, m), per_C).mH).mH
+    a, c = (A[:, None] if per_A else A), (C[:, None] if per_C else C)
+    r, e = m[:, 1:] - _mv(a, m[:, :-1]), y - _mv(c, m)
+    Q = avg(outer(r, r) + V[:, 1:] - a @ V10.mH - V10 @ a.mH + a @ V[:, :-1] @ a.mH, per_A)
+    R = avg(outer(e, e) + c @ V @ c.mH, per_C)
     m0 = m[:, 0] if per_m0 else m[:, 0].mean(0)
-    outer0 = outer[:, 0] if per_m0 else outer[:, 0].mean(0)
-    P0 = outer0 - m0.unsqueeze(-1) @ m0.unsqueeze(-2).conj()
+    P0 = V[:, 0] if per_m0 else (V[:, 0] + outer(m[:, 0] - m0, m[:, 0] - m0)).mean(0)
     # Exactly Hermitian, despite rounding, for the next step's factorizations.
     Q, R, P0 = (Q + Q.mH) / 2, (R + R.mH) / 2, (P0 + P0.mH) / 2
     return log_likelihood, (A, C, Q, R, m0, P0)

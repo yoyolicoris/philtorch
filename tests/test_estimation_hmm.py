@@ -288,6 +288,16 @@ def test_hmm_em_step_counts_are_partial_derivatives():
 
 
 @pytest.mark.cuda
+def test_hmm_em_step_in_inference_mode():
+    inputs = _model(2, 5, 3, time_varying=False)
+    inputs = (inputs[0], inputs[1], inputs[2][0])
+    expected = hmm_em_step(*inputs)
+    with torch.inference_mode():
+        actual = hmm_em_step(*(x.clone() for x in inputs))
+    torch.testing.assert_close(actual, expected)
+
+
+@pytest.mark.cuda
 def test_hmm_em_step_gradients():
     log_emit, log_trans, log_init = _model(2, 5, 3, time_varying=False)
 

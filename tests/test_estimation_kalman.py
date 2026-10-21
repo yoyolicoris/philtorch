@@ -425,6 +425,20 @@ def test_kalman_em_step_per_signal_matches_separate_fits(B, N):
             torch.testing.assert_close(t[b], t_b)
 
 
+@pytest.mark.parametrize("per_signal", [False, True])
+def test_kalman_em_step_covariances_survive_large_means(per_signal):
+    # Means of 1e8 make second moments of 1e16, whose differences would round
+    # the covariances to 0.
+    one = torch.ones(1, 1, dtype=torch.float64)
+    m0 = torch.full((1,), 1e8, dtype=torch.float64)
+    if per_signal:
+        one, m0 = one[None], m0[None]
+    y = torch.full((1, 2, 1), 1e8, dtype=torch.float64)
+    _, (_, _, Q, R, _, P0) = kalman_em_step(y, one, one, one, one, m0, one)
+    actual = torch.cat([t.reshape(1) for t in (Q, R, P0)])
+    torch.testing.assert_close(actual, actual.new_tensor([0.6, 0.5, 0.4]), rtol=0, atol=1e-6)
+
+
 def test_kalman_known_initial_state_with_singular_noise():
     """An AR(2) model from a known zero state, one step before its first measurement.
 

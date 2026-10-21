@@ -572,11 +572,16 @@ def hmm_em_step(
         )
     inputs = (log_emit, log_trans, log_init)
     differentiable = torch.is_grad_enabled() and any(x.requires_grad for x in inputs)
-    with torch.enable_grad():
+    # Autograd records nothing in inference mode, nor on its tensors, so the
+    # E-step leaves it and clones them.
+    with torch.inference_mode(False), torch.enable_grad():
         # Fresh views, so that the gradients are partial derivatives even when
         # one input depends on another.
         emit, trans, init = (
-            x.view_as(x) if x.requires_grad else x.detach().requires_grad_() for x in inputs
+            x.view_as(x)
+            if x.requires_grad
+            else (x.clone() if x.is_inference() else x.detach()).requires_grad_()
+            for x in inputs
         )
         e, t, i = _parse("hmm_em_step", emit, trans, init, per_signal=True)
         log_likelihood = _logsumexp(_LogChain.apply(i, t, e[:, :-1])[:, -1] + e[:, -1], dim=-1)
