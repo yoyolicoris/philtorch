@@ -43,7 +43,8 @@ either semiring, min-plus (or soft-min-plus) for the forward pass and
 linear for every accumulation, the first-order backward's included;
 ``_shares_kernel`` computes, for CTC's forced alignment, each cell's best
 step back over all cells at once; with the ctc steps, both take the (B, R)
-skip mask.
+skip mask. :func:`sqdist` builds the cost matrix of two feature sequences
+from direct differences, which don't cancel as |x|^2 + |y|^2 - 2 x.y does.
 """
 
 import math
@@ -747,3 +748,61 @@ def _dtw_dp_backward_backward(ctx, grad_e):
 
 
 dtw_dp_backward.register_autograd(_dtw_dp_backward_backward, setup_context=_dtw_dp_backward_setup)
+
+
+@triton.jit
+def _sqdist_kernel(
+    x_ptr, y_ptr, out_ptr, N, M, F, BN: tl.constexpr, BM: tl.constexpr, BF: tl.constexpr
+):
+    b = tl.program_id(0).to(tl.int64)
+    n = tl.program_id(1) * BN + tl.arange(0, BN)
+    m = tl.program_id(2) * BM + tl.arange(0, BM)
+    x_ptr += b * N * F
+    y_ptr += b * M * F
+    acc = tl.zeros((BN, BM), dtype=out_ptr.dtype.element_ty)
+    for f0 in range(0, F, BF):
+        f = f0 + tl.arange(0, BF)
+        x = tl.load(
+            x_ptr + n[:, None] * F + f[None, :], mask=(n[:, None] < N) & (f[None, :] < F), other=0
+        )
+        y = tl.load(
+            y_ptr + m[:, None] * F + f[None, :], mask=(m[:, None] < M) & (f[None, :] < F), other=0
+        )
+        d = x[:, None, :] - y[None, :, :]
+        acc += tl.sum(d * d, axis=2)
+    mask = (n[:, None] < N) & (m[None, :] < M)
+    tl.store(out_ptr + b * N * M + n[:, None] * M + m[None, :], acc, mask=mask)
+
+
+@torch.library.custom_op("philtorch::dtw_sqdist", mutates_args=())
+def sqdist(x: Tensor, y: Tensor) -> Tensor:
+    """The squared Euclidean distances (B, N, M) between the rows of x (B, N, F)
+    and y (B, M, F), from their differences."""
+    x, y = x.contiguous(), y.contiguous()
+    (B, N, F), M = x.shape, y.shape[1]
+    out = x.new_empty(B, N, M)
+    BN = BM = 32
+    _sqdist_kernel[(B, triton.cdiv(N, BN), triton.cdiv(M, BM))](
+        x, y, out, N, M, F, BN=BN, BM=BM, BF=8, num_warps=4
+    )  # fmt: skip
+    return out
+
+
+@sqdist.register_fake
+def _(x, y):
+    return x.new_empty(x.shape[0], x.shape[1], y.shape[1])
+
+
+def _sqdist_setup(ctx, inputs, output):
+    ctx.save_for_backward(*inputs)
+
+
+def _sqdist_backward(ctx, g):
+    # d/dx of sum_f (x - y)^2 is 2 (x - y), summed over the pairs weighted by g.
+    x, y = ctx.saved_tensors
+    grad_x = 2 * (x * g.sum(2, keepdim=True) - g @ y)
+    grad_y = 2 * (y * g.sum(1).unsqueeze(-1) - g.mT @ x)
+    return grad_x, grad_y
+
+
+sqdist.register_autograd(_sqdist_backward, setup_context=_sqdist_setup)

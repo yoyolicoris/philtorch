@@ -46,10 +46,33 @@ def _band_mask(N: int, M: int, n_len: Tensor, m_len: Tensor, band: float) -> Ten
     return (offset <= torch.maximum(width, torch.full_like(width, band))) | one_line
 
 
+def _features_cost(name: str, cost: Tensor | None, x: Tensor | None, y: Tensor | None) -> Tensor:
+    """``cost``, or the squared Euclidean distances between ``x`` and ``y``."""
+    if (x is None) != (y is None):
+        raise ValueError(f"{name} needs x and y together")
+    if (cost is None) == (x is None):
+        raise ValueError(f"{name} needs either the cost or x and y, not both or neither")
+    if cost is not None:
+        return cost
+    if x.dim() != 3 or y.dim() != 3 or x.shape[::2] != y.shape[::2]:
+        raise ValueError(
+            f"x and y must be (B, N, F) and (B, M, F), got {tuple(x.shape)} and {tuple(y.shape)}"
+        )
+    if x.dtype != y.dtype:
+        raise ValueError(f"x and y must have one dtype, got {x.dtype} and {y.dtype}")
+    check_cuda_triton(name, x, y)
+    # Imported here so that philtorch.align imports without Triton.
+    from ._dtw_kernels import sqdist
+
+    return sqdist(x, y)
+
+
 def dtw(
-    cost: Tensor,
+    cost: Tensor | None = None,
     gamma: float = 0.0,
     *,
+    x: Tensor | None = None,
+    y: Tensor | None = None,
     step_pattern: StepPattern = "symmetric",
     diagonal_weight: float = 1.0,
     lengths: tuple[Tensor, Tensor] | None = None,
@@ -95,8 +118,14 @@ def dtw(
         builds for Linux.
 
     Args:
-        cost (Tensor): the costs :math:`c[n, m]`, of shape :math:`(B, N, M)`.
+        cost (Tensor, optional): the costs :math:`c[n, m]`, of shape
+            :math:`(B, N, M)`. Give either it or both :attr:`x` and :attr:`y`.
         gamma (float): 0 for DTW, positive for soft-DTW. Default: 0.
+        x (Tensor, optional): the first sequences' frames, of shape
+            :math:`(B, N, F)`. With :attr:`y`, the cost is the squared
+            Euclidean distances between their frames, as direct differences.
+        y (Tensor, optional): the second sequences' frames, of shape
+            :math:`(B, M, F)`, with the dtype of :attr:`x`.
         step_pattern (str): the steps a path may take, as (row, column)
             increments: ``"symmetric"`` for (1, 0), (0, 1) and (1, 1);
             ``"asymmetric"`` for (1, 0) and (1, 1) only, so that every frame of
@@ -128,7 +157,10 @@ def dtw(
         no path, such as the asymmetric steps with :math:`N_b < M_b`.
 
     Raises:
-        ValueError: if :attr:`cost` is not a CUDA tensor of shape
+        ValueError: if not exactly one of :attr:`cost` and (:attr:`x`,
+            :attr:`y`) is given, if :attr:`x` and :attr:`y` are not CUDA
+            tensors of shapes :math:`(B, N, F)` and :math:`(B, M, F)` of one
+            dtype, if :attr:`cost` is not a CUDA tensor of shape
             :math:`(B, N, M)` with :math:`N, M > 0` and at most
             :math:`2^{31} - 1` cells per pair, if :attr:`step_pattern` is
             unknown, if :attr:`diagonal_weight` is not 1 with steps that have
@@ -148,12 +180,14 @@ def dtw(
         >>> distance = dtw(cost, gamma=0.1)
         >>> alignment, = torch.autograd.grad(distance.sum(), cost, retain_graph=True)
         >>> distance.sum().backward()  # gradients with respect to y
+        >>> same = dtw(x=x, y=y, gamma=0.1)  # the same cost, from the frames
 
     .. _Soft-DTW\: a Differentiable Loss Function for Time-Series:
         https://proceedings.mlr.press/v70/cuturi17a.html
     .. _Parallelizing Dynamic Time Warping Algorithm Using Prefix Computations on GPU:
         https://doi.org/10.1109/HPCC.and.EUC.2013.50
     """
+    cost = _features_cost("dtw", cost, x, y)
     _validate("dtw", cost, step_pattern, diagonal_weight, lengths)
     return _dtw(cost, gamma, step_pattern, diagonal_weight, lengths, band)[0]
 
@@ -238,8 +272,10 @@ def _dtw(cost, gamma, step_pattern, diagonal_weight, lengths, band):
 
 
 def dtw_path(
-    cost: Tensor,
+    cost: Tensor | None = None,
     *,
+    x: Tensor | None = None,
+    y: Tensor | None = None,
     step_pattern: StepPattern = "symmetric",
     diagonal_weight: float = 1.0,
     lengths: tuple[Tensor, Tensor] | None = None,
@@ -261,7 +297,9 @@ def dtw_path(
         builds for Linux.
 
     Args:
-        cost (Tensor): the costs :math:`c[n, m]`, of shape :math:`(B, N, M)`.
+        cost (Tensor, optional): as in :func:`dtw`.
+        x (Tensor, optional): as in :func:`dtw`.
+        y (Tensor, optional): as in :func:`dtw`.
         step_pattern (str): as in :func:`dtw`.
         diagonal_weight (float): as in :func:`dtw`.
         lengths (tuple of Tensor, optional): as in :func:`dtw`.
@@ -294,6 +332,7 @@ def dtw_path(
                 [-1, -1],
                 [-1, -1]], device='cuda:0')
     """
+    cost = _features_cost("dtw_path", cost, x, y)
     _validate("dtw_path", cost, step_pattern, diagonal_weight, lengths)
     from ._dtw_kernels import backtrack
 
@@ -317,11 +356,13 @@ def dtw_path(
 
 
 def soft_dtw_divergence(
-    cost_xy: Tensor,
-    cost_xx: Tensor,
-    cost_yy: Tensor,
-    gamma: float,
+    cost_xy: Tensor | None = None,
+    cost_xx: Tensor | None = None,
+    cost_yy: Tensor | None = None,
+    gamma: float | None = None,
     *,
+    x: Tensor | None = None,
+    y: Tensor | None = None,
     lengths: tuple[Tensor, Tensor] | None = None,
     **kwargs,
 ) -> Tensor:
@@ -341,13 +382,19 @@ def soft_dtw_divergence(
         builds for Linux.
 
     Args:
-        cost_xy (Tensor): costs between the sequences, of shape
+        cost_xy (Tensor, optional): costs between the sequences, of shape
             :math:`(B, N, M)`.
-        cost_xx (Tensor): costs of the first sequences with themselves, of
-            shape :math:`(B, N, N)`.
-        cost_yy (Tensor): costs of the second sequences with themselves, of
-            shape :math:`(B, M, M)`.
-        gamma (float): the soft-min temperature, positive.
+        cost_xx (Tensor, optional): costs of the first sequences with
+            themselves, of shape :math:`(B, N, N)`.
+        cost_yy (Tensor, optional): costs of the second sequences with
+            themselves, of shape :math:`(B, M, M)`.
+        gamma (float): the soft-min temperature, positive. Required.
+        x (Tensor, optional): the first sequences' frames, of shape
+            :math:`(B, N, F)`. Give either the three costs or both :attr:`x`
+            and :attr:`y`, from which they are the squared Euclidean
+            distances, as in :func:`dtw`.
+        y (Tensor, optional): the second sequences' frames, of shape
+            :math:`(B, M, F)`.
         lengths (tuple of Tensor, optional): each pair's lengths
             :math:`(N_b, M_b)`, as in :func:`dtw`.
         **kwargs: the other keyword arguments of :func:`dtw`.
@@ -356,16 +403,21 @@ def soft_dtw_divergence(
         Tensor: the divergences, of shape :math:`(B)`.
 
     Raises:
-        ValueError: if :attr:`gamma` is not positive, if :attr:`cost_xx`
-            and :attr:`cost_yy` are not of shapes :math:`(B, N, N)` and
-            :math:`(B, M, M)`, or as :func:`dtw` does.
+        ValueError: if :attr:`gamma` is missing or not positive, if the three
+            costs and (:attr:`x`, :attr:`y`) are both given or neither, if
+            :attr:`cost_xx` and :attr:`cost_yy` are not of shapes
+            :math:`(B, N, N)` and :math:`(B, M, M)`, or as :func:`dtw` does.
         RuntimeError: if Triton is not installed.
 
     .. _Differentiable Divergences Between Time Series:
         https://proceedings.mlr.press/v130/blondel21a.html
     """
-    if not gamma > 0:
+    if gamma is None or not gamma > 0:
         raise ValueError(f"the soft-DTW divergence needs gamma > 0, got {gamma}")
+    name = "soft_dtw_divergence"
+    cost_xy = _features_cost(name, cost_xy, x, y)
+    cost_xx = _features_cost(name, cost_xx, x, x)
+    cost_yy = _features_cost(name, cost_yy, y, y)
     if cost_xy.dim() == 3:
         B, N, M = cost_xy.shape
         if cost_xx.shape != (B, N, N) or cost_yy.shape != (B, M, M):

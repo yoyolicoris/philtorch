@@ -412,3 +412,91 @@ def test_dtw_tiles_agree_with_one_tile(monkeypatch, gamma, step_pattern, diagona
             torch.testing.assert_close(tiled, whole, rtol=0, atol=0)
         else:
             torch.testing.assert_close(tiled, whole)
+
+
+def _features(batch_size=3, N=9, M=7, F=2):
+    gen = torch.Generator().manual_seed(0)
+    x = torch.randn(batch_size, N, F, dtype=torch.float64, generator=gen)
+    y = torch.randn(batch_size, M, F, dtype=torch.float64, generator=gen)
+    return x.cuda().requires_grad_(), y.cuda().requires_grad_()
+
+
+def _squared_distances(x, y):
+    return (x[:, :, None] - y[:, None]).pow(2).sum(-1)
+
+
+@pytest.mark.cuda
+@pytest.mark.parametrize("gamma", [0.0, 0.5])
+def test_dtw_features_equal_the_squared_distances_as_cost(gamma):
+    x, y = _features()
+    options = {}
+    if gamma > 0:
+        options = dict(lengths=(torch.tensor([9, 4, 6]), torch.tensor([7, 3, 7])), band=2.0)
+    actual = dtw(x=x, y=y, gamma=gamma, **options)
+    expected = dtw(_squared_distances(x, y), gamma, **options)
+    torch.testing.assert_close(actual, expected)
+    grads = torch.autograd.grad(actual.sum(), (x, y))
+    expected_grads = torch.autograd.grad(expected.sum(), (x, y))
+    torch.testing.assert_close(grads, expected_grads)
+
+
+@pytest.mark.cuda
+def test_dtw_path_features():
+    x, y = _features()
+    distance, path = dtw_path(x=x, y=y, step_pattern="orthogonal")
+    expected, expected_path = dtw_path(_squared_distances(x, y), step_pattern="orthogonal")
+    torch.testing.assert_close(distance, expected)
+    torch.testing.assert_close(path, expected_path)
+
+
+@pytest.mark.cuda
+def test_soft_dtw_divergence_features():
+    x, y = _features()
+    lengths = (torch.tensor([9, 4, 6]), torch.tensor([7, 3, 7]))
+    actual = soft_dtw_divergence(gamma=0.5, x=x, y=y, lengths=lengths)
+    expected = soft_dtw_divergence(
+        _squared_distances(x, y),
+        _squared_distances(x, x),
+        _squared_distances(y, y),
+        0.5,
+        lengths=lengths,
+    )
+    torch.testing.assert_close(actual, expected)
+
+
+@pytest.mark.cuda
+@pytest.mark.parametrize(
+    "call, match",
+    [
+        (lambda c, x, y: dtw(c, x=x, y=y), "either the cost or x and y"),
+        (lambda c, x, y: dtw(), "either the cost or x and y"),
+        (lambda c, x, y: dtw_path(x=x), "x and y together"),
+        (lambda c, x, y: dtw(x=x, y=y[:, :, :1]), "must be"),
+        (lambda c, x, y: dtw(x=x, y=y.float()), "one dtype"),
+        (lambda c, x, y: soft_dtw_divergence(x=x, y=y), "gamma > 0"),
+        (lambda c, x, y: soft_dtw_divergence(c, c, c, 0.5, x=x, y=y), "either the cost"),
+    ],
+)
+def test_dtw_features_reject_bad_arguments(call, match):
+    x, y = _features()
+    cost = _squared_distances(x, y).detach()
+    with pytest.raises(ValueError, match=match):
+        call(cost, x, y)
+
+
+@pytest.mark.cuda
+def test_sqdist_from_differences_under_large_offsets():
+    # |x|^2 + |y|^2 - 2 x.y would lose every digit here in float32.
+    from philtorch.align._dtw_kernels import sqdist
+
+    x, y = (1e4 + torch.randn(2, n, 16, device="cuda") for n in (50, 40))
+    expected = _squared_distances(x.double(), y.double())
+    torch.testing.assert_close(sqdist(x, y).double(), expected, atol=1e-4, rtol=1e-6)
+
+
+@pytest.mark.cuda
+def test_sqdist_second_derivatives():
+    from philtorch.align._dtw_kernels import sqdist
+
+    x, y = _features(2, 4, 5, 3)
+    assert torch.autograd.gradgradcheck(sqdist, (x, y))

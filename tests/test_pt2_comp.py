@@ -148,6 +148,13 @@ def _ctc_viterbi_calls():
     )
 
 
+def _dtw_sqdist_calls():
+    from philtorch.align import _dtw_kernels
+
+    x, y = (torch.rand(2, n, 3, device="cuda", requires_grad=True) for n in (5, 6))
+    return _recorded_calls(_dtw_kernels, "sqdist", lambda: _dtw_kernels.sqdist(x, y))
+
+
 def _dtw_backtrack_calls():
     from philtorch.align import _dtw_kernels, dtw_path
 
@@ -199,6 +206,7 @@ def _weighted_contract_calls():
         pytest.param("dtw_accumulate", _dtw_accumulate_calls, id="dtw_accumulate"),
         pytest.param("ctc_viterbi", _ctc_viterbi_calls, id="ctc_viterbi"),
         pytest.param("dtw_backtrack", _dtw_backtrack_calls, id="dtw_backtrack"),
+        pytest.param("dtw_sqdist", _dtw_sqdist_calls, id="dtw_sqdist"),
         pytest.param("hmm_viterbi_chain", _hmm_viterbi_chain_calls, id="hmm_viterbi_chain"),
         pytest.param("weighted_contract", _weighted_contract_calls, id="weighted_contract"),
     ],
