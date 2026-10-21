@@ -203,6 +203,6 @@ def test_ctc_tiles_agree_with_one_tile(monkeypatch):
         return loss, grad, *forced_align(logits.log_softmax(-1).detach(), *args, 0)
 
     expected = run()
-    monkeypatch.setattr(_dtw_kernels, "_tile", lambda B, R, L: (3, 16))
+    monkeypatch.setattr(_dtw_kernels, "_tile", lambda *args: (3, 16))
     for tiled, whole in zip(run(), expected):
         torch.testing.assert_close(tiled, whole)

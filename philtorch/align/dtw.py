@@ -76,8 +76,8 @@ def _check_features(name: str, cost: Tensor | None, x: Tensor | None, y: Tensor 
         raise ValueError(
             f"x and y must be (B, N, F) and (B, M, F), got {tuple(x.shape)} and {tuple(y.shape)}"
         )
-    if x.dtype != y.dtype:
-        raise ValueError(f"x and y must have one dtype, got {x.dtype} and {y.dtype}")
+    if x.dtype != y.dtype or not x.is_floating_point():
+        raise ValueError(f"x and y must have one floating dtype, got {x.dtype} and {y.dtype}")
     check_cuda_triton(name, x, y)
 
 
@@ -267,9 +267,15 @@ def _dtw(cost, x, y, gamma, step_pattern, diagonal_weight, lengths, band):
     scale = 1.0 / (gamma * math.log(2)) if gamma > 0 else 1.0
     # A large finite cost outside the band, not inf, keeps soft-min's
     # arithmetic finite; a path sums at most w (N + M) of them.
-    big = torch.finfo(ref.dtype).max / (8 * max(diagonal_weight, 1.0) * (N + M))
+    dtype = ref.dtype if ref.is_floating_point() else torch.get_default_dtype()  # cost * scale's
+    big = torch.finfo(dtype).max / (8 * max(diagonal_weight, 1.0) * (N + M))
     if features:
         window = None if band is None else _band_windows(N, M, n_len, m_len, band)
+        if lengths is not None:
+            # Frames past each pair's length as zeros: any value there, inf
+            # included, would reach the gradients' products.
+            x = torch.where((torch.arange(N, device=x.device) < n_len[:, None])[..., None], x, 0.0)
+            y = torch.where((torch.arange(M, device=y.device) < m_len[:, None])[..., None], y, 0.0)
     else:
         cost = cost * scale
         if band is not None:

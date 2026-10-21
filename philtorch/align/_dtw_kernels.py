@@ -618,15 +618,16 @@ def _num_warps(TL: int, backward: bool = False) -> int:
     return min(warps, 16) if torch.version.hip else warps
 
 
-def _tile(B: int, R: int, L: int) -> tuple[int, int]:
+def _tile(B: int, R: int, L: int, features: bool = False) -> tuple[int, int]:
     """The tile's rows and columns, measured on an RTX 5060 Ti: narrower tiles give
     a few pairs more programs per launch, wider ones fewer launches for many. With
     too few tiles side by side to pay for the launches, a tile is the whole grid,
-    for rows of at most _MAX_ROW columns."""
+    for rows of at most _MAX_ROW columns; with features, whose cells cost more,
+    two side by side pay."""
     TL = min(256 if B < 8 else 1024, triton.next_power_of_2(L))
     n_cols = triton.cdiv(L, TL)
     side_by_side = B * min(triton.cdiv(R, 32), n_cols)
-    if n_cols == 1 or (side_by_side < _MIN_TILES and L <= _MAX_ROW):
+    if n_cols == 1 or (side_by_side < (2 if features else _MIN_TILES) and L <= _MAX_ROW):
         return R, triton.next_power_of_2(L)
     return 32, TL
 
@@ -652,7 +653,7 @@ def _launch(
 ):  # fmt: skip
     """Run _dag_kernel over the grid, one launch per tile anti-diagonal; ``feat``, as
     _features takes it, in place of ``cost``."""
-    TR, TL = _tile(B, R, L)
+    TR, TL = _tile(B, R, L, feat is not None)
     features, flags = _features(feat, TL)
     n_rows, n_cols = triton.cdiv(R, TR), triton.cdiv(L, TL)
     for d in range(n_rows + n_cols - 1):
