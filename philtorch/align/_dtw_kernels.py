@@ -32,10 +32,11 @@ minima, which can differ from the stored D in the last bit.
 
 dtw_dp's backward is one op, :func:`dtw_dp_backward`, in eager and compiled
 code alike: :func:`_dtw_backward`, which computes the shares as it scans each
-row from the right, without storing them. Its own backward, for higher derivatives, rebuilds the
-same gradient from :func:`shares`, PyTorch ops, and :func:`accumulate`, the
-linear accumulation over the grid in either direction, whose backward is
-itself in the other direction, and differentiates that.
+row from the right, without storing them. Its own backward, for higher
+derivatives, rebuilds the same gradient from :func:`shares`, PyTorch ops, and
+:func:`accumulate`, the linear accumulation over the grid in either
+direction, whose backward is itself in the other direction, and
+differentiates that.
 
 Two kernels do all of it. ``_dag_kernel`` is the row-by-row recursion in
 either semiring, min-plus (or soft-min-plus) for the forward pass and

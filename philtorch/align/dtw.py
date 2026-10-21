@@ -84,9 +84,8 @@ def dtw(
     Rows of the accumulated costs are computed one after another, each with
     a parallel scan over its cells, after `Parallelizing Dynamic Time
     Warping Algorithm Using Prefix Computations on GPU`_ (Xiao et al.,
-    2013), in one Triton kernel per batch: :math:`\min(N, M)` sequential
-    steps for the symmetric and orthogonal steps, at most :math:`M` for the
-    asymmetric steps, and :math:`O(NM)` work and memory. The cost can be any
+    2013), in tiles of the grid run as a wavefront, so that a single long
+    pair fills the GPU: :math:`O(NM)` work and memory. The cost can be any
     tensor, from any differentiable function of the sequences, such as the
     squared Euclidean distances between their frames.
 
