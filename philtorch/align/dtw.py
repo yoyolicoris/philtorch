@@ -176,7 +176,7 @@ def dtw(
         ValueError: if not exactly one of :attr:`cost` and (:attr:`x`,
             :attr:`y`) is given, if :attr:`x` and :attr:`y` are not CUDA
             tensors of shapes :math:`(B, N, F)` and :math:`(B, M, F)` of one
-            dtype, if :attr:`cost` is not a CUDA tensor of shape
+            floating dtype, if :attr:`cost` is not a CUDA tensor of shape
             :math:`(B, N, M)` with :math:`N, M > 0` and at most
             :math:`2^{31} - 1` cells per pair, if :attr:`step_pattern` is
             unknown, if :attr:`diagonal_weight` is not 1 with steps that have
@@ -274,8 +274,12 @@ def _dtw(cost, x, y, gamma, step_pattern, diagonal_weight, lengths, band):
         if lengths is not None:
             # Frames past each pair's length as zeros: any value there, inf
             # included, would reach the gradients' products.
-            x = torch.where((torch.arange(N, device=x.device) < n_len[:, None])[..., None], x, 0.0)
-            y = torch.where((torch.arange(M, device=y.device) < m_len[:, None])[..., None], y, 0.0)
+            x, y = (
+                torch.where(
+                    (torch.arange(t.size(1), device=t.device) < n[:, None])[..., None], t, 0
+                )
+                for t, n in ((x, n_len), (y, m_len))
+            )
     else:
         cost = cost * scale
         if band is not None:

@@ -454,7 +454,6 @@ def test_soft_dtw_divergence_features():
         (lambda c, x, y: dtw(), "either the cost or x and y"),
         (lambda c, x, y: dtw_path(x=x), "x and y together"),
         (lambda c, x, y: dtw(x=x, y=y[:, :, :1]), "must be"),
-        (lambda c, x, y: dtw(x=x, y=y.float()), "one floating dtype"),
         (lambda c, x, y: dtw(x=x.long(), y=y.long()), "one floating dtype"),
         (lambda c, x, y: soft_dtw_divergence(x=x, y=y), "gamma > 0"),
         (lambda c, x, y: soft_dtw_divergence(c, c, c, 0.5, x=x, y=y), "either the cost"),

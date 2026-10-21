@@ -531,11 +531,6 @@ def _backtrack_kernel(
         i = next_i
 
 
-def _feature_block(F: int, lanes: int) -> int:
-    """The features a kernel reads at once per lane, within a register budget."""
-    return max(1, min(8, 8192 // lanes, triton.next_power_of_2(F)))
-
-
 def _features(feat, lanes: int):
     """feat = (x, y, window, big, scale, shear, transpose), or None for the cost
     tensor mode, as the kernels' arguments: (fx, fy, window, N, M, F, big_bits,
@@ -549,7 +544,8 @@ def _features(feat, lanes: int):
     bits = (struct.unpack("<q", struct.pack("<d", v))[0] for v in (big, scale))
     N, F = x.shape[1:]
     arguments = (x, y, window, N, y.shape[1], F, *bits)
-    return arguments, (shear, transpose, _feature_block(F, lanes))
+    # The features a kernel reads at once per lane, within a register budget.
+    return arguments, (shear, transpose, max(1, min(8, 8192 // lanes, triton.next_power_of_2(F))))
 
 
 def _backtrack(D, cost, feat, ends, steps, diag_weight):
