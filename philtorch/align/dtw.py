@@ -123,7 +123,9 @@ def dtw(
     a parallel scan over its cells, after `Parallelizing Dynamic Time
     Warping Algorithm Using Prefix Computations on GPU`_ (Xiao et al.,
     2013), in tiles of the grid run as a wavefront, so that a single long
-    pair fills the GPU: :math:`O(NM)` work and memory. The cost can be any
+    pair fills the GPU: :math:`O(NM)` work, and the memory of the cost and
+    the accumulated costs, or from frames, without gradients,
+    :math:`O(B (N + M))`. The cost can be any
     tensor, from any differentiable function of the sequences, such as the
     squared Euclidean distances between their frames.
 
@@ -340,12 +342,8 @@ def _dtw(cost, x, y, gamma, step_pattern, diagonal_weight, lengths, band):
         # Frames past each pair's length as zeros: any value there, inf
         # included, would reach the gradients' products.
         x, y = (
-            torch.where(
-                (torch.arange(t.size(1), device=t.device) < n.to(t.device)[:, None])[..., None],
-                t,
-                0,
-            )
-            for t, n in zip((x, y), lengths)
+            torch.where((torch.arange(t.size(1), device=t.device) < n[:, None])[..., None], t, 0)
+            for t, n in zip((x, y), (n.to(x.device) for n in lengths))
         )
     g = _grid(cost, x, y, gamma, step_pattern, diagonal_weight, lengths, band)
     if g is None:
@@ -538,7 +536,7 @@ def dtw_path(
     :func:`dtw`'s, differentiable to any order, its gradient the path.
 
     From :attr:`x` and :attr:`y`, the path is found by divide and conquer, in
-    :math:`O(B (N + M))` memory and about twice the forward work: the best
+    :math:`O(B (N + M))` memory and a few times the forward work: the best
     crossing of a rectangle's middle rows splits it in two between cells of
     the path, down to rectangles backtracked whole.
 

@@ -38,12 +38,12 @@ derivatives, rebuilds the same gradient from :func:`shares`, PyTorch ops, and
 direction, whose backward is itself in the other direction, and
 differentiates that.
 
-Two kernels do all of it. ``_dag_kernel`` is the row-by-row recursion in
+Three kernels do all of it. ``_dag_kernel`` is the row-by-row recursion in
 either semiring, min-plus (or soft-min-plus) for the forward pass and
 linear for every accumulation, the first-order backward's included;
 ``_shares_kernel`` computes, for CTC's forced alignment, each cell's best
 step back over all cells at once; with the ctc steps, both take the (B, R)
-skip mask.
+skip mask; ``_frontier_kernel`` is the recursion without storing D (below).
 
 Feature mode. With the features x (B, N, F) and y (B, M, F), the kernels
 compute each cost they need on the spot, as the squared distance of the
@@ -537,7 +537,7 @@ def _frontier_kernel(
     inf = tl.full([TL], _KERNEL_INF, rows_ptr.dtype.element_ty)
     left_prev = inf
     if REVERSE:
-        below = mask & (i > 0)
+        below = mask & (i > 0) & (n_rows > 0)  # past the item, that row is off its grid
         c_prev = _cost(
             None, fx_ptr, fy_ptr, win_ptr, b, r0 + h - first, cols, below, 0, 0, N, M, F,
             big_bits, scale_bits, SHEAR, TRANSPOSE, BF,
