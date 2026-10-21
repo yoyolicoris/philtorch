@@ -126,8 +126,9 @@ def dtw(
     Warping Algorithm Using Prefix Computations on GPU`_ (Xiao et al.,
     2013), in tiles of the grid run as a wavefront, so that a single long
     pair fills the GPU: :math:`O(NM)` work, and the memory of the cost and
-    the accumulated costs (fewer of them with :attr:`checkpoint`), or from
-    frames, without gradients, :math:`O(B (N + M))`. The cost can be any
+    the accumulated costs; from frames, of the accumulated costs only (fewer
+    of them with :attr:`checkpoint`), and without gradients
+    :math:`O(B (N + M))`. The cost can be any
     tensor, from any differentiable function of the sequences, such as the
     squared Euclidean distances between their frames.
 
@@ -180,7 +181,8 @@ def dtw(
             rows, their memory is :math:`O(B L (R / k + k))`, not
             :math:`O(B R L)`, at the price of recomputing each block of rows
             in the backward pass: about one more forward pass, and more for a
-            small :math:`k`, whose blocks the kernels' tiles fill less.
+            small :math:`k`, whose blocks the kernels' tiles fill less. From
+            :attr:`x` and :attr:`y` only: a cost is :math:`O(B R L)` anyway.
             Default: all rows are stored.
 
     Returns:
@@ -198,8 +200,9 @@ def dtw(
             no weighted diagonal, or if :attr:`lengths` are not of shape
             :math:`(B)` within :math:`1 \le N_b \le N` and
             :math:`1 \le M_b \le M`, or if :attr:`checkpoint` is not an
-            integer of at least 1; the lengths' values are checked only in
-            eager mode, as they would break a :func:`torch.compile` graph.
+            integer of at least 1 or comes with :attr:`cost`; the lengths'
+            values are checked only in eager mode, as they would break a
+            :func:`torch.compile` graph.
         RuntimeError: if Triton is not installed.
 
     Example::
@@ -219,8 +222,8 @@ def dtw(
     .. _Parallelizing Dynamic Time Warping Algorithm Using Prefix Computations on GPU:
         https://doi.org/10.1109/HPCC.and.EUC.2013.50
     """
-    if checkpoint is not None and (type(checkpoint) is not int or checkpoint < 1):
-        raise ValueError(f"checkpoint must be a positive integer, got {checkpoint!r}")
+    if checkpoint is not None and (type(checkpoint) is not int or checkpoint < 1 or x is None):
+        raise ValueError(f"checkpoint must be a positive integer, with x and y, got {checkpoint!r}")
     _validate("dtw", cost, x, y, step_pattern, diagonal_weight, lengths)
     return _dtw(cost, x, y, gamma, step_pattern, diagonal_weight, lengths, band, checkpoint)[0]
 
@@ -379,36 +382,34 @@ def _dtw(cost, x, y, gamma, step_pattern, diagonal_weight, lengths, band, checkp
             g.transposed, False, g.R, g.L,
         )  # fmt: skip
         distance = row.gather(1, end_col[:, None])[:, 0]
+    elif not features:
+        D = dtw_dp(g.cost, None, soft, g.steps, g.diag_weight)
+        distance = D[batch, end_row, end_col]
     else:
-        inputs = (x, y) if features else (g.cost,)
 
-        def dp(row0, rows, seed, *inputs):
+        def dp(row0, rows, seed, x, y):
             """The grid's rows row0 to row0 + rows - 1 of D; the first is seed, if given."""
-            if features:
-                return dtw_dp_features(
-                    *inputs, g.window, g.big, g.scale, soft, g.steps, g.diag_weight, g.sheared,
-                    g.transposed, rows, g.L, seed, row0,
-                )  # fmt: skip
-            return dtw_dp(
-                inputs[0][:, row0 : row0 + rows], None, soft, g.steps, g.diag_weight, seed
-            )
+            return dtw_dp_features(
+                x, y, g.window, g.big, g.scale, soft, g.steps, g.diag_weight, g.sheared,
+                g.transposed, rows, g.L, seed, row0,
+            )  # fmt: skip
 
-        def block(a, b, seed, *inputs):
+        def block(a, b, seed, x, y):
             """Rows a to b - 1 of D: the last one, and the distances of the pairs ending in them."""
             row0 = max(a - 1, 0)  # the seed's row, for a > 0
-            D = dp(row0, b - row0, seed, *inputs)
+            D = dp(row0, b - row0, seed, x, y)
             picked = D[batch, (end_row - row0).clamp(0, b - row0 - 1), end_col]
             return D[:, -1].clone(), torch.where((end_row >= a) & (end_row < b), picked, 0.0)
 
         if checkpoint is None or checkpoint >= g.R:
-            D = dp(0, g.R, None, *inputs)
+            D = dp(0, g.R, None, x, y)
             distance = D[batch, end_row, end_col]
         else:
             distance, seed = 0, None
             for a in range(0, g.R, checkpoint):
                 # Autograd keeps each block's seed and outputs, not its rows of D.
                 seed, found = torch.utils.checkpoint.checkpoint(
-                    block, a, min(a + checkpoint, g.R), seed, *inputs, use_reentrant=False,
+                    block, a, min(a + checkpoint, g.R), seed, x, y, use_reentrant=False,
                     preserve_rng_state=False,
                 )  # fmt: skip
                 distance = distance + found

@@ -237,9 +237,12 @@ def test_dtw_rejects_bad_arguments():
         dtw(cost, lengths=(torch.tensor([4]), torch.tensor([3])))
     with pytest.raises(ValueError, match="lengths must be within"):
         dtw(cost, lengths=(torch.tensor([3]), torch.tensor([0])))
+    frames = torch.zeros(1, 3, 1)
     for bad in (0, -1, 2.5, True):
         with pytest.raises(ValueError, match="checkpoint must be a positive integer"):
-            dtw(cost, checkpoint=bad)
+            dtw(x=frames, y=frames, checkpoint=bad)
+    with pytest.raises(ValueError, match="with x and y"):
+        dtw(cost, checkpoint=3)
     with pytest.raises(ValueError, match="gamma > 0"):
         soft_dtw_divergence(cost, cost, cost, 0.0)
     with pytest.raises(ValueError, match="cost_xx and cost_yy must be"):
@@ -609,20 +612,13 @@ def test_dtw_path_features_by_divide_and_conquer(monkeypatch, case):
 @pytest.mark.cuda
 @pytest.mark.parametrize("gamma", [0.0, 0.5])
 @pytest.mark.parametrize(
-    "features, step_pattern, diagonal_weight, band",
-    [
-        (False, "symmetric", 2.0, None),
-        (False, "asymmetric", 1.0, None),
-        (True, "symmetric", 1.0, None),
-        (True, "orthogonal", 1.0, 4.0),
-    ],
+    "step_pattern, diagonal_weight, band",
+    [("symmetric", 2.0, None), ("asymmetric", 1.0, None), ("orthogonal", 1.0, 4.0)],
 )
-def test_dtw_checkpoint_equals_storing_every_row(
-    gamma, features, step_pattern, diagonal_weight, band
-):
+def test_dtw_checkpoint_equals_storing_every_row(gamma, step_pattern, diagonal_weight, band):
     # A grid of 20 rows, in blocks of 3; the pairs' ends fall in different blocks.
     x, y = (t.detach() for t in _features(3, 26, 20))
-    inputs = dict(x=x, y=y) if features else dict(cost=_squared_distances(x, y))
+    inputs = dict(x=x, y=y)
     options = dict(
         step_pattern=step_pattern,
         diagonal_weight=diagonal_weight,

@@ -53,12 +53,12 @@ row of x masks it by a large finite cost, and the shear, for the asymmetric
 steps, and the transpose, to keep the rows the shorter side, map the
 kernels' cells to those of x and y.
 
-Seeded grids. With a seed (B, L), row 0 of D is given and the rows below run
-from it, as the rows of a longer grid run from the row above: a grid cut into
-blocks of rows, each seeded with the last row of the one before. The shares of
-row 0 are then all zero, so that the backward's e there, g included, is the
-seed's gradient, and the cost's row 0 gets none. In feature mode the block's
-rows are rows ``row0`` on of the grid of ``_cost``.
+Seeded grids. In feature mode, with a seed (B, L), row 0 of D is given and
+the rows below run from it, as the rows of a longer grid run from the row
+above: a grid cut into blocks of rows ``row0`` on, each seeded with the last
+row of the one before. The shares of row 0 are then all zero, so that the
+backward's e there, g included, is the seed's gradient, and the cost's row 0
+gets none.
 
 Linear memory. :func:`frontier` runs the forward recursion, or the reverse one
 from a cell to the end of a sub-grid (an "item"), over such a grid without
@@ -1029,18 +1029,12 @@ def shares(
 
 
 @torch.library.custom_op("philtorch::dtw_dp", mutates_args=())
-def dtw_dp(
-    cost: Tensor, skip: Tensor | None, soft: bool, steps: str, diag_weight: float,
-    seed: Tensor | None = None,
-) -> Tensor:  # fmt: skip
+def dtw_dp(cost: Tensor, skip: Tensor | None, soft: bool, steps: str, diag_weight: float) -> Tensor:
     """The accumulated costs D of cost (B, R, L) over the steps ``steps``, the
     diagonal weighted by ``diag_weight``, soft-min in base 2 with ``soft``;
     ``skip`` is the (B, R) mask of the rows the ctc steps may skip into, and
-    None for the others. With ``seed`` (B, L), row 0 of D is the seed, not
-    computed from the cost's row 0 (unused, with gradient 0), and the grid
-    starts from it, without D(0, 0) = c(0, 0): the steps "orthogonal" and
-    "symmetric" only. See the module docstring."""
-    return _forward(cost, skip, soft, steps, diag_weight, seed=seed)
+    None for the others. See the module docstring."""
+    return _forward(cost, skip, soft, steps, diag_weight)
 
 
 def _forward(cost, skip, soft, steps, diag_weight, feat=None, grid=None, seed=None, row0=0):
@@ -1082,29 +1076,18 @@ def _(cost, skip):
 
 
 @dtw_dp.register_fake
-def _(cost, skip, soft, steps, diag_weight, seed=None):
+def _(cost, skip, soft, steps, diag_weight):
     return _empty(cost)
 
 
-def _split_seed(G: Tensor, seeded: bool) -> tuple[Tensor, Tensor | None]:
-    """The cost's gradient and the seed's from the backward's G, whose row 0 is
-    the seed's gradient, with a seed: the cost's row 0 is unused."""
-    if not seeded:
-        return G, None
-    return F.pad(G[:, 1:], (0, 0, 1, 0)), G[:, 0]
-
-
 def _dtw_dp_setup(ctx, inputs, output):
-    cost, skip, *ctx.options, seed = inputs
-    ctx.seeded = seed is not None
+    cost, skip, *ctx.options = inputs
     ctx.save_for_backward(cost, skip, output)
 
 
 def _dtw_dp_backward(ctx, grad_D):
     cost, skip, D = ctx.saved_tensors
-    G = dtw_dp_backward(D, cost, skip, grad_D, *ctx.options, ctx.seeded)
-    grad_cost, grad_seed = _split_seed(G, ctx.seeded)
-    return grad_cost, None, None, None, None, grad_seed
+    return dtw_dp_backward(D, cost, skip, grad_D, *ctx.options), None, None, None, None
 
 
 dtw_dp.register_autograd(_dtw_dp_backward, setup_context=_dtw_dp_setup)
@@ -1113,19 +1096,16 @@ dtw_dp.register_autograd(_dtw_dp_backward, setup_context=_dtw_dp_setup)
 @torch.library.custom_op("philtorch::dtw_dp_backward", mutates_args=())
 def dtw_dp_backward(
     D: Tensor, cost: Tensor, skip: Tensor | None, grad: Tensor, soft: bool, steps: str,
-    diag_weight: float, seeded: bool = False,
+    diag_weight: float,
 ) -> Tensor:  # fmt: skip
     """The gradient of cost from ``grad``, D's, through :func:`dtw_dp`, by the
-    fused kernels; see the module docstring. With ``seeded``, row 0 is the
-    gradient of the seed, not the cost's."""
+    fused kernels; see the module docstring."""
     skip = None if skip is None else skip.contiguous()
-    return _dtw_backward(
-        D.contiguous(), cost.contiguous(), skip, grad, soft, steps, diag_weight, seeded=seeded
-    )
+    return _dtw_backward(D.contiguous(), cost.contiguous(), skip, grad, soft, steps, diag_weight)
 
 
 @dtw_dp_backward.register_fake
-def _(D, cost, skip, grad, soft, steps, diag_weight, seeded=False):
+def _(D, cost, skip, grad, soft, steps, diag_weight):
     return _empty(D)
 
 
@@ -1158,7 +1138,7 @@ def _dtw_dp_backward_backward(ctx, grad_e):
         grad_D, grad_cost, grad_grad = torch.autograd.grad(
             e, inputs, grad_e, create_graph=create_graph, allow_unused=True
         )
-    return grad_D, grad_cost, None, grad_grad, None, None, None, None
+    return grad_D, grad_cost, None, grad_grad, None, None, None
 
 
 dtw_dp_backward.register_autograd(_dtw_dp_backward_backward, setup_context=_dtw_dp_backward_setup)
@@ -1213,13 +1193,12 @@ def _dtw_dp_features_setup(ctx, inputs, output):
 def _dtw_dp_features_backward(ctx, grad_D):
     x, y, window, D = ctx.saved_tensors
     big, scale, soft, steps, diag_weight, shear, transpose, _, _ = ctx.options
-    E, grad_seed = _split_seed(
-        dtw_dp_backward_features(
-            D, x, y, window, big, scale, grad_D, soft, steps, diag_weight, shear, transpose,
-            ctx.seeded, ctx.row0,
-        ),
-        ctx.seeded,
+    G = dtw_dp_backward_features(
+        D, x, y, window, big, scale, grad_D, soft, steps, diag_weight, shear, transpose,
+        ctx.seeded, ctx.row0,
     )  # fmt: skip
+    # With a seed, G's row 0 is the seed's gradient; the cost's row 0 has none.
+    E, grad_seed = (F.pad(G[:, 1:], (0, 0, 1, 0)), G[:, 0]) if ctx.seeded else (G, None)
     # E, the cost's gradient on the grid, back to the (n, m) cells it covers:
     # rows n0 to n1 of x, columns m0 on of y.
     N, M = x.size(1), y.size(1)

@@ -117,19 +117,6 @@ def _dtw_dp_calls():
     return _recorded_calls(_dtw_kernels, "dtw_dp", lambda: dtw(cost, gamma=0.1).sum().backward())
 
 
-def _dtw_dp_seeded_calls(op):
-    # The seeded forward and, through its backward, dtw_dp_backward.
-    from philtorch.align import _dtw_kernels
-
-    cost = torch.rand(2, 5, 6, device="cuda", requires_grad=True)
-    seed = torch.rand(2, 6, device="cuda", requires_grad=True)
-
-    def run():
-        _dtw_kernels.dtw_dp(cost, None, True, "symmetric", 2.0, seed).sum().backward()
-
-    return _recorded_calls(_dtw_kernels, op, run)
-
-
 def _dtw_dp_backward_calls(loss, shape):
     # loss's first-order backward, through dtw_dp's.
     from philtorch.align import _dtw_kernels
@@ -247,12 +234,6 @@ def _weighted_contract_calls():
     "op, calls",
     [
         pytest.param("dtw_dp", _dtw_dp_calls, id="dtw_dp"),
-        pytest.param("dtw_dp", lambda: _dtw_dp_seeded_calls("dtw_dp"), id="dtw_dp-seeded"),
-        pytest.param(
-            "dtw_dp_backward",
-            lambda: _dtw_dp_seeded_calls("dtw_dp_backward"),
-            id="dtw_dp_backward-seeded",
-        ),
         pytest.param(
             "dtw_dp_backward",
             lambda: _dtw_dp_backward_calls(_dtw(0.1, diagonal_weight=2.0), (2, 5, 6)),
@@ -358,16 +339,15 @@ def test_compiled_alignment_gradients(loss, shape):
 
 @pytest.mark.cuda
 @pytest.mark.parametrize(
-    "soft, steps, diag_weight, seeded",
+    "soft, steps, diag_weight",
     [
-        (True, "symmetric", 1.0, False),
-        (True, "symmetric", 2.0, False),
-        (True, "orthogonal", 1.0, False),
-        (False, "symmetric", 2.0, False),
-        (True, "symmetric", 2.0, True),
+        (True, "symmetric", 1.0),
+        (True, "symmetric", 2.0),
+        (True, "orthogonal", 1.0),
+        (False, "symmetric", 2.0),
     ],
 )
-def test_dtw_dp_backward_registered_gradients(soft, steps, diag_weight, seeded):
+def test_dtw_dp_backward_registered_gradients(soft, steps, diag_weight):
     # dtw_dp_backward's registered backward, which defines dtw_dp's second and
     # higher derivatives, against finite differences of the fused kernel, with
     # D, cost and grad independent; and its own derivatives. DTW's hard shares
@@ -381,7 +361,7 @@ def test_dtw_dp_backward_registered_gradients(soft, steps, diag_weight, seeded):
     inputs = tuple(t.requires_grad_() for t in (D, cost, grad))
 
     def fn(D, cost, grad):
-        return dtw_dp_backward(D, cost, None, grad, soft, steps, diag_weight, seeded)
+        return dtw_dp_backward(D, cost, None, grad, soft, steps, diag_weight)
 
     assert torch.autograd.gradcheck(fn, inputs)
     assert torch.autograd.gradgradcheck(fn, inputs)
