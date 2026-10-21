@@ -188,3 +188,21 @@ def test_forced_align_matches_viterbi(blank):
         torch.testing.assert_close(scores[n, :T].sum().cpu(), best)
     one_path, one_scores = forced_align(log_probs[1], targets[1, :3], 9, 3, blank)
     assert torch.equal(one_path, path[1]) and torch.equal(one_scores, scores[1])
+
+
+@pytest.mark.cuda
+def test_ctc_tiles_agree_with_one_tile(monkeypatch):
+    from philtorch.align import _dtw_kernels
+
+    logits, targets = _problem(2, 70, 5, 12)
+    targets[0, 3] = targets[0, 2]  # a repeat, which forbids the skip into it
+    args = (targets, (70, 55), (12, 9))
+
+    def run():
+        loss, grad = _losses_and_grads(ctc_loss, logits, *args, reduction="none")
+        return loss, grad, *forced_align(logits.log_softmax(-1).detach(), *args, 0)
+
+    expected = run()
+    monkeypatch.setattr(_dtw_kernels, "_tile", lambda B, R, L: (3, 16))
+    for tiled, whole in zip(run(), expected):
+        torch.testing.assert_close(tiled, whole)

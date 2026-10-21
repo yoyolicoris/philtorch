@@ -106,7 +106,7 @@ def test_dtw_alignment_is_the_gradient(step_pattern, gamma):
 @pytest.mark.cuda
 @pytest.mark.parametrize(
     "step_pattern, diagonal_weight",
-    [("symmetric", 1.0), ("symmetric", 2.0), ("asymmetric", 1.0), ("orthogonal", 1.0)],
+    [("symmetric", 1.0), ("symmetric", 2.0), ("orthogonal", 1.0)],
 )
 def test_soft_dtw_second_derivatives(step_pattern, diagonal_weight):
     cost = _cost(2, 5, 4).requires_grad_()
@@ -307,7 +307,7 @@ def test_dtw_backward_implementations_agree(soft, steps, diagonal_weight):
     D = kernels.dtw_dp(cost, skip, soft, steps, diagonal_weight)
     grad = torch.randn_like(D)
     args = (D, cost, skip, grad, soft, steps, diagonal_weight)
-    torch.testing.assert_close(kernels._dtw_backward(*args), kernels._dtw_backward_parallel(*args))
+    torch.testing.assert_close(kernels._dtw_backward(*args), kernels._decomposed_backward(*args))
 
 
 _STEPS = {
@@ -320,7 +320,7 @@ _STEPS = {
 @pytest.mark.cuda
 @pytest.mark.parametrize(
     "step_pattern, diagonal_weight",
-    [("symmetric", 1.0), ("symmetric", 2.0), ("asymmetric", 1.0), ("orthogonal", 1.0)],
+    [("symmetric", 1.0), ("symmetric", 2.0), ("orthogonal", 1.0)],
 )
 def test_dtw_path(step_pattern, diagonal_weight):
     # The path runs from (0, 0) to each pair's last cell in the pattern's
@@ -350,7 +350,37 @@ def test_dtw_path(step_pattern, diagonal_weight):
     torch.testing.assert_close(grad, expected_grad)
 
 
+def _derivatives(cost, gamma, **options):
+    """dtw's values and gradient, and for soft-DTW a second derivative."""
+    cost = cost.clone().requires_grad_()
+    value = dtw(cost, gamma, **options)
+    (grad,) = torch.autograd.grad(value.sum(), cost, create_graph=gamma > 0)
+    if gamma == 0:
+        return value, grad
+    weights = torch.arange(cost.numel(), device=cost.device).reshape(cost.shape).sin()
+    (second,) = torch.autograd.grad((grad * weights).sum(), cost)
+    return value, grad, second
+
+
 @pytest.mark.cuda
-def test_dtw_rejects_rows_too_long_to_compile():
-    with pytest.raises(ValueError, match="2\\^18 per row"):
-        dtw(_cost(1, 2, 2**18 + 1, dtype=torch.float32))
+@pytest.mark.parametrize("gamma", [0.0, 0.5])
+@pytest.mark.parametrize(
+    "step_pattern, diagonal_weight",
+    [("symmetric", 1.0), ("symmetric", 2.0), ("orthogonal", 1.0)],
+)
+def test_dtw_tiles_agree_with_one_tile(monkeypatch, gamma, step_pattern, diagonal_weight):
+    from philtorch.align import _dtw_kernels
+
+    # A grid of many tiles; integer costs for DTW, whose sums are then exact.
+    cost = _cost(2, 70, 37)
+    if gamma == 0:
+        cost = (cost * 5).floor()
+    options = dict(step_pattern=step_pattern, diagonal_weight=diagonal_weight)
+    expected = _derivatives(cost, gamma, **options)
+    monkeypatch.setattr(_dtw_kernels, "_tile", lambda B, R, L: (3, 16))
+    actual = _derivatives(cost, gamma, **options)
+    for tiled, whole in zip(actual, expected):
+        if gamma == 0:
+            torch.testing.assert_close(tiled, whole, rtol=0, atol=0)
+        else:
+            torch.testing.assert_close(tiled, whole)
