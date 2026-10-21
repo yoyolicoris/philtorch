@@ -407,11 +407,12 @@ def _dtw(
                 g.R, g.L, g.ends, ~g.no_path,
             )  # fmt: skip
             distance = _path_cost(g, x, y, walk)
-        # False for inf, NaN and the band's no path.
-        finite = distance < g.big / 2
+        # False for inf, NaN and, with a window, its no path.
+        finite = distance.isfinite() if g.window is None else distance < g.big / 2
+        finite &= _is_walk(g, walk)
         walk = torch.where(finite[:, None, None], walk, -1)
-        if grad:
-            distance = torch.where(finite, _path_cost(g, x, y, walk), torch.inf)
+        # With gradients, the cost again, of the walk kept, in the graph.
+        distance = torch.where(finite, _path_cost(g, x, y, walk) if grad else distance, torch.inf)
     elif features and not (grad and soft):
         zero = torch.zeros_like(batch)
         items = torch.stack([batch, zero, zero, end_row + 1, end_col + 1], -1)
@@ -466,6 +467,20 @@ _LEAF_ROWS = 64
 _CHUNK_CELLS = 2**26
 
 
+def _is_walk(g: _Grid, walk: Tensor) -> Tensor:
+    """Whether each pair's walk, (B, R + L - 1, 2) with -1 past its cells, runs
+    from the grid's first cell to the pair's end cell by the step set's steps:
+    a finite cost does not prove it, as skipped tiles can cut the path."""
+    r, col = walk.unbind(-1)
+    valid = r >= 0
+    last = walk.gather(1, (valid.sum(1) - 1).clamp(min=0)[:, None, None].expand(-1, 1, 2))[:, 0]
+    dr, dc = r[:, 1:] - r[:, :-1], col[:, 1:] - col[:, :-1]
+    step = ((dr == 1) & (dc == 0)) | ((dr == 0) & (dc == 1))
+    if g.steps == "symmetric":
+        step |= (dr == 1) & (dc == 1)
+    return (walk[:, 0] == 0).all(-1) & (last == g.ends).all(-1) & (step | ~valid[:, 1:]).all(1)
+
+
 def _path_cost(g: _Grid, x, y, walk: Tensor) -> Tensor:
     """The cost of each pair's path on the grid, (B, R + L - 1, 2) with -1 past
     it: its cells' costs from the frames, by PyTorch ops, a diagonal step's
@@ -475,8 +490,9 @@ def _path_cost(g: _Grid, x, y, walk: Tensor) -> Tensor:
     r, col = walk.unbind(-1)
     p = torch.arange(walk.size(0), device=walk.device)[:, None].expand_as(r)
     c = _cell_costs(
-        x, y, g.window, g.big, g.scale, g.sheared, g.transposed, p, r.clamp(min=0), col.clamp(min=0)
-    )
+        x, y, g.window, g.big, g.scale, g.sheared, g.transposed, p, r.clamp(min=0),
+        col.clamp(min=0), r >= 0,
+    )  # fmt: skip
     diagonal = (r[:, 1:] - r[:, :-1] == 1) & (col[:, 1:] - col[:, :-1] == 1)
     weight = pad(torch.where(diagonal, g.diag_weight, 1.0), (1, 0), value=1.0)
     return torch.where(r >= 0, weight * c, 0.0).sum(1)

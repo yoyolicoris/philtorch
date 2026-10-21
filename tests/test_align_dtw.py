@@ -574,7 +574,7 @@ def test_dtw_split_chunks_skewed_items(monkeypatch):
 def test_dtw_features_without_a_path_in_the_band_give_inf():
     # Pair 0 has an inf frame; pair 1 has a path.
     x, y = (t.detach() for t in _features(2, 6, 6))
-    x[0, 2] = torch.inf
+    x[0, 2] = x[0, 0] = torch.inf  # the first frame too: no NaN gradients
     distance = dtw(x=x, y=y, band=1.0)  # no gradients
     x, y = x.requires_grad_(), y.requires_grad_()
     actual = dtw(x=x, y=y, band=1.0)
@@ -589,6 +589,84 @@ def test_dtw_features_without_a_path_in_the_band_give_inf():
         torch.testing.assert_close(grad[1], want[1])  # the cost's has 0 * inf in pair 0
     path = dtw_path(x=x, y=y, band=1.0)[1]
     assert path[0].eq(-1).all() and path[1, 0].ge(0).all()
+
+
+@pytest.mark.cuda
+@pytest.mark.parametrize("grad", [False, True])
+def test_dtw_features_with_a_cut_window_give_inf(grad):
+    # The band keeps the diagonal only, whose tiles are skipped but for the
+    # first and the last: no walk from (0, 0) to the end, though one cell costs 1.
+    x, y = torch.zeros(1, 300, 1, device="cuda"), torch.ones(1, 300, 1, device="cuda")
+    x.requires_grad_(grad)
+    options = dict(x=x, y=y, step_pattern="orthogonal", band=0.0)
+    assert dtw(**options).isinf().all()
+    distance, path = dtw_path(**options)
+    assert distance.isinf().all() and path.eq(-1).all()
+
+
+@pytest.mark.cuda
+def test_dtw_features_without_a_band_take_any_finite_distance():
+    # 1e38 is finite in float32, though above the band's sentinel threshold.
+    x = torch.full((1, 1, 1), 1e19, device="cuda", requires_grad=True)
+    y = torch.zeros(1, 1, 1, device="cuda")
+    expected = dtw(x=x.detach(), y=y)
+    assert expected.isfinite().all()
+    torch.testing.assert_close(dtw(x=x, y=y), expected)
+    torch.testing.assert_close(dtw((x - y).pow(2)), expected)
+    distance, path = dtw_path(x=x, y=y)
+    torch.testing.assert_close(distance, expected)
+    assert path.eq(0).all()
+
+
+@pytest.mark.cuda
+@pytest.mark.parametrize("gamma", [0.0, 0.5])
+def test_dtw_features_of_an_empty_batch(gamma):
+    x = torch.empty(0, 3, 1, device="cuda", requires_grad=True)
+    assert dtw(x=x.detach(), y=x.detach(), gamma=gamma).shape == (0,)
+    distance = dtw(x=x, y=x, gamma=gamma)
+    assert distance.shape == (0,)
+    (grad,) = torch.autograd.grad(distance.sum(), x)
+    assert grad.shape == x.shape
+    if gamma == 0:
+        distance, path = dtw_path(x=x, y=x)
+        assert distance.shape == (0,) and path.shape == (0, 5, 2)
+
+
+@pytest.mark.cuda
+@pytest.mark.parametrize("soft", [False, True])
+def test_dtw_backward_features_zeroes_the_skipped_tiles(monkeypatch, soft):
+    from philtorch.align import _dtw_kernels
+
+    # A weighted diagonal has an output of its own; the window skips tiles.
+    monkeypatch.setattr(_dtw_kernels, "_tile", lambda *args: (3, 16))
+    B, R, L, big = 2, 8, 40, 1e3
+    x, y = (torch.randn(B, n, 2, device="cuda", dtype=torch.float64) for n in (R, L))
+    rows = torch.arange(R, device="cuda")
+    window = torch.stack([rows, rows + 3], -1).int().expand(B, R, 2).contiguous()
+    options = (window, big, 1.0)
+    steps = ("symmetric", 2.0, False, False)
+    D = _dtw_kernels.dtw_dp_features(x, y, window, big, 1.0, soft, *steps, R, L)
+    grad = torch.ones_like(D)
+
+    def run():
+        # The cache hands the NaNs' block back to the next empty tensor.
+        junk = torch.full_like(D, torch.nan)
+        del junk
+        return _dtw_kernels.dtw_dp_backward_features(
+            D, x, y, *options, grad, soft, *steps, False, 0
+        )
+
+    out = run()
+    cols = torch.arange(L, device="cuda")
+    inside = ((cols >= rows[:, None]) & (cols <= rows[:, None] + 3)).flip(0, 1)  # reversed
+    skipped = torch.zeros_like(inside)
+    for i in range(0, R, 3):
+        for j in range(0, L, 16):
+            skipped[i : i + 3, j : j + 16] = not inside[i : i + 3, j : j + 16].any()
+    skipped = skipped.flip(0, 1)
+    assert skipped.any()
+    assert out.isfinite().all() and out[:, skipped].eq(0).all()
+    torch.testing.assert_close(run(), out, rtol=0, atol=0)
 
 
 @pytest.mark.cuda

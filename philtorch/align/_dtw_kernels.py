@@ -537,6 +537,8 @@ def _dag_kernel(
         for k in range(0, tl.where(skipped, n_rows, 0)):
             row = batch + (r_first + (-k if REVERSE else k)) * L + cols
             tl.store(y_ptr + row, tl.full([TL], zero, y_ptr.dtype.element_ty), mask=mask)
+            if SHARES and out_ptr is not None:
+                tl.store(out_ptr + row, tl.full([TL], 0.0, out_ptr.dtype.element_ty), mask=mask)
         n_rows = tl.where(skipped, 0, n_rows)
     if SHARES:
         # The shares of the rows below, kept from earlier rows: row r + 1
@@ -1013,6 +1015,8 @@ def _diagonals(
     ``given``, the tiles of the seeded row 0 also): a tile's slice is at
     ``slot`` plus its program number. Without, the scratch is None.
     """
+    if S == 0:
+        return
     n_rows, n_cols = triton.cdiv(R, TR), triton.cdiv(L, TL)
     n_diag = n_rows + n_cols - 1
     if feat is None:
@@ -1369,16 +1373,20 @@ def _dtw_dp_backward_backward(ctx, grad_e):
 dtw_dp_backward.register_autograd(_dtw_dp_backward_backward, setup_context=_dtw_dp_backward_setup)
 
 
-def _cell_costs(x, y, window, big, scale, shear, transpose, p, r, col):
+def _cell_costs(x, y, window, big, scale, shear, transpose, p, r, col, valid=None):
     """The costs of the grid's cells (r, col) of pairs p, as the kernels compute
     them, from PyTorch ops that autograd differentiates.
 
     p, r and col broadcast together; a cell is mapped as :func:`_cost` maps it.
+    Where ``valid`` is False, the frames' difference is zeroed before it is
+    squared, so that infinite frames there give no NaN gradient.
     """
     a, s = (col, r) if transpose else (r, col)
     n = (a + s if shear else a).clamp(max=x.size(1) - 1)
     m = (a if shear else s).clamp(max=y.size(1) - 1)
     d = x[p, n] - y[p, m]
+    if valid is not None:
+        d = torch.where(valid[..., None], d, 0.0)
     c = (d * d).sum(-1) * scale
     if window is not None:
         lo, hi = window[p, n].unbind(-1)
