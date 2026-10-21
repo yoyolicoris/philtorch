@@ -409,7 +409,11 @@ def hmm_smoother(log_emit: Tensor, log_trans: Tensor, log_init: Tensor) -> tuple
     :math:`\log p(z[n] \mid y[0], \dots, y[N - 1])`, from a forward and an
     independent backward scan, as in `Temporal Parallelization of Inference
     in Hidden Markov Models`_ (Hassan et al., 2021). Its implementation and
-    differentiability are those of :func:`hmm_filter`.
+    differentiability are those of :func:`hmm_filter`. The pairwise
+    posteriors :math:`p(z[n] = i, z[n + 1] = j \mid y[0], \dots, y[N - 1])`
+    are the gradient of the summed log-likelihood with respect to a
+    :attr:`log_trans` of shape :math:`(B, N - 1, K, K)`, from which
+    :func:`hmm_em_step` takes its counts.
 
     Note:
         Runs only on CUDA GPUs, as Triton kernels: the inputs must be CUDA
