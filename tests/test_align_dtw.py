@@ -237,6 +237,9 @@ def test_dtw_rejects_bad_arguments():
         dtw(cost, lengths=(torch.tensor([4]), torch.tensor([3])))
     with pytest.raises(ValueError, match="lengths must be within"):
         dtw(cost, lengths=(torch.tensor([3]), torch.tensor([0])))
+    for bad in (0, -1, 2.5, True):
+        with pytest.raises(ValueError, match="checkpoint must be a positive integer"):
+            dtw(cost, checkpoint=bad)
     with pytest.raises(ValueError, match="gamma > 0"):
         soft_dtw_divergence(cost, cost, cost, 0.0)
     with pytest.raises(ValueError, match="cost_xx and cost_yy must be"):
@@ -601,3 +604,46 @@ def test_dtw_path_features_by_divide_and_conquer(monkeypatch, case):
     expected, expected_path = dtw_path(_squared_distances(x, y), **options)
     torch.testing.assert_close(distance, expected)
     torch.testing.assert_close(path, expected_path)
+
+
+@pytest.mark.cuda
+@pytest.mark.parametrize("gamma", [0.0, 0.5])
+@pytest.mark.parametrize(
+    "features, step_pattern, diagonal_weight, band",
+    [
+        (False, "symmetric", 2.0, None),
+        (False, "asymmetric", 1.0, None),
+        (True, "symmetric", 1.0, None),
+        (True, "orthogonal", 1.0, 4.0),
+    ],
+)
+def test_dtw_checkpoint_equals_storing_every_row(
+    gamma, features, step_pattern, diagonal_weight, band
+):
+    # A grid of 20 rows, in blocks of 3; the pairs' ends fall in different blocks.
+    x, y = (t.detach() for t in _features(3, 26, 20))
+    inputs = dict(x=x, y=y) if features else dict(cost=_squared_distances(x, y))
+    options = dict(
+        step_pattern=step_pattern,
+        diagonal_weight=diagonal_weight,
+        band=band,
+        lengths=(torch.tensor([26, 15, 24]), torch.tensor([20, 14, 9])),
+    )
+    expected = _derivatives(inputs, gamma, **options)
+    actual = _derivatives(inputs, gamma, checkpoint=3, **options)
+    for checkpointed, stored in zip(actual, expected):
+        torch.testing.assert_close(checkpointed, stored)
+
+
+@pytest.mark.cuda
+def test_dtw_checkpoint_lowers_the_backward_peak_memory():
+    x, y = torch.randn(2, 1, 2048, 2, device="cuda").unbind(0)
+    x.requires_grad_(), y.requires_grad_()
+    base = torch.cuda.memory_allocated()
+    peaks = {}
+    for checkpoint in (None, 64):
+        torch.cuda.reset_peak_memory_stats()
+        distance = dtw(x=x, y=y, gamma=0.5, checkpoint=checkpoint)
+        torch.autograd.grad(distance.sum(), (x, y))
+        peaks[checkpoint] = torch.cuda.max_memory_allocated() - base
+    assert peaks[64] < peaks[None] / 2
