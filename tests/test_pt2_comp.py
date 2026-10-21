@@ -181,6 +181,21 @@ def _dtw_dp_features_calls(op, seeded=False):
     return _recorded_calls(_dtw_kernels, op, run)
 
 
+def _dtw_grid_cost_calls():
+    # From the second derivatives of soft-DTW from frames, with a shear.
+    from philtorch.align import _dtw_kernels, dtw
+
+    gen = torch.Generator("cuda").manual_seed(0)
+    x, y = (torch.randn(2, n, 3, device="cuda", generator=gen, requires_grad=True) for n in (6, 4))
+
+    def run():
+        loss = dtw(x=x, y=y, gamma=0.5, step_pattern="asymmetric", band=2.0).sum()
+        (grad,) = torch.autograd.grad(loss, x, create_graph=True)
+        grad.sum().backward()
+
+    return _recorded_calls(_dtw_kernels, "grid_cost", run)
+
+
 def _dtw_backtrack_features_calls():
     from philtorch.align import _dtw_kernels
 
@@ -271,6 +286,7 @@ def _weighted_contract_calls():
             "dtw_backtrack_features", _dtw_backtrack_features_calls, id="dtw_backtrack_features"
         ),
         pytest.param("dtw_frontier", _dtw_frontier_calls, id="dtw_frontier"),
+        pytest.param("dtw_grid_cost", _dtw_grid_cost_calls, id="dtw_grid_cost"),
         pytest.param("hmm_viterbi_chain", _hmm_viterbi_chain_calls, id="hmm_viterbi_chain"),
         pytest.param("weighted_contract", _weighted_contract_calls, id="weighted_contract"),
     ],
@@ -302,6 +318,13 @@ def _soft_dtw_divergence(x):
     return soft_dtw_divergence(*costs, 0.1).sum()
 
 
+def _soft_dtw_band(x):
+    # From frames, whose band Inductor must round as eager does.
+    from philtorch.align import dtw
+
+    return dtw(x=x, y=x[:, :20].flip(1), gamma=0.5, band=4.0).sum()
+
+
 def _dtw(gamma, **options):
     def loss(cost):
         from philtorch.align import dtw
@@ -322,6 +345,7 @@ _LENGTHS = (torch.tensor([6, 4]), torch.tensor([5, 3]))
         pytest.param(_dtw(0.1, diagonal_weight=2.0), (2, 6, 5), id="soft_dtw"),
         pytest.param(_dtw(0.1, lengths=_LENGTHS), (2, 6, 5), id="soft_dtw-lengths"),
         pytest.param(_dtw(0.1, step_pattern="asymmetric"), (2, 6, 5), id="soft_dtw-asymmetric"),
+        pytest.param(_soft_dtw_band, (2, 30, 3), id="soft_dtw-band"),
         pytest.param(_soft_dtw_divergence, (2, 7, 3), id="soft_dtw_divergence"),
         pytest.param(_ctc_loss, (2, 7, 4), id="ctc_loss"),
         pytest.param(_ctc_loss_tensor_lengths, (2, 7, 4), id="ctc_loss-tensor_lengths"),

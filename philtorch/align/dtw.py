@@ -40,17 +40,19 @@ def _band_windows(N: int, M: int, n_len: Tensor, m_len: Tensor, band: float) -> 
     n = (n_len - 1).double()[:, None]
     m = (m_len - 1).double()[:, None]
     rows_longer = n > m
-    # Along the longer side, the line advances `slope` cells per other cell.
+    # Along the longer side, the line advances `slope` cells per other cell;
+    # a step between rows reaches slope / 2. Scaled by the shorter side, the
+    # offset of (i, j) is |i m - j n|, an integer: exact, however compiled.
     slope = torch.where(rows_longer, n, m) / torch.where(rows_longer, m, n).clamp(min=1)
-    # slope / 2: a step between rows.
     reach = torch.maximum(slope / 2, torch.full_like(slope, band))
+    twice = torch.where(rows_longer, torch.maximum(n, 2 * band * m), torch.maximum(m, 2 * band * n))
     one_line = torch.minimum(n, m) == 0  # a row or column: no band to keep
 
     def inside(j):
-        offset = torch.where(rows_longer, i - j * slope, j - i * slope).abs()
-        return ((offset <= reach) | one_line) & (j >= 0) & (j < M)
+        offset = 2 * (i * m - j * n).abs()
+        return ((offset <= twice) | one_line) & (j >= 0) & (j < M)
 
-    # In closed form, then corrected by the test itself against rounding.
+    # In closed form, then corrected by the exact test.
     lo = torch.where(rows_longer, (i - reach) / slope, i * slope - reach).ceil()
     hi = torch.where(rows_longer, (i + reach) / slope, i * slope + reach).floor()
     lo = torch.where(one_line, 0, lo.clamp(0, M))
@@ -527,8 +529,19 @@ def _split(g: _Grid, x, y, items: Tensor) -> Tensor:
     given = (x, y, g.window, g.big, g.scale)
     options = (False, g.steps, g.diag_weight, g.sheared, g.transposed)
     h_max, w_max = (int(t.max()) for t in (h - h // 2, w))
-    D = frontier(*given, torch.stack([p, r0, l0, top, w], -1), *options, False, h_max, w_max)
-    G = frontier(*given, torch.stack([p, below, l0, h - top, w], -1), *options, True, h_max, w_max)
+    first = torch.stack([p, r0, l0, top, w], -1)
+    second = torch.stack([p, below, l0, h - top, w], -1)
+    # The reverse frontier on a side stream, joined back after the forward.
+    main, side = torch.cuda.current_stream(), torch.cuda.Stream()
+    side.wait_stream(main)
+    for t in (x, y, g.window, second):
+        if t is not None:
+            t.record_stream(side)
+    with torch.cuda.stream(side):
+        G = frontier(*given, second, *options, True, h_max, w_max)
+    D = frontier(*given, first, *options, False, h_max, w_max)
+    main.wait_stream(side)
+    G.record_stream(main)
     j = torch.arange(D.size(1), device=x.device)
     c = _cell_costs(
         x, y, g.window, g.big, g.scale, g.sheared, g.transposed, p[:, None], below[:, None],
@@ -773,7 +786,14 @@ def soft_dtw_divergence(
         inputs = (dict(x=x, y=y), dict(x=x, y=x), dict(x=y, y=y))
     xx = None if lengths is None else (n_len, n_len)
     yy = None if lengths is None else (m_len, m_len)
-    d_xy, d_xx, d_yy = (
-        dtw(gamma=gamma, lengths=ls, **kw, **kwargs) for kw, ls in zip(inputs, (lengths, xx, yy))
-    )
+    pairs = list(zip(inputs, (lengths, xx, yy)))
+    if len({(t.shape, t.dtype, t.device) for kw, _ in pairs for t in kw.values()}) == 1 and (
+        lengths is None or n_len.shape == m_len.shape
+    ):
+        # The three pairs share a shape: one call over all of them.
+        kw = {k: torch.cat([p[0][k] for p in pairs]) for k in inputs[0]}
+        ls = None if lengths is None else tuple(torch.cat([p[1][i] for p in pairs]) for i in (0, 1))
+        d_xy, d_xx, d_yy = dtw(gamma=gamma, lengths=ls, **kw, **kwargs).chunk(3)
+    else:
+        d_xy, d_xx, d_yy = (dtw(gamma=gamma, lengths=ls, **kw, **kwargs) for kw, ls in pairs)
     return d_xy - 0.5 * (d_xx + d_yy)

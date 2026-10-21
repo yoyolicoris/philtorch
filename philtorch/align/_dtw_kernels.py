@@ -52,13 +52,16 @@ two rows from direct differences, which don't cancel as |x|^2 + |y|^2 - 2 x.y
 does, so that no (B, N, M) cost is stored. A window of allowed columns per
 row of x masks it by a large finite cost, and the shear, for the asymmetric
 steps, and the transpose, to keep the rows the shorter side, map the
-kernels' cells to those of x and y.
+kernels' cells to those of x and y. Second derivatives rebuild the costs
+with :func:`grid_cost`, in the memory of the grid.
 
-Windows. A hard DTW skips the tiles with no cell in the window, as a band
-leaves most of the grid out, so that its work follows the window's area: a
-skipped tile's D is inf, not the costs ``big`` adds up to. A path through
-masked cells costs at least ``big``, which callers take for no path, so every
-other result is unchanged.
+Windows. A DTW, soft or hard, skips the tiles with no cell in the window, as
+a band leaves most of the grid out, so that its work follows the window's
+area: a skipped tile's D is inf, not the costs ``big`` adds up to, and its
+gradient is zero. A path through masked cells costs at least ``big``, which
+callers take for no path, and the soft-min of inf with a finite D is that D,
+the weight of a ``big`` argument underflowing to 0, so every other result is
+unchanged.
 
 Seeded grids. In feature mode, with a seed (B, L), row 0 of D is given and
 the rows below run from it, as the rows of a longer grid run from the row
@@ -307,7 +310,7 @@ def _neighbour(ptr, row, L, ROWS: tl.constexpr, COLS: tl.constexpr, REVERSE: tl.
 
 @triton.jit(
     do_not_specialize=[
-        "N", "M", "F", "big_bits", "scale_bits", "d", "I_lo", "n_tiles", "TR", "row0"
+        "N", "M", "big_bits", "scale_bits", "d", "I_lo", "n_tiles", "TR", "row0"
     ]
 )  # fmt: skip
 def _dag_kernel(
@@ -354,7 +357,7 @@ def _dag_kernel(
     """
     SHARES: tl.constexpr = D_ptr is not None
     FORWARD: tl.constexpr = (cost_ptr is not None or fx_ptr is not None) and not SHARES
-    SKIP: tl.constexpr = win_ptr is not None and not SOFT
+    SKIP: tl.constexpr = win_ptr is not None
     b = (tl.program_id(0) // n_tiles).to(tl.int64)
     i = I_lo + tl.program_id(0) % n_tiles
     j = d - i
@@ -543,7 +546,7 @@ def _dag_kernel(
 
 @triton.jit(
     do_not_specialize=[
-        "N", "M", "F", "big_bits", "scale_bits", "d", "I_lo", "n_tiles", "TR", "W", "H"
+        "N", "M", "big_bits", "scale_bits", "d", "I_lo", "n_tiles", "TR", "H"
     ]
 )  # fmt: skip
 def _frontier_kernel(
@@ -575,7 +578,7 @@ def _frontier_kernel(
     below's terms use its costs, kept.
     """
     SLOTS: tl.constexpr = 4 if REVERSE else 3
-    SKIP: tl.constexpr = win_ptr is not None and not SOFT
+    SKIP: tl.constexpr = win_ptr is not None
     s = (tl.program_id(0) // n_tiles).to(tl.int64)
     i = I_lo + tl.program_id(0) % n_tiles
     j = d - i
@@ -681,7 +684,7 @@ def _frontier_kernel(
             c_prev_shift = c_shift
 
 
-@triton.jit(do_not_specialize=["N", "M", "F", "big_bits", "scale_bits"])
+@triton.jit(do_not_specialize=["N", "M", "big_bits", "scale_bits"])
 def _backtrack_kernel(
     D_ptr, cost_ptr, fx_ptr, fy_ptr, win_ptr, ends_ptr, path_ptr, N, M, F, big_bits, scale_bits,
     R, L, P, diag_weight, STEPS: tl.constexpr, BLOCK: tl.constexpr, SHEAR: tl.constexpr,
@@ -1235,6 +1238,43 @@ def _dtw_dp_features_setup(ctx, inputs, output):
     ctx.save_for_backward(x, y, window, output)
 
 
+def _cost_gradients(x, y, window, scale, shear, transpose, row0, E):
+    """The gradients of x and y from E, the gradient of the grid's costs of
+    :func:`dtw_dp_features` (B, R, L). E is masked in place."""
+    # E, the cost's gradient on the grid, back to the (n, m) cells it covers:
+    # rows n0 to n1 of x, columns m0 on of y.
+    N, M = x.size(1), y.size(1)
+    if transpose:
+        E = E.mT
+    B, A, S = E.shape
+    a0, s0 = (0, row0) if transpose else (row0, 0)
+    if shear:
+        n0, n1, m0 = a0 + s0, min(a0 + s0 + A + S - 2, N - 1), a0
+        # Cell (m, s) is x's row n0 + m + s, column m: offset m (A + 1) + s A
+        # in rows of A, K rows in all.
+        K = A + S - 1
+        E = E.new_zeros(B, K, A).as_strided_scatter(E, (B, A, S), (K * A, A + 1, A))
+        k = n1 - n0 + 1
+        if k < K:  # the cells past x's last row are clamped to it
+            E[:, k - 1] += E[:, k:].sum(1)
+        E = E[:, :k]
+    else:
+        n0, n1, m0 = a0, a0 + A - 1, s0
+    m1 = m0 + E.size(2)
+    if window is not None:
+        cols = torch.arange(m0, m1, device=x.device)
+        lo, hi = window[:, n0 : n1 + 1].split(1, -1)
+        E = E.masked_fill_((cols < lo) | (cols > hi), 0.0)
+    # From frames centred on each pair's mean: the products' difference then
+    # cancels only their spread, not an offset they share.
+    mean = torch.cat([x, y], 1).mean(1, keepdim=True)
+    x, y = x[:, n0 : n1 + 1] - mean, y[:, m0:m1] - mean
+    grad_x = 2 * scale * (x * E.sum(2, keepdim=True) - E @ y)
+    grad_y = 2 * scale * (y * E.sum(1).unsqueeze(-1) - E.mT @ x)
+    grad_x, grad_y = F.pad(grad_x, (0, 0, n0, N - 1 - n1)), F.pad(grad_y, (0, 0, m0, M - m1))
+    return grad_x, grad_y
+
+
 def _dtw_dp_features_backward(ctx, grad_D):
     x, y, window, D = ctx.saved_tensors
     big, scale, soft, steps, diag_weight, shear, transpose, _, _ = ctx.options
@@ -1244,37 +1284,70 @@ def _dtw_dp_features_backward(ctx, grad_D):
     )  # fmt: skip
     # With a seed, G's row 0 is the seed's gradient; the cost's row 0 has none.
     E, grad_seed = (F.pad(G[:, 1:], (0, 0, 1, 0)), G[:, 0]) if ctx.seeded else (G, None)
-    # E, the cost's gradient on the grid, back to the (n, m) cells it covers:
-    # rows n0 to n1 of x, columns m0 on of y.
-    N, M = x.size(1), y.size(1)
-    if transpose:
-        E = E.mT
-    B, A, S = E.shape
-    a0, s0 = (0, ctx.row0) if transpose else (ctx.row0, 0)
-    if shear:
-        n0, n1, m0 = min(a0 + s0, N - 1), min(a0 + s0 + A + S - 2, N - 1), a0
-        m = torch.arange(A, device=x.device)[:, None]
-        n = (m + a0 + torch.arange(S, device=x.device) + s0).clamp(max=N - 1)
-        cell = ((n - n0) * A + m).flatten()
-        E = E.new_zeros(B, (n1 - n0 + 1) * A).index_add(1, cell, E.flatten(1)).view(B, -1, A)
-    else:
-        n0, n1, m0 = a0, a0 + A - 1, s0
-    m1 = m0 + E.size(2)
-    if window is not None:
-        cols = torch.arange(m0, m1, device=x.device)
-        lo, hi = window[:, n0 : n1 + 1].split(1, -1)
-        E = torch.where((cols < lo) | (cols > hi), 0.0, E)
-    # From frames centred on each pair's mean: the products' difference then
-    # cancels only their spread, not an offset they share.
-    mean = torch.cat([x, y], 1).mean(1, keepdim=True)
-    x, y = x[:, n0 : n1 + 1] - mean, y[:, m0:m1] - mean
-    grad_x = 2 * scale * (x * E.sum(2, keepdim=True) - E @ y)
-    grad_y = 2 * scale * (y * E.sum(1).unsqueeze(-1) - E.mT @ x)
-    grad_x, grad_y = F.pad(grad_x, (0, 0, n0, N - 1 - n1)), F.pad(grad_y, (0, 0, m0, M - m1))
+    grad_x, grad_y = _cost_gradients(x, y, window, scale, shear, transpose, ctx.row0, E)
     return grad_x, grad_y, *(None,) * 10, grad_seed, None
 
 
 dtw_dp_features.register_autograd(_dtw_dp_features_backward, setup_context=_dtw_dp_features_setup)
+
+
+@torch.library.custom_op("philtorch::dtw_grid_cost", mutates_args=())
+def grid_cost(
+    x: Tensor, y: Tensor, window: Tensor | None, big: float, scale: float, shear: bool,
+    transpose: bool, R: int, L: int, row0: int,
+) -> Tensor:  # fmt: skip
+    """The costs (B, R, L) of the cells of :func:`dtw_dp_features`'s grid, whose
+    arguments x through ``row0`` are these.
+
+    One feature at a time, from views of x and y, so that the memory is that of
+    the grid, not F times it; the gradients of x and y are the matrix products
+    of :func:`_cost_gradients`.
+    """
+    B, N, _ = x.shape
+    # Of the cell (r, l): its rows r + row0, its columns l, or, for x's row
+    # n = r + row0 + l, clamped to N - 1, the diagonals of the rows' windows.
+    rows = slice(row0, row0 + R)
+    a = (lambda t: t[:, None, :L]) if transpose else (lambda t: t[:, rows, None])
+    s = (lambda t: t[:, rows, None]) if transpose else (lambda t: t[:, None, :L])
+
+    def at_n(t):
+        if not shear:
+            return a(t)
+        t = torch.cat([t, t[:, -1:].expand(-1, max(0, row0 + R + L - 1 - N))], 1)
+        return t.unfold(1, L, 1)[:, rows]
+
+    at_m = a if shear else s
+    cost = x.new_zeros(B, R, L)
+    for f in range(x.size(2)):
+        d = at_n(x[..., f]) - at_m(y[..., f])
+        cost.addcmul_(d, d)
+    cost *= scale
+    if window is not None:
+        lo, hi = at_n(window[..., 0]), at_n(window[..., 1])
+        m = at_m(torch.arange(y.size(1), device=x.device)[None])
+        cost.masked_fill_((m < lo) | (m > hi), big)
+    return cost
+
+
+@grid_cost.register_fake
+def _(x, y, window, big, scale, shear, transpose, R, L, row0):
+    return x.new_empty(x.size(0), R, L)
+
+
+def _grid_cost_setup(ctx, inputs, output):
+    x, y, window, _, ctx.scale, ctx.shear, ctx.transpose, _, _, ctx.row0 = inputs
+    ctx.save_for_backward(x, y, window)
+
+
+def _grid_cost_backward(ctx, E):
+    x, y, window = ctx.saved_tensors
+    # _cost_gradients masks its E in place, and this one is not ours.
+    E = E.clone() if window is not None else E
+    grads = _cost_gradients(x, y, window, ctx.scale, ctx.shear, ctx.transpose, ctx.row0, E)
+    return *grads, *(None,) * 8
+
+
+grid_cost.register_autograd(_grid_cost_backward, setup_context=_grid_cost_setup)
 
 
 @torch.library.custom_op("philtorch::dtw_dp_backward_features", mutates_args=())
@@ -1311,11 +1384,7 @@ def _dtw_dp_backward_features_backward(ctx, grad_e):
             t.view_as(t) if t.requires_grad else t.detach().requires_grad_()
             for t in (D, x, y, grad)
         )
-        B, R, L = D.shape
-        p = torch.arange(B, device=D.device)[:, None, None]
-        r = torch.arange(row0, row0 + R, device=D.device)[:, None]
-        col = torch.arange(L, device=D.device)
-        cost = _cell_costs(x, y, window, big, scale, shear, transpose, p, r, col)
+        cost = grid_cost(x, y, window, big, scale, shear, transpose, *D.shape[1:], row0)
         e = _decomposed_backward(D, cost, None, grad, soft, steps, diag_weight, seeded)
         grad_D, grad_x, grad_y, grad_grad = torch.autograd.grad(
             e, (D, x, y, grad), grad_e, create_graph=create_graph, allow_unused=True
