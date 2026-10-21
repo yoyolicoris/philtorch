@@ -968,6 +968,10 @@ def _dtw_dp_features_backward(ctx, grad_D):
         E = E.new_zeros(E.size(0), N * M).index_add(1, cell, E.flatten(1)).view(-1, N, M)
     if window is not None:
         E = torch.where(_outside(window, M), 0.0, E)
+    # From frames centred on each pair's mean: the products' difference then
+    # cancels only their spread, not an offset they share.
+    mean = torch.cat([x, y], 1).mean(1, keepdim=True)
+    x, y = x - mean, y - mean
     grad_x = 2 * scale * (x * E.sum(2, keepdim=True) - E @ y)
     grad_y = 2 * scale * (y * E.sum(1).unsqueeze(-1) - E.mT @ x)
     return grad_x, grad_y, *(None,) * 10

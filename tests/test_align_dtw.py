@@ -516,7 +516,14 @@ def test_dtw_features_with_a_band_and_each_step_pattern(gamma, step_pattern, N, 
 
 @pytest.mark.cuda
 def test_dtw_features_from_differences_under_large_offsets():
-    # |x|^2 + |y|^2 - 2 x.y would lose every digit here in float32.
+    # |x|^2 + |y|^2 - 2 x.y would lose every digit here in float32, in the
+    # distance and in its gradient.
     x, y = (1e4 + torch.randn(2, n, 16, device="cuda") for n in (50, 40))
-    expected = dtw(_squared_distances(x.double(), y.double()))
-    torch.testing.assert_close(dtw(x=x, y=y).double(), expected, rtol=1e-4, atol=1e-3)
+    x64, y64 = (t.double().requires_grad_() for t in (x, y))
+    x, y = (t.requires_grad_() for t in (x, y))
+    distance = dtw(x=x, y=y)
+    expected = dtw(_squared_distances(x64, y64))
+    torch.testing.assert_close(distance.double(), expected, rtol=1e-4, atol=1e-3)
+    grads = torch.autograd.grad(distance.sum(), (x, y))
+    for grad, want in zip(grads, torch.autograd.grad(expected.sum(), (x64, y64))):
+        torch.testing.assert_close(grad.double(), want, rtol=1e-3, atol=1e-3)
