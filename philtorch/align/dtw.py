@@ -40,10 +40,11 @@ def _band_windows(N: int, M: int, n_len: Tensor, m_len: Tensor, band: float) -> 
     n = (n_len - 1).double()[:, None]
     m = (m_len - 1).double()[:, None]
     rows_longer = n > m
-    # Along the longer side, the line advances `slope` cells per cell of the other.
+    # Along the longer side, the line advances `slope` cells per other cell.
     slope = torch.where(rows_longer, n, m) / torch.where(rows_longer, m, n).clamp(min=1)
-    reach = torch.maximum(slope / 2, torch.full_like(slope, band))  # slope / 2: a step between rows
-    one_line = torch.minimum(n, m) == 0  # a single row or column: no band to keep
+    # slope / 2: a step between rows.
+    reach = torch.maximum(slope / 2, torch.full_like(slope, band))
+    one_line = torch.minimum(n, m) == 0  # a row or column: no band to keep
 
     def inside(j):
         offset = torch.where(rows_longer, i - j * slope, j - i * slope).abs()
@@ -60,7 +61,7 @@ def _band_windows(N: int, M: int, n_len: Tensor, m_len: Tensor, band: float) -> 
 
 
 def _check_features(name: str, cost: Tensor | None, x: Tensor | None, y: Tensor | None) -> None:
-    """Checks that there is either the ``cost`` or ``x`` and ``y``, as frames."""
+    """Check that there is either the cost or frames x and y, and the frames."""
     if (x is None) != (y is None):
         raise ValueError(f"{name} needs x and y together")
     if (cost is None) == (x is None):
@@ -88,7 +89,7 @@ def dtw(
     band: float | None = None,
     checkpoint: int | None = None,
 ) -> Tensor:
-    r"""The DTW or soft-DTW distance between pairs of sequences, from their costs.
+    r"""Compute the DTW or soft-DTW distance between pairs of sequences.
 
     For a cost matrix :math:`c[n, m]` of matching frame :math:`n` of one
     sequence with frame :math:`m` of another, the accumulated costs
@@ -110,20 +111,21 @@ def dtw(
     alignment: the 0/1 indicator of the optimal path for DTW, and for
     soft-DTW the expected alignment, each cell's probability of being on a
     path under the Gibbs distribution; with a diagonal weight :math:`w`, a
-    cell entered diagonally counts :math:`w` times. Both come from autograd,
-    with no backtracking, and the gradient is itself differentiable, to any
-    order. Costs may be ``inf`` to forbid cells.
+    cell entered diagonally counts :math:`w` times. From a cost, both come
+    from autograd, with no backtracking; from frames, DTW's is that of its
+    path's cost. The gradient is itself differentiable, to any order. Costs
+    may be ``inf`` to forbid cells.
 
     Rows of the accumulated costs are computed one after another, each with
     a parallel scan over its cells, after `Parallelizing Dynamic Time
     Warping Algorithm Using Prefix Computations on GPU`_ (Xiao et al.,
     2013), in tiles of the grid run as a wavefront, so that a single long
-    pair fills the GPU: :math:`O(NM)` work, and the memory of the cost and
-    the accumulated costs; from frames, :math:`O(B (N + M))`, but for
-    soft-DTW's gradient that of the accumulated costs (fewer of them with
-    :attr:`checkpoint`). The cost can be any
-    tensor, from any differentiable function of the sequences, such as the
-    squared Euclidean distances between their frames.
+    pair fills the GPU: :math:`O(BNM)` work. From a cost, the memory is that
+    of the cost and the accumulated costs; from frames, :math:`O(B (N + M))`,
+    but for soft-DTW's gradient that of the accumulated costs (fewer of them
+    with :attr:`checkpoint`). The cost can be any tensor, from any
+    differentiable function of the sequences, such as the squared Euclidean
+    distances between their frames.
 
     Note:
         Runs only on CUDA GPUs, as Triton kernels: the inputs must be CUDA
@@ -133,52 +135,56 @@ def dtw(
     Args:
         cost (Tensor, optional): the costs :math:`c[n, m]`, of shape
             :math:`(B, N, M)`. Give either it or both :attr:`x` and :attr:`y`.
-        gamma (float): 0 for DTW, positive for soft-DTW. Default: 0.
+        gamma (float, optional): 0 for DTW, positive for soft-DTW. Default: 0.
         x (Tensor, optional): the first sequences' frames, of shape
             :math:`(B, N, F)`. With :attr:`y`, the cost is the squared
             Euclidean distances between their frames, computed in the kernels
-            from the frames as direct differences, never stored. DTW's
-            gradient is then its path's, found by divide and conquer as
-            :func:`dtw_path` finds it, in :math:`O(B (N + M))` memory.
+            from direct differences and never stored. DTW's gradient is then
+            that of its path's cost, the path found by divide and conquer as
+            :func:`dtw_path` finds it, in :math:`O(B (N + M))` memory and a
+            few times the forward work; the search reads sizes back to the
+            host, which breaks a :func:`torch.compile` graph.
         y (Tensor, optional): the second sequences' frames, of shape
             :math:`(B, M, F)`, with the dtype of :attr:`x`.
-        step_pattern (str): the steps a path may take, as (row, column)
-            increments: ``"symmetric"`` for (1, 0), (0, 1) and (1, 1);
+        step_pattern (str, optional): the steps a path may take, as (row,
+            column) increments: ``"symmetric"`` for (1, 0), (0, 1) and (1, 1);
             ``"asymmetric"`` for (1, 0) and (1, 1) only, so that every frame of
-            the first sequence matches exactly one frame of the second
-            (needs :math:`N \ge M`); ``"orthogonal"`` for (1, 0) and (0, 1)
-            only, so that every path has :math:`N + M - 1` cells. Default:
-            ``"symmetric"``.
-        diagonal_weight (float): :math:`w`, the weight of a diagonal step's
-            cost in the symmetric steps. 1 favors diagonal paths, which sum
-            fewer costs; 2, Sakoe and Chiba's symmetric form ("symmetric2" in
-            Giorgino's dtw package), weighs each step's cost by how far it
-            advances, :math:`\Delta n + \Delta m`, so that every path has the
-            same total weight and diagonal steps are not favored. Default: 1.
+            the first sequence matches exactly one frame of the second (a
+            pair with :math:`N_b < M_b` has no path); ``"orthogonal"`` for
+            (1, 0) and (0, 1) only, so that every path has :math:`N + M - 1`
+            cells. Default: ``"symmetric"``.
+        diagonal_weight (float, optional): :math:`w`, the weight of a diagonal
+            step's cost in the symmetric steps. 1 favors diagonal paths, which
+            sum fewer costs; 2, Sakoe and Chiba's symmetric form
+            ("symmetric2" in Giorgino's dtw package), weighs each step's cost
+            by how far it advances, :math:`\Delta n + \Delta m`, so that every
+            path has the same total weight and diagonal steps are not favored.
+            Default: 1.
         lengths (tuple of Tensor, optional): each pair's lengths
             :math:`(N_b, M_b)`, two integer tensors of shape :math:`(B)`, for
             batches of sequences padded to :math:`N` and :math:`M`; the
             distance is then :math:`D[N_b - 1, M_b - 1]`. Padding costs don't
             affect it. With the asymmetric steps, their values size the
             computation, which breaks a :func:`torch.compile` graph. Default:
-            the full lengths.
+            ``None``, the full lengths.
         band (float, optional): a Sakoe-Chiba band: only cells within this
             many cells of the straight line from :math:`(0, 0)` to
             :math:`(N_b - 1, M_b - 1)`, measured along the longer sequence,
             may be on a path. Where the line is steeper than the band allows
             a step to follow, the band widens to keep a path. From :attr:`x`
-            and :attr:`y` only, where for DTW the kernels skip the cells
-            outside it; with a cost, make it ``inf`` there. Default: no band.
-        checkpoint (int, optional): the number of rows of the kernels' grid,
-            :math:`R` by :math:`L` cells (:math:`R \le L`, the shorter side,
-            for the symmetric and orthogonal steps), between stored rows of
-            the accumulated costs, which soft-DTW's gradient needs. With
-            :math:`k` rows, their memory is :math:`O(B L (R / k + k))`, not
-            :math:`O(B R L)`, at the price of recomputing each block of rows
-            in the backward pass: about one more forward pass, and more for a
-            small :math:`k`, whose blocks the kernels' tiles fill less. From
-            :attr:`x` and :attr:`y` only: a cost is :math:`O(B R L)` anyway.
-            Default: all rows are stored.
+            and :attr:`y` only, where for DTW the kernels skip the tiles of
+            the grid outside it; with a cost, make the cost ``inf`` outside
+            it instead. Default: ``None``, no band.
+        checkpoint (int, optional): the number of rows of the kernels' grid
+            between stored rows of the accumulated costs, which soft-DTW's
+            gradient needs. The grid is :math:`R` by :math:`L` cells, with
+            :math:`R \le L`: :math:`R = \min(N, M)` for the symmetric and
+            orthogonal steps. With :math:`k` rows, their memory is
+            :math:`O(B L (R / k + k))`, not :math:`O(B R L)`, at the price of
+            recomputing each block of rows in the backward pass, each block
+            filling the kernels' wavefront anew: a small :math:`k` is much
+            slower. From :attr:`x` and :attr:`y` only: a cost is
+            :math:`O(B R L)` anyway. Default: ``None``, all rows stored.
 
     Returns:
         Tensor: the distances, of shape :math:`(B)`; ``inf`` for a pair with
@@ -186,29 +192,34 @@ def dtw(
 
     Raises:
         ValueError: if not exactly one of :attr:`cost` and (:attr:`x`,
-            :attr:`y`) is given, if :attr:`x` and :attr:`y` are not CUDA
-            tensors of shapes :math:`(B, N, F)` and :math:`(B, M, F)` of one
-            floating dtype, if :attr:`cost` is not a CUDA tensor of shape
-            :math:`(B, N, M)` with :math:`N, M > 0` and at most
-            :math:`2^{31} - 1` cells per pair, if :attr:`step_pattern` is
-            unknown, if :attr:`diagonal_weight` is not 1 with steps that have
-            no weighted diagonal, or if :attr:`lengths` are not of shape
+            :attr:`y`) is given, if :attr:`x` and :attr:`y` are not of
+            shapes :math:`(B, N, F)` and :math:`(B, M, F)` and one floating
+            dtype, if :attr:`cost` is not of shape :math:`(B, N, M)`, if the
+            inputs are not on one CUDA device, if :math:`N` or :math:`M` is
+            0, if the accumulated costs stored for a pair (from a cost, or
+            for soft-DTW's gradient from frames) exceed :math:`2^{31} - 1`
+            cells, if :attr:`step_pattern` is unknown, if
+            :attr:`diagonal_weight` is not 1 with steps that have no
+            weighted diagonal, if :attr:`lengths` are not of shape
             :math:`(B)` within :math:`1 \le N_b \le N` and
-            :math:`1 \le M_b \le M`, if :attr:`band` comes with :attr:`cost`,
-            or if :attr:`checkpoint` is not an integer of at least 1 or comes
-            with :attr:`cost`; the lengths' values are checked only in eager
-            mode, as they would break a :func:`torch.compile` graph.
+            :math:`1 \le M_b \le M`, if :attr:`band` comes with
+            :attr:`cost`, or if :attr:`checkpoint` is not an integer of at
+            least 1 or comes with :attr:`cost`. The lengths' values are
+            checked only in eager mode, as they would break a
+            :func:`torch.compile` graph.
         RuntimeError: if Triton is not installed.
 
     Example::
 
         >>> import torch
         >>> from philtorch.align import dtw
-        >>> x = torch.randn(4, 100, 3, device="cuda")  # 4 sequences of 3-D frames
+        >>> x = torch.randn(4, 100, 3, device="cuda")  # 3-D frames
         >>> y = torch.randn(4, 80, 3, device="cuda", requires_grad=True)
         >>> cost = torch.cdist(x, y) ** 2
         >>> distance = dtw(cost, gamma=0.1)
-        >>> alignment, = torch.autograd.grad(distance.sum(), cost, retain_graph=True)
+        >>> alignment, = torch.autograd.grad(
+        ...     distance.sum(), cost, retain_graph=True
+        ... )
         >>> distance.sum().backward()  # gradients with respect to y
         >>> same = dtw(x=x, y=y, gamma=0.1)  # the same cost, from the frames
 
@@ -231,7 +242,7 @@ def _validate(
     step_pattern: str,
     diagonal_weight: float,
     lengths: tuple[Tensor, Tensor] | None,
-    band: float | None = None,
+    band: float | None,
 ) -> tuple[int, int, int]:
     """Checks the arguments; returns the shape (B, N, M) of the costs."""
     _check_features(name, cost, x, y)
@@ -300,14 +311,15 @@ def _grid(cost, x, y, gamma, step_pattern, diagonal_weight, lengths, band) -> _G
     scale = 1.0 / (gamma * math.log(2)) if gamma > 0 else 1.0
     # A large finite cost outside the band, not inf, keeps soft-min's
     # arithmetic finite; a path sums at most w (N + M) of them.
-    dtype = ref.dtype if ref.is_floating_point() else torch.get_default_dtype()  # cost * scale's
+    # cost * scale's dtype.
+    dtype = ref.dtype if ref.is_floating_point() else torch.get_default_dtype()
     big = torch.finfo(dtype).max / (8 * max(diagonal_weight, 1.0) * (N + M))
     window = None
     if features:
         if band is not None:
             window = _band_windows(N, M, n_len, m_len, band)
-    else:
-        cost = cost * scale
+    elif gamma > 0 or not cost.is_floating_point():
+        cost = cost * scale  # in units of gamma; integers become floats
 
     no_path = torch.zeros(B, dtype=torch.bool, device=ref.device)
     sheared = step_pattern == "asymmetric"
@@ -349,13 +361,14 @@ def _dtw(
     gradients or ``path``, each pair's path on the grid (else None).
 
     From frames, without gradients, each pair's grid is advanced a row at a
-    time up to its end cell and the accumulated costs are never stored; so
-    too for DTW with gradients, whose distance is then its path's cost, which
-    autograd differentiates: the path, by divide and conquer, is the gradient.
-    Soft-DTW's, the expected alignment, needs the accumulated costs: with
-    ``checkpoint`` rows, they are computed in blocks of that many rows, each
-    seeded with the last row of the one before and recomputed in the backward
-    pass; then they are not returned."""
+    time up to its end cell and the accumulated costs are never stored. For
+    DTW with gradients or ``path``, the path is found by divide and conquer,
+    and the distance is the path's cost, which autograd differentiates: the
+    path is the gradient; it is -1 for a pair without a path, whose distance
+    is inf. Soft-DTW's gradient, the expected alignment, needs the
+    accumulated costs: with ``checkpoint`` rows, they are computed in blocks
+    of that many rows, each seeded with the last row of the one before and
+    recomputed in the backward pass."""
     # Imported here so that philtorch.align imports without Triton.
     from ._dtw_kernels import dtw_dp, dtw_dp_features, frontier
 
@@ -378,7 +391,16 @@ def _dtw(
     soft = gamma > 0
     D = walk = None
     grad = features and torch.is_grad_enabled() and (x.requires_grad or y.requires_grad)
-    if features and not (grad and soft):
+    if features and not soft and (grad or path):
+        with torch.no_grad():
+            walk = _linear_path(g, x, y, ~g.no_path)
+            distance = _path_cost(g, x, y, walk)
+        # False for inf, NaN and the band's no path.
+        finite = distance < g.big / 2
+        walk = torch.where(finite[:, None, None], walk, -1)
+        if grad:
+            distance = torch.where(finite, _path_cost(g, x, y, walk), torch.inf)
+    elif features and not (grad and soft):
         zero = torch.zeros_like(batch)
         items = torch.stack([batch, zero, zero, end_row + 1, end_col + 1], -1)
         with torch.no_grad():
@@ -387,38 +409,33 @@ def _dtw(
                 g.transposed, False, g.R, g.L,
             )  # fmt: skip
         distance = row.gather(1, end_col[:, None])[:, 0]
-        if not soft and (grad or path):
-            finite = ~g.no_path & ((distance < g.big / 2) if band is not None else True)
-            with torch.no_grad():
-                walk = _linear_path(g, x, y, finite)
-            if grad:
-                distance = _path_cost(g, x, y, walk)
     elif not features:
         D = dtw_dp(g.cost, None, soft, g.steps, g.diag_weight)
         distance = D[batch, end_row, end_col]
     else:
 
         def dp(row0, rows, seed, x, y):
-            """The grid's rows row0 to row0 + rows - 1 of D; the first is seed, if given."""
+            """The grid's rows row0 to row0 + rows - 1 of D; the first is the
+            seed, if given."""
             return dtw_dp_features(
                 x, y, g.window, g.big, g.scale, soft, g.steps, g.diag_weight, g.sheared,
                 g.transposed, rows, g.L, seed, row0,
             )  # fmt: skip
 
         def block(a, b, seed, x, y):
-            """Rows a to b - 1 of D: the last one, and the distances of the pairs ending in them."""
+            """Rows a to b - 1 of D: the last one, and the distances of the
+            pairs ending in them."""
             row0 = max(a - 1, 0)  # the seed's row, for a > 0
             D = dp(row0, b - row0, seed, x, y)
             picked = D[batch, (end_row - row0).clamp(0, b - row0 - 1), end_col]
             return D[:, -1].clone(), torch.where((end_row >= a) & (end_row < b), picked, 0.0)
 
         if checkpoint is None or checkpoint >= g.R:
-            D = dp(0, g.R, None, x, y)
-            distance = D[batch, end_row, end_col]
+            distance = dp(0, g.R, None, x, y)[batch, end_row, end_col]
         else:
             distance, seed = 0, None
             for a in range(0, g.R, checkpoint):
-                # Autograd keeps each block's seed and outputs, not its rows of D.
+                # Autograd keeps each block's seed and outputs, not its D.
                 seed, found = torch.utils.checkpoint.checkpoint(
                     block, a, min(a + checkpoint, g.R), seed, x, y, use_reentrant=False,
                     preserve_rng_state=False,
@@ -437,33 +454,24 @@ _LEAF_ROWS = 64
 _CHUNK_CELLS = 2**26
 
 
-def _row_costs(g: _Grid, x, y, p, r, col):
-    """The costs of the grid's cells (r, col) of pairs p, as the kernels compute them."""
-    a, s = (col, r) if g.transposed else (r, col)
-    n = (a + s if g.sheared else a).clamp(max=x.size(1) - 1)
-    m = (a if g.sheared else s).clamp(max=y.size(1) - 1)
-    d = x[p, n] - y[p, m]
-    c = (d * d).sum(-1) * g.scale
-    if g.window is not None:
-        lo, hi = g.window[p, n].unbind(-1)
-        c = torch.where((m < lo) | (m > hi), g.big, c)
-    return c
-
-
 def _path_cost(g: _Grid, x, y, walk: Tensor) -> Tensor:
-    """The cost of each pair's path on the grid, (B, R + L - 1, 2) with -1 past it:
-    its cells' costs from the frames, by PyTorch ops, a diagonal step's times its
-    weight."""
+    """The cost of each pair's path on the grid, (B, R + L - 1, 2) with -1 past
+    it: its cells' costs from the frames, by PyTorch ops, a diagonal step's
+    times its weight."""
+    from ._dtw_kernels import _cell_costs
+
     r, col = walk.unbind(-1)
     p = torch.arange(walk.size(0), device=walk.device)[:, None].expand_as(r)
-    c = _row_costs(g, x, y, p, r.clamp(min=0), col.clamp(min=0))
+    c = _cell_costs(
+        x, y, g.window, g.big, g.scale, g.sheared, g.transposed, p, r.clamp(min=0), col.clamp(min=0)
+    )
     diagonal = (r[:, 1:] - r[:, :-1] == 1) & (col[:, 1:] - col[:, :-1] == 1)
     weight = pad(torch.where(diagonal, g.diag_weight, 1.0), (1, 0), value=1.0)
     return torch.where(r >= 0, weight * c, 0.0).sum(1)
 
 
 def _lines(items: Tensor) -> Tensor:
-    """The cells (pair, row, column) of items of one row or column: a straight path."""
+    """The cells (pair, row, column) of items of one row or column: lines."""
     p, r0, l0, h, w = items.unbind(-1)
     count = h + w - 1
     item = torch.repeat_interleave(torch.arange(len(items), device=items.device), count)
@@ -511,7 +519,7 @@ def _split(g: _Grid, x, y, items: Tensor) -> Tensor:
     Frontiers give the best cost to each cell of the middle row, from the
     item's first cell, and from each cell of the next row, to its last; the
     cheapest step across, up or diagonal, is on an optimal path."""
-    from ._dtw_kernels import frontier
+    from ._dtw_kernels import _cell_costs, frontier
 
     p, r0, l0, h, w = items.unbind(-1)
     top = h // 2
@@ -522,7 +530,10 @@ def _split(g: _Grid, x, y, items: Tensor) -> Tensor:
     D = frontier(*given, torch.stack([p, r0, l0, top, w], -1), *options, False, h_max, w_max)
     G = frontier(*given, torch.stack([p, below, l0, h - top, w], -1), *options, True, h_max, w_max)
     j = torch.arange(D.size(1), device=x.device)
-    c = _row_costs(g, x, y, p[:, None], below[:, None], l0[:, None] + j)
+    c = _cell_costs(
+        x, y, g.window, g.big, g.scale, g.sheared, g.transposed, p[:, None], below[:, None],
+        l0[:, None] + j,
+    )  # fmt: skip
     live = j < w[:, None]
     across = [torch.where(live, D + c + G, torch.inf)]
     if g.steps == "symmetric":
@@ -591,21 +602,23 @@ def dtw_path(
     lengths: tuple[Tensor, Tensor] | None = None,
     band: float | None = None,
 ) -> tuple[Tensor, Tensor]:
-    r"""The DTW distance and the optimal warping path between pairs of sequences.
+    r"""Find the DTW distance and optimal warping path of pairs of sequences.
 
     The path is DTW's (:func:`dtw` with :math:`\gamma = 0`) as index pairs
-    :math:`(n, m)` from :math:`(0, 0)` to :math:`(N_b - 1, M_b - 1)`, as
-    Viterbi decoding gives a hidden Markov model's states: backtracked over
-    the forward pass's accumulated costs, one step per cell of the path, the
-    same path as the distance's gradient marks. Under ties, it is one of the
-    optimal paths. The distance is
-    :func:`dtw`'s, differentiable to any order, its gradient the path.
+    :math:`(n, m)` from :math:`(0, 0)` to :math:`(N_b - 1, M_b - 1)`, the
+    same path as the distance's gradient marks; under ties, one of the
+    optimal paths. The distance is :func:`dtw`'s, differentiable to any
+    order, its gradient the path.
 
-    From :attr:`x` and :attr:`y`, the path is found by divide and conquer, in
-    :math:`O(B (N + M))` memory and a few times the forward work: the best
-    crossing of a rectangle's middle rows splits it in two between cells of
-    the path, down to rectangles backtracked whole; the distance is then the
-    path's cost, from the frames, which autograd differentiates.
+    From :attr:`cost`, the path is backtracked over the forward pass's
+    accumulated costs, one step per cell of the path, as Viterbi decoding
+    gives a hidden Markov model's states. From :attr:`x` and :attr:`y`, it
+    is found by divide and conquer, in :math:`O(B (N + M))` memory and a
+    few times the forward work: the best crossing of a rectangle's middle
+    rows splits it in two between cells of the path, down to rectangles
+    backtracked whole; the distance is then the path's cost, from the
+    frames, which autograd differentiates. The search reads sizes back to
+    the host, which breaks a :func:`torch.compile` graph.
 
     Note:
         Runs only on CUDA GPUs, as Triton kernels: the inputs must be CUDA
@@ -616,8 +629,8 @@ def dtw_path(
         cost (Tensor, optional): as in :func:`dtw`.
         x (Tensor, optional): as in :func:`dtw`.
         y (Tensor, optional): as in :func:`dtw`.
-        step_pattern (str): as in :func:`dtw`.
-        diagonal_weight (float): as in :func:`dtw`.
+        step_pattern (str, optional): as in :func:`dtw`.
+        diagonal_weight (float, optional): as in :func:`dtw`.
         lengths (tuple of Tensor, optional): as in :func:`dtw`.
         band (float, optional): as in :func:`dtw`.
 
@@ -628,7 +641,7 @@ def dtw_path(
         each pair's path, all -1 for a pair with none.
 
     Raises:
-        ValueError: as :func:`dtw` does.
+        ValueError: as :func:`dtw` does for these arguments.
         RuntimeError: if Triton is not installed.
 
     Example::
@@ -684,7 +697,7 @@ def soft_dtw_divergence(
     lengths: tuple[Tensor, Tensor] | None = None,
     **kwargs,
 ) -> Tensor:
-    r"""The soft-DTW divergence between pairs of sequences, from their costs.
+    r"""Compute the soft-DTW divergence between pairs of sequences.
 
     .. math::
         \mathrm{SDTW}_\gamma(x, y) - \tfrac{1}{2}\big(\mathrm{SDTW}_\gamma(x, x)
@@ -706,15 +719,16 @@ def soft_dtw_divergence(
             themselves, of shape :math:`(B, N, N)`.
         cost_yy (Tensor, optional): costs of the second sequences with
             themselves, of shape :math:`(B, M, M)`.
-        gamma (float): the soft-min temperature, positive. Required.
+        gamma (float): the soft-min temperature :math:`\gamma`, positive.
         x (Tensor, optional): the first sequences' frames, of shape
             :math:`(B, N, F)`. Give either the three costs or both :attr:`x`
             and :attr:`y`, from which they are the squared Euclidean
             distances, as in :func:`dtw`.
         y (Tensor, optional): the second sequences' frames, of shape
-            :math:`(B, M, F)`.
+            :math:`(B, M, F)`, with the dtype of :attr:`x`.
         lengths (tuple of Tensor, optional): each pair's lengths
-            :math:`(N_b, M_b)`, as in :func:`dtw`.
+            :math:`(N_b, M_b)`, as in :func:`dtw`. Default: ``None``, the
+            full lengths.
         **kwargs: the other keyword arguments of :func:`dtw`.
 
     Returns:
@@ -726,6 +740,15 @@ def soft_dtw_divergence(
             :attr:`cost_xx` and :attr:`cost_yy` are not of shapes
             :math:`(B, N, N)` and :math:`(B, M, M)`, or as :func:`dtw` does.
         RuntimeError: if Triton is not installed.
+
+    Example::
+
+        >>> import torch
+        >>> from philtorch.align import soft_dtw_divergence
+        >>> x = torch.randn(4, 100, 3, device="cuda")
+        >>> y = torch.randn(4, 80, 3, device="cuda", requires_grad=True)
+        >>> divergence = soft_dtw_divergence(gamma=0.1, x=x, y=y)
+        >>> divergence.sum().backward()
 
     .. _Differentiable Divergences Between Time Series:
         https://proceedings.mlr.press/v130/blondel21a.html

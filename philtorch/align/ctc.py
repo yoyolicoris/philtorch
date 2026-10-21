@@ -21,16 +21,16 @@ def ctc_loss(
     reduction: Literal["none", "mean", "sum"] = "mean",
     zero_infinity: bool = False,
 ) -> Tensor:
-    r"""The connectionist temporal classification loss, with the arguments of
-    :func:`torch.nn.functional.ctc_loss` but batch first.
+    r"""Compute the connectionist temporal classification (CTC) loss.
 
-    For per-frame log-probabilities :math:`\log p(k \mid t)` over :math:`C`
-    classes and a target of :math:`S` labels, `Connectionist Temporal
-    Classification`_ (Graves et al., 2006) sums the probabilities of every
-    path of :math:`T` frames that reads as the target once repeats are merged
-    and blanks dropped. That sum is soft-DTW with :math:`\gamma = 1` between
-    the frames and the target's :math:`2S + 1` states, its labels with a
-    blank before, between and after them, at the cost :math:`-\log p(k \mid
+    It takes the arguments of :func:`torch.nn.functional.ctc_loss`, but batch
+    first. For per-frame log-probabilities :math:`\log p(k \mid t)` over
+    :math:`C` classes and a target of :math:`S` labels, `Connectionist
+    Temporal Classification`_ (Graves et al., 2006) sums the probabilities of
+    every path of :math:`T` frames that reads as the target once repeats are
+    merged and blanks dropped. That sum is soft-DTW with :math:`\gamma = 1`
+    between the frames and the target's :math:`2S + 1` states, its labels with
+    a blank before, between and after them, at the cost :math:`-\log p(k \mid
     t)` of the state's class at each frame: each frame stays in its state,
     advances to the next or skips a blank between two different labels. So
     it runs on the kernels of :func:`dtw`, one state after another, each a
@@ -50,33 +50,33 @@ def ctc_loss(
 
     Args:
         log_probs (Tensor): :math:`\log p(k \mid t)`, of shape
-            :math:`(N, T, C)`, or :math:`(T, C)` for one sequence, such as a
+            :math:`(B, T, C)`, or :math:`(T, C)` for one sequence, such as a
             ``log_softmax`` over the classes.
         targets (Tensor): the labels, an integer tensor of shape
-            :math:`(N, S)`, padded past each target's length, or of the
+            :math:`(B, S)`, padded past each target's length, or of the
             targets' total length, the targets concatenated; :math:`(S)` for
             one sequence. Not :attr:`blank`.
         input_lengths (Tensor or tuple of int): each sequence's number of
-            frames, of shape :math:`(N)`, or :math:`()` for one sequence.
+            frames, of shape :math:`(B)`, or :math:`()` for one sequence.
         target_lengths (Tensor or tuple of int): each target's number of
-            labels, of shape :math:`(N)`, or :math:`()` for one sequence.
+            labels, of shape :math:`(B)`, or :math:`()` for one sequence.
             With concatenated targets, a tensor's values size the padded
             targets, which breaks a :func:`torch.compile` graph.
-        blank (int): the blank class. Default: 0.
-        reduction (str): ``"none"`` for the losses, ``"mean"`` for the mean
-            over the batch of the losses divided by their target lengths, or
-            ``"sum"``. Default: ``"mean"``.
-        zero_infinity (bool): zero the infinite losses, of targets that no
-            path of their frames can read, as their gradients are. Default:
-            ``False``.
+        blank (int, optional): the blank class. Default: 0.
+        reduction (str, optional): ``"none"`` for the losses, ``"mean"`` for
+            the mean over the batch of the losses divided by their target
+            lengths, or ``"sum"``. Default: ``"mean"``.
+        zero_infinity (bool, optional): zero the infinite losses, of targets
+            that no path of their frames can read, as their gradients are.
+            Default: ``False``.
 
     Returns:
-        Tensor: the losses, of shape :math:`(N)` with ``reduction="none"``,
-        else a scalar.
+        Tensor: the losses, of shape :math:`(B)` with ``reduction="none"``
+        (:math:`()` for one sequence), else a scalar.
 
     Raises:
         ValueError: if :attr:`log_probs` is not a CUDA tensor of shape
-            :math:`(N, T, C)` or :math:`(T, C)`, if the other arguments'
+            :math:`(B, T, C)` or :math:`(T, C)`, if the other arguments'
             shapes do not match it, if a length is negative or past its
             sequence (or the concatenated targets' lengths do not sum to
             theirs), or if :attr:`reduction` is unknown. Lengths given as
@@ -90,7 +90,8 @@ def ctc_loss(
         >>> from philtorch.align import ctc_loss
         >>> logits = torch.randn(4, 100, 20, device="cuda", requires_grad=True)
         >>> targets = torch.randint(1, 20, (4, 30), device="cuda")
-        >>> loss = ctc_loss(logits.log_softmax(-1), targets, (100,) * 4, (30,) * 4)
+        >>> log_probs = logits.log_softmax(-1)
+        >>> loss = ctc_loss(log_probs, targets, (100,) * 4, (30,) * 4)
         >>> loss.backward()
 
     .. _Connectionist Temporal Classification:
@@ -121,14 +122,15 @@ def forced_align(
     target_lengths: Tensor | Sequence[int],
     blank: int = 0,
 ) -> tuple[Tensor, Tensor]:
-    r"""The most probable alignment of each target to its frames, as
-    ``torchaudio.functional.forced_align``, batch first and batched.
+    r"""Find each target's most probable CTC alignment to its frames.
 
+    As ``torchaudio.functional.forced_align``, but batch first and batched.
     Of the paths that :func:`ctc_loss` sums over, the most probable one: CTC
     Viterbi decoding, the same grid with a hard minimum that records each
-    cell's best step back, and the traceback of :func:`~philtorch.estimation.hmm_viterbi`,
-    parallel over the frames. Under ties, a frame stays in its state rather
-    than advances, and advances rather than skips a blank.
+    cell's best step back, and the traceback of
+    :func:`~philtorch.estimation.hmm_viterbi`, parallel over the frames.
+    Under ties, a frame stays in its state rather than advances, and
+    advances rather than skips a blank.
 
     Note:
         Runs only on CUDA GPUs, as Triton kernels: the inputs must be CUDA
@@ -136,22 +138,22 @@ def forced_align(
         builds for Linux.
 
     Args:
-        log_probs (Tensor): as in :func:`ctc_loss`, :math:`(N, T, C)` or
+        log_probs (Tensor): as in :func:`ctc_loss`, :math:`(B, T, C)` or
             :math:`(T, C)`.
         targets (Tensor): as in :func:`ctc_loss`.
         input_lengths (Tensor or tuple of int): as in :func:`ctc_loss`.
         target_lengths (Tensor or tuple of int): as in :func:`ctc_loss`.
-        blank (int): the blank class. Default: 0.
+        blank (int, optional): the blank class. Default: 0.
 
     Returns:
         tuple of Tensor: each frame's label, :attr:`blank` included, an
-        integer tensor of shape :math:`(N, T)`, and its log-probability, of
-        shape :math:`(N, T)`; :math:`(T)` each for one sequence. Past each
+        integer tensor of shape :math:`(B, T)`, and its log-probability, of
+        shape :math:`(B, T)`; :math:`(T)` each for one sequence. Past each
         sequence's frames, and for a target that no path of its frames can
         read, the labels are -1 and the log-probabilities 0.
 
     Raises:
-        ValueError: as :func:`ctc_loss` does.
+        ValueError: as :func:`ctc_loss` does for these arguments.
         RuntimeError: if Triton is not installed.
 
     Example::
@@ -190,8 +192,8 @@ def forced_align(
 
 
 def _lengths(lengths: Tensor | Sequence[int] | int) -> tuple[Tensor, list[int] | None]:
-    """Lengths as a 1-D long tensor, and as a list of ints if they were given as
-    ints."""
+    """Lengths as a 1-D long tensor, and as a list of ints if they were given
+    as ints."""
     if isinstance(lengths, Tensor):
         return lengths.long().reshape(-1), None
     if isinstance(lengths, numbers.Integral):
@@ -201,10 +203,10 @@ def _lengths(lengths: Tensor | Sequence[int] | int) -> tuple[Tensor, list[int] |
 
 
 def _prepare(name, log_probs, targets, input_lengths, target_lengths, blank):
-    """The arguments as (N, T, C) log-probabilities, the (N, 2S + 1) states and the
-    kernels' skip mask, (N) lengths, and whether there was a batch."""
+    """The arguments as (N, T, C) log-probabilities, the (N, 2S + 1) states and
+    the kernels' skip mask, (N) lengths, and whether there was a batch."""
     if log_probs.dim() not in (2, 3):
-        raise ValueError(f"log_probs must be (N, T, C) or (T, C), got {tuple(log_probs.shape)}")
+        raise ValueError(f"log_probs must be (B, T, C) or (T, C), got {tuple(log_probs.shape)}")
     unbatched = log_probs.dim() == 2
     device = log_probs.device
     frames, frame_values = _lengths(input_lengths)
@@ -271,10 +273,11 @@ def _prepare(name, log_probs, targets, input_lengths, target_lengths, blank):
 
 
 def _grid(state_log_probs, skip, frames, labels, viterbi):
-    """The kernels' grid from each frame's log-probabilities of the states, (N, T, 2S + 1):
-    its accumulated costs D, with ``viterbi`` its cells' best steps back, and -log p
-    of the paths ending in each sequence's final blank and in its last label, rows
-    2S + 1 and 2S, (2, N): of all paths, or with ``viterbi`` the best one."""
+    """The kernels' grid from each frame's log-probabilities of the states,
+    (N, T, 2S + 1): its accumulated costs D, with ``viterbi`` its cells' best
+    steps back, and -log p of the paths ending in each sequence's final blank
+    and in its last label, rows 2S + 1 and 2S, (2, N): of all paths, or with
+    ``viterbi`` the best one."""
     # Imported here so that philtorch.align imports without Triton.
     from ._dtw_kernels import ctc_viterbi, dtw_dp
 
