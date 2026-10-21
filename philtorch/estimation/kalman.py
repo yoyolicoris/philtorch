@@ -1,4 +1,5 @@
-"""Kalman filters and smoothers parallelized over time with associative scans.
+"""Kalman filters and smoothers parallelized over time with associative scans,
+and their expectation-maximization step.
 
 These follow Särkkä and García-Fernández, "On the performance of prefix-sum
 parallel Kalman filters and smoothers on GPUs" (arXiv:2511.10363).
@@ -321,14 +322,11 @@ def kalman_filter(
     in its generic mode, which needs PyTorch 2.11 or later.
 
     Each of :attr:`A`, :attr:`C`, :attr:`Q` and :attr:`R` may be constant or
-    time-varying, and shared or one per signal: its base shape below can be
-    prefixed with its number of steps :math:`T` (:math:`N` for :attr:`C` and
-    :attr:`R`, :math:`N - 1` for :attr:`A` and :attr:`Q`) for time-varying
-    values, :math:`B` for one per signal, or :math:`(B, T)` for both. When
-    two readings fit, such as :math:`T = B`, the time-varying one is taken.
-    Even with constant matrices, the Kalman gain varies over time. Complex
-    tensors describe circularly symmetric complex Gaussian noise, with
-    conjugate transposes in place of transposes.
+    time-varying, and shared or one per signal, as listed below. When a 3-D
+    one fits both readings, as when :math:`B` equals its number of steps, it
+    is taken as time-varying. Even with constant matrices, the Kalman gain
+    varies over time. Complex tensors describe circularly symmetric complex
+    Gaussian noise, with conjugate transposes in place of transposes.
 
     Note:
         Known inputs need no extra arguments. For
@@ -337,7 +335,7 @@ def kalman_filter(
         \mathbf{d}[n] + \mathbf{v}[n]`, filter the part of the state that
         :math:`\mathbf{u}` doesn't drive, then add the part it does, which
         :func:`~philtorch.lpv.state_space_recursion` computes from zero. With
-        :attr:`u` of shape :math:`(B, N - 1, M)`, :attr:`d` of shape
+        ``u`` of shape :math:`(B, N - 1, M)`, ``d`` of shape
         :math:`(B, N, P)`, and :attr:`A` and :attr:`C` expanded to their full
         shapes :math:`(B, N - 1, M, M)` and :math:`(B, N, P, M)`, such as
         ``A.expand(B, N - 1, M, M)`` for a constant :attr:`A`::
@@ -369,11 +367,18 @@ def kalman_filter(
         y (Tensor): measurements :math:`\mathbf{y}[n]`, of shape
             :math:`(B, N, P)`.
         A (Tensor): state transition matrices, each taking a state to the
-            next, of base shape :math:`(M, M)`.
-        C (Tensor): measurement matrices, of base shape :math:`(P, M)`.
-        Q (Tensor): process noise covariances, of base shape :math:`(M, M)`.
-        R (Tensor): measurement noise covariances, of base shape
-            :math:`(P, P)`.
+            next: shared, of shape :math:`(M, M)`; per step,
+            :math:`(N - 1, M, M)`; per signal, :math:`(B, M, M)`; or both,
+            :math:`(B, N - 1, M, M)`.
+        C (Tensor): measurement matrices: shared, of shape :math:`(P, M)`;
+            per step, :math:`(N, P, M)`; per signal, :math:`(B, P, M)`; or
+            both, :math:`(B, N, P, M)`.
+        Q (Tensor): process noise covariances: shared, of shape
+            :math:`(M, M)`; per step, :math:`(N - 1, M, M)`; per signal,
+            :math:`(B, M, M)`; or both, :math:`(B, N - 1, M, M)`.
+        R (Tensor): measurement noise covariances: shared, of shape
+            :math:`(P, P)`; per step, :math:`(N, P, P)`; per signal,
+            :math:`(B, P, P)`; or both, :math:`(B, N, P, P)`.
         m0 (Tensor): the prior mean of :math:`\mathbf{x}[0]`, of shape
             :math:`(M)` or :math:`(B, M)`.
         P0 (Tensor): the prior covariance of :math:`\mathbf{x}[0]`, of shape
@@ -428,42 +433,25 @@ def kalman_smoother(
     The arguments are those of :func:`kalman_filter`, and the same PyTorch
     2.11 requirement applies.
 
-    These are the expectations of the E-step of expectation-maximization.
-    With constant matrices and :math:`N \ge 2`, the M-step has a closed form,
-    from `An Approach to Time Series Smoothing and Forecasting Using the EM
-    Algorithm`_ (Shumway and Stoffer, 1982), here fitting one model to all
-    the signals::
-
-        from philtorch.estimation import kalman_smoother
-
-        m, V, V10, _ = kalman_smoother(y, A, C, Q, R, m0, P0)
-        outer = V + m.unsqueeze(-1) @ m.unsqueeze(-2).conj()  # E[x[n] x[n]^H]
-        cross = V10 + m[:, 1:].unsqueeze(-1) @ m[:, :-1].unsqueeze(-2).conj()
-        S00 = outer[:, :-1].sum((0, 1))  # sums of E[x[n] x[n]^H], n < N - 1
-        S11 = outer[:, 1:].sum((0, 1))  # sums of E[x[n + 1] x[n + 1]^H]
-        S10 = cross.sum((0, 1))  # sums of E[x[n + 1] x[n]^H]
-        A = torch.linalg.solve(S00, S10.mH).mH  # S10 S00^-1
-        Q = (S11 - A @ S10.mH) / (y.size(0) * (y.size(1) - 1))
-        Syx = (y.unsqueeze(-1) @ m.unsqueeze(-2).conj()).sum((0, 1))
-        C = torch.linalg.solve(outer.sum((0, 1)), Syx.mH).mH
-        yy = (y.unsqueeze(-1) @ y.unsqueeze(-2).conj()).sum((0, 1))
-        R = (yy - C @ Syx.mH) / (y.size(0) * y.size(1))
-        m0 = m[:, 0].mean(0)
-        P0 = outer[:, 0].mean(0) - m0.outer(m0.conj())
-        # Exactly Hermitian, despite rounding, for the next step's factorizations.
-        Q, R, P0 = (Q + Q.mH) / 2, (R + R.mH) / 2, (P0 + P0.mH) / 2
-
-    Each such step increases the log-likelihood until it converges.
+    These are the expectations of the E-step of expectation-maximization;
+    :func:`kalman_em_step` runs its closed-form M-step.
 
     Args:
         y (Tensor): measurements :math:`\mathbf{y}[n]`, of shape
             :math:`(B, N, P)`.
         A (Tensor): state transition matrices, each taking a state to the
-            next, of base shape :math:`(M, M)`.
-        C (Tensor): measurement matrices, of base shape :math:`(P, M)`.
-        Q (Tensor): process noise covariances, of base shape :math:`(M, M)`.
-        R (Tensor): measurement noise covariances, of base shape
-            :math:`(P, P)`.
+            next: shared, of shape :math:`(M, M)`; per step,
+            :math:`(N - 1, M, M)`; per signal, :math:`(B, M, M)`; or both,
+            :math:`(B, N - 1, M, M)`.
+        C (Tensor): measurement matrices: shared, of shape :math:`(P, M)`;
+            per step, :math:`(N, P, M)`; per signal, :math:`(B, P, M)`; or
+            both, :math:`(B, N, P, M)`.
+        Q (Tensor): process noise covariances: shared, of shape
+            :math:`(M, M)`; per step, :math:`(N - 1, M, M)`; per signal,
+            :math:`(B, M, M)`; or both, :math:`(B, N - 1, M, M)`.
+        R (Tensor): measurement noise covariances: shared, of shape
+            :math:`(P, P)`; per step, :math:`(N, P, P)`; per signal,
+            :math:`(B, P, P)`; or both, :math:`(B, N, P, P)`.
         m0 (Tensor): the prior mean of :math:`\mathbf{x}[0]`, of shape
             :math:`(M)` or :math:`(B, M)`.
         P0 (Tensor): the prior covariance of :math:`\mathbf{x}[0]`, of shape
@@ -493,8 +481,6 @@ def kalman_smoother(
 
     .. _On The Performance of Prefix-Sum Parallel Kalman Filters and Smoothers on GPUs:
         https://arxiv.org/abs/2511.10363
-    .. _An Approach to Time Series Smoothing and Forecasting Using the EM Algorithm:
-        https://doi.org/10.1111/j.1467-9892.1982.tb00349.x
     """
     A, C, Q, R, m0, P0 = _parse(y, A, C, Q, R, m0, P0)
     filtered_means, filtered_covs = _filter(y, A, C, Q, R, m0, P0)
@@ -507,3 +493,94 @@ def kalman_smoother(
     # Cov(x[n + 1], x[n] | y) = Cov(x[n], x[n + 1] | y)^H = Cov(x[n + 1] | y) E[n]^H.
     cross_covs = covs[:, 1:] @ E.mH
     return KalmanSmootherResult(means, covs, cross_covs, log_likelihood)
+
+
+def kalman_em_step(
+    y: Tensor, A: Tensor, C: Tensor, Q: Tensor, R: Tensor, m0: Tensor, P0: Tensor
+) -> tuple[Tensor, tuple[Tensor, ...]]:
+    r"""Run one expectation-maximization step of :func:`kalman_filter`'s model.
+
+    The E-step is :func:`kalman_smoother`. The M-step has a closed form, from
+    `An Approach to Time Series Smoothing and Forecasting Using the EM
+    Algorithm`_ (Shumway and Stoffer, 1982). Shared parameters are fitted to
+    all the signals together, per-signal ones to each signal alone. Each step
+    increases the log-likelihood until it converges. Repeat it with
+    :func:`em`, e.g. ``em(functools.partial(kalman_em_step, y), (A, C, Q, R,
+    m0, P0))``.
+
+    Args:
+        y (Tensor): measurements :math:`\mathbf{y}[n]`, of shape
+            :math:`(B, N, P)`, with :math:`N \ge 2`.
+        A (Tensor): the state transition matrix, of shape :math:`(M, M)` or
+            :math:`(B, M, M)`.
+        C (Tensor): the measurement matrix, of shape :math:`(P, M)` or
+            :math:`(B, P, M)`.
+        Q (Tensor): the process noise covariance (the same layout as
+            :attr:`A`), of shape :math:`(M, M)` or :math:`(B, M, M)`.
+        R (Tensor): the measurement noise covariance (the same layout as
+            :attr:`C`), of shape :math:`(P, P)` or :math:`(B, P, P)`.
+        m0 (Tensor): the prior mean of :math:`\mathbf{x}[0]`, of shape
+            :math:`(M)` or :math:`(B, M)`.
+        P0 (Tensor): the prior covariance of :math:`\mathbf{x}[0]` (the same
+            layout as :attr:`m0`), of shape :math:`(M, M)` or
+            :math:`(B, M, M)`.
+
+    Returns:
+        tuple: the log-likelihood of the given parameters, of shape
+        :math:`(B)`, and the new ``(A, C, Q, R, m0, P0)``, each in the layout
+        it was given.
+
+    Raises:
+        ValueError: if :attr:`y` has no signal or fewer than two steps, or a
+            parameter is not of a shape listed above, or :attr:`A` and
+            :attr:`Q`, :attr:`C` and :attr:`R`, or :attr:`m0` and :attr:`P0`
+            differ in layout.
+        RuntimeError: on PyTorch older than 2.11.
+
+    .. _An Approach to Time Series Smoothing and Forecasting Using the EM Algorithm:
+        https://doi.org/10.1111/j.1467-9892.1982.tb00349.x
+    """
+    if not (
+        A.dim() in (2, 3)
+        and Q.dim() == A.dim()
+        and C.dim() in (2, 3)
+        and R.dim() == C.dim()
+        and m0.dim() in (1, 2)
+        and P0.dim() == m0.dim() + 1
+    ):
+        raise ValueError(
+            "A and Q, C and R, m0 and P0 must each be shared by all signals or all per signal: "
+            f"got shapes {tuple(A.shape)}, {tuple(Q.shape)}, {tuple(C.shape)}, {tuple(R.shape)}, "
+            f"{tuple(m0.shape)}, {tuple(P0.shape)}"
+        )
+    B, N, _ = y.shape
+    if B < 1 or N < 2:
+        raise ValueError(f"y must have at least one signal of two steps, got {tuple(y.shape)}")
+    # A per-signal (B, M, M) would be read as per step when B == N - 1 (or N).
+    per_A, per_C, per_m0 = A.dim() == 3, C.dim() == 3, m0.dim() == 2
+    if per_A:
+        A, Q = (t[:, None].expand(-1, N - 1, -1, -1) for t in (A, Q))
+    if per_C:
+        C, R = (t[:, None].expand(-1, N, -1, -1) for t in (C, R))
+    m, V, V10, log_likelihood = kalman_smoother(y, A, C, Q, R, m0, P0)
+
+    def avg(t: Tensor, per_signal: bool) -> Tensor:
+        return t.mean(1) if per_signal else t.mean((0, 1))
+
+    def outer(u: Tensor, v: Tensor) -> Tensor:
+        return u.unsqueeze(-1) @ v.unsqueeze(-2).conj()
+
+    # Covariances from the residuals: differences of second moments round away.
+    Exx = V + outer(m, m)
+    E10 = avg(V10 + outer(m[:, 1:], m[:, :-1]), per_A)
+    A = torch.linalg.solve(avg(Exx[:, :-1], per_A), E10.mH).mH
+    C = torch.linalg.solve(avg(Exx, per_C), avg(outer(y, m), per_C).mH).mH
+    a, c = (A[:, None] if per_A else A), (C[:, None] if per_C else C)
+    r, e = m[:, 1:] - _mv(a, m[:, :-1]), y - _mv(c, m)
+    Q = avg(outer(r, r) + V[:, 1:] - a @ V10.mH - V10 @ a.mH + a @ V[:, :-1] @ a.mH, per_A)
+    R = avg(outer(e, e) + c @ V @ c.mH, per_C)
+    m0 = m[:, 0] if per_m0 else m[:, 0].mean(0)
+    P0 = V[:, 0] if per_m0 else (V[:, 0] + outer(m[:, 0] - m0, m[:, 0] - m0)).mean(0)
+    # Exactly Hermitian, despite rounding, for the next step's factorizations.
+    Q, R, P0 = (Q + Q.mH) / 2, (R + R.mH) / 2, (P0 + P0.mH) / 2
+    return log_likelihood, (A, C, Q, R, m0, P0)

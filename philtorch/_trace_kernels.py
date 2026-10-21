@@ -4,7 +4,9 @@ Each step's backpointers are a map of K states, and following them is a
 chain of maps, composed in two levels as the HMM message chains are: each
 chunk's maps composed, the chain of the compositions one level up, then
 each chunk from its start. So a traceback of L steps takes a sequential
-depth of a few hundred steps whatever L is, and about L K work.
+depth of a few hundred steps whatever L is, and about L K work. This is the
+parallel traceback of Särkkä and García-Fernández, "On the temporal
+parallelisation of the Viterbi algorithm" (EUSIPCO, 2023), eq. (30).
 """
 
 import torch

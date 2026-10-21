@@ -14,6 +14,7 @@ Kalman filtering
 
    kalman_filter
    kalman_smoother
+   kalman_em_step
 
 .. autoclass:: KalmanFilterResult
    :members: means, covs, log_likelihood
@@ -38,3 +39,13 @@ Hidden Markov models
    hmm_filter
    hmm_smoother
    hmm_viterbi
+   hmm_em_step
+
+Expectation-maximization
+------------------------
+
+.. autosummary::
+   :toctree: generated
+   :nosignatures:
+
+   em

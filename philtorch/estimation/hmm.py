@@ -4,6 +4,10 @@ The forward algorithm, forward-backward smoothing and Viterbi decoding as
 parallel scans over time of per-step K x K matrices in the log or max-plus
 semiring, following Hassan, Särkkä and García-Fernández, "Temporal
 parallelization of inference in hidden Markov models" (IEEE TSP, 2021).
+Viterbi decoding's traceback composes its backpointer maps in parallel, as in
+Särkkä and García-Fernández, "On the temporal parallelisation of the Viterbi
+algorithm" (EUSIPCO, 2023). Baum-Welch re-estimation takes its expected
+counts from the forward algorithm's gradients.
 
 The model is the classical one, as in
 :func:`~philtorch.estimation.kalman_filter`: the prior describes the first
@@ -34,10 +38,10 @@ from .._triton import check_cuda_triton
 
 
 def _parse(
-    name: str, log_emit: Tensor, log_trans: Tensor, log_init: Tensor
+    name: str, log_emit: Tensor, log_trans: Tensor, log_init: Tensor, per_signal: bool = False
 ) -> tuple[Tensor, Tensor, Tensor]:
     """Validate the model; return log_emit, log_trans as (1 or B, 1 or N - 1, K, K), and
-    log_init as (B, K)."""
+    log_init as (B, K). With per_signal, a 3-D log_trans is never read per step."""
     if log_emit.dim() != 3:
         raise ValueError(f"log_emit must be (B, N, K), got {tuple(log_emit.shape)}")
     batch_size, N, K = log_emit.shape
@@ -46,7 +50,7 @@ def _parse(
         case 2:
             log_trans = log_trans[None, None]
         # Per step before per signal when both fit, as in kalman_filter.
-        case 3 if log_trans.size(0) == transitions:
+        case 3 if log_trans.size(0) == transitions and not per_signal:
             log_trans = log_trans[None]
         case 3 if log_trans.size(0) == batch_size:
             log_trans = log_trans[:, None]
@@ -82,6 +86,12 @@ def _logsumexp(x: Tensor, dim: int, keepdim: bool = False) -> Tensor:
     out = torch.logsumexp(torch.where(empty, torch.zeros_like(x), x), dim=dim, keepdim=True)
     out = torch.where(empty, float("-inf"), out)
     return out if keepdim else out.squeeze(dim)
+
+
+def _log(x: Tensor) -> Tensor:
+    """The log of x >= 0, with a zero gradient, not NaN, where x is 0."""
+    positive = x > 0
+    return torch.where(positive, torch.where(positive, x, 1).log(), float("-inf"))
 
 
 # The transition gradient's sum over the batch and time runs over blocks of
@@ -339,7 +349,7 @@ def _predicted_and_backward(
 
 
 def hmm_filter(log_emit: Tensor, log_trans: Tensor, log_init: Tensor) -> tuple[Tensor, Tensor]:
-    r"""Filter a hidden Markov model: its log-likelihood and filtered state probabilities.
+    r"""Filter a hidden Markov model: its log-likelihood and filtered posteriors.
 
     For a hidden Markov model with states :math:`z[0], \dots, z[N - 1]` and
     measurements :math:`y[0], \dots, y[N - 1]`, where :math:`y[n]` is emitted
@@ -402,7 +412,11 @@ def hmm_smoother(log_emit: Tensor, log_trans: Tensor, log_init: Tensor) -> tuple
     :math:`\log p(z[n] \mid y[0], \dots, y[N - 1])`, from a forward and an
     independent backward scan, as in `Temporal Parallelization of Inference
     in Hidden Markov Models`_ (Hassan et al., 2021). Its implementation and
-    differentiability are those of :func:`hmm_filter`.
+    differentiability are those of :func:`hmm_filter`. The pairwise
+    posteriors :math:`p(z[n] = i, z[n + 1] = j \mid y[0], \dots, y[N - 1])`
+    are the gradient of the summed log-likelihood with respect to a
+    :attr:`log_trans` of shape :math:`(B, N - 1, K, K)`, from which
+    :func:`hmm_em_step` takes its counts.
 
     Note:
         Runs only on CUDA GPUs, as Triton kernels: the inputs must be CUDA
@@ -448,16 +462,16 @@ def hmm_viterbi(log_emit: Tensor, log_trans: Tensor, log_init: Tensor) -> tuple[
     r"""Decode a hidden Markov model: its most probable state sequence.
 
     For the model of :func:`hmm_filter`, this is the Viterbi algorithm with
-    both of its passes parallelized over time: a max-plus scan, as in
-    `Temporal Parallelization of Inference in Hidden Markov Models`_ (Hassan
-    et al., 2021), gives the best score of any path ending in each state and
-    records each state's best predecessor, and a traceback follows those
-    backpointers from the best last state, in chunks of steps. So the path is
-    always one of the optimal paths: under ties, the one that prefers lower
-    state indices, as the sequential algorithm's backpointers do. The score's
-    gradient is that of the decoded path: one for its first state's prior
-    and for each of its emissions and transitions; its higher derivatives are
-    zero.
+    both of its passes parallelized over time, as in `On the Temporal
+    Parallelisation of the Viterbi Algorithm`_ (Särkkä and García-Fernández,
+    2023): a max-plus scan gives the best score of any path ending in each
+    state and records each state's best predecessor, and the traceback
+    composes those backpointer maps from the best last state, in chunks of
+    steps. So the path is always one of the optimal paths: under ties, the one
+    that prefers lower state indices, as the sequential algorithm's
+    backpointers do. The score's gradient is that of the decoded path: one for
+    its first state's prior and for each of its emissions and transitions; its
+    higher derivatives are zero.
 
     Note:
         Runs only on CUDA GPUs, as Triton kernels: the inputs must be CUDA
@@ -486,8 +500,8 @@ def hmm_viterbi(log_emit: Tensor, log_trans: Tensor, log_init: Tensor) -> tuple[
             shapes.
         RuntimeError: if Triton is not installed.
 
-    .. _Temporal Parallelization of Inference in Hidden Markov Models:
-        https://doi.org/10.1109/TSP.2021.3103338
+    .. _On the Temporal Parallelisation of the Viterbi Algorithm:
+        https://doi.org/10.23919/EUSIPCO58844.2023.10289998
     """
     log_emit, log_trans, log_init = _parse("hmm_viterbi", log_emit, log_trans, log_init)
     batch_size, N, _ = log_emit.shape
@@ -495,3 +509,87 @@ def hmm_viterbi(log_emit: Tensor, log_trans: Tensor, log_init: Tensor) -> tuple[
         score, _ = _empty(log_emit, log_trans, log_init)
         return score, log_emit.new_zeros(batch_size, 0, dtype=torch.long)
     return _Viterbi.apply(log_emit, log_trans, log_init)
+
+
+def hmm_em_step(
+    log_emit: Tensor, log_trans: Tensor, log_init: Tensor
+) -> tuple[Tensor, tuple[Tensor, Tensor], Tensor]:
+    r"""Re-estimate a hidden Markov model's transitions by one Baum-Welch step.
+
+    For the model of :func:`hmm_filter`, this is one step of
+    expectation-maximization (the Baum-Welch algorithm) of the transitions and
+    the initial distribution. Shared parameters are fitted to all signals
+    together, per-signal ones to each signal alone. The expected transition
+    counts and initial states are the gradients of the log-likelihood with
+    respect to :attr:`log_trans` and :attr:`log_init`, so the E-step is
+    :func:`hmm_filter` and its backward pass, parallel scans as in `Temporal
+    Parallelization of Inference in Hidden Markov Models`_ (Hassan et al.,
+    2021). The M-step normalizes them; a state that is never left keeps its
+    row of :attr:`log_trans`.
+
+    The emissions belong to the caller: the state posteriors, the gradient
+    with respect to :attr:`log_emit`, are returned to re-estimate their model.
+    The results are differentiable to any order in reverse mode, as those
+    of :func:`hmm_filter` are. To iterate, pass the step to
+    :func:`em`, e.g. ``em(lambda t, i: hmm_em_step(log_emit, t, i)[:2],
+    (log_trans, log_init))``.
+
+    Note:
+        Runs only on CUDA GPUs, as Triton kernels: the inputs must be CUDA
+        tensors, and Triton must be installed, as it is with PyTorch's CUDA
+        builds for Linux.
+
+    Args:
+        log_emit (Tensor): :math:`\log p(y[n] \mid z[n] = k)`, of shape
+            :math:`(B, N, K)`, with :math:`B, N \ge 1`.
+        log_trans (Tensor): :math:`\log p(z[n + 1] = j \mid z[n] = i)` at
+            index :math:`[i, j]`, shared by all steps and signals, of shape
+            :math:`(K, K)`, or per signal, :math:`(B, K, K)`.
+        log_init (Tensor): :math:`\log p(z[0] = k)`, shared, of shape
+            :math:`(K)`, or per signal, :math:`(B, K)`.
+
+    Returns:
+        tuple: the log-likelihood of the given parameters, of shape
+        :math:`(B)`; the new :attr:`log_trans` and :attr:`log_init`, of the
+        shapes given; and the posterior probabilities
+        :math:`p(z[n] = k \mid y[0], \dots, y[N - 1])`, of shape
+        :math:`(B, N, K)`.
+
+    Raises:
+        ValueError: if the inputs are not CUDA tensors or have unsupported
+            shapes.
+        RuntimeError: if Triton is not installed.
+
+    .. _Temporal Parallelization of Inference in Hidden Markov Models:
+        https://doi.org/10.1109/TSP.2021.3103338
+    """
+    if log_emit.dim() != 3 or log_emit.size(0) < 1 or log_emit.size(1) < 1:
+        raise ValueError(f"log_emit must be (B, N, K) with B, N >= 1, got {tuple(log_emit.shape)}")
+    if log_trans.dim() not in (2, 3) or log_init.dim() not in (1, 2):
+        raise ValueError(
+            f"log_trans must be (K, K) or (B, K, K) and log_init (K) or (B, K), "
+            f"got {tuple(log_trans.shape)} and {tuple(log_init.shape)}"
+        )
+    inputs = (log_emit, log_trans, log_init)
+    differentiable = torch.is_grad_enabled() and any(x.requires_grad for x in inputs)
+    # Fresh views keep the gradients partial derivatives; inference tensors, which
+    # autograd can't record, are cloned outside inference mode.
+    with torch.inference_mode(False), torch.enable_grad():
+        emit, trans, init = (
+            x.view_as(x)
+            if x.requires_grad
+            else (x.clone() if x.is_inference() else x.detach()).requires_grad_()
+            for x in inputs
+        )
+        e, t, i = _parse("hmm_em_step", emit, trans, init, per_signal=True)
+        log_likelihood = _logsumexp(_LogChain.apply(i, t, e[:, :-1])[:, -1] + e[:, -1], dim=-1)
+        # Fisher's identity: the gradients are the expected counts and posteriors.
+        counts, starts, posteriors = torch.autograd.grad(
+            log_likelihood.sum(), (trans, init, emit), create_graph=differentiable
+        )
+    if not differentiable:
+        log_likelihood = log_likelihood.detach()
+    rows = counts.sum(-1, keepdim=True)
+    new_trans = torch.where(rows > 0, _log(counts) - _log(rows), log_trans)
+    new_init = _log(starts) - _log(starts.sum(-1, keepdim=True))
+    return log_likelihood, (new_trans, new_init), posteriors
