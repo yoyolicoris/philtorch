@@ -468,10 +468,12 @@ def _num_warps(TL: int, backward: bool = False) -> int:
 def _tile(B: int, R: int, L: int) -> tuple[int, int]:
     """The tile's rows and columns, measured on an RTX 5060 Ti: narrower tiles give
     a few pairs more programs per launch, wider ones fewer launches for many. With
-    too few tiles side by side to pay for the launches, a tile is the whole grid."""
+    too few tiles side by side to pay for the launches, a tile is the whole grid,
+    for rows of at most _MAX_ROW columns."""
     TL = min(256 if B < 8 else 1024, triton.next_power_of_2(L))
     n_cols = triton.cdiv(L, TL)
-    if n_cols == 1 or B * n_cols < _MIN_TILES:
+    side_by_side = B * min(triton.cdiv(R, 32), n_cols)
+    if n_cols == 1 or (side_by_side < _MIN_TILES and L <= _MAX_ROW):
         return R, triton.next_power_of_2(L)
     return 32, TL
 
@@ -484,6 +486,9 @@ _MAX_CELLS = 2**31 - 1
 
 # The fewest tiles side by side, over the batch, worth a wavefront.
 _MIN_TILES = 16
+# The longest row a program holds whole: 2^18 lanes compile in about half a
+# minute, once.
+_MAX_ROW = 2**18
 # The cells per program of _shares_kernel.
 _SHARES_BLOCK = 1024
 

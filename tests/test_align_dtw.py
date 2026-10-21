@@ -106,7 +106,7 @@ def test_dtw_alignment_is_the_gradient(step_pattern, gamma):
 @pytest.mark.cuda
 @pytest.mark.parametrize(
     "step_pattern, diagonal_weight",
-    [("symmetric", 1.0), ("symmetric", 2.0), ("orthogonal", 1.0)],
+    [("symmetric", 1.0), ("symmetric", 2.0), ("asymmetric", 1.0), ("orthogonal", 1.0)],
 )
 def test_soft_dtw_second_derivatives(step_pattern, diagonal_weight):
     cost = _cost(2, 5, 4).requires_grad_()
@@ -320,7 +320,7 @@ _STEPS = {
 @pytest.mark.cuda
 @pytest.mark.parametrize(
     "step_pattern, diagonal_weight",
-    [("symmetric", 1.0), ("symmetric", 2.0), ("orthogonal", 1.0)],
+    [("symmetric", 1.0), ("symmetric", 2.0), ("asymmetric", 1.0), ("orthogonal", 1.0)],
 )
 def test_dtw_path(step_pattern, diagonal_weight):
     # The path runs from (0, 0) to each pair's last cell in the pattern's
