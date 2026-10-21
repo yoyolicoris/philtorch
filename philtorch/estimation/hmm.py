@@ -506,17 +506,18 @@ def hmm_viterbi(log_emit: Tensor, log_trans: Tensor, log_init: Tensor) -> tuple[
 def hmm_em_step(
     log_emit: Tensor, log_trans: Tensor, log_init: Tensor
 ) -> tuple[Tensor, tuple[Tensor, Tensor], Tensor]:
-    r"""Run one Baum-Welch step: re-estimate a hidden Markov model's transitions.
+    r"""Re-estimate a hidden Markov model's transitions by one Baum-Welch step.
 
     For the model of :func:`hmm_filter`, this is one step of
-    expectation-maximization (the Baum-Welch algorithm) that fits one
-    transition matrix and one initial distribution to all :math:`B` signals
-    together. The expected transition counts and initial states are the
-    gradients of the log-likelihood with respect to :attr:`log_trans` and
-    :attr:`log_init`, so the E-step is :func:`hmm_filter` and its backward
-    pass, parallel scans as in `Temporal Parallelization of Inference in
-    Hidden Markov Models`_ (Hassan et al., 2021). The M-step normalizes them;
-    a state that is never left keeps its row of :attr:`log_trans`.
+    expectation-maximization (the Baum-Welch algorithm) of the transitions and
+    the initial distribution. Shared parameters are fitted to all signals
+    together, per-signal ones to each signal alone. The expected transition
+    counts and initial states are the gradients of the log-likelihood with
+    respect to :attr:`log_trans` and :attr:`log_init`, so the E-step is
+    :func:`hmm_filter` and its backward pass, parallel scans as in `Temporal
+    Parallelization of Inference in Hidden Markov Models`_ (Hassan et al.,
+    2021). The M-step normalizes them; a state that is never left keeps its
+    row of :attr:`log_trans`.
 
     The emissions belong to the caller: the state posteriors, the gradient
     with respect to :attr:`log_emit`, are returned to re-estimate their model.
@@ -535,14 +536,16 @@ def hmm_em_step(
             :math:`(B, N, K)`, with :math:`B, N \ge 1`.
         log_trans (Tensor): :math:`\log p(z[n + 1] = j \mid z[n] = i)` at
             index :math:`[i, j]`, shared by all steps and signals, of shape
-            :math:`(K, K)`.
-        log_init (Tensor): :math:`\log p(z[0] = k)`, of shape :math:`(K)`.
+            :math:`(K, K)`, or per signal, :math:`(B, K, K)`.
+        log_init (Tensor): :math:`\log p(z[0] = k)`, shared, of shape
+            :math:`(K)`, or per signal, :math:`(B, K)`.
 
     Returns:
         tuple: the log-likelihood of the given parameters, of shape
-        :math:`(B)`; the new :attr:`log_trans` and :attr:`log_init`; and the
-        posterior probabilities :math:`p(z[n] = k \mid y[0], \dots, y[N - 1])`,
-        of shape :math:`(B, N, K)`.
+        :math:`(B)`; the new :attr:`log_trans` and :attr:`log_init`, of the
+        shapes given; and the posterior probabilities
+        :math:`p(z[n] = k \mid y[0], \dots, y[N - 1])`, of shape
+        :math:`(B, N, K)`.
 
     Raises:
         ValueError: if the inputs are not CUDA tensors or have unsupported
@@ -554,16 +557,18 @@ def hmm_em_step(
     """
     if log_emit.dim() != 3 or log_emit.size(0) < 1 or log_emit.size(1) < 1:
         raise ValueError(f"log_emit must be (B, N, K) with B, N >= 1, got {tuple(log_emit.shape)}")
-    if log_trans.dim() != 2 or log_init.dim() != 1:
+    if log_trans.dim() not in (2, 3) or log_init.dim() not in (1, 2):
         raise ValueError(
-            f"log_trans must be (K, K) and log_init (K), got {tuple(log_trans.shape)} "
-            f"and {tuple(log_init.shape)}"
+            f"log_trans must be (K, K) or (B, K, K) and log_init (K) or (B, K), "
+            f"got {tuple(log_trans.shape)} and {tuple(log_init.shape)}"
         )
     inputs = (log_emit, log_trans, log_init)
     differentiable = torch.is_grad_enabled() and any(x.requires_grad for x in inputs)
     with torch.enable_grad():
         emit, trans, init = (x if x.requires_grad else x.detach().requires_grad_() for x in inputs)
-        log_likelihood, _ = hmm_filter(emit, trans, init)
+        # A per-signal (B, K, K) would be read as per step when B == N - 1.
+        steps = trans if trans.dim() == 2 else trans[:, None].expand(-1, emit.size(1) - 1, -1, -1)
+        log_likelihood, _ = hmm_filter(emit, steps, init)
         # Fisher's identity: the gradients are the expected counts and posteriors.
         counts, starts, posteriors = torch.autograd.grad(
             log_likelihood.sum(), (trans, init, emit), create_graph=differentiable
@@ -572,4 +577,5 @@ def hmm_em_step(
         log_likelihood = log_likelihood.detach()
     rows = counts.sum(-1, keepdim=True)
     new_trans = torch.where(rows > 0, _log(counts) - _log(rows), log_trans)
-    return log_likelihood, (new_trans, _log(starts / log_emit.size(0))), posteriors
+    new_init = _log(starts) - _log(starts.sum(-1, keepdim=True))
+    return log_likelihood, (new_trans, new_init), posteriors

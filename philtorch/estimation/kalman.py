@@ -486,56 +486,87 @@ def kalman_smoother(
 def kalman_em_step(
     y: Tensor, A: Tensor, C: Tensor, Q: Tensor, R: Tensor, m0: Tensor, P0: Tensor
 ) -> tuple[Tensor, tuple[Tensor, ...]]:
-    r"""Run one expectation-maximization step for the model of :func:`kalman_filter`.
+    r"""Run one expectation-maximization step of :func:`kalman_filter`'s model.
 
     The E-step is :func:`kalman_smoother`. The M-step has a closed form, from
     `An Approach to Time Series Smoothing and Forecasting Using the EM
-    Algorithm`_ (Shumway and Stoffer, 1982), here fitting one model to all
-    the signals. Each step increases the log-likelihood until it converges.
-    Repeat it with :func:`em`, e.g. ``em(functools.partial(kalman_em_step,
-    y), (A, C, Q, R, m0, P0))``.
+    Algorithm`_ (Shumway and Stoffer, 1982). Shared parameters are fitted to
+    all the signals together, per-signal ones to each signal alone. Each step
+    increases the log-likelihood until it converges. Repeat it with
+    :func:`em`, e.g. ``em(functools.partial(kalman_em_step, y), (A, C, Q, R,
+    m0, P0))``.
 
     Args:
         y (Tensor): measurements :math:`\mathbf{y}[n]`, of shape
             :math:`(B, N, P)`, with :math:`N \ge 2`.
-        A (Tensor): the state transition matrix, of shape :math:`(M, M)`.
-        C (Tensor): the measurement matrix, of shape :math:`(P, M)`.
-        Q (Tensor): the process noise covariance, of shape :math:`(M, M)`.
-        R (Tensor): the measurement noise covariance, of shape :math:`(P, P)`.
+        A (Tensor): the state transition matrix, of shape :math:`(M, M)` or
+            :math:`(B, M, M)`.
+        C (Tensor): the measurement matrix, of shape :math:`(P, M)` or
+            :math:`(B, P, M)`.
+        Q (Tensor): the process noise covariance (the same layout as
+            :attr:`A`), of shape :math:`(M, M)` or :math:`(B, M, M)`.
+        R (Tensor): the measurement noise covariance (the same layout as
+            :attr:`C`), of shape :math:`(P, P)` or :math:`(B, P, P)`.
         m0 (Tensor): the prior mean of :math:`\mathbf{x}[0]`, of shape
-            :math:`(M)`.
-        P0 (Tensor): the prior covariance of :math:`\mathbf{x}[0]`, of shape
-            :math:`(M, M)`.
+            :math:`(M)` or :math:`(B, M)`.
+        P0 (Tensor): the prior covariance of :math:`\mathbf{x}[0]` (the same
+            layout as :attr:`m0`), of shape :math:`(M, M)` or
+            :math:`(B, M, M)`.
 
     Returns:
         tuple: the log-likelihood of the given parameters, of shape
-        :math:`(B)`, and the new ``(A, C, Q, R, m0, P0)``.
+        :math:`(B)`, and the new ``(A, C, Q, R, m0, P0)``, each in the layout
+        it was given.
 
     Raises:
         ValueError: if :attr:`y` has no signal or fewer than two steps, or a
-            parameter is not of the shape listed above.
+            parameter is not of a shape listed above, or :attr:`A` and
+            :attr:`Q`, :attr:`C` and :attr:`R`, or :attr:`m0` and :attr:`P0`
+            differ in layout.
         RuntimeError: on PyTorch older than 2.11.
 
     .. _An Approach to Time Series Smoothing and Forecasting Using the EM Algorithm:
         https://doi.org/10.1111/j.1467-9892.1982.tb00349.x
     """
-    if any(t.dim() != d for t, d in zip((A, C, Q, R, m0, P0), (2, 2, 2, 2, 1, 2))):
-        raise ValueError("A, C, Q, R and P0 must be matrices and m0 a vector, shared by all steps")
+    if not (
+        A.dim() in (2, 3)
+        and Q.dim() == A.dim()
+        and C.dim() in (2, 3)
+        and R.dim() == C.dim()
+        and m0.dim() in (1, 2)
+        and P0.dim() == m0.dim() + 1
+    ):
+        raise ValueError(
+            "A and Q, C and R, m0 and P0 must each be shared by all signals or all per signal: "
+            f"got shapes {tuple(A.shape)}, {tuple(Q.shape)}, {tuple(C.shape)}, {tuple(R.shape)}, "
+            f"{tuple(m0.shape)}, {tuple(P0.shape)}"
+        )
     B, N, _ = y.shape
     if B < 1 or N < 2:
         raise ValueError(f"y must have at least one signal of two steps, got {tuple(y.shape)}")
+    # A per-signal (B, M, M) would be read as per step when B == N - 1 (or N).
+    per_A, per_C, per_m0 = A.dim() == 3, C.dim() == 3, m0.dim() == 2
+    if per_A:
+        A, Q = (t[:, None].expand(-1, N - 1, -1, -1) for t in (A, Q))
+    if per_C:
+        C, R = (t[:, None].expand(-1, N, -1, -1) for t in (C, R))
     m, V, V10, log_likelihood = kalman_smoother(y, A, C, Q, R, m0, P0)
+
+    def avg(t: Tensor, per_signal: bool) -> Tensor:
+        return t.mean(1) if per_signal else t.mean((0, 1))
+
     outer = V + m.unsqueeze(-1) @ m.unsqueeze(-2).conj()  # E[x[n] x[n]^H]
     cross = V10 + m[:, 1:].unsqueeze(-1) @ m[:, :-1].unsqueeze(-2).conj()
-    S00, S11, S10 = outer[:, :-1].sum((0, 1)), outer[:, 1:].sum((0, 1)), cross.sum((0, 1))
-    A = torch.linalg.solve(S00, S10.mH).mH
-    Q = (S11 - A @ S10.mH) / (B * (N - 1))
-    Syx = (y.unsqueeze(-1) @ m.unsqueeze(-2).conj()).sum((0, 1))
-    C = torch.linalg.solve(outer.sum((0, 1)), Syx.mH).mH
-    yy = (y.unsqueeze(-1) @ y.unsqueeze(-2).conj()).sum((0, 1))
-    R = (yy - C @ Syx.mH) / (B * N)
-    m0 = m[:, 0].mean(0)
-    P0 = outer[:, 0].mean(0) - m0.outer(m0.conj())
+    E00, E11, E10 = avg(outer[:, :-1], per_A), avg(outer[:, 1:], per_A), avg(cross, per_A)
+    A = torch.linalg.solve(E00, E10.mH).mH
+    Q = E11 - A @ E10.mH
+    Exx, Eyx = avg(outer, per_C), avg(y.unsqueeze(-1) @ m.unsqueeze(-2).conj(), per_C)
+    Eyy = avg(y.unsqueeze(-1) @ y.unsqueeze(-2).conj(), per_C)
+    C = torch.linalg.solve(Exx, Eyx.mH).mH
+    R = Eyy - C @ Eyx.mH
+    m0 = m[:, 0] if per_m0 else m[:, 0].mean(0)
+    outer0 = outer[:, 0] if per_m0 else outer[:, 0].mean(0)
+    P0 = outer0 - m0.unsqueeze(-1) @ m0.unsqueeze(-2).conj()
     # Exactly Hermitian, despite rounding, for the next step's factorizations.
     Q, R, P0 = (Q + Q.mH) / 2, (R + R.mH) / 2, (P0 + P0.mH) / 2
     return log_likelihood, (A, C, Q, R, m0, P0)

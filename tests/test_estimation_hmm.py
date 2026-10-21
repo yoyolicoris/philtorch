@@ -213,8 +213,8 @@ def test_hmm_rejects_unsupported_shapes():
     [
         ((3, 0, 3), (3, 3), (3,)),
         ((0, 4, 3), (3, 3), (3,)),
-        ((3, 4, 3), (3, 3, 3), (3,)),
-        ((3, 4, 3), (3, 3), (3, 3)),
+        ((3, 4, 3), (3, 3, 3, 3), (3,)),
+        ((3, 4, 3), (3, 3), (3, 3, 3)),
     ],
 )
 def test_hmm_em_step_rejects_unsupported_shapes(log_emit, log_trans, log_init):
@@ -257,6 +257,21 @@ def test_hmm_em_step_is_baum_welch():
     )
     assert len(history) == 5
     assert bool((history.diff() >= -1e-9).all())
+
+
+@pytest.mark.cuda
+def test_hmm_em_step_per_signal_parameters():
+    # B = N - 1, so a (B, K, K) log_trans must not be read as per step.
+    log_emit, log_trans, log_init = _model(4, 5, 3)
+    log_trans = log_trans[:, 0]
+    results = hmm_em_step(log_emit, log_trans, log_init)
+    separate = [hmm_em_step(log_emit[b : b + 1], log_trans[b], log_init[b]) for b in range(4)]
+    expected = (
+        torch.cat([r[0] for r in separate]),
+        (torch.stack([r[1][0] for r in separate]), torch.stack([r[1][1] for r in separate])),
+        torch.cat([r[2] for r in separate]),
+    )
+    torch.testing.assert_close(results, expected)
 
 
 @pytest.mark.cuda

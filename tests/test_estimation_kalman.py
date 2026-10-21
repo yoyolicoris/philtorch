@@ -380,12 +380,52 @@ def test_kalman_em_increases_likelihood(dtype):
     assert history[-1] > history[0] + 10
 
 
-@pytest.mark.parametrize("B, N, A_shape", [(2, 5, (2, 2, 2)), (2, 1, (2, 2)), (0, 5, (2, 2))])
-def test_kalman_em_step_rejects_bad_shapes(B, N, A_shape):
+@pytest.mark.parametrize(
+    "B, N, A_shape, Q_shape",
+    [
+        (2, 5, (2, 2, 2), (2, 2)),  # A per signal, Q shared
+        (2, 5, (2, 2), (2, 2, 2)),
+        (2, 5, (5, 2, 2, 2), (5, 2, 2, 2)),
+        (2, 1, (2, 2), (2, 2)),
+        (0, 5, (2, 2), (2, 2)),
+    ],
+)
+def test_kalman_em_step_rejects_bad_shapes(B, N, A_shape, Q_shape):
     eye = torch.eye(2, dtype=torch.float64)
     y = torch.zeros(B, N, 2, dtype=torch.float64)
     with pytest.raises(ValueError):
-        kalman_em_step(y, eye.expand(A_shape), eye, eye, eye, eye[0], eye)
+        kalman_em_step(y, eye.expand(A_shape), eye, eye.expand(Q_shape), eye, eye[0], eye)
+
+
+@pytest.mark.parametrize("B, N", [(4, 5), (5, 5)])
+def test_kalman_em_step_per_signal_matches_separate_fits(B, N):
+    # B == N - 1 and B == N are the sizes a per-signal matrix could be mistaken
+    # for a per-step one at.
+    M, P = 2, 3
+    gen = torch.Generator().manual_seed(7)
+
+    def rand(*shape):
+        return torch.randn(*shape, generator=gen, dtype=torch.float64)
+
+    def spd(*shape):
+        L = rand(*shape)
+        return L @ L.mT + torch.eye(shape[-1], dtype=torch.float64)
+
+    y = rand(B, N, P)
+    params = (
+        0.5 * rand(B, M, M),
+        rand(B, P, M),
+        spd(B, M, M),
+        spd(B, P, P),
+        rand(B, M),
+        spd(B, M, M),
+    )
+    log_p, new = kalman_em_step(y, *params)
+    for b in range(B):
+        log_p_b, new_b = kalman_em_step(y[b : b + 1], *(t[b] for t in params))
+        torch.testing.assert_close(log_p[b], log_p_b[0])
+        for t, t_b in zip(new, new_b):
+            torch.testing.assert_close(t[b], t_b)
 
 
 def test_kalman_known_initial_state_with_singular_noise():
