@@ -38,22 +38,35 @@ derivatives, rebuilds the same gradient from :func:`shares`, PyTorch ops, and
 direction, whose backward is itself in the other direction, and
 differentiates that.
 
-Four kernels do all of it. ``_dag_kernel`` is the row-by-row recursion in
+Five kernels do all of it. ``_dag_kernel`` is the row-by-row recursion in
 either semiring, min-plus (or soft-min-plus) for the forward pass and
 linear for every accumulation, the first-order backward's included;
 ``_shares_kernel`` computes, for CTC's forced alignment, each cell's best
 step back over all cells at once; with the ctc steps, both take the (B, R)
 skip mask. ``_frontier_kernel`` is the recursion without storing D (below),
-and ``_backtrack_kernel`` walks a DTW path back from its end cell.
+``_backtrack_kernel`` walks a DTW path back from its end cell, and, in feature
+mode, ``_cost_kernel`` computes the costs the others read (below).
 
-Feature mode. With the features x (B, N, F) and y (B, M, F), the kernels
-compute each cost they need on the spot, as the squared distance of the
-two rows from direct differences, which don't cancel as |x|^2 + |y|^2 - 2 x.y
-does, so that no (B, N, M) cost is stored. A window of allowed columns per
-row of x masks it by a large finite cost, and the shear, for the asymmetric
-steps, and the transpose, to keep the rows the shorter side, map the
-kernels' cells to those of x and y. Second derivatives rebuild the costs
-with :func:`grid_cost`, in the memory of the grid.
+Feature mode. With the features x (B, N, F) and y (B, M, F), no (B, N, M)
+cost is stored. Before the launches of a few tile anti-diagonals,
+``_cost_kernel`` computes the costs of all their tiles' cells, in parallel
+over blocks of cells, each block loading its rows of x and y once per chunk
+of features: the squared distance from direct differences, which don't cancel
+as |x|^2 + |y|^2 - 2 x.y does. They go to a scratch, a slice per tile, and the
+kernels read them there as they read a cost tensor; that, not computing each
+cell in the row loop, which reloads the tile's features every row with few
+programs in flight, is what keeps large F near the speed of a matrix-product
+cost. The scratch holds a chunk of anti-diagonals, at most _CHUNK and
+_SCRATCH_CELLS cells, so that the memory is linear in the sides. The backward
+and the reverse frontier also read the cost of the row above the tile and of
+the column before it, which the slice holds as a halo (the backward's tile
+rows are 31, so that a slice's 32 rows fill the cost blocks). A window of
+allowed columns per row of x masks it by a large finite cost, and
+``_hit_kernel`` flags the tiles with a cell in it, whose costs and recursion
+the others skip. The shear, for the asymmetric steps, and the transpose, to
+keep the rows the shorter side, map the kernels' cells to those of x and y.
+Second derivatives rebuild the costs with :func:`grid_cost`, in the memory of
+the grid.
 
 Windows. A DTW, soft or hard, skips the tiles with no cell in the window, as
 a band leaves most of the grid out, so that its work follows the window's
@@ -202,10 +215,154 @@ def _cost(
 
 
 @triton.jit
+def _tile_cost(
+    tile_ptr, k, lanes, valid, TL: tl.constexpr, HALO: tl.constexpr, SHIFT: tl.constexpr = 0
+):
+    """Row k of a tile's costs, as :func:`_cost_kernel` left them in its slice
+    of scratch, ``tile_ptr``: the cell of lane ``lanes + SHIFT``, 0 where not
+    ``valid``. With HALO, the slice has the row k = -1 above the tile and the
+    column -1 left of it (SHIFT = -1 reads it, or the lane before)."""
+    return tl.load(
+        tile_ptr + (k + HALO) * (TL + HALO) + HALO + SHIFT + lanes, mask=valid, other=0.0
+    )
+
+
+@triton.jit
+def _frame(items_ptr, s, R, L):
+    """The pair b and sub-grid (r0, c0, h, w) of item s of ``items_ptr``, or,
+    without items, the whole grid of pair s."""
+    if items_ptr is None:
+        return s, s * 0, s * 0, R, L
+    else:
+        item = items_ptr + s * 5
+        return (
+            tl.load(item), tl.load(item + 1), tl.load(item + 2), tl.load(item + 3),
+            tl.load(item + 4),
+        )  # fmt: skip
+
+
+@triton.jit(
+    do_not_specialize=["N", "S", "R", "L", "d0", "n_rows", "n_cols", "TR", "P", "row0"]
+)  # fmt: skip
+def _hit_kernel(
+    hit_ptr, items_ptr, win_ptr, N, S, R, L, d0, n_rows, n_cols, TR, P, row0,
+    SHEAR: tl.constexpr, TRANSPOSE: tl.constexpr, REVERSE: tl.constexpr, TL: tl.constexpr,
+):  # fmt: skip
+    """Whether each tile of the anti-diagonals d0, d0 + 1, ... (axis 1 of the
+    grid) has a cell in the window, as :func:`_window_hit` says, to ``hit_ptr``
+    at the slot (d - d0) * P plus the tile's program number in its launch: the
+    tile decoded as in :func:`_dag_kernel` and :func:`_frontier_kernel`, whose
+    grids are P wide (P >= the tiles of a diagonal); ``items_ptr`` as in
+    :func:`_frame`."""
+    pid = tl.program_id(0)
+    dd = tl.program_id(1)
+    d = d0 + dd
+    lo = tl.maximum(0, d - n_cols + 1)
+    n_tiles = tl.minimum(n_rows - 1, d) - lo + 1
+    if pid < S * n_tiles:
+        i = lo + pid % n_tiles
+        j = d - i
+        b, r0, c0, h, w = _frame(items_ptr, (pid // n_tiles).to(tl.int64), R, L)
+        first = i * TR
+        n = tl.where((first < h) & (j * TL < w), tl.minimum(TR, h - first), 0)
+        pos = j * TL + tl.arange(0, TL)
+        cols = c0 + ((w - 1 - pos) if REVERSE else pos)
+        r_first = r0 + ((h - 1 - first) if REVERSE else first)
+        hit = _window_hit(
+            win_ptr, b, r_first, -1 if REVERSE else 1, n, cols, pos < w, N, SHEAR, TRANSPOSE, row0
+        )  # fmt: skip
+        tl.store(hit_ptr + dd * P + pid, hit.to(tl.int8))
+
+
+@triton.jit(
+    do_not_specialize=[
+        "N", "M", "big_bits", "scale_bits", "S", "R", "L", "d0", "n_rows", "n_cols", "TR", "P",
+        "row0",
+    ]
+)  # fmt: skip
+def _cost_kernel(
+    scr_ptr, hit_ptr, items_ptr, fx_ptr, fy_ptr, win_ptr, N, M, F, big_bits, scale_bits, S, R, L,
+    d0, n_rows, n_cols, TR, P, row0, SHEAR: tl.constexpr, TRANSPOSE: tl.constexpr,
+    REVERSE: tl.constexpr, TL: tl.constexpr, BR: tl.constexpr, BC: tl.constexpr,
+    BF: tl.constexpr,
+):  # fmt: skip
+    """The costs of the cells the tiles of the anti-diagonals d0, d0 + 1, ...
+    (axis 2 of the grid) need, from the features, into ``scr_ptr``: the
+    squared distance of the two rows from direct differences, as :func:`_cost`
+    takes it, a block of BR rows by BC columns of one tile (axis 1) per
+    program, each feature chunk of BF loaded once for the block.
+
+    A tile's slice, at (slot + program number) of the (TR + HALO) by
+    (TL + HALO) cells, holds its rows from the row above it (the tile's
+    first, with HALO) and its columns from the column before it, in the
+    order of processing; 0 where there is no cell. HALO, set by REVERSE,
+    is what the backward and the reverse frontier read of the tile above and
+    the tile to the left. Tiles ``hit_ptr`` (if given) says have no cell in
+    the window are left as they are; see :func:`_hit_kernel` for the
+    decoding and the slots.
+    """
+    HALO: tl.constexpr = REVERSE
+    blocks_wide: tl.constexpr = (TL + HALO + BC - 1) // BC
+    pid = tl.program_id(0)
+    dd = tl.program_id(2)
+    d = d0 + dd
+    lo = tl.maximum(0, d - n_cols + 1)
+    n_tiles = tl.minimum(n_rows - 1, d) - lo + 1
+    if pid < S * n_tiles:
+        i = lo + pid % n_tiles
+        j = d - i
+        b, r0, c0, h, w = _frame(items_ptr, (pid // n_tiles).to(tl.int64), R, L)
+        live = (i * TR < h) & (j * TL < w)
+        if hit_ptr is not None:
+            live &= tl.load(hit_ptr + dd * P + pid) != 0
+        if live:
+            k = (tl.program_id(1) // blocks_wide) * BR + tl.arange(0, BR)
+            e = (tl.program_id(1) % blocks_wide) * BC + tl.arange(0, BC)
+            p = i * TR - HALO + k  # the cell's row and place in the scan
+            pos = j * TL - HALO + e
+            valid = ((p >= 0) & (p < h))[:, None] & ((pos >= 0) & (pos < w))[None, :]
+            r = (r0 + ((h - 1 - p) if REVERSE else p) + row0)[:, None]
+            cols = (c0 + ((w - 1 - pos) if REVERSE else pos))[None, :]
+            # As in _cell, with the indices clamped into the features: the cells
+            # not valid are 0, whatever they read. Without the shear, n and m
+            # each follow one of r and cols, and the loads are shared.
+            a = cols if TRANSPOSE else r
+            s = r if TRANSPOSE else cols
+            n = tl.maximum(tl.minimum(a + s if SHEAR else a, N - 1), 0)
+            m = tl.maximum(tl.minimum(a if SHEAR else s, M - 1), 0)
+            dtype = fx_ptr.dtype.element_ty
+            c = tl.zeros([BR, BC], dtype)
+            work = valid
+            if win_ptr is not None:
+                at = win_ptr + (b * N + n) * 2
+                outside = (m < tl.load(at)) | (m > tl.load(at + 1))
+                work = valid & ~outside
+            # A block with no cell in the window is all ``big``.
+            if tl.max(work.to(tl.int32)) > 0:
+                f_x = fx_ptr + b * N * F + n[:, :, None].to(tl.int64) * F
+                f_y = fy_ptr + b * M * F + m[:, :, None].to(tl.int64) * F
+                for f0 in range(0, F, BF):
+                    f = (f0 + tl.arange(0, BF))[None, None, :]
+                    diff = tl.load(f_x + f, mask=f < F, other=0.0)
+                    diff -= tl.load(f_y + f, mask=f < F, other=0.0)
+                    c += tl.sum(diff * diff, axis=2)
+            c *= scale_bits.to(tl.int64).to(tl.float64, bitcast=True).to(dtype)
+            if win_ptr is not None:
+                c = tl.where(
+                    outside, big_bits.to(tl.int64).to(tl.float64, bitcast=True).to(dtype), c
+                )
+            c = tl.where(valid, c, 0.0)
+            tile = scr_ptr + (dd * P + pid).to(tl.int64) * ((TR + HALO) * (TL + HALO))
+            tl.store(
+                tile + k[:, None] * (TL + HALO) + e[None, :], c,
+                mask=(k < TR + HALO)[:, None] & (e < TL + HALO)[None, :],
+            )  # fmt: skip
+
+
+@triton.jit
 def _shares(
-    D_ptr, cost_ptr, fx_ptr, fy_ptr, win_ptr, skip_ptr, b, r, cols, R, L, N, M, F, big_bits,
-    scale_bits, diag_weight, SOFT: tl.constexpr, STEPS: tl.constexpr, SHEAR: tl.constexpr,
-    TRANSPOSE: tl.constexpr, BF: tl.constexpr, GIVEN: tl.constexpr = False, row0=0,
+    D_ptr, cost_ptr, skip_ptr, b, r, cols, R, L, diag_weight, SOFT: tl.constexpr,
+    STEPS: tl.constexpr, GIVEN: tl.constexpr = False,
 ):  # fmt: skip
     """The shares of cells (r, cols) from their up, left, diagonal and skip.
 
@@ -213,10 +370,7 @@ def _shares(
     among the steps; with GIVEN, all zero in row 0, whose D is given.
     """
     valid = (cols >= 0) & (cols < L) & (r >= 0) & (r < R)
-    c = _cost(
-        cost_ptr, fx_ptr, fy_ptr, win_ptr, b, r, cols, valid, R, L, N, M, F, big_bits, scale_bits,
-        SHEAR, TRANSPOSE, BF, row0,
-    )  # fmt: skip
+    c = tl.load(cost_ptr + b * R * L + r * L + cols, mask=valid, other=0.0)
     return _shares_of(D_ptr, c, skip_ptr, b, r, cols, R, L, diag_weight, SOFT, STEPS, GIVEN)
 
 
@@ -288,8 +442,7 @@ def _shares_kernel(D_ptr, cost_ptr, skip_ptr, back_ptr, R, L, BLOCK: tl.constexp
     r = batch_row % R
     cols = tl.program_id(1) * BLOCK + tl.arange(0, BLOCK)
     _, _, diag, skip = _shares(
-        D_ptr, cost_ptr, None, None, None, skip_ptr, b, r, cols, R, L, 0, 0, 0, 0, 0, 1.0, False,
-        _CTC, False, False, 1,
+        D_ptr, cost_ptr, skip_ptr, b, r, cols, R, L, 1.0, False, _CTC
     )  # fmt: skip
     offset = b * R * L + r * L + cols
     tl.store(back_ptr + offset, (diag + 2 * skip).to(tl.int8), mask=cols < L)
@@ -308,17 +461,12 @@ def _neighbour(ptr, row, L, ROWS: tl.constexpr, COLS: tl.constexpr, REVERSE: tl.
     return ptr + row - ROWS * L - COLS
 
 
-@triton.jit(
-    do_not_specialize=[
-        "N", "M", "big_bits", "scale_bits", "d", "I_lo", "n_tiles", "TR", "row0"
-    ]
-)  # fmt: skip
+@triton.jit(do_not_specialize=["d", "I_lo", "n_tiles", "TR", "slot"])
 def _dag_kernel(
     cost_ptr, D_ptr, skip_rows_ptr, up_ptr, left_ptr, diag_ptr, skip_ptr, x_ptr, y_ptr,
-    out_ptr, fx_ptr, fy_ptr, win_ptr, N, M, F, big_bits, scale_bits, R, L, diag_weight, d, I_lo,
-    n_tiles, TR, row0, SOFT: tl.constexpr, STEPS: tl.constexpr, REVERSE: tl.constexpr,
-    TL: tl.constexpr, SEEDED: tl.constexpr, SHEAR: tl.constexpr, TRANSPOSE: tl.constexpr,
-    BF: tl.constexpr, GIVEN: tl.constexpr,
+    out_ptr, scr_ptr, hit_ptr, R, L, diag_weight, d, I_lo, n_tiles, TR, slot, SOFT: tl.constexpr,
+    STEPS: tl.constexpr, REVERSE: tl.constexpr, TL: tl.constexpr, SEEDED: tl.constexpr,
+    GIVEN: tl.constexpr,
 ):  # fmt: skip
     """y(s) = x(s) (+) the sum over steps of W(s, p) (x) y(p), predecessors p;
     with REVERSE, the transpose, over successors t of W(t, s) (x) y(t). Each
@@ -326,14 +474,14 @@ def _dag_kernel(
 
     Three uses, by the pointers given:
 
-    * the forward pass, with ``cost_ptr`` alone, or ``fx_ptr``, ``fy_ptr``
-      and ``win_ptr`` (feature mode; see :func:`_cost`) in its place:
+    * the forward pass, with ``cost_ptr`` alone, or ``scr_ptr`` and
+      ``hit_ptr`` (feature mode; see :func:`_cost_kernel`) in its place:
       min-plus, or soft-min-plus with ``SOFT``; every step's weight is the
       cost of the cell it enters, the diagonal's times ``diag_weight``, the
       ctc steps' skips gated by the (B, R) mask ``skip_rows_ptr``;
       D(0, 0) = c(0, 0); with GIVEN, row 0 is the (B, L) ``x_ptr`` instead,
       and the grid starts from it;
-    * the first-order backward, with ``cost_ptr`` or the features and the
+    * the first-order backward, with ``cost_ptr`` or the scratch and the
       forward pass's ``D_ptr``, REVERSE: linear, x the gradient of D, the
       weights the shares, computed from D and the cost (soft with ``SOFT``)
       as each row is reached and kept for the rows above; ``out_ptr``, if not
@@ -346,18 +494,21 @@ def _dag_kernel(
     A wavefront: the program (tile, b) of launch ``d`` is the tile
     ``I_lo + tile % n_tiles`` of tile row and ``d`` minus that of tile
     column, TR rows by TL columns, the grid mirrored with REVERSE. It reads
-    only earlier launches' y, written whole. Row by row, the left step makes
-    each row a scan of the maps x -> A (+) (C (x) x), from the right with
-    REVERSE, applied to y of the column before the tile, whose weight is the
-    row's own. The other rows' terms come from y already written, after a
-    barrier; the first row's from the tile above. With ``D_ptr`` the shares
-    of the rows below, kept in registers, start from the cells themselves.
-    The neighbours' offsets are constants: offsets computed from REVERSE
-    would cost a fifth of the time on long rows.
+    only earlier launches' y, written whole, and the costs its slice of the
+    scratch holds, at ``slot`` plus its program number. Row by row, the left
+    step makes each row a scan of the maps x -> A (+) (C (x) x), from the
+    right with REVERSE, applied to y of the column before the tile, whose
+    weight is the row's own. The other rows' terms come from y already
+    written, after a barrier; the first row's from the tile above. With
+    ``D_ptr`` the shares of the rows below, kept in registers, start from the
+    cells themselves. The neighbours' offsets are constants: offsets computed
+    from REVERSE would cost a fifth of the time on long rows.
     """
     SHARES: tl.constexpr = D_ptr is not None
-    FORWARD: tl.constexpr = (cost_ptr is not None or fx_ptr is not None) and not SHARES
-    SKIP: tl.constexpr = win_ptr is not None
+    FEAT: tl.constexpr = scr_ptr is not None
+    FORWARD: tl.constexpr = (cost_ptr is not None or FEAT) and not SHARES
+    SKIP: tl.constexpr = hit_ptr is not None
+    HALO: tl.constexpr = REVERSE
     b = (tl.program_id(0) // n_tiles).to(tl.int64)
     i = I_lo + tl.program_id(0) % n_tiles
     j = d - i
@@ -373,12 +524,12 @@ def _dag_kernel(
     zero = _KERNEL_INF if FORWARD else 0.0  # the semiring's zero
     y_near = tl.load(y_ptr + batch + above * L + cols, mask=mask & (i > 0), other=zero)
     n_rows = tl.minimum(TR, R - first)
+    if FEAT:
+        tile = scr_ptr + (slot + tl.program_id(0)).to(tl.int64) * ((TR + HALO) * (TL + HALO))
     if SKIP:
         # A tile with no cell in the window holds the semiring's zero: D = inf.
         r_first = (R - 1 - first) if REVERSE else first
-        skipped = ~_window_hit(
-            win_ptr, b, r_first, -1 if REVERSE else 1, n_rows, cols, mask, N, SHEAR, TRANSPOSE, row0
-        )  # fmt: skip
+        skipped = tl.load(hit_ptr + slot + tl.program_id(0)) == 0
         for k in range(0, tl.where(skipped, n_rows, 0)):
             row = batch + (r_first + (-k if REVERSE else k)) * L + cols
             tl.store(y_ptr + row, tl.full([TL], zero, y_ptr.dtype.element_ty), mask=mask)
@@ -387,20 +538,30 @@ def _dag_kernel(
         # The shares of the rows below, kept from earlier rows: row r + 1
         # straight down at j and diagonally at j + 1, row r + 2 by a skip at
         # j + 1. None below the last row.
-        up_below, _, _, _ = _shares(
-            D_ptr, cost_ptr, fx_ptr, fy_ptr, win_ptr, skip_rows_ptr, b, above, cols, R, L, N, M, F,
-            big_bits, scale_bits, diag_weight, SOFT, STEPS, SHEAR, TRANSPOSE, BF, GIVEN, row0,
-        )  # fmt: skip
-        _, _, diag_below_next, skip_below_next = _shares(
-            D_ptr, cost_ptr, fx_ptr, fy_ptr, win_ptr, skip_rows_ptr, b, above, cols + 1, R, L, N,
-            M, F, big_bits, scale_bits, diag_weight, SOFT, STEPS, SHEAR, TRANSPOSE, BF, GIVEN,
-            row0,
-        )  # fmt: skip
-        _, _, _, skip_below2_next = _shares(
-            D_ptr, cost_ptr, fx_ptr, fy_ptr, win_ptr, skip_rows_ptr, b, above + 1, cols + 1, R, L,
-            N, M, F, big_bits, scale_bits, diag_weight, SOFT, STEPS, SHEAR, TRANSPOSE, BF, GIVEN,
-            row0,
-        )  # fmt: skip
+        if FEAT:
+            # The row above's costs, kept in the scratch's halo; no skips.
+            up_below, _, _, _ = _shares_of(
+                D_ptr, _tile_cost(tile, -1, lanes, mask, TL, HALO), skip_rows_ptr, b, above, cols,
+                R, L, diag_weight, SOFT, STEPS, GIVEN,
+            )  # fmt: skip
+            _, _, diag_below_next, skip_below_next = _shares_of(
+                D_ptr, _tile_cost(tile, -1, lanes, mask, TL, HALO, -1), skip_rows_ptr, b, above,
+                cols + 1, R, L, diag_weight, SOFT, STEPS, GIVEN,
+            )  # fmt: skip
+            skip_below2_next = tl.zeros_like(skip_below_next)
+        else:
+            up_below, _, _, _ = _shares(
+                D_ptr, cost_ptr, skip_rows_ptr, b, above, cols, R, L, diag_weight, SOFT, STEPS,
+                GIVEN,
+            )  # fmt: skip
+            _, _, diag_below_next, skip_below_next = _shares(
+                D_ptr, cost_ptr, skip_rows_ptr, b, above, cols + 1, R, L, diag_weight, SOFT, STEPS,
+                GIVEN,
+            )  # fmt: skip
+            _, _, _, skip_below2_next = _shares(
+                D_ptr, cost_ptr, skip_rows_ptr, b, above + 1, cols + 1, R, L, diag_weight, SOFT,
+                STEPS, GIVEN,
+            )  # fmt: skip
     for k in range(0, n_rows):
         p = first + k
         r = (R - 1 - p) if REVERSE else p
@@ -411,10 +572,10 @@ def _dag_kernel(
         if SEEDED:
             left = tl.load(y_ptr + batch + r * L + edge, mask=j > 0, other=zero)
         if FORWARD:
-            c = _cost(
-                cost_ptr, fx_ptr, fy_ptr, win_ptr, b, r, cols, mask, R, L, N, M, F, big_bits,
-                scale_bits, SHEAR, TRANSPOSE, BF, row0,
-            )  # fmt: skip
+            if FEAT:
+                c = _tile_cost(tile, k, lanes, mask, TL, HALO)
+            else:
+                c = tl.load(cost_ptr + row, mask=mask, other=0.0)
         else:
             base = tl.load(x_ptr + row, mask=mask, other=0.0)
         if STEPS != _CTC:
@@ -472,35 +633,20 @@ def _dag_kernel(
         elif SHARES:
             # Row r's shares at j, for the rows above, and at j + 1, whose left
             # share takes e(r, j + 1) into e(r, j).
-            if fx_ptr is None:
+            if not FEAT:
                 up_here, left_here, diag_here, _ = _shares(
-                    D_ptr, cost_ptr, fx_ptr, fy_ptr, win_ptr, skip_rows_ptr, b, r, cols, R, L, N,
-                    M, F, big_bits, scale_bits, diag_weight, SOFT, STEPS, SHEAR, TRANSPOSE, BF,
-                    GIVEN, row0,
+                    D_ptr, cost_ptr, skip_rows_ptr, b, r, cols, R, L, diag_weight, SOFT, STEPS,
+                    GIVEN,
                 )  # fmt: skip
                 _, a, diag_next, skip_next = _shares(
-                    D_ptr, cost_ptr, fx_ptr, fy_ptr, win_ptr, skip_rows_ptr, b, r, cols + 1, R, L,
-                    N, M, F, big_bits, scale_bits, diag_weight, SOFT, STEPS, SHEAR, TRANSPOSE, BF,
-                    GIVEN, row0,
+                    D_ptr, cost_ptr, skip_rows_ptr, b, r, cols + 1, R, L, diag_weight, SOFT, STEPS,
+                    GIVEN,
                 )  # fmt: skip
             else:
-                # Each cost once: column j + 1's is the previous lane's
-                # (REVERSE), passed through this row of y, which the row's
-                # result then overwrites; the first lane's is the next tile's,
-                # computed here.
-                c = _cost(
-                    cost_ptr, fx_ptr, fy_ptr, win_ptr, b, r, cols, mask, R, L, N, M, F, big_bits,
-                    scale_bits, SHEAR, TRANSPOSE, BF, row0,
-                )  # fmt: skip
-                tl.store(y_ptr + row, c, mask=mask)
-                tl.debug_barrier()
-                c_next = tl.load(y_ptr + row + 1, mask=mask & (lanes > 0), other=0.0)
-                first_lane = (lanes == 0) & (cols + 1 < L)
-                c_edge = _cost(
-                    cost_ptr, fx_ptr, fy_ptr, win_ptr, b, r, cols + 1, first_lane, R, L, N, M, F,
-                    big_bits, scale_bits, SHEAR, TRANSPOSE, BF, row0,
-                )  # fmt: skip
-                c_next = tl.where(lanes == 0, c_edge, c_next)
+                # Column j + 1's cost is the previous lane's (REVERSE), the
+                # first lane's the halo's.
+                c = _tile_cost(tile, k, lanes, mask, TL, HALO)
+                c_next = _tile_cost(tile, k, lanes, mask, TL, HALO, -1)
                 up_here, left_here, diag_here, _ = _shares_of(
                     D_ptr, c, skip_rows_ptr, b, r, cols, R, L, diag_weight, SOFT, STEPS, GIVEN
                 )
@@ -530,8 +676,6 @@ def _dag_kernel(
                 y_near = tl.minimum(y_near, scan_c + left)
         if FORWARD and GIVEN:
             y_near = tl.where(p == 0, tl.load(x_ptr + b * L + cols, mask=mask, other=zero), y_near)
-        if SHARES and fx_ptr is not None:
-            tl.debug_barrier()  # every lane has read the costs passed through y
         tl.store(y_ptr + row, y_near, mask=mask)
         if SHARES:
             if out_ptr is not None:
@@ -544,47 +688,41 @@ def _dag_kernel(
             skip_below_next = skip_next
 
 
-@triton.jit(
-    do_not_specialize=[
-        "N", "M", "big_bits", "scale_bits", "d", "I_lo", "n_tiles", "TR", "H"
-    ]
-)  # fmt: skip
+@triton.jit(do_not_specialize=["d", "I_lo", "n_tiles", "TR", "H", "slot"])
 def _frontier_kernel(
-    items_ptr, rows_ptr, cols_ptr, fx_ptr, fy_ptr, win_ptr, N, M, F, big_bits, scale_bits,
-    diag_weight, d, I_lo, n_tiles, TR, W, H, SOFT: tl.constexpr, SYMMETRIC: tl.constexpr,
-    REVERSE: tl.constexpr, TL: tl.constexpr, SEEDED: tl.constexpr, SHEAR: tl.constexpr,
-    TRANSPOSE: tl.constexpr, BF: tl.constexpr,
+    items_ptr, rows_ptr, cols_ptr, scr_ptr, hit_ptr, diag_weight, d, I_lo, n_tiles, TR, W, H,
+    slot, SOFT: tl.constexpr, SYMMETRIC: tl.constexpr, REVERSE: tl.constexpr, TL: tl.constexpr,
+    SEEDED: tl.constexpr,
 ):  # fmt: skip
     """:func:`frontier`'s wavefront, as :func:`_dag_kernel`'s forward pass, with
-    REVERSE mirrored, but over the items (S, 5) of the grid of ``_cost``.
+    REVERSE mirrored, but over the items (S, 5) of the grid of the costs in the
+    scratch ``scr_ptr`` (see :func:`_cost_kernel`), at ``slot``.
 
     The program (item, tile) of launch ``d`` is the item's tile ``I_lo + tile %
     n_tiles`` of tile row, in the order of processing (the rows from the item's
     last with REVERSE, the columns likewise), and ``d`` minus that of tile
     column; it does nothing if the item has no such tile. Only these are kept,
-    all in global memory: ``rows_ptr`` (S, SLOTS, W) holds the rows of tile row
+    all in global memory: ``rows_ptr`` (S, 3, W) holds the rows of tile row
     i in slot i % 3, so that the tile reads the last row of the tile row above
     from slot (i - 1) % 3, the diagonal's corner from the tile to its left
     included, which tile row i + 2 is the first to overwrite, two launches after
-    the last read; the last slot, with REVERSE, passes a row's costs by one
-    lane. ``cols_ptr`` (S, H) holds, per processed row, the last column of the
-    latest tile in it, for the tile to its right. A row's previous row, shifted
-    by a lane for the diagonal, goes through the tile's own slot after a
-    barrier, with the lane 0 from the left column of the previous row.
+    the last read. ``cols_ptr`` (S, H) holds, per processed row, the last
+    column of the latest tile in it, for the tile to its right. A row's
+    previous row, shifted by a lane for the diagonal, goes through the tile's
+    own slot after a barrier, with the lane 0 from the left column of the
+    previous row.
 
     With REVERSE the weight of a step is its successor's cost: the row's scan
-    maps are min(T, c(next column) + x), with the next column's cost shifted
-    through the scratch, the tile edge's computed directly, and the row
-    below's terms use its costs, kept.
+    maps are min(T, c(next column) + x), with the next column's cost the
+    scratch's, the tile edge's in its halo, and the row below's terms use its
+    costs, kept.
     """
-    SLOTS: tl.constexpr = 4 if REVERSE else 3
-    SKIP: tl.constexpr = win_ptr is not None
+    SKIP: tl.constexpr = hit_ptr is not None
+    HALO: tl.constexpr = REVERSE
     s = (tl.program_id(0) // n_tiles).to(tl.int64)
     i = I_lo + tl.program_id(0) % n_tiles
     j = d - i
     item = items_ptr + s * 5
-    b = tl.load(item)
-    r0 = tl.load(item + 1)
     h = tl.load(item + 3)
     w = tl.load(item + 4)
     first = i * TR
@@ -592,20 +730,16 @@ def _frontier_kernel(
     lanes = tl.arange(0, TL)
     pos = j * TL + lanes  # the column's place in the scan
     mask = pos < w
-    cols = tl.load(item + 2) + ((w - 1 - pos) if REVERSE else pos)
-    own = (s * SLOTS + i % 3) * W
-    above = (s * SLOTS + (i + 2) % 3) * W
+    own = (s * 3 + i % 3) * W
+    above = (s * 3 + (i + 2) % 3) * W
+    tile = scr_ptr + (slot + tl.program_id(0)).to(tl.int64) * ((TR + HALO) * (TL + HALO))
     y_near = tl.load(rows_ptr + above + pos, mask=mask & (i > 0), other=_KERNEL_INF)
     inf = tl.full([TL], _KERNEL_INF, rows_ptr.dtype.element_ty)
     left_prev = inf
     below = mask & (i > 0) & (n_rows > 0)  # not past the item: off its grid
     if SKIP:
         # A tile with no cell in the window hands on inf, and does nothing else.
-        r_first = r0 + ((h - 1 - first) if REVERSE else first)
-        skipped = ~_window_hit(
-            win_ptr, b, r_first, -1 if REVERSE else 1, n_rows, cols, mask, N, SHEAR, TRANSPOSE
-        )  # fmt: skip
-        skipped &= n_rows > 0
+        skipped = (tl.load(hit_ptr + slot + tl.program_id(0)) == 0) & (n_rows > 0)
         tl.store(rows_ptr + own + pos, inf, mask=mask & skipped)
         if SEEDED:
             for kk in range(0, tl.where(skipped, n_rows, 0)):
@@ -616,28 +750,16 @@ def _frontier_kernel(
         n_rows = tl.where(skipped, 0, n_rows)
         below &= ~skipped
     if REVERSE:
-        c_prev = _cost(
-            None, fx_ptr, fy_ptr, win_ptr, b, r0 + h - first, cols, below, 0, 0, N, M, F,
-            big_bits, scale_bits, SHEAR, TRANSPOSE, BF,
-        )  # fmt: skip
-        c_prev_shift = _cost(
-            None, fx_ptr, fy_ptr, win_ptr, b, r0 + h - first, cols + 1, below & (pos > 0), 0, 0, N,
-            M, F, big_bits, scale_bits, SHEAR, TRANSPOSE, BF,
-        )  # fmt: skip
+        c_prev = _tile_cost(tile, -1, lanes, below, TL, HALO)
+        c_prev_shift = _tile_cost(tile, -1, lanes, below, TL, HALO, -1)
     for kk in range(0, n_rows):
         g = first + kk
-        r = r0 + ((h - 1 - g) if REVERSE else g)
-        c = _cost(
-            None, fx_ptr, fy_ptr, win_ptr, b, r, cols, mask, 0, 0, N, M, F, big_bits, scale_bits,
-            SHEAR, TRANSPOSE, BF,
-        )  # fmt: skip
+        c = _tile_cost(tile, kk, lanes, mask, TL, HALO)
         left = inf
         if SEEDED:
             left = tl.load(
                 cols_ptr + s * H + g + lanes * 0, mask=(j > 0) & (lanes >= 0), other=_KERNEL_INF
             )
-        if REVERSE:
-            tl.store(rows_ptr + (s * SLOTS + 3) * W + pos, c, mask=mask)
         tl.debug_barrier()
         if SYMMETRIC:
             src = tl.where(kk == 0, above, own)
@@ -645,14 +767,7 @@ def _frontier_kernel(
             diag = tl.load(rows_ptr + src + pos - 1, mask=ok, other=_KERNEL_INF)
             diag = tl.where((kk > 0) & (lanes == 0), left_prev, diag)
         if REVERSE:
-            c_edge = _cost(
-                None, fx_ptr, fy_ptr, win_ptr, b, r, cols + 1, (lanes == 0) & (pos > 0), 0, 0, N,
-                M, F, big_bits, scale_bits, SHEAR, TRANSPOSE, BF,
-            )  # fmt: skip
-            c_shift = tl.load(
-                rows_ptr + (s * SLOTS + 3) * W + pos - 1, mask=mask & (lanes > 0), other=0.0
-            )
-            c_shift = tl.where(lanes == 0, c_edge, c_shift)
+            c_shift = _tile_cost(tile, kk, lanes, mask, TL, HALO, -1)
             a = c_shift
             base = c_prev + y_near
             if SYMMETRIC:
@@ -763,7 +878,7 @@ def _features(feat, lanes: int):
     N, F = x.shape[1:]
     arguments = (x, y, window, N, y.shape[1], F, *bits)
     # The features a kernel reads at once per lane, within a register budget.
-    return arguments, (shear, transpose, max(1, min(8, 8192 // lanes, triton.next_power_of_2(F))))
+    return arguments, (shear, transpose, max(1, min(32, 8192 // lanes, triton.next_power_of_2(F))))
 
 
 def _backtrack(D, cost, feat, ends, steps, diag_weight):
@@ -838,12 +953,15 @@ def _tile(B: int, R: int, L: int, features: bool = False) -> tuple[int, int]:
     give a few pairs more programs per launch, wider ones fewer launches for
     many. With too few tiles side by side to pay for the launches, a tile is the
     whole grid, for rows of at most _MAX_ROW columns; with features, whose cells
-    cost more, two side by side pay."""
+    cost more, two side by side pay, and the tile's costs must fit the scratch,
+    _SCRATCH_CELLS, which holds the costs of at least one anti-diagonal."""
     TL = min(256 if B < 8 else 1024, triton.next_power_of_2(L))
     n_cols = triton.cdiv(L, TL)
     side_by_side = B * min(triton.cdiv(R, 32), n_cols)
     if n_cols == 1 or (side_by_side < (2 if features else _MIN_TILES) and L <= _MAX_ROW):
-        return R, triton.next_power_of_2(L)
+        TL = triton.next_power_of_2(L)
+        if not features or B * (R + 1) * (TL + 1) <= _SCRATCH_CELLS:
+            return R, TL
     return 32, TL
 
 
@@ -860,6 +978,59 @@ _MIN_TILES = 16
 _MAX_ROW = 2**18
 # The cells per program of _shares_kernel.
 _SHARES_BLOCK = 1024
+# The costs of feature mode that a launch of _cost_kernel leaves in scratch,
+# at most, but for one anti-diagonal's.
+_SCRATCH_CELLS = 2**22
+# The anti-diagonals whose costs one launch of _cost_kernel computes, at most.
+_CHUNK = 8
+
+
+def _halo_rows(TR: int) -> int:
+    """A tile row of 32 with the halo row above it fills the 32 rows of
+    _cost_kernel's blocks: 31 rows."""
+    return 31 if TR == 32 else TR
+
+
+def _diagonals(
+    S: int, R: int, L: int, TR: int, TL: int, reverse: bool, feat, items=None, row0: int = 0
+):
+    """The tile anti-diagonals of S grids of R rows and L columns, in tiles of
+    TR by TL, as (d, scratch, hit, slot) for the kernels' launches.
+
+    In feature mode (``feat``, as _features takes it, with the ``items`` of
+    _frame, if any), a chunk of anti-diagonals at a time, whose costs fit
+    _SCRATCH_CELLS, first has its costs computed by _cost_kernel, in parallel
+    over the blocks of all its tiles, into ``scratch``, and the tiles with a
+    cell in the window flagged in ``hit`` (None without a window): a tile's
+    slice is at ``slot`` plus its program number. Without, the scratch is None.
+    """
+    n_rows, n_cols = triton.cdiv(R, TR), triton.cdiv(L, TL)
+    n_diag = n_rows + n_cols - 1
+    if feat is None:
+        yield from ((d, None, None, 0) for d in range(n_diag))
+        return
+    (fx, fy, win, *sizes), (shear, transpose, _) = _features(feat, 1)
+    BF = min(16, triton.next_power_of_2(sizes[2]))
+    halo = reverse
+    P = S * min(n_rows, n_cols)  # the most tiles of an anti-diagonal
+    tile = (TR + halo) * (TL + halo)
+    K = max(1, min(n_diag, _CHUNK, _SCRATCH_CELLS // (P * tile)))
+    scratch = fx.new_empty(K * P * tile)
+    hit = None if win is None else torch.empty(K * P, dtype=torch.int8, device=fx.device)
+    BR, BC = 32, 64
+    blocks = triton.cdiv(TR + halo, BR) * triton.cdiv(TL + halo, BC)
+    for d0 in range(0, n_diag, K):
+        k = min(K, n_diag - d0)
+        if win is not None:
+            _hit_kernel[(P, k)](
+                hit, items, win, sizes[0], S, R, L, d0, n_rows, n_cols, TR, P, row0, shear,
+                transpose, reverse, TL, num_warps=_num_warps(TL),
+            )  # fmt: skip
+        _cost_kernel[(P, blocks, k)](
+            scratch, hit, items, fx, fy, win, *sizes, S, R, L, d0, n_rows, n_cols, TR, P, row0,
+            shear, transpose, reverse, TL, BR, BC, BF, num_warps=4,
+        )  # fmt: skip
+        yield from ((d, scratch, hit, (d - d0) * P) for d in range(d0, d0 + k))
 
 
 def _launch(
@@ -871,23 +1042,25 @@ def _launch(
     ``feat``, as _features takes it, in place of ``cost``, whose rows start at
     row ``row0`` of the features' grid; ``given`` as the kernel's GIVEN."""
     TR, TL = _tile(B, R, L, feat is not None)
-    features, flags = _features(feat, TL)
+    TR = _halo_rows(TR) if feat is not None and reverse else TR
     n_rows, n_cols = triton.cdiv(R, TR), triton.cdiv(L, TL)
-    for d in range(n_rows + n_cols - 1):
+    for d, scratch, hit, slot in _diagonals(B, R, L, TR, TL, reverse, feat, None, row0):
         lo = max(0, d - n_cols + 1)
         n_tiles = min(n_rows - 1, d) - lo + 1
         _dag_kernel[(n_tiles * B,)](
-            cost, D, skip, up, left, diag, skip_share, x, y, out, *features, R, L, diag_weight, d,
-            lo, n_tiles, TR, row0, soft, _STEPS[steps], reverse, TL, n_cols > 1, *flags, given,
+            cost, D, skip, up, left, diag, skip_share, x, y, out, scratch, hit, R, L, diag_weight,
+            d, lo, n_tiles, TR, slot, soft, _STEPS[steps], reverse, TL, n_cols > 1, given,
             num_warps=_num_warps(TL, backward),
         )  # fmt: skip
 
 
 def _frontier_tile(S: int, R: int, L: int) -> tuple[int, int]:
     """The tile of :func:`frontier` for S items of at most R rows and L columns:
-    a tile row of R, one launch, where the columns fit in one tile."""
+    a tile row of R, one launch, where the columns fit in one tile and the
+    costs in the scratch."""
     TL = min(256 if S < 8 else 1024, triton.next_power_of_2(L))
-    return (R if triton.cdiv(L, TL) == 1 else 32), TL
+    whole = triton.cdiv(L, TL) == 1 and S * (R + 1) * (TL + 1) <= _SCRATCH_CELLS
+    return (R if whole else 32), TL
 
 
 @torch.library.custom_op("philtorch::dtw_frontier", mutates_args=())
@@ -912,21 +1085,19 @@ def frontier(
     """
     S = items.size(0)
     TR, TL = _frontier_tile(S, h_max, w_max)
-    (fx, fy, win, *sizes), (shear, transpose, bf) = _features(
-        (x, y, window, big, scale, shear, transpose), TL
-    )
+    feat = (x, y, window, big, scale, shear, transpose)
+    TR = _halo_rows(TR) if reverse else TR
     n_rows, n_cols = triton.cdiv(h_max, TR), triton.cdiv(w_max, TL)
     W = n_cols * TL
-    rows = x.new_empty(S, 4 if reverse else 3, W)
+    rows = x.new_empty(S, 3, W)
     cols = x.new_empty(S, h_max)
     items = items.contiguous()
-    for d in range(n_rows + n_cols - 1):
+    for d, scratch, hit, slot in _diagonals(S, h_max, w_max, TR, TL, reverse, feat, items):
         lo = max(0, d - n_cols + 1)
         n_tiles = min(n_rows - 1, d) - lo + 1
         _frontier_kernel[(S * n_tiles,)](
-            items, rows, cols, fx, fy, win, *sizes, diag_weight, d, lo, n_tiles, TR, W, h_max,
-            soft, steps == "symmetric", reverse, TL, n_cols > 1, shear, transpose, bf,
-            num_warps=_num_warps(TL),
+            items, rows, cols, scratch, hit, diag_weight, d, lo, n_tiles, TR, W, h_max, slot, soft,
+            steps == "symmetric", reverse, TL, n_cols > 1, num_warps=_num_warps(TL),
         )  # fmt: skip
     # Each item's last tile row holds the row.
     h, w = items[:, 3:].unbind(1)
