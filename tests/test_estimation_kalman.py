@@ -1,10 +1,11 @@
 import math
+from functools import partial
 
 import pytest
 import torch
 
 import philtorch.estimation.kalman as kalman
-from philtorch.estimation import kalman_filter, kalman_smoother
+from philtorch.estimation import em, kalman_em_step, kalman_filter, kalman_smoother
 from philtorch.lpv import state_space_recursion as lpv_state_space_recursion
 
 DEVICES = [
@@ -359,27 +360,6 @@ def test_kalman_smoother_matches_dense_posterior(device, dtype, N, M, P):
     torch.testing.assert_close(filtered.log_likelihood, result.log_likelihood)
 
 
-def _em_step(y, result):
-    """The M-step of kalman_smoother's docstring, as written there."""
-    m, V, V10, _ = result
-    outer = V + m.unsqueeze(-1) @ m.unsqueeze(-2).conj()  # E[x[n] x[n]^H]
-    cross = V10 + m[:, 1:].unsqueeze(-1) @ m[:, :-1].unsqueeze(-2).conj()
-    S00 = outer[:, :-1].sum((0, 1))  # sums of E[x[n] x[n]^H], n < N - 1
-    S11 = outer[:, 1:].sum((0, 1))  # sums of E[x[n + 1] x[n + 1]^H]
-    S10 = cross.sum((0, 1))  # sums of E[x[n + 1] x[n]^H]
-    A = torch.linalg.solve(S00, S10.mH).mH  # S10 S00^-1
-    Q = (S11 - A @ S10.mH) / (y.size(0) * (y.size(1) - 1))
-    Syx = (y.unsqueeze(-1) @ m.unsqueeze(-2).conj()).sum((0, 1))
-    C = torch.linalg.solve(outer.sum((0, 1)), Syx.mH).mH
-    yy = (y.unsqueeze(-1) @ y.unsqueeze(-2).conj()).sum((0, 1))
-    R = (yy - C @ Syx.mH) / (y.size(0) * y.size(1))
-    m0 = m[:, 0].mean(0)
-    P0 = outer[:, 0].mean(0) - m0.outer(m0.conj())
-    # Exactly Hermitian, despite rounding, for the next step's factorizations.
-    Q, R, P0 = (Q + Q.mH) / 2, (R + R.mH) / 2, (P0 + P0.mH) / 2
-    return A, C, Q, R, m0, P0
-
-
 @pytest.mark.parametrize("dtype", [torch.float64, torch.complex128])
 def test_kalman_em_increases_likelihood(dtype):
     # Data from a known model, fitted from a poor initial guess.
@@ -394,13 +374,18 @@ def test_kalman_em_increases_likelihood(dtype):
     y = torch.stack(ys, 1)
     eye = torch.eye(M, dtype=dtype)
     params = (0.5 * eye, eye.clone(), eye.clone(), eye.clone(), torch.zeros(M, dtype=dtype), eye)
-    log_ps = []
-    for _ in range(20):
-        result = kalman_smoother(y, *params)
-        log_ps.append(result.log_likelihood.sum().item())
-        params = _em_step(y, result)
-    assert all(b >= a - 1e-8 for a, b in zip(log_ps, log_ps[1:]))
-    assert log_ps[-1] > log_ps[0] + 10
+    _, history = em(partial(kalman_em_step, y), params, max_iter=20, tol=-math.inf)
+    assert history.numel() == 20
+    assert (history.diff() >= -1e-8).all()
+    assert history[-1] > history[0] + 10
+
+
+@pytest.mark.parametrize("B, N, A_shape", [(2, 5, (2, 2, 2)), (2, 1, (2, 2)), (0, 5, (2, 2))])
+def test_kalman_em_step_rejects_bad_shapes(B, N, A_shape):
+    eye = torch.eye(2, dtype=torch.float64)
+    y = torch.zeros(B, N, 2, dtype=torch.float64)
+    with pytest.raises(ValueError):
+        kalman_em_step(y, eye.expand(A_shape), eye, eye, eye, eye[0], eye)
 
 
 def test_kalman_known_initial_state_with_singular_noise():

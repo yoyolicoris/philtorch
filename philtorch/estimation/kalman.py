@@ -428,32 +428,8 @@ def kalman_smoother(
     The arguments are those of :func:`kalman_filter`, and the same PyTorch
     2.11 requirement applies.
 
-    These are the expectations of the E-step of expectation-maximization.
-    With constant matrices and :math:`N \ge 2`, the M-step has a closed form,
-    from `An Approach to Time Series Smoothing and Forecasting Using the EM
-    Algorithm`_ (Shumway and Stoffer, 1982), here fitting one model to all
-    the signals::
-
-        from philtorch.estimation import kalman_smoother
-
-        m, V, V10, _ = kalman_smoother(y, A, C, Q, R, m0, P0)
-        outer = V + m.unsqueeze(-1) @ m.unsqueeze(-2).conj()  # E[x[n] x[n]^H]
-        cross = V10 + m[:, 1:].unsqueeze(-1) @ m[:, :-1].unsqueeze(-2).conj()
-        S00 = outer[:, :-1].sum((0, 1))  # sums of E[x[n] x[n]^H], n < N - 1
-        S11 = outer[:, 1:].sum((0, 1))  # sums of E[x[n + 1] x[n + 1]^H]
-        S10 = cross.sum((0, 1))  # sums of E[x[n + 1] x[n]^H]
-        A = torch.linalg.solve(S00, S10.mH).mH  # S10 S00^-1
-        Q = (S11 - A @ S10.mH) / (y.size(0) * (y.size(1) - 1))
-        Syx = (y.unsqueeze(-1) @ m.unsqueeze(-2).conj()).sum((0, 1))
-        C = torch.linalg.solve(outer.sum((0, 1)), Syx.mH).mH
-        yy = (y.unsqueeze(-1) @ y.unsqueeze(-2).conj()).sum((0, 1))
-        R = (yy - C @ Syx.mH) / (y.size(0) * y.size(1))
-        m0 = m[:, 0].mean(0)
-        P0 = outer[:, 0].mean(0) - m0.outer(m0.conj())
-        # Exactly Hermitian, despite rounding, for the next step's factorizations.
-        Q, R, P0 = (Q + Q.mH) / 2, (R + R.mH) / 2, (P0 + P0.mH) / 2
-
-    Each such step increases the log-likelihood until it converges.
+    These are the expectations of the E-step of expectation-maximization;
+    :func:`kalman_em_step` runs its closed-form M-step.
 
     Args:
         y (Tensor): measurements :math:`\mathbf{y}[n]`, of shape
@@ -493,8 +469,6 @@ def kalman_smoother(
 
     .. _On The Performance of Prefix-Sum Parallel Kalman Filters and Smoothers on GPUs:
         https://arxiv.org/abs/2511.10363
-    .. _An Approach to Time Series Smoothing and Forecasting Using the EM Algorithm:
-        https://doi.org/10.1111/j.1467-9892.1982.tb00349.x
     """
     A, C, Q, R, m0, P0 = _parse(y, A, C, Q, R, m0, P0)
     filtered_means, filtered_covs = _filter(y, A, C, Q, R, m0, P0)
@@ -507,3 +481,61 @@ def kalman_smoother(
     # Cov(x[n + 1], x[n] | y) = Cov(x[n], x[n + 1] | y)^H = Cov(x[n + 1] | y) E[n]^H.
     cross_covs = covs[:, 1:] @ E.mH
     return KalmanSmootherResult(means, covs, cross_covs, log_likelihood)
+
+
+def kalman_em_step(
+    y: Tensor, A: Tensor, C: Tensor, Q: Tensor, R: Tensor, m0: Tensor, P0: Tensor
+) -> tuple[Tensor, tuple[Tensor, ...]]:
+    r"""Run one expectation-maximization step for the model of :func:`kalman_filter`.
+
+    The E-step is :func:`kalman_smoother`. The M-step has a closed form, from
+    `An Approach to Time Series Smoothing and Forecasting Using the EM
+    Algorithm`_ (Shumway and Stoffer, 1982), here fitting one model to all
+    the signals. Each step increases the log-likelihood until it converges.
+    Repeat it with :func:`em`, e.g. ``em(functools.partial(kalman_em_step,
+    y), (A, C, Q, R, m0, P0))``.
+
+    Args:
+        y (Tensor): measurements :math:`\mathbf{y}[n]`, of shape
+            :math:`(B, N, P)`, with :math:`N \ge 2`.
+        A (Tensor): the state transition matrix, of shape :math:`(M, M)`.
+        C (Tensor): the measurement matrix, of shape :math:`(P, M)`.
+        Q (Tensor): the process noise covariance, of shape :math:`(M, M)`.
+        R (Tensor): the measurement noise covariance, of shape :math:`(P, P)`.
+        m0 (Tensor): the prior mean of :math:`\mathbf{x}[0]`, of shape
+            :math:`(M)`.
+        P0 (Tensor): the prior covariance of :math:`\mathbf{x}[0]`, of shape
+            :math:`(M, M)`.
+
+    Returns:
+        tuple: the log-likelihood of the given parameters, of shape
+        :math:`(B)`, and the new ``(A, C, Q, R, m0, P0)``.
+
+    Raises:
+        ValueError: if :attr:`y` has no signal or fewer than two steps, or a
+            parameter is not of the shape listed above.
+        RuntimeError: on PyTorch older than 2.11.
+
+    .. _An Approach to Time Series Smoothing and Forecasting Using the EM Algorithm:
+        https://doi.org/10.1111/j.1467-9892.1982.tb00349.x
+    """
+    if any(t.dim() != d for t, d in zip((A, C, Q, R, m0, P0), (2, 2, 2, 2, 1, 2))):
+        raise ValueError("A, C, Q, R and P0 must be matrices and m0 a vector, shared by all steps")
+    B, N, _ = y.shape
+    if B < 1 or N < 2:
+        raise ValueError(f"y must have at least one signal of two steps, got {tuple(y.shape)}")
+    m, V, V10, log_likelihood = kalman_smoother(y, A, C, Q, R, m0, P0)
+    outer = V + m.unsqueeze(-1) @ m.unsqueeze(-2).conj()  # E[x[n] x[n]^H]
+    cross = V10 + m[:, 1:].unsqueeze(-1) @ m[:, :-1].unsqueeze(-2).conj()
+    S00, S11, S10 = outer[:, :-1].sum((0, 1)), outer[:, 1:].sum((0, 1)), cross.sum((0, 1))
+    A = torch.linalg.solve(S00, S10.mH).mH
+    Q = (S11 - A @ S10.mH) / (B * (N - 1))
+    Syx = (y.unsqueeze(-1) @ m.unsqueeze(-2).conj()).sum((0, 1))
+    C = torch.linalg.solve(outer.sum((0, 1)), Syx.mH).mH
+    yy = (y.unsqueeze(-1) @ y.unsqueeze(-2).conj()).sum((0, 1))
+    R = (yy - C @ Syx.mH) / (B * N)
+    m0 = m[:, 0].mean(0)
+    P0 = outer[:, 0].mean(0) - m0.outer(m0.conj())
+    # Exactly Hermitian, despite rounding, for the next step's factorizations.
+    Q, R, P0 = (Q + Q.mH) / 2, (R + R.mH) / 2, (P0 + P0.mH) / 2
+    return log_likelihood, (A, C, Q, R, m0, P0)

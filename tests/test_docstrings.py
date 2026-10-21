@@ -3,6 +3,7 @@ import doctest
 import pytest
 import torch
 
+import philtorch.estimation._em
 import philtorch.estimation.kalman
 import philtorch.lpv.filtering
 import philtorch.lpv.recur
@@ -30,6 +31,7 @@ MODULES = [
     philtorch.lpv.filtering,
     philtorch.lpv.recur,
     philtorch.lpv.ssm,
+    philtorch.estimation._em,
     philtorch.estimation.kalman,
 ]
 # Modules whose examples run Triton kernels are in test_docstrings_cuda.py.

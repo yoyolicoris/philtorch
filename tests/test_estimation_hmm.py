@@ -5,7 +5,7 @@ import sys
 import pytest
 import torch
 
-from philtorch.estimation import hmm_filter, hmm_smoother, hmm_viterbi
+from philtorch.estimation import em, hmm_em_step, hmm_filter, hmm_smoother, hmm_viterbi
 
 # The HMM scans run Triton kernels, so the tests that run them need CUDA; the
 # references, validation and import tests run anywhere.
@@ -206,6 +206,57 @@ def test_hmm_rejects_unsupported_shapes():
         hmm_filter(log_emit, log_trans[0, 0].expand(4, 3, 3), log_init)
     with pytest.raises(ValueError, match="log_init"):
         hmm_filter(log_emit, log_trans, log_init[:, :2])
+
+
+@pytest.mark.parametrize(
+    ("log_emit", "log_trans", "log_init"),
+    [
+        ((3, 0, 3), (3, 3), (3,)),
+        ((0, 4, 3), (3, 3), (3,)),
+        ((3, 4, 3), (3, 3, 3), (3,)),
+        ((3, 4, 3), (3, 3), (3, 3)),
+    ],
+)
+def test_hmm_em_step_rejects_unsupported_shapes(log_emit, log_trans, log_init):
+    with pytest.raises(ValueError, match="log_emit|log_trans"):
+        hmm_em_step(torch.zeros(log_emit), torch.zeros(log_trans), torch.zeros(log_init))
+
+
+@pytest.mark.cuda
+def test_hmm_em_step_is_baum_welch():
+    log_emit, log_trans, log_init = _model(3, 6, 3, time_varying=False)
+    log_init = log_init[0]
+    log_likelihood, (new_trans, new_init), posteriors = hmm_em_step(log_emit, log_trans, log_init)
+
+    # The references: pairwise posteriors from the brute-force joint.
+    B, N, K = log_emit.shape
+    paths = torch.tensor(list(itertools.product(range(K), repeat=N)), device=log_emit.device)
+    joint = (
+        log_init[paths[:, 0]]
+        + log_trans[paths[:, :-1], paths[:, 1:]].sum(-1)
+        + log_emit[:, torch.arange(N), paths].sum(-1)
+    )
+    weights = (joint - joint.logsumexp(-1, keepdim=True)).exp()  # (B, K^N)
+    counts = torch.zeros(K, K, dtype=weights.dtype, device=weights.device)
+    for n in range(N - 1):
+        counts.index_put_((paths[:, n], paths[:, n + 1]), weights.sum(0), accumulate=True)
+    starts = torch.zeros(K, dtype=weights.dtype, device=weights.device)
+    starts.index_add_(0, paths[:, 0], weights.sum(0))
+    expected_log_likelihood, log_post, *_ = _brute_force(log_emit, log_trans, log_init.expand(B, K))
+
+    torch.testing.assert_close(log_likelihood, expected_log_likelihood)
+    torch.testing.assert_close(new_trans, (counts / counts.sum(-1, keepdim=True)).log())
+    torch.testing.assert_close(new_init, (starts / B).log())
+    torch.testing.assert_close(posteriors, log_post.exp())
+
+    _, history = em(
+        lambda t, i: hmm_em_step(log_emit, t, i)[:2],
+        (log_trans, log_init),
+        max_iter=5,
+        tol=-float("inf"),
+    )
+    assert len(history) == 5
+    assert bool((history.diff() >= -1e-9).all())
 
 
 def test_estimation_imports_without_triton(tmp_path):
