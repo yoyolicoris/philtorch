@@ -572,11 +572,9 @@ def hmm_em_step(
         )
     inputs = (log_emit, log_trans, log_init)
     differentiable = torch.is_grad_enabled() and any(x.requires_grad for x in inputs)
-    # Autograd records nothing in inference mode, nor on its tensors, so the
-    # E-step leaves it and clones them.
+    # Fresh views keep the gradients partial derivatives; inference tensors, which
+    # autograd can't record, are cloned outside inference mode.
     with torch.inference_mode(False), torch.enable_grad():
-        # Fresh views, so that the gradients are partial derivatives even when
-        # one input depends on another.
         emit, trans, init = (
             x.view_as(x)
             if x.requires_grad

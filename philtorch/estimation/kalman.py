@@ -570,9 +570,7 @@ def kalman_em_step(
     def outer(u: Tensor, v: Tensor) -> Tensor:
         return u.unsqueeze(-1) @ v.unsqueeze(-2).conj()
 
-    # A and C from the second moments E[x[n] x[n]^H] = V + m m^H; the
-    # covariances from the residuals, as differences of second moments would
-    # round them away under large means.
+    # Covariances from the residuals: differences of second moments round away.
     Exx = V + outer(m, m)
     E10 = avg(V10 + outer(m[:, 1:], m[:, :-1]), per_A)
     A = torch.linalg.solve(avg(Exx[:, :-1], per_A), E10.mH).mH
