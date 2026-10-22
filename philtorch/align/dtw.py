@@ -84,9 +84,8 @@ def dtw(
     Rows of the accumulated costs are computed one after another, each with
     a parallel scan over its cells, after `Parallelizing Dynamic Time
     Warping Algorithm Using Prefix Computations on GPU`_ (Xiao et al.,
-    2013), in one Triton kernel per batch: :math:`\min(N, M)` sequential
-    steps for the symmetric and orthogonal steps, at most :math:`M` for the
-    asymmetric steps, and :math:`O(NM)` work and memory. The cost can be any
+    2013), in tiles of the grid run as a wavefront, so that a single long
+    pair fills the GPU: :math:`O(NM)` work and memory. The cost can be any
     tensor, from any differentiable function of the sequences, such as the
     squared Euclidean distances between their frames.
 
@@ -130,14 +129,13 @@ def dtw(
 
     Raises:
         ValueError: if :attr:`cost` is not a CUDA tensor of shape
-            :math:`(B, N, M)` with :math:`N, M > 0`, at most
-            :math:`2^{31} - 1` cells per pair and :math:`\max(N, M) \le
-            2^{18}`, if :attr:`step_pattern` is unknown, if
-            :attr:`diagonal_weight` is not 1 with steps that have no weighted
-            diagonal, or if :attr:`lengths` are not of shape :math:`(B)`
-            within :math:`1 \le N_b \le N` and :math:`1 \le M_b \le M`;
-            the lengths' values are checked only in eager mode, as they would
-            break a :func:`torch.compile` graph.
+            :math:`(B, N, M)` with :math:`N, M > 0` and at most
+            :math:`2^{31} - 1` cells per pair, if :attr:`step_pattern` is
+            unknown, if :attr:`diagonal_weight` is not 1 with steps that have
+            no weighted diagonal, or if :attr:`lengths` are not of shape
+            :math:`(B)` within :math:`1 \le N_b \le N` and
+            :math:`1 \le M_b \le M`; the lengths' values are checked only in
+            eager mode, as they would break a :func:`torch.compile` graph.
         RuntimeError: if Triton is not installed.
 
     Example::

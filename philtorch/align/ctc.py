@@ -76,12 +76,12 @@ def ctc_loss(
 
     Raises:
         ValueError: if :attr:`log_probs` is not a CUDA tensor of shape
-            :math:`(N, T, C)` or :math:`(T, C)` with :math:`T < 2^{18}`, if
-            the other arguments' shapes do not match it, if a length is
-            negative or past its sequence (or the concatenated targets'
-            lengths do not sum to theirs), or if :attr:`reduction` is
-            unknown. Lengths given as tensors are checked only in eager mode:
-            their values would break a :func:`torch.compile` graph.
+            :math:`(N, T, C)` or :math:`(T, C)`, if the other arguments'
+            shapes do not match it, if a length is negative or past its
+            sequence (or the concatenated targets' lengths do not sum to
+            theirs), or if :attr:`reduction` is unknown. Lengths given as
+            tensors are checked only in eager mode: their values would break
+            a :func:`torch.compile` graph.
         RuntimeError: if Triton is not installed.
 
     Example::

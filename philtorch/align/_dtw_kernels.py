@@ -9,12 +9,15 @@ log2, the multiplies of exp and log saved; callers scale costs by log2 e),
 
 over one of three step sets: "orthogonal", up and left; "symmetric", also
 the diagonal, weighted by w; and "ctc", left, the diagonal and the skip from
-two rows up, the last only into the rows a mask allows. One program per
-batch item holds a whole row and loops over the rows. Within row i, with t(j)
-the minimum over the steps from earlier rows, the row is D(j) = min(t(j),
-c(j) + D(j - 1)): a scan of the maps x -> min(A, C + x). The diagonal and
-skip terms read earlier rows one column to the left, from the D already
-written.
+two rows up, the last only into the rows a mask allows. The grid is cut into
+tiles of TR rows by TL columns, run as a wavefront: one launch per tile
+anti-diagonal, each tile a program, so that a long pair fills the GPU. A
+tile loops over its rows. Within row i, with t(j) the minimum over the steps
+from earlier rows, the row is D(j) = min(t(j), c(j) + D(j - 1)): a scan of
+the maps x -> min(A, C + x) over the tile's columns, applied to the D of
+the column before the tile, already written by an earlier launch. The
+diagonal and skip terms read earlier rows one column to the left, from the
+D already written.
 
 Derivatives. With pi(s, p) the share of each cell s's minimum taken from its
 predecessor p (a one-hot of the best for DTW, a softmax of the negated
@@ -29,19 +32,18 @@ minima, which can differ from the stored D in the last bit.
 
 dtw_dp's backward is one op, :func:`dtw_dp_backward`, in eager and compiled
 code alike: :func:`_dtw_backward`, which computes the shares as it scans each
-row from the right, or for a few long rows :func:`_dtw_backward_parallel`,
-which computes them over all cells first and then accumulates. Neither
-stores the shares. Its own backward, for higher derivatives, rebuilds the
-same gradient from :func:`shares`, PyTorch ops, and :func:`accumulate`, the
-linear accumulation over the grid in either direction, whose backward is
-itself in the other direction, and differentiates that.
+row from the right, without storing them. Its own backward, for higher
+derivatives, rebuilds the same gradient from :func:`shares`, PyTorch ops, and
+:func:`accumulate`, the linear accumulation over the grid in either
+direction, whose backward is itself in the other direction, and
+differentiates that.
 
 Two kernels do all of it. ``_dag_kernel`` is the row-by-row recursion in
 either semiring, min-plus (or soft-min-plus) for the forward pass and
 linear for every accumulation, the first-order backward's included;
-``_shares_kernel`` computes the shares over all cells at once, or for
-CTC's forced alignment each cell's best step back. Both take
-a ``STEPS`` constant, and with the ctc steps the (B, R) skip mask.
+``_shares_kernel`` computes, for CTC's forced alignment, each cell's best
+step back over all cells at once; with the ctc steps, both take the (B, R)
+skip mask.
 """
 
 import math
@@ -95,8 +97,7 @@ def _compose_affine(a_l, b_l, a_r, b_r):
     return a_r * a_l, a_r * b_l + b_r
 
 
-# The kernels take contiguous (B, R, L) tensors, one program per batch item
-# with a whole row in BLOCK >= L lanes. In the forward kernels, lanes past L
+# The kernels take contiguous (B, R, L) tensors. In _dag_kernel, lanes past L
 # hold padding; the scans run left to right, so it never reaches the real
 # columns.
 
@@ -162,32 +163,17 @@ def _shares(
 
 
 @triton.jit
-def _shares_kernel(
-    D_ptr, cost_ptr, skip_ptr, up_ptr, left_ptr, diag_ptr, skip_share_ptr, back_ptr, R, L,
-    diag_weight, SOFT: tl.constexpr, STEPS: tl.constexpr, BLOCK: tl.constexpr,
-):  # fmt: skip
-    """Every cell's shares of the steps in the set, one program per BLOCK cells of a row;
-    or, with ``back_ptr`` and the hard ctc steps, its best step back as int8: 0 to stay
-    in its row, 1 to advance from the row above, 2 to skip from two rows above."""
+def _shares_kernel(D_ptr, cost_ptr, skip_ptr, back_ptr, R, L, BLOCK: tl.constexpr):
+    """Every cell's best step back under the hard ctc steps, as int8, one program per
+    BLOCK cells of a row: 0 to stay in its row, 1 to advance from the row above, 2 to
+    skip from two rows above."""
     batch_row = tl.program_id(0)
     b = (batch_row // R).to(tl.int64)
     r = batch_row % R
     cols = tl.program_id(1) * BLOCK + tl.arange(0, BLOCK)
-    up, left, diag, skip = _shares(
-        D_ptr, cost_ptr, skip_ptr, b, r, cols, R, L, diag_weight, SOFT, STEPS
-    )
+    _, _, diag, skip = _shares(D_ptr, cost_ptr, skip_ptr, b, r, cols, R, L, 1.0, False, _CTC)
     offset = b * R * L + r * L + cols
-    mask = cols < L
-    if back_ptr is not None:
-        tl.store(back_ptr + offset, (diag + 2 * skip).to(tl.int8), mask=mask)
-    else:
-        if STEPS != _CTC:
-            tl.store(up_ptr + offset, up, mask=mask)
-        tl.store(left_ptr + offset, left, mask=mask)
-        if STEPS != _ORTHOGONAL:
-            tl.store(diag_ptr + offset, diag, mask=mask)
-        if STEPS == _CTC:
-            tl.store(skip_share_ptr + offset, skip, mask=mask)
+    tl.store(back_ptr + offset, (diag + 2 * skip).to(tl.int8), mask=cols < L)
 
 
 @triton.jit
@@ -203,11 +189,11 @@ def _neighbour(ptr, row, L, ROWS: tl.constexpr, COLS: tl.constexpr, REVERSE: tl.
     return ptr + row - ROWS * L - COLS
 
 
-@triton.jit
+@triton.jit(do_not_specialize=["d", "I_lo", "n_tiles", "TR"])
 def _dag_kernel(
     cost_ptr, D_ptr, skip_rows_ptr, up_ptr, left_ptr, diag_ptr, skip_ptr, x_ptr, y_ptr,
-    out_ptr, R, L, diag_weight, SOFT: tl.constexpr, STEPS: tl.constexpr,
-    REVERSE: tl.constexpr, BLOCK: tl.constexpr,
+    out_ptr, R, L, diag_weight, d, I_lo, n_tiles, TR, SOFT: tl.constexpr, STEPS: tl.constexpr,
+    REVERSE: tl.constexpr, TL: tl.constexpr, SEEDED: tl.constexpr,
 ):  # fmt: skip
     """y(s) = x(s) (+) the sum over steps of W(s, p) (x) y(p), predecessors p; with
     REVERSE, the transpose, over successors t of W(t, s) (x) y(t). Each edge's
@@ -227,42 +213,56 @@ def _dag_kernel(
     * the linear accumulation, with x and the weights of the steps in the
       set, the others None.
 
-    Row by row, the left step makes each row a scan of the maps
-    x -> A (+) (C (x) x), from the right with REVERSE, where lane t holds
-    column L - 1 - t. The other rows' terms come from y already written,
-    after a barrier. The neighbours' offsets are constants: offsets computed
-    from REVERSE would cost a fifth of the time on long rows.
+    A wavefront: the program (tile, b) of launch ``d`` is the tile
+    ``I_lo + tile % n_tiles`` of tile row and ``d`` minus that of tile
+    column, TR rows by TL columns, the grid mirrored with REVERSE. It reads
+    only earlier launches' y, written whole. Row by row, the left step makes
+    each row a scan of the maps x -> A (+) (C (x) x), from the right with
+    REVERSE, applied to y of the column before the tile, whose weight is the
+    row's own. The other rows' terms come from y already written, after a
+    barrier; the first row's from the tile above. With ``D_ptr`` the shares
+    of the rows below, kept in registers, start from the cells themselves.
+    The neighbours' offsets are constants: offsets computed from REVERSE
+    would cost a fifth of the time on long rows.
     """
     SHARES: tl.constexpr = D_ptr is not None
     FORWARD: tl.constexpr = cost_ptr is not None and not SHARES
-    b = tl.program_id(0).to(tl.int64)
+    b = (tl.program_id(0) // n_tiles).to(tl.int64)
+    i = I_lo + tl.program_id(0) % n_tiles
+    j = d - i
     batch = b * R * L
-    lanes = tl.arange(0, BLOCK)
-    mask = lanes < L
-    cols = (L - 1 - lanes) if REVERSE else lanes
+    lanes = tl.arange(0, TL)
+    pos = j * TL + lanes  # the column's place in the scan
+    mask = pos < L
+    cols = (L - 1 - pos) if REVERSE else pos
+    first = i * TR  # the tile's first row's place
+    # The row before it, the column before the tile in each row.
+    above = (R - first) if REVERSE else (first - 1)
+    edge = (L - j * TL) if REVERSE else (j * TL - 1)
     zero = _KERNEL_INF if FORWARD else 0.0  # the semiring's zero
-    dtype = y_ptr.dtype.element_ty
-    if FORWARD:
-        # Row 0 takes the left steps alone: D(0, j) = c(0, 0) + ... + c(0, j).
-        c = tl.load(cost_ptr + batch + cols, mask=mask, other=0.0)
-        y_near = tl.cumsum(c, axis=0)
-        tl.store(y_ptr + batch + cols, y_near, mask=mask)
-    else:
-        y_near = tl.full([BLOCK], zero, dtype)  # the up neighbour, in this lane
+    y_near = tl.load(y_ptr + batch + above * L + cols, mask=mask & (i > 0), other=zero)
     if SHARES:
         # The shares of the rows below, kept from earlier rows: row r + 1
         # straight down at j and diagonally at j + 1, row r + 2 by a skip at
         # j + 1. None below the last row.
-        up_below = tl.zeros([BLOCK], dtype)
-        diag_below_next = tl.zeros([BLOCK], dtype)
-        skip_below_next = tl.zeros([BLOCK], dtype)
-        skip_below2_next = tl.zeros([BLOCK], dtype)
-    for k in range(1 if FORWARD else 0, R):
-        r = (R - 1 - k) if REVERSE else k
+        up_below, _, _, _ = _shares(
+            D_ptr, cost_ptr, skip_rows_ptr, b, above, cols, R, L, diag_weight, SOFT, STEPS
+        )
+        _, _, diag_below_next, skip_below_next = _shares(
+            D_ptr, cost_ptr, skip_rows_ptr, b, above, cols + 1, R, L, diag_weight, SOFT, STEPS
+        )
+        _, _, _, skip_below2_next = _shares(
+            D_ptr, cost_ptr, skip_rows_ptr, b, above + 1, cols + 1, R, L, diag_weight, SOFT, STEPS
+        )
+    for k in range(0, tl.minimum(TR, R - first)):
+        p = first + k
+        r = (R - 1 - p) if REVERSE else p
         row = batch + r * L + cols
-        rows_1 = (r + 1 < R) if REVERSE else (r > 0)
+        rows_1 = p > 0
         # Recomputed per row: kept live, it costs registers that long rows lack.
-        side = mask & ((cols + 1 < L) if REVERSE else (cols > 0))
+        side = mask & (pos > 0)
+        if SEEDED:
+            left = tl.load(y_ptr + batch + r * L + edge, mask=j > 0, other=zero)
         if FORWARD:
             c = tl.load(cost_ptr + row, mask=mask, other=0.0)
         else:
@@ -298,7 +298,7 @@ def _dag_kernel(
                     )
                 base += w * tl.load(_neighbour(y_ptr, row, L, 1, 1, REVERSE), mask=ok, other=0.0)
             if STEPS == _CTC:
-                ok &= (r + 2 < R) if REVERSE else (r > 1)
+                ok &= p > 1
                 if FORWARD:
                     ok &= tl.load(skip_rows_ptr + b * R + r) != 0
                     y = tl.load(_neighbour(y_ptr, row, L, 2, 1, REVERSE), mask=ok, other=zero)
@@ -318,6 +318,7 @@ def _dag_kernel(
                     )
         if FORWARD:
             a = c
+            base = tl.where((p == 0) & (pos == 0), c, base)
         elif SHARES:
             # Row r's shares at j, for the rows above, and at j + 1, whose left
             # share takes e(r, j + 1) into e(r, j).
@@ -333,12 +334,20 @@ def _dag_kernel(
                 mask=side,
                 other=0.0,
             )
+        # Seeded with the column before the tile; unseeded, the scan's other half is
+        # left to the compiler to drop.
         if not FORWARD:
-            y_near = tl.associative_scan((a, base), 0, _compose_affine)[1]
+            mult, y_near = tl.associative_scan((a, base), 0, _compose_affine)
+            if SEEDED:
+                y_near += mult * left
         elif SOFT:
-            y_near = tl.associative_scan((base, a), 0, _compose_softmin)[0]
+            y_near, scan_c = tl.associative_scan((base, a), 0, _compose_softmin)
+            if SEEDED:
+                y_near = _softmin(y_near, scan_c + left)
         else:
-            y_near = tl.associative_scan((base, a), 0, _compose_min)[0]
+            y_near, scan_c = tl.associative_scan((base, a), 0, _compose_min)
+            if SEEDED:
+                y_near = tl.minimum(y_near, scan_c + left)
         tl.store(y_ptr + row, y_near, mask=mask)
         if SHARES:
             if out_ptr is not None:
@@ -443,37 +452,63 @@ def _(D, cost, ends, steps, diag_weight):
     return ends.new_empty(B, R + L - 1, 2)
 
 
-def _num_warps(L: int, backward: bool = False, diag: bool = False) -> int:
-    """Warps per program by row length, measured on an RTX 5060 Ti.
+def _num_warps(TL: int, backward: bool = False) -> int:
+    """Warps per tile by its columns, measured on an RTX 5060 Ti.
 
-    The backward kernel keeps more of each row live, and with the diagonal
-    step its rows past 4096 lanes spill at 16 warps.
+    The backward kernel keeps more of each row live.
     """
     if not backward:
-        warps = 4 if L <= 256 else 8 if L <= 1024 else 16
+        warps = 4 if TL <= 256 else 8 if TL <= 1024 else 16
     else:
-        warps = 4 if L <= 256 else 32 if L > 4096 and diag else 16
+        warps = 4 if TL <= 128 else 8 if TL <= 256 else 16
     # A program has at most 1024 threads, and AMD's datacenter GPUs have
     # 64-thread warps.
     return min(warps, 16) if torch.version.hip else warps
+
+
+def _tile(B: int, R: int, L: int) -> tuple[int, int]:
+    """The tile's rows and columns, measured on an RTX 5060 Ti: narrower tiles give
+    a few pairs more programs per launch, wider ones fewer launches for many. With
+    too few tiles side by side to pay for the launches, a tile is the whole grid,
+    for rows of at most _MAX_ROW columns."""
+    TL = min(256 if B < 8 else 1024, triton.next_power_of_2(L))
+    n_cols = triton.cdiv(L, TL)
+    side_by_side = B * min(triton.cdiv(R, 32), n_cols)
+    if n_cols == 1 or (side_by_side < _MIN_TILES and L <= _MAX_ROW):
+        return R, triton.next_power_of_2(L)
+    return 32, TL
 
 
 # Outputs are allocated contiguous: torch.empty_like keeps a permuted input's
 # strides, and the kernels write rows contiguously. Offsets within a pair are
 # 32-bit, which keeps long rows fast; the batch offset is 64-bit.
 _MAX_CELLS = 2**31 - 1
-# A program holds a whole row: 2^18 lanes compile in about half a minute,
-# once, and twice that did not within minutes.
+
+
+# The fewest tiles side by side, over the batch, worth a wavefront.
+_MIN_TILES = 16
+# The longest row a program holds whole: 2^18 lanes compile in about half a
+# minute, once.
 _MAX_ROW = 2**18
-
-
 # The cells per program of _shares_kernel.
 _SHARES_BLOCK = 1024
 
 
-def _launch(kernel, B: int, L: int, *args, num_warps: int | None = None):
-    num_warps = _num_warps(L) if num_warps is None else num_warps
-    kernel[(B,)](*args, BLOCK=triton.next_power_of_2(L), num_warps=num_warps)
+def _launch(
+    B: int, R: int, L: int, cost, D, skip, up, left, diag, skip_share, x, y, out,
+    diag_weight: float, soft: bool, steps: str, reverse: bool, backward: bool = False,
+):  # fmt: skip
+    """Run _dag_kernel over the grid, one launch per tile anti-diagonal."""
+    TR, TL = _tile(B, R, L)
+    n_rows, n_cols = triton.cdiv(R, TR), triton.cdiv(L, TL)
+    for d in range(n_rows + n_cols - 1):
+        lo = max(0, d - n_cols + 1)
+        n_tiles = min(n_rows - 1, d) - lo + 1
+        _dag_kernel[(n_tiles * B,)](
+            cost, D, skip, up, left, diag, skip_share, x, y, out, R, L, diag_weight, d, lo,
+            n_tiles, TR, soft, _STEPS[steps], reverse, TL, n_cols > 1,
+            num_warps=_num_warps(TL, backward),
+        )  # fmt: skip
 
 
 def _empty(t: Tensor) -> Tensor:
@@ -489,9 +524,8 @@ def _dtw_backward(
     e = _empty(D)
     out = _empty(D) if weighted else e
     _launch(
-        _dag_kernel, B, L, cost, D, skip, None, None, None, None, grad.contiguous(), e,
-        out if weighted else None, R, L, diag_weight, soft, _STEPS[steps], True,
-        num_warps=_num_warps(L, backward=True, diag=steps != "orthogonal"),
+        B, R, L, cost, D, skip, None, None, None, None, grad.contiguous(), e,
+        out if weighted else None, diag_weight, soft, steps, True, backward=True,
     )  # fmt: skip
     return out
 
@@ -500,28 +534,6 @@ def _weigh(e: Tensor, up: Tensor, left: Tensor, diag: Tensor, diag_weight: float
     """The cost's gradient from e, with a weighted diagonal: e times the cell's weight."""
     none = (up + left + diag) == 0  # cell (0, 0)
     return e * torch.where(none, 1.0, up + left + diag_weight * diag)
-
-
-def _dtw_backward_parallel(
-    D: Tensor, cost: Tensor, skip: Tensor | None, grad: Tensor, soft: bool, steps: str,
-    diag_weight: float,
-) -> Tensor:  # fmt: skip
-    """As :func:`_dtw_backward`, with the shares computed by a kernel over all cells.
-
-    For few long rows: there the fused kernel computes every share in one
-    program per batch item, leaving most of the GPU idle.
-    """
-    B, R, L = D.shape
-    up = _empty(D) if steps != "ctc" else None
-    left = _empty(D)
-    diag = _empty(D) if steps != "orthogonal" else None
-    skip_share = _empty(D) if steps == "ctc" else None
-    _shares_kernel[(B * R, triton.cdiv(L, _SHARES_BLOCK))](
-        D, cost, skip, up, left, diag, skip_share, None, R, L, diag_weight, soft,
-        _STEPS[steps], BLOCK=_SHARES_BLOCK, num_warps=4,
-    )  # fmt: skip
-    e = _accumulate(up, left, diag, skip_share, grad, True)
-    return _weigh(e, up, left, diag, diag_weight) if diag_weight != 1.0 else e
 
 
 def _shift(t: Tensor, rows: int, cols: int, fill: float = 0.0) -> Tensor:
@@ -539,8 +551,7 @@ def _accumulate(
     y = _empty(x)
     weights = (None if w is None else w.contiguous() for w in (w_up, w_left, w_diag, w_skip))
     _launch(
-        _dag_kernel, B, L, None, None, None, *weights, x.contiguous(), y, None, R, L, 1.0,
-        False, _STEPS[steps], reverse,
+        B, R, L, None, None, None, *weights, x.contiguous(), y, None, 1.0, False, steps, reverse
     )  # fmt: skip
     return y
 
@@ -632,15 +643,14 @@ def dtw_dp(cost: Tensor, skip: Tensor | None, soft: bool, steps: str, diag_weigh
 
 def _forward(cost, skip, soft, steps, diag_weight):
     B, R, L = cost.shape
-    if R * L > _MAX_CELLS or L > _MAX_ROW:
+    if R * L > _MAX_CELLS:
         raise ValueError(
-            "the DTW kernels take at most 2^31 - 1 cells per pair and 2^18 per row, "
-            f"got {tuple(cost.shape)}"
+            f"the DTW kernels take at most 2^31 - 1 cells per pair, got {tuple(cost.shape)}"
         )
     D = _empty(cost)
     _launch(
-        _dag_kernel, B, L, cost.contiguous(), None, skip, None, None, None, None, None, D,
-        None, R, L, diag_weight, soft, _STEPS[steps], False,
+        B, R, L, cost.contiguous(), None, skip, None, None, None, None, None, D, None,
+        diag_weight, soft, steps, False,
     )  # fmt: skip
     return D
 
@@ -658,8 +668,7 @@ def ctc_viterbi(cost: Tensor, skip: Tensor) -> tuple[Tensor, Tensor]:
     # nearly doubling it on long rows.
     steps_back = torch.empty_like(D, dtype=torch.int8)
     _shares_kernel[(B * R, triton.cdiv(L, _SHARES_BLOCK))](
-        D, cost.contiguous(), skip, None, None, None, None, steps_back, R, L, 1.0, False,
-        _STEPS["ctc"], BLOCK=_SHARES_BLOCK, num_warps=4,
+        D, cost.contiguous(), skip, steps_back, R, L, BLOCK=_SHARES_BLOCK, num_warps=4,
     )  # fmt: skip
     return D, steps_back
 
@@ -696,12 +705,8 @@ def dtw_dp_backward(
 ) -> Tensor:  # fmt: skip
     """The gradient of cost from ``grad``, D's, through :func:`dtw_dp`, by the
     fused kernels; see the module docstring."""
-    # The fused kernel runs one program per pair; for a few long rows, the
-    # shares are better computed over the whole GPU first.
-    B, _, L = D.shape
-    backward = _dtw_backward_parallel if B <= 4 and L > 4096 else _dtw_backward
     skip = None if skip is None else skip.contiguous()
-    return backward(D.contiguous(), cost.contiguous(), skip, grad, soft, steps, diag_weight)
+    return _dtw_backward(D.contiguous(), cost.contiguous(), skip, grad, soft, steps, diag_weight)
 
 
 @dtw_dp_backward.register_fake
