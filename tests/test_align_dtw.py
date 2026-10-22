@@ -274,6 +274,34 @@ def test_dtw_float32_long(gamma, step_pattern):
     torch.testing.assert_close(actual.double(), expected, rtol=1e-5, atol=1e-4)
 
 
+@pytest.mark.cuda
+@pytest.mark.parametrize("gamma", [0.0, 0.5])
+def test_dtw_kernels_own_tiles_agree_with_one_tile(monkeypatch, gamma):
+    from philtorch.align import _dtw_kernels
+
+    # Enough tiles side by side for the kernels to tile the grid themselves.
+    cost = _cost(4, 128, 1024).requires_grad_()
+    assert _dtw_kernels._tile(*cost.shape)[0] < 128
+
+    def run():
+        value = dtw(cost, gamma, diagonal_weight=2.0)
+        return value, *torch.autograd.grad(value.sum(), cost)
+
+    actual = run()
+    monkeypatch.setattr(_dtw_kernels, "_tile", lambda B, R, L, *_: (R, 1024))
+    torch.testing.assert_close(actual, run())
+
+
+@pytest.mark.cuda
+def test_dtw_kernels_reject_too_many_cells():
+    from philtorch.align import _dtw_kernels
+
+    # An expanded view: the check comes before any allocation.
+    cost = torch.zeros(1, 1, 1, device="cuda").expand(1, 46341, 46341)
+    with pytest.raises(ValueError, match="at most 2"):
+        _dtw_kernels.dtw_dp(cost, None, False, "symmetric", 1.0)
+
+
 def test_dtw_needs_cuda():
     with pytest.raises(ValueError, match="dtw runs Triton kernels on CUDA GPUs only"):
         dtw(_cost(1, 3, 3, device="cpu"))
