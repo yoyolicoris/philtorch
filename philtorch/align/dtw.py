@@ -797,7 +797,7 @@ def dtw_path(
                 [-1, -1]], device='cuda:0')
 
     .. _Exact, Parallelizable Dynamic Time Warping Alignment with Linear Memory:
-        https://arxiv.org/abs/2008.02734
+        https://doi.org/10.5281/zenodo.4245470
     """
     B, N, M = _validate("dtw_path", cost, x, y, step_pattern, diagonal_weight, lengths, band)
     distance, g, D, walk = _dtw(
