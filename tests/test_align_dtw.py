@@ -588,7 +588,9 @@ def test_dtw_features_without_gradients_stay_linear_in_memory():
     with torch.no_grad():
         distance = dtw(x=x, y=y, gamma=0.5)
     assert torch.cuda.max_memory_allocated() - base < N * M * 4 / 8
-    torch.testing.assert_close(distance, dtw(_squared_distances(x, y), 0.5))
+    # Float32 sums of 8191 costs each, in another order than the cost's.
+    expected = dtw(_squared_distances(x, y), 0.5)
+    torch.testing.assert_close(distance, expected, rtol=1e-5, atol=0)
 
 
 @pytest.mark.cuda
