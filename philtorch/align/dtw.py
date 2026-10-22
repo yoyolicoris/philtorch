@@ -28,25 +28,29 @@ def _shear(cost: Tensor, width: int) -> Tensor:
     return cost[:, (m + k).clamp(max=N - 1), m]
 
 
-def _band_windows(N: int, M: int, n_len: Tensor, m_len: Tensor, band: float) -> Tensor:
+def _band_windows(
+    N: int, M: int, n_len: Tensor, m_len: Tensor, band: float, orthogonal: bool
+) -> Tensor:
     """Each row's allowed columns, (B, N, 2) int32 [lo, hi], lo > hi if none.
 
     The cells within ``band`` cells of the straight line between each pair's
     corners. The distance is measured along the longer side, and the band is
-    widened where needed for consecutive rows (or columns) of it to overlap,
-    so that it always holds a path.
+    widened where needed so that it always holds a path: for consecutive rows
+    (or columns) of it to touch, or, with the ``orthogonal`` steps, to overlap.
     """
     i = torch.arange(N, device=n_len.device, dtype=torch.float64)
     n = (n_len - 1).double()[:, None]
     m = (m_len - 1).double()[:, None]
     rows_longer = n > m
     # Along the longer side, the line advances `slope` cells per other cell;
-    # a step between rows reaches slope / 2. Scaled by the shorter side, the
-    # offset of (i, j) is |i m - j n|, an integer: exact, however compiled.
-    slope = torch.where(rows_longer, n, m) / torch.where(rows_longer, m, n).clamp(min=1)
-    reach = torch.maximum(slope / 2, torch.full_like(slope, band))
-    twice = torch.where(rows_longer, torch.maximum(n, 2 * band * m), torch.maximum(m, 2 * band * n))
-    one_line = torch.minimum(n, m) == 0  # a row or column: no band to keep
+    # a step between rows reaches slope / 2, and an orthogonal one, which
+    # keeps its column, (slope + 1) / 2. Scaled by the shorter side, the offset
+    # of (i, j) is |i m - j n|, an integer: exact, however compiled.
+    longer, shorter = torch.maximum(n, m), torch.minimum(n, m)
+    slope = longer / shorter.clamp(min=1)
+    reach = torch.maximum((slope + orthogonal) / 2, torch.full_like(slope, band))
+    twice = torch.maximum(longer + orthogonal * shorter, 2 * band * shorter)
+    one_line = shorter == 0  # a row or column: no band to keep
 
     def inside(j):
         offset = 2 * (i * m - j * n).abs()
@@ -246,7 +250,7 @@ def dtw(
     .. _Parallelizing Dynamic Time Warping Algorithm Using Prefix Computations on GPU:
         https://doi.org/10.1109/HPCC.and.EUC.2013.50
     """
-    if gamma < 0:
+    if not gamma >= 0:
         raise ValueError(f"gamma must be non-negative, got {gamma}")
     if checkpoint is not None and (type(checkpoint) is not int or checkpoint < 1 or x is None):
         raise ValueError(f"checkpoint must be a positive integer, with x and y, got {checkpoint!r}")
@@ -265,7 +269,7 @@ def _validate(
     band: float | None,
 ) -> tuple[int, int, int]:
     """Check the arguments; return the shape (B, N, M) of the costs."""
-    if band is not None and band < 0:
+    if band is not None and not band >= 0:
         raise ValueError(f"band must be non-negative, got {band}")
     _check_features(name, cost, x, y)
     if band is not None and cost is not None:
@@ -341,7 +345,7 @@ def _grid(cost, x, y, gamma, step_pattern, diagonal_weight, lengths, band) -> _G
     window = None
     if features:
         if band is not None:
-            window = _band_windows(N, M, n_len, m_len, band)
+            window = _band_windows(N, M, n_len, m_len, band, step_pattern == "orthogonal")
     elif gamma > 0 or not cost.is_floating_point():
         cost = cost * scale  # in units of gamma; integers become floats
 
@@ -433,7 +437,7 @@ def _dtw(
         with torch.no_grad():
             walk = linear_path(
                 x, y, g.window, g.big, g.scale, g.steps, g.diag_weight, g.sheared, g.transposed,
-                g.R, g.L, g.ends, ~g.no_path,
+                g.R, g.L, g.ends, g.no_path,
             )  # fmt: skip
             distance = _path_cost(g, x, y, walk)
         # False for inf, NaN and, with a window, its no path.
@@ -476,12 +480,11 @@ def _dtw(
         # about ``checkpoint`` rows, and at least two diagonals.
         strip = None if checkpoint is None else strip_tile(g.ends.size(0), g.R, g.L)
         if strip is not None:
-            n_diag = -(-g.R // strip[0]) + -(-g.L // strip[1]) - 1
-            step = max(2, -(-checkpoint // strip[0]))
+            TR, TL, n_diag = strip
+            step = max(2, -(-checkpoint // TR))
         if checkpoint is None or checkpoint >= g.R or (strip is not None and step >= n_diag):
             distance = dp(0, g.R, None, x, y)[batch, end_row, end_col]
         elif strip is not None:
-            TR, TL = strip
 
             def strip_dp(d0, seed, x, y):
                 """The strip of tile anti-diagonals from d0 of D: the seed of
@@ -534,7 +537,8 @@ _CHUNK_CELLS = 2**26
 def _is_walk(g: _Grid, walk: Tensor) -> Tensor:
     """Whether each pair's walk, (B, R + L - 1, 2) with -1 past its cells, runs
     from the grid's first cell to the pair's end cell by the step set's steps:
-    a finite cost does not prove it, as skipped tiles can cut the path."""
+    a finite cost does not prove it, as a row of infinite costs (an infinite
+    frame) can stop the leaves' backtrack short."""
     r, col = walk.unbind(-1)
     valid = r >= 0
     last = walk.gather(1, (valid.sum(1) - 1).clamp(min=0)[:, None, None].expand(-1, 1, 2))[:, 0]
@@ -673,16 +677,33 @@ def _cross(g: _Grid, x, y, items: Tensor) -> Tensor:
     )
 
 
-def _linear_path(g: _Grid, x, y) -> Tensor:
-    """Each pair's optimal path on the kernels' grid, in :func:`backtrack`'s
-    format, in memory linear in the grid's sides: Hirschberg's divide and
-    conquer, for the pairs ``g`` has a path for.
+# The path search syncs with the host, which a CUDA graph can't capture: the
+# tag, from PyTorch 2.8, keeps the op out of the graphs of reduce-overhead.
+_UNSAFE = getattr(torch.Tag, "cudagraph_unsafe", None)
+
+
+@torch.library.custom_op(
+    "philtorch::dtw_linear_path", mutates_args=(), **({"tags": (_UNSAFE,)} if _UNSAFE else {})
+)
+def linear_path(
+    x: Tensor, y: Tensor, window: Tensor | None, big: float, scale: float, steps: str,
+    diag_weight: float, sheared: bool, transposed: bool, R: int, L: int, ends: Tensor,
+    no_path: Tensor,
+) -> Tensor:  # fmt: skip
+    """Each pair's optimal path (B, R + L - 1, 2) on the :class:`_Grid` of these
+    fields, in :func:`backtrack`'s format, in memory linear in the grid's
+    sides: Hirschberg's divide and conquer, for the pairs ``no_path`` is False
+    for. An op because it reads sizes back to the host, which a
+    :func:`torch.compile` graph can't hold.
 
     An item, a rectangle of the grid between two cells of the path, is a
     straight line, a leaf backtracked whole, or split in two across its middle
     rows (:func:`_split`). Each round handles all items together."""
+    g = _Grid(
+        None, window, big, scale, steps, diag_weight, sheared, transposed, R, L, ends, no_path
+    )
     B = g.ends.size(0)
-    pairs = (~g.no_path).nonzero()[:, 0]
+    pairs = (~no_path).nonzero()[:, 0]
     end_row, end_col = g.ends[pairs].unbind(-1)
     zero = torch.zeros_like(pairs)
     work = torch.stack([pairs, zero, zero, end_row + 1, end_col + 1], -1)
@@ -715,30 +736,8 @@ def _linear_path(g: _Grid, x, y) -> Tensor:
     return walk
 
 
-# The path search syncs with the host, which a CUDA graph can't capture: the
-# tag, from PyTorch 2.8, keeps the op out of the graphs of reduce-overhead.
-_UNSAFE = getattr(torch.Tag, "cudagraph_unsafe", None)
-
-
-@torch.library.custom_op(
-    "philtorch::dtw_linear_path", mutates_args=(), **({"tags": (_UNSAFE,)} if _UNSAFE else {})
-)
-def linear_path(
-    x: Tensor, y: Tensor, window: Tensor | None, big: float, scale: float, steps: str,
-    diag_weight: float, sheared: bool, transposed: bool, R: int, L: int, ends: Tensor,
-    finite: Tensor,
-) -> Tensor:  # fmt: skip
-    """Each pair's optimal path (B, R + L - 1, 2) on the :class:`_Grid` of these
-    fields: :func:`_linear_path`, an op because it reads sizes back to the
-    host, which a :func:`torch.compile` graph can't hold."""
-    g = _Grid(
-        None, window, big, scale, steps, diag_weight, sheared, transposed, R, L, ends, ~finite
-    )
-    return _linear_path(g, x, y)
-
-
 @linear_path.register_fake
-def _(x, y, window, big, scale, steps, diag_weight, sheared, transposed, R, L, ends, finite):
+def _(x, y, window, big, scale, steps, diag_weight, sheared, transposed, R, L, ends, no_path):
     return x.new_empty(ends.size(0), R + L - 1, 2, dtype=torch.long)
 
 
@@ -922,17 +921,7 @@ def soft_dtw_divergence(
         inputs = (dict(x=x, y=y), dict(x=x, y=x), dict(x=y, y=y))
     xx = None if lengths is None else (n_len, n_len)
     yy = None if lengths is None else (m_len, m_len)
-    pairs = list(zip(inputs, (lengths, xx, yy)))
-    if len({(t.shape, t.dtype, t.device) for kw, _ in pairs for t in kw.values()}) == 1 and (
-        lengths is None or n_len.shape == m_len.shape
-    ):
-        # The three pairs share a shape: one call over all of them.
-        kw = {k: torch.cat([p[0][k] for p in pairs]) for k in inputs[0]}
-        device = next(iter(kw.values())).device
-        ls = None if lengths is None else tuple(
-            torch.cat([p[1][i].to(device) for p in pairs]) for i in (0, 1)
-        )  # fmt: skip
-        d_xy, d_xx, d_yy = dtw(gamma=gamma, lengths=ls, **kw, **kwargs).chunk(3)
-    else:
-        d_xy, d_xx, d_yy = (dtw(gamma=gamma, lengths=ls, **kw, **kwargs) for kw, ls in pairs)
+    d_xy, d_xx, d_yy = (
+        dtw(gamma=gamma, lengths=ls, **kw, **kwargs) for kw, ls in zip(inputs, (lengths, xx, yy))
+    )
     return d_xy - 0.5 * (d_xx + d_yy)

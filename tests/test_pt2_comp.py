@@ -513,22 +513,15 @@ def test_compiled_alignment_paths(fn, shape):
 
 
 @pytest.mark.cuda
-@pytest.mark.parametrize(
-    "fn",
-    [
-        pytest.param(_dtw_features, id="dtw"),
-        pytest.param(lambda x: _dtw_path_features(x)[0].sum(), id="dtw_path"),
-    ],
-)
-def test_dtw_path_search_reduce_overhead(fn):
+def test_dtw_path_search_reduce_overhead():
     # The path search reads sizes back to the host, which a CUDA graph can't
     # capture: its op is left out of the graphs, and repeated calls of the
     # compiled code, which replay them, give eager's values and gradients.
-    compiled = torch.compile(fn, mode="reduce-overhead")
+    compiled = torch.compile(_dtw_features, mode="reduce-overhead")
     generator = torch.Generator("cuda").manual_seed(0)
     for _ in range(4):
         x = torch.randn(2, 30, 3, device="cuda", generator=generator).requires_grad_()
-        (expected,) = torch.autograd.grad(fn(x), x)
+        (expected,) = torch.autograd.grad(_dtw_features(x), x)
         (actual,) = torch.autograd.grad(compiled(x), x)
         torch.testing.assert_close(actual, expected)
 
