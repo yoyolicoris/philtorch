@@ -35,7 +35,7 @@ def ctc_loss(
     advances to the next or skips a blank between two different labels. So
     it runs on the kernels of :func:`dtw`, one state after another, each a
     parallel scan over the frames: :math:`2S + 1` sequential steps and
-    :math:`O(TS)` work and memory.
+    :math:`O(BTS)` work and memory.
 
     The loss is differentiable to any order in reverse mode. Its gradient
     with respect to :attr:`log_probs` is minus each frame's expected
@@ -53,8 +53,8 @@ def ctc_loss(
             :math:`(B, T, C)`, or :math:`(T, C)` for one sequence, such as a
             ``log_softmax`` over the classes.
         targets (Tensor): the labels, an integer tensor of shape
-            :math:`(B, S)`, padded past each target's length, or of the
-            targets' total length, the targets concatenated; :math:`(S)` for
+            :math:`(B, S)`, padded past each target's length, or of shape
+            :math:`(\sum_b S_b)`, the targets concatenated; :math:`(S)` for
             one sequence. Not :attr:`blank`.
         input_lengths (Tensor or tuple of int): each sequence's number of
             frames, of shape :math:`(B)`, or :math:`()` for one sequence.
@@ -66,9 +66,9 @@ def ctc_loss(
         reduction (str, optional): ``"none"`` for the losses, ``"mean"`` for
             the mean over the batch of the losses divided by their target
             lengths, or ``"sum"``. Default: ``"mean"``.
-        zero_infinity (bool, optional): zero the infinite losses, of targets
-            that no path of their frames can read, as their gradients are.
-            Default: ``False``.
+        zero_infinity (bool, optional): if ``True``, zeroes the infinite
+            losses, of targets that no path of their frames can read; their
+            gradients are zero either way. Default: ``False``.
 
     Returns:
         Tensor: the losses, of shape :math:`(B)` with ``reduction="none"``
@@ -79,7 +79,9 @@ def ctc_loss(
             :math:`(B, T, C)` or :math:`(T, C)`, if the other arguments'
             shapes do not match it, if a length is negative or past its
             sequence (or the concatenated targets' lengths do not sum to
-            theirs), or if :attr:`reduction` is unknown. Lengths given as
+            theirs), if a sequence's grid, :math:`(2S + 2)(T + 1)` cells with
+            :math:`S` the padded targets' width, exceeds :math:`2^{31} - 1`
+            cells, or if :attr:`reduction` is unknown. Lengths given as
             tensors are checked only in eager mode: their values would break
             a :func:`torch.compile` graph.
         RuntimeError: if Triton is not installed.
@@ -124,13 +126,13 @@ def forced_align(
 ) -> tuple[Tensor, Tensor]:
     r"""Find each target's most probable CTC alignment to its frames.
 
-    As ``torchaudio.functional.forced_align``, but batch first and batched.
-    Of the paths that :func:`ctc_loss` sums over, the most probable one: CTC
-    Viterbi decoding, the same grid with a hard minimum that records each
-    cell's best step back, and the traceback of
-    :func:`~philtorch.estimation.hmm_viterbi`, parallel over the frames.
-    Under ties, a frame stays in its state rather than advances, and
-    advances rather than skips a blank.
+    As ``torchaudio.functional.forced_align``, but for any batch size, not
+    only 1. Of the paths that :func:`ctc_loss` sums over, the most probable
+    one: CTC Viterbi decoding, the same grid with a hard minimum, each cell's
+    best step back found afterwards from its accumulated costs, over all cells
+    at once, and the traceback of :func:`~philtorch.estimation.hmm_viterbi`,
+    parallel over the frames. Under ties, a frame stays in its state rather
+    than advances, and advances rather than skips a blank.
 
     Note:
         Runs only on CUDA GPUs, as Triton kernels: the inputs must be CUDA
@@ -138,19 +140,19 @@ def forced_align(
         builds for Linux.
 
     Args:
-        log_probs (Tensor): as in :func:`ctc_loss`, :math:`(B, T, C)` or
-            :math:`(T, C)`.
+        log_probs (Tensor): as in :func:`ctc_loss`.
         targets (Tensor): as in :func:`ctc_loss`.
         input_lengths (Tensor or tuple of int): as in :func:`ctc_loss`.
         target_lengths (Tensor or tuple of int): as in :func:`ctc_loss`.
-        blank (int, optional): the blank class. Default: 0.
+        blank (int, optional): as in :func:`ctc_loss`.
 
     Returns:
         tuple of Tensor: each frame's label, :attr:`blank` included, an
         integer tensor of shape :math:`(B, T)`, and its log-probability, of
         shape :math:`(B, T)`; :math:`(T)` each for one sequence. Past each
         sequence's frames, and for a target that no path of its frames can
-        read, the labels are -1 and the log-probabilities 0.
+        read, the labels are -1 and the log-probabilities 0. Neither carries a
+        gradient.
 
     Raises:
         ValueError: as :func:`ctc_loss` does for these arguments.
@@ -203,8 +205,8 @@ def _lengths(lengths: Tensor | Sequence[int] | int) -> tuple[Tensor, list[int] |
 
 
 def _prepare(name, log_probs, targets, input_lengths, target_lengths, blank):
-    """The arguments as (N, T, C) log-probabilities, the (N, 2S + 1) states and
-    the kernels' skip mask, (N) lengths, and whether there was a batch."""
+    """The arguments as (B, T, C) log-probabilities, the (B, 2S + 1) states and
+    the kernels' skip mask, (B) lengths, and whether there was a batch."""
     if log_probs.dim() not in (2, 3):
         raise ValueError(f"log_probs must be (B, T, C) or (T, C), got {tuple(log_probs.shape)}")
     unbatched = log_probs.dim() == 2
@@ -274,9 +276,9 @@ def _prepare(name, log_probs, targets, input_lengths, target_lengths, blank):
 
 def _grid(state_log_probs, skip, frames, labels, viterbi):
     """The kernels' grid from each frame's log-probabilities of the states,
-    (N, T, 2S + 1): its accumulated costs D, with ``viterbi`` its cells' best
+    (B, T, 2S + 1): its accumulated costs D, with ``viterbi`` its cells' best
     steps back, and -log p of the paths ending in each sequence's final blank
-    and in its last label, rows 2S + 1 and 2S, (2, N): of all paths, or with
+    and in its last label, rows 2S + 1 and 2S, (2, B): of all paths, or with
     ``viterbi`` the best one."""
     # Imported here so that philtorch.align imports without Triton.
     from ._dtw_kernels import ctc_viterbi, dtw_dp
