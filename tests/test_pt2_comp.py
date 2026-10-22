@@ -181,6 +181,21 @@ def _dtw_dp_features_calls(op, seeded=False):
     return _recorded_calls(_dtw_kernels, op, run)
 
 
+def _dtw_grid_cost_calls():
+    # From the second derivatives of soft-DTW from frames, with a shear.
+    from philtorch.align import _dtw_kernels, dtw
+
+    gen = torch.Generator("cuda").manual_seed(0)
+    x, y = (torch.randn(2, n, 3, device="cuda", generator=gen, requires_grad=True) for n in (6, 4))
+
+    def run():
+        loss = dtw(x=x, y=y, gamma=0.5, step_pattern="asymmetric", band=2.0).sum()
+        (grad,) = torch.autograd.grad(loss, x, create_graph=True)
+        grad.sum().backward()
+
+    return _recorded_calls(_dtw_kernels, "grid_cost", run)
+
+
 def _dtw_backtrack_features_calls():
     from philtorch.align import _dtw_kernels
 
@@ -201,6 +216,15 @@ def _dtw_backtrack_calls():
 
     cost = torch.rand(2, 9, 6, device="cuda")
     return _recorded_calls(_dtw_kernels, "backtrack", lambda: dtw_path(cost))
+
+
+def _dtw_linear_path_calls():
+    # The path search of DTW from frames, for its gradient.
+    from philtorch.align import dtw
+
+    module = importlib.import_module("philtorch.align.dtw")
+    x, y = (torch.rand(2, n, 3, device="cuda", requires_grad=True) for n in (9, 6))
+    return _recorded_calls(module, "linear_path", lambda: dtw(x=x, y=y).sum().backward())
 
 
 def _hmm_viterbi_chain_calls():
@@ -271,6 +295,8 @@ def _weighted_contract_calls():
             "dtw_backtrack_features", _dtw_backtrack_features_calls, id="dtw_backtrack_features"
         ),
         pytest.param("dtw_frontier", _dtw_frontier_calls, id="dtw_frontier"),
+        pytest.param("dtw_grid_cost", _dtw_grid_cost_calls, id="dtw_grid_cost"),
+        pytest.param("dtw_linear_path", _dtw_linear_path_calls, id="dtw_linear_path"),
         pytest.param("hmm_viterbi_chain", _hmm_viterbi_chain_calls, id="hmm_viterbi_chain"),
         pytest.param("weighted_contract", _weighted_contract_calls, id="weighted_contract"),
     ],
@@ -281,6 +307,43 @@ def test_alignment_and_hmm_ops_opcheck(op, calls):
     recorded = calls()
     assert recorded, f"{op} was not called"
     torch.library.opcheck(getattr(torch.ops.philtorch, op), recorded[0])
+
+
+@pytest.mark.cuda
+@pytest.mark.parametrize(
+    "name, op",
+    [
+        ("dtw_dp_strip", "dtw_dp_strip"),
+        ("dtw_dp_backward_strip", "dtw_dp_backward_strip"),
+        ("accumulate", "dtw_accumulate"),
+    ],
+)
+def test_dtw_strip_ops_opcheck(monkeypatch, name, op):
+    from philtorch.align import _dtw_kernels, dtw
+
+    # Strips of two tile anti-diagonals over a grid of 7 by 3 tiles, a band, and
+    # second derivatives, which reach the backward's own ops; for the forward,
+    # a strip with a seed and the last one.
+    monkeypatch.setattr(_dtw_kernels, "_tile", lambda *args: (3, 16))
+    gen = torch.Generator("cuda").manual_seed(0)
+    x, y = (
+        torch.randn(2, n, 3, device="cuda", generator=gen, requires_grad=True) for n in (20, 40)
+    )
+
+    def run():
+        loss = dtw(x=x, y=y, gamma=0.5, diagonal_weight=2.0, band=12.0, checkpoint=3).sum()
+        (grad,) = torch.autograd.grad(loss, x, create_graph=True)
+        grad.sum().backward()
+
+    recorded = _recorded_calls(_dtw_kernels, name, run)
+    assert recorded, f"{name} was not called"
+    calls = (
+        [recorded[1], max(recorded, key=lambda args: args[-1])]
+        if name == "dtw_dp_strip"
+        else recorded[:1]
+    )
+    for args in calls:
+        torch.library.opcheck(getattr(torch.ops.philtorch, op), args)
 
 
 def _ctc_loss(log_probs, lengths=((7, 6), (3, 2))):
@@ -300,6 +363,20 @@ def _soft_dtw_divergence(x):
     y = x.flip(1)[:, :5]
     costs = [torch.cdist(a, b).square() for a, b in ((x, y), (x, x), (y, y))]
     return soft_dtw_divergence(*costs, 0.1).sum()
+
+
+def _soft_dtw_band(x):
+    # From frames, whose band Inductor must round as eager does.
+    from philtorch.align import dtw
+
+    return dtw(x=x, y=x[:, :20].flip(1), gamma=0.5, band=4.0).sum()
+
+
+def _dtw_features(x):
+    # DTW from frames with gradients: the path's search is an op.
+    from philtorch.align import dtw
+
+    return dtw(x=x, y=x[:, :20].flip(1)).sum()
 
 
 def _dtw(gamma, **options):
@@ -322,6 +399,8 @@ _LENGTHS = (torch.tensor([6, 4]), torch.tensor([5, 3]))
         pytest.param(_dtw(0.1, diagonal_weight=2.0), (2, 6, 5), id="soft_dtw"),
         pytest.param(_dtw(0.1, lengths=_LENGTHS), (2, 6, 5), id="soft_dtw-lengths"),
         pytest.param(_dtw(0.1, step_pattern="asymmetric"), (2, 6, 5), id="soft_dtw-asymmetric"),
+        pytest.param(_soft_dtw_band, (2, 30, 3), id="soft_dtw-band"),
+        pytest.param(_dtw_features, (2, 30, 3), id="dtw-features"),
         pytest.param(_soft_dtw_divergence, (2, 7, 3), id="soft_dtw_divergence"),
         pytest.param(_ctc_loss, (2, 7, 4), id="ctc_loss"),
         pytest.param(_ctc_loss_tensor_lengths, (2, 7, 4), id="ctc_loss-tensor_lengths"),
@@ -334,6 +413,27 @@ def test_compiled_alignment_gradients(loss, shape):
     x.requires_grad_()
     (expected,) = torch.autograd.grad(loss(x), x)
     (actual,) = torch.autograd.grad(torch.compile(loss, fullgraph=True)(x), x)
+    torch.testing.assert_close(actual, expected)
+
+
+@pytest.mark.cuda
+def test_compiled_dtw_strips_with_dynamic_shapes(monkeypatch):
+    from philtorch.align import _dtw_kernels, dtw
+
+    # Strips of two tile anti-diagonals, whose tile is chosen by the shapes:
+    # compiled as a whole, with them dynamic.
+    monkeypatch.setattr(_dtw_kernels, "_tile", lambda *args: (3, 16))
+    gen = torch.Generator("cuda").manual_seed(0)
+    x, y = (
+        torch.randn(2, n, 3, device="cuda", generator=gen, requires_grad=True) for n in (12, 36)
+    )
+
+    def loss(x, y):
+        return dtw(x=x, y=y, gamma=0.5, checkpoint=3).sum()
+
+    expected = torch.autograd.grad(loss(x, y), (x, y))
+    compiled = torch.compile(loss, fullgraph=True, dynamic=True)
+    actual = torch.autograd.grad(compiled(x, y), (x, y))
     torch.testing.assert_close(actual, expected)
 
 
@@ -367,10 +467,27 @@ def test_dtw_dp_backward_registered_gradients(soft, steps, diag_weight):
     assert torch.autograd.gradgradcheck(fn, inputs)
 
 
+@pytest.mark.cuda
+def test_soft_dtw_asymmetric_second_derivatives():
+    # The asymmetric steps are PyTorch's shear around the orthogonal kernel.
+    from philtorch.align import dtw
+
+    gen = torch.Generator("cuda").manual_seed(0)
+    cost = torch.rand(2, 5, 4, device="cuda", dtype=torch.float64, generator=gen)
+    cost.requires_grad_()
+    assert torch.autograd.gradgradcheck(lambda c: dtw(c, 0.5, step_pattern="asymmetric"), (cost,))
+
+
 def _dtw_path(cost):
     from philtorch.align import dtw_path
 
     return dtw_path(cost, lengths=_LENGTHS)
+
+
+def _dtw_path_features(x):
+    from philtorch.align import dtw_path
+
+    return dtw_path(x=x, y=x[:, :4].flip(1))
 
 
 def _forced_align(log_probs):
@@ -393,6 +510,7 @@ def _hmm_viterbi(x):
     "fn, shape",
     [
         pytest.param(_dtw_path, (2, 6, 5), id="dtw_path"),
+        pytest.param(_dtw_path_features, (2, 6, 5), id="dtw_path-features"),
         pytest.param(_forced_align, (2, 7, 4), id="forced_align"),
         pytest.param(_hmm_viterbi, (2, 7, 4), id="hmm_viterbi"),
     ],
@@ -402,6 +520,20 @@ def test_compiled_alignment_paths(fn, shape):
     # them: the same paths as eager, and their scores, in one graph.
     x = torch.randn(shape, device="cuda", generator=torch.Generator("cuda").manual_seed(0))
     for actual, expected in zip(torch.compile(fn, fullgraph=True)(x), fn(x), strict=True):
+        torch.testing.assert_close(actual, expected)
+
+
+@pytest.mark.cuda
+def test_dtw_path_search_reduce_overhead():
+    # The path search reads sizes back to the host, which a CUDA graph can't
+    # capture: its op is left out of the graphs, and repeated calls of the
+    # compiled code, which replay them, give eager's values and gradients.
+    compiled = torch.compile(_dtw_features, mode="reduce-overhead")
+    generator = torch.Generator("cuda").manual_seed(0)
+    for _ in range(4):
+        x = torch.randn(2, 30, 3, device="cuda", generator=generator).requires_grad_()
+        (expected,) = torch.autograd.grad(_dtw_features(x), x)
+        (actual,) = torch.autograd.grad(compiled(x), x)
         torch.testing.assert_close(actual, expected)
 
 
