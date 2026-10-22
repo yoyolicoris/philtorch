@@ -821,6 +821,80 @@ def test_dtw_checkpoint_equals_storing_every_row(step_pattern, diagonal_weight, 
         torch.testing.assert_close(checkpointed, stored)
 
 
+# (N, M, step_pattern, diagonal_weight, band, tile, dtype, checkpoint): grids of
+# 3 tile columns, of 16 and tile rows of 3 (the kernels' own for the last two),
+# one transposed and one sheared; the last in float32, to first order.
+_STRIP_CASES = [
+    (26, 40, "symmetric", 1.0, None, (3, 16), torch.float64, 3),
+    (40, 26, "symmetric", 2.0, 5.0, (3, 16), torch.float64, 3),
+    (26, 40, "orthogonal", 1.0, 4.0, (3, 16), torch.float64, 3),
+    (60, 20, "asymmetric", 1.0, None, (3, 16), torch.float64, 3),
+    (40, 30, "asymmetric", 1.0, 3.0, (3, 16), torch.float64, 3),
+    (100, 600, "symmetric", 2.0, None, None, torch.float64, 40),
+    (100, 600, "symmetric", 1.0, 40.0, None, torch.float32, 40),
+]
+
+
+@pytest.mark.cuda
+@pytest.mark.parametrize("N, M, step_pattern, diagonal_weight, band, tile, dtype, k", _STRIP_CASES)
+def test_dtw_strips_equal_storing_every_row(
+    monkeypatch, N, M, step_pattern, diagonal_weight, band, tile, dtype, k
+):
+    from philtorch.align import _dtw_kernels
+
+    # Strips of 2 tile anti-diagonals, each pair's end in another; with second
+    # derivatives, through the strips' own backward.
+    if tile is not None:
+        monkeypatch.setattr(_dtw_kernels, "_tile", lambda *args: tile)
+    B = 3 if tile else 1
+    x, y = (t.detach().to(dtype) for t in _features(B, N, M, 2 if tile else 3))
+    lengths = ([N, N * 3 // 5, N * 4 // 5][:B], [M, M * 2 // 3, M // 2][:B])
+    options = dict(
+        step_pattern=step_pattern,
+        diagonal_weight=diagonal_weight,
+        band=band,
+        lengths=tuple(map(torch.tensor, lengths)),
+    )
+    run = partial(dtw, gamma=0.5, **options)
+    order = 0.5 if dtype == torch.float64 else 0  # float32: first order only
+    expected = _derivatives(run, dict(x=x, y=y), order)
+    actual = _derivatives(partial(run, checkpoint=k), dict(x=x, y=y), order)
+    tolerance = {} if dtype == torch.float64 else dict(rtol=1e-4, atol=1e-4)
+    for checkpointed, stored in zip(actual, expected):
+        torch.testing.assert_close(checkpointed, stored, **tolerance)
+
+
+@pytest.mark.cuda
+def test_dtw_strips_third_derivatives_and_gradgradcheck(monkeypatch):
+    from philtorch.align import _dtw_kernels
+
+    # 4 tile rows of 2 by 3 tile columns of 8: 3 strips.
+    monkeypatch.setattr(_dtw_kernels, "_tile", lambda *args: (2, 8))
+    x, y = _features(1, 8, 20, 1)
+    run = partial(dtw, gamma=0.5, step_pattern="symmetric", diagonal_weight=2.0, band=6.0)
+
+    def third(checkpoint):
+        loss = run(x=x, y=y, checkpoint=checkpoint).sum()
+        grads = torch.autograd.grad(loss, (x, y), create_graph=True)
+        second = torch.autograd.grad(sum(g.sin().sum() for g in grads), (x, y), create_graph=True)
+        return torch.autograd.grad(sum(g.cos().sum() for g in second), (x, y))
+
+    torch.testing.assert_close(third(2), third(None))
+    assert torch.autograd.gradgradcheck(lambda x, y: run(x=x, y=y, checkpoint=2), (x, y))
+
+
+@pytest.mark.cuda
+def test_dtw_strips_of_an_empty_batch(monkeypatch):
+    from philtorch.align import _dtw_kernels
+
+    monkeypatch.setattr(_dtw_kernels, "_tile", lambda *args: (3, 16))
+    x, y = (torch.empty(0, n, 1, device="cuda", requires_grad=True) for n in (12, 36))
+    distance = dtw(x=x, y=y, gamma=0.5, checkpoint=3)
+    assert distance.shape == (0,)
+    grads = torch.autograd.grad(distance.sum(), (x, y))
+    assert [g.shape for g in grads] == [x.shape, y.shape]
+
+
 @pytest.mark.cuda
 def test_dtw_checkpoint_lowers_the_backward_peak_memory():
     x, y = torch.randn(2, 1, 2048, 2, device="cuda").unbind(0)

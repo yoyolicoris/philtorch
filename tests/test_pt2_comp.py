@@ -309,6 +309,43 @@ def test_alignment_and_hmm_ops_opcheck(op, calls):
     torch.library.opcheck(getattr(torch.ops.philtorch, op), recorded[0])
 
 
+@pytest.mark.cuda
+@pytest.mark.parametrize(
+    "name, op",
+    [
+        ("dtw_dp_strip", "dtw_dp_strip"),
+        ("dtw_dp_backward_strip", "dtw_dp_backward_strip"),
+        ("accumulate_strip", "dtw_accumulate_strip"),
+    ],
+)
+def test_dtw_strip_ops_opcheck(monkeypatch, name, op):
+    from philtorch.align import _dtw_kernels, dtw
+
+    # Strips of two tile anti-diagonals over a grid of 7 by 3 tiles, a band, and
+    # second derivatives, which reach the backward's own ops; for the forward,
+    # a strip with a seed and the last one.
+    monkeypatch.setattr(_dtw_kernels, "_tile", lambda *args: (3, 16))
+    gen = torch.Generator("cuda").manual_seed(0)
+    x, y = (
+        torch.randn(2, n, 3, device="cuda", generator=gen, requires_grad=True) for n in (20, 40)
+    )
+
+    def run():
+        loss = dtw(x=x, y=y, gamma=0.5, diagonal_weight=2.0, band=12.0, checkpoint=3).sum()
+        (grad,) = torch.autograd.grad(loss, x, create_graph=True)
+        grad.sum().backward()
+
+    recorded = _recorded_calls(_dtw_kernels, name, run)
+    assert recorded, f"{name} was not called"
+    calls = (
+        [recorded[1], max(recorded, key=lambda args: args[-1])]
+        if name == "dtw_dp_strip"
+        else recorded[:1]
+    )
+    for args in calls:
+        torch.library.opcheck(getattr(torch.ops.philtorch, op), args)
+
+
 def _ctc_loss(log_probs, lengths=((7, 6), (3, 2))):
     from philtorch.align import ctc_loss
 
@@ -376,6 +413,27 @@ def test_compiled_alignment_gradients(loss, shape):
     x.requires_grad_()
     (expected,) = torch.autograd.grad(loss(x), x)
     (actual,) = torch.autograd.grad(torch.compile(loss, fullgraph=True)(x), x)
+    torch.testing.assert_close(actual, expected)
+
+
+@pytest.mark.cuda
+def test_compiled_dtw_strips_with_dynamic_shapes(monkeypatch):
+    from philtorch.align import _dtw_kernels, dtw
+
+    # Strips of two tile anti-diagonals, whose tile is chosen by the shapes:
+    # compiled as a whole, with them dynamic.
+    monkeypatch.setattr(_dtw_kernels, "_tile", lambda *args: (3, 16))
+    gen = torch.Generator("cuda").manual_seed(0)
+    x, y = (
+        torch.randn(2, n, 3, device="cuda", generator=gen, requires_grad=True) for n in (12, 36)
+    )
+
+    def loss(x, y):
+        return dtw(x=x, y=y, gamma=0.5, checkpoint=3).sum()
+
+    expected = torch.autograd.grad(loss(x, y), (x, y))
+    compiled = torch.compile(loss, fullgraph=True, dynamic=True)
+    actual = torch.autograd.grad(compiled(x, y), (x, y))
     torch.testing.assert_close(actual, expected)
 
 

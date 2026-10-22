@@ -182,10 +182,18 @@ def dtw(
             :math:`R \le L`: :math:`R = \min(N, M)` for the symmetric and
             orthogonal steps. With :math:`k` rows, their memory is
             :math:`O(B L (R / k + k))`, not :math:`O(B R L)`, at the price of
-            recomputing each block of rows in the backward pass, each block
-            filling the kernels' wavefront anew: a small :math:`k` is much
-            slower. From :attr:`x` and :attr:`y` only: a cost is
-            :math:`O(B R L)` anyway. Default: ``None``, all rows stored.
+            recomputing the accumulated costs in the backward pass. A long
+            grid, of rows of more than a tile, is cut along its wavefront,
+            into strips of tile anti-diagonals of about :math:`k` rows, but
+            of at least 62, so that the strips follow one another along it:
+            the passes take about 1.7 times as long as without
+            :attr:`checkpoint`, plus a few milliseconds of launches per strip
+            (on :math:`16384 \times 16384` cells, about 2, 4 and 6 times as
+            long for 1024, 256 and 128 rows). A short grid is cut into blocks
+            of :math:`k` rows, each filling the wavefront anew: a small
+            :math:`k` is much slower. From :attr:`x` and :attr:`y` only: a
+            cost is :math:`O(B R L)` anyway. Default: ``None``, all rows
+            stored.
 
     Returns:
         Tensor: the distances, of shape :math:`(B)`; ``inf`` for a pair with
@@ -369,11 +377,12 @@ def _dtw(
     and the distance is the path's cost, which autograd differentiates: the
     path is the gradient; it is -1 for a pair without a path, whose distance
     is inf. Soft-DTW's gradient, the expected alignment, needs the
-    accumulated costs: with ``checkpoint`` rows, they are computed in blocks
-    of that many rows, each seeded with the last row of the one before and
+    accumulated costs: with ``checkpoint`` rows, they are computed in strips
+    of that many rows, of the tile anti-diagonals of a long grid or else
+    blocks of rows, each seeded with the last row or cells of the one before and
     recomputed in the backward pass."""
     # Imported here so that philtorch.align imports without Triton.
-    from ._dtw_kernels import dtw_dp, dtw_dp_features, frontier
+    from ._dtw_kernels import dtw_dp, dtw_dp_features, dtw_dp_strip, frontier, strip_tile
 
     features = cost is None
     if features and lengths is not None:
@@ -443,8 +452,31 @@ def _dtw(
             picked = D[batch, (end_row - row0).clamp(0, b - row0 - 1), end_col]
             return D[:, -1].clone(), torch.where((end_row >= a) & (end_row < b), picked, 0.0)
 
-        if checkpoint is None or checkpoint >= g.R:
+        # A grid of many tile columns is cut into strips of tile anti-diagonals:
+        # about ``checkpoint`` rows, and at least two diagonals.
+        strip = None if checkpoint is None else strip_tile(g.ends.size(0), g.R, g.L)
+        if strip is not None:
+            n_diag = -(-g.R // strip[0]) + -(-g.L // strip[1]) - 1
+            step = max(2, -(-checkpoint // strip[0]))
+        if checkpoint is None or checkpoint >= g.R or (strip is not None and step >= n_diag):
             distance = dp(0, g.R, None, x, y)[batch, end_row, end_col]
+        elif strip is not None:
+
+            def strip_dp(d0, seed, x, y):
+                """The strip of tile anti-diagonals from d0 of D: the seed of
+                the next, and the distances of the pairs ending in it."""
+                _, seed, found = dtw_dp_strip(
+                    x, y, g.window, g.big, g.scale, soft, g.steps, g.diag_weight, g.sheared,
+                    g.transposed, g.R, g.L, g.ends, seed, step, d0,
+                )  # fmt: skip
+                return seed, found
+
+            distance, seed = 0, None
+            for d0 in range(0, n_diag, step):
+                seed, found = torch.utils.checkpoint.checkpoint(
+                    strip_dp, d0, seed, x, y, use_reentrant=False, preserve_rng_state=False
+                )
+                distance = distance + found
         else:
             distance, seed = 0, None
             for a in range(0, g.R, checkpoint):
