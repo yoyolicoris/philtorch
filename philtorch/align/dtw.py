@@ -748,11 +748,12 @@ def dtw_path(
     From :attr:`cost`, the path is walked back over the forward pass's
     accumulated costs, up to a block of a row's cells per step, as Viterbi
     decoding gives a hidden Markov model's states. From :attr:`x` and
-    :attr:`y`, it is found by divide and conquer, in :math:`O(B (N + M))`
-    memory and a few times the forward work: the best crossing of a
-    rectangle's middle rows splits it in two between cells of the path, down
-    to rectangles backtracked whole; the distance is then the path's cost,
-    from the frames, which autograd differentiates.
+    :attr:`y`, it is found by divide and conquer, after `Exact, Parallelizable
+    Dynamic Time Warping Alignment with Linear Memory`_ (Tralie and Dempsey,
+    2020), in :math:`O(B (N + M))` memory and a few times the forward work:
+    the best crossing of a rectangle's middle rows splits it in two between
+    cells of the path, down to rectangles backtracked whole; the distance is
+    then the path's cost, from the frames, which autograd differentiates.
 
     Note:
         Runs only on CUDA GPUs, as Triton kernels: the inputs must be CUDA
@@ -794,6 +795,9 @@ def dtw_path(
                 [ 2,  3],
                 [-1, -1],
                 [-1, -1]], device='cuda:0')
+
+    .. _Exact, Parallelizable Dynamic Time Warping Alignment with Linear Memory:
+        https://arxiv.org/abs/2008.02734
     """
     B, N, M = _validate("dtw_path", cost, x, y, step_pattern, diagonal_weight, lengths, band)
     distance, g, D, walk = _dtw(
