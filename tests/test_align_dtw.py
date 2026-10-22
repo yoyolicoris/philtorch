@@ -378,37 +378,163 @@ def test_dtw_path(step_pattern, diagonal_weight):
     torch.testing.assert_close(grad, expected_grad)
 
 
-def _derivatives(cost, gamma, **options):
-    """dtw's values and gradient, and for soft-DTW a second derivative."""
-    cost = cost.clone().requires_grad_()
-    value = dtw(cost, gamma, **options)
-    (grad,) = torch.autograd.grad(value.sum(), cost, create_graph=gamma > 0)
+def _derivatives(inputs, gamma, **options):
+    """dtw's values and gradients, and for soft-DTW second derivatives."""
+    inputs = {name: t.clone().requires_grad_() for name, t in inputs.items()}
+    value = dtw(gamma=gamma, **inputs, **options)
+    grads = torch.autograd.grad(value.sum(), list(inputs.values()), create_graph=gamma > 0)
     if gamma == 0:
-        return value, grad
-    weights = torch.arange(cost.numel(), device=cost.device).reshape(cost.shape).sin()
-    (second,) = torch.autograd.grad((grad * weights).sum(), cost)
-    return value, grad, second
+        return value, *grads
+    weights = (torch.arange(g.numel(), device=g.device).reshape(g.shape).sin() for g in grads)
+    second = torch.autograd.grad(
+        sum((g * w).sum() for g, w in zip(grads, weights)), list(inputs.values())
+    )
+    return value, *grads, *second
 
 
 @pytest.mark.cuda
+@pytest.mark.parametrize("features", [False, True])
 @pytest.mark.parametrize("gamma", [0.0, 0.5])
 @pytest.mark.parametrize(
     "step_pattern, diagonal_weight",
     [("symmetric", 1.0), ("symmetric", 2.0), ("orthogonal", 1.0)],
 )
-def test_dtw_tiles_agree_with_one_tile(monkeypatch, gamma, step_pattern, diagonal_weight):
+def test_dtw_tiles_agree_with_one_tile(monkeypatch, features, gamma, step_pattern, diagonal_weight):
     from philtorch.align import _dtw_kernels
 
     # A grid of many tiles; integer costs for DTW, whose sums are then exact.
-    cost = _cost(2, 70, 37)
-    if gamma == 0:
-        cost = (cost * 5).floor()
+    if features:
+        frames = (torch.randint(-2, 3, (2, n, 3), device="cuda").double() for n in (70, 37))
+        inputs = dict(zip("xy", frames))
+    else:
+        cost = _cost(2, 70, 37)
+        inputs = dict(cost=(cost * 5).floor() if gamma == 0 else cost)
     options = dict(step_pattern=step_pattern, diagonal_weight=diagonal_weight)
-    expected = _derivatives(cost, gamma, **options)
-    monkeypatch.setattr(_dtw_kernels, "_tile", lambda B, R, L: (3, 16))
-    actual = _derivatives(cost, gamma, **options)
+    expected = _derivatives(inputs, gamma, **options)
+    monkeypatch.setattr(_dtw_kernels, "_tile", lambda *args: (3, 16))
+    actual = _derivatives(inputs, gamma, **options)
     for tiled, whole in zip(actual, expected):
         if gamma == 0:
             torch.testing.assert_close(tiled, whole, rtol=0, atol=0)
         else:
             torch.testing.assert_close(tiled, whole)
+
+
+def _features(batch_size=3, N=9, M=7, F=2):
+    gen = torch.Generator().manual_seed(0)
+    x = torch.randn(batch_size, N, F, dtype=torch.float64, generator=gen)
+    y = torch.randn(batch_size, M, F, dtype=torch.float64, generator=gen)
+    return x.cuda().requires_grad_(), y.cuda().requires_grad_()
+
+
+def _squared_distances(x, y):
+    return (x[:, :, None] - y[:, None]).pow(2).sum(-1)
+
+
+@pytest.mark.cuda
+def test_soft_dtw_divergence_features():
+    x, y = _features()
+    lengths = (torch.tensor([9, 4, 6]), torch.tensor([7, 3, 7]))
+    actual = soft_dtw_divergence(gamma=0.5, x=x, y=y, lengths=lengths)
+    expected = soft_dtw_divergence(
+        _squared_distances(x, y),
+        _squared_distances(x, x),
+        _squared_distances(y, y),
+        0.5,
+        lengths=lengths,
+    )
+    torch.testing.assert_close(actual, expected)
+
+
+@pytest.mark.cuda
+@pytest.mark.parametrize(
+    "call, match",
+    [
+        (lambda c, x, y: dtw(c, x=x, y=y), "either the cost or x and y"),
+        (lambda c, x, y: dtw(), "either the cost or x and y"),
+        (lambda c, x, y: dtw_path(x=x), "x and y together"),
+        (lambda c, x, y: dtw(x=x, y=y[:, :, :1]), "must be"),
+        (lambda c, x, y: dtw(x=x.long(), y=y.long()), "one floating dtype"),
+        (lambda c, x, y: soft_dtw_divergence(x=x, y=y), "gamma > 0"),
+        (lambda c, x, y: soft_dtw_divergence(c, c, c, 0.5, x=x, y=y), "either the cost"),
+    ],
+)
+def test_dtw_features_reject_bad_arguments(call, match):
+    x, y = _features()
+    cost = _squared_distances(x, y).detach()
+    with pytest.raises(ValueError, match=match):
+        call(cost, x, y)
+
+
+@pytest.mark.cuda
+@pytest.mark.parametrize("gamma", [0.0, 0.5])
+@pytest.mark.parametrize(
+    "step_pattern, N, M",
+    [
+        ("symmetric", 7, 9),
+        ("orthogonal", 9, 7),
+        ("asymmetric", 9, 7),  # sheared, then transposed
+        ("asymmetric", 9, 4),  # sheared, not transposed
+    ],
+)
+def test_dtw_features_with_a_band_and_each_step_pattern(gamma, step_pattern, N, M):
+    x, y = _features(3, N, M)
+    options = dict(
+        step_pattern=step_pattern,
+        band=2.0,
+        diagonal_weight=2.0 if step_pattern == "symmetric" else 1.0,
+        lengths=(torch.tensor([N, N - 2, N - 1]), torch.tensor([M, M - 2, M - 1])),
+    )
+    actual = dtw(x=x, y=y, gamma=gamma, **options)
+    expected = dtw(_squared_distances(x, y), gamma, **options)
+    assert actual.isfinite().all()
+    torch.testing.assert_close(actual, expected)
+    grads = torch.autograd.grad(actual.sum(), (x, y), create_graph=gamma > 0)
+    expected_grads = torch.autograd.grad(expected.sum(), (x, y), create_graph=gamma > 0)
+    torch.testing.assert_close(grads, expected_grads)
+    if gamma > 0:  # and the second derivatives, along fixed directions
+        weights = [torch.arange(g.numel(), device=g.device).reshape(g.shape).sin() for g in grads]
+        torch.testing.assert_close(
+            *(
+                torch.autograd.grad(sum((g * w).sum() for g, w in zip(gs, weights)), (x, y))
+                for gs in (grads, expected_grads)
+            )
+        )
+    if gamma == 0:
+        path = dtw_path(x=x, y=y, **options)[1]
+        torch.testing.assert_close(path, dtw_path(_squared_distances(x, y), **options)[1])
+
+
+@pytest.mark.cuda
+def test_dtw_features_from_differences_under_large_offsets():
+    # |x|^2 + |y|^2 - 2 x.y would lose every digit here in float32, in the
+    # distance and in its gradient.
+    x, y = (1e4 + torch.randn(2, n, 16, device="cuda") for n in (50, 40))
+    x64, y64 = (t.double().requires_grad_() for t in (x, y))
+    x, y = (t.requires_grad_() for t in (x, y))
+    distance = dtw(x=x, y=y)
+    expected = dtw(_squared_distances(x64, y64))
+    torch.testing.assert_close(distance.double(), expected, rtol=1e-4, atol=1e-3)
+    grads = torch.autograd.grad(distance.sum(), (x, y))
+    for grad, want in zip(grads, torch.autograd.grad(expected.sum(), (x64, y64))):
+        torch.testing.assert_close(grad.double(), want, rtol=1e-3, atol=1e-3)
+
+
+@pytest.mark.cuda
+def test_dtw_features_ignore_frames_past_the_lengths():
+    # Even inf there: the gradients' products would turn 0 * inf into NaN.
+    x = torch.ones(1, 1, 1, device="cuda", requires_grad=True)
+    y = torch.tensor([[[2.0], [torch.inf]]], device="cuda", requires_grad=True)
+    lengths = (torch.tensor([1]), torch.tensor([1]))
+    distance = dtw(x=x, y=y, lengths=lengths)
+    grads = torch.autograd.grad(distance.sum(), (x, y))
+    torch.testing.assert_close(distance, torch.ones(1, device="cuda"))
+    torch.testing.assert_close(
+        grads, (-2 * torch.ones_like(x), torch.tensor([[[2.0], [0.0]]], device="cuda"))
+    )
+
+
+@pytest.mark.cuda
+def test_dtw_takes_integer_costs():
+    cost = torch.tensor([[[0, 1], [1, 0]]], device="cuda")
+    torch.testing.assert_close(dtw(cost), torch.zeros(1, device="cuda"))
