@@ -153,6 +153,15 @@ def _features_inputs():
     return x, y, torch.tensor([[[0, 5]] * 5] * 2, dtype=torch.int32, device="cuda")
 
 
+def _dtw_frontier_calls():
+    # The no-gradient feature form of dtw.
+    from philtorch.align import _dtw_kernels, dtw
+
+    x, y = (t.detach() for t in _features_inputs()[:2])
+    with torch.no_grad():
+        return _recorded_calls(_dtw_kernels, "frontier", lambda: dtw(x=x, y=y, gamma=0.5))
+
+
 def _dtw_dp_features_calls(op):
     # The forward and, through its backward, dtw_dp_backward_features.
     from philtorch.align import _dtw_kernels
@@ -247,6 +256,7 @@ def _weighted_contract_calls():
         pytest.param(
             "dtw_backtrack_features", _dtw_backtrack_features_calls, id="dtw_backtrack_features"
         ),
+        pytest.param("dtw_frontier", _dtw_frontier_calls, id="dtw_frontier"),
         pytest.param("hmm_viterbi_chain", _hmm_viterbi_chain_calls, id="hmm_viterbi_chain"),
         pytest.param("weighted_contract", _weighted_contract_calls, id="weighted_contract"),
     ],

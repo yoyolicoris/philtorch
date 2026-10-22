@@ -1,10 +1,11 @@
 """Dynamic time warping (DTW) and soft-DTW."""
 
 import math
-from typing import Literal
+from typing import Literal, NamedTuple
 
 import torch
 from torch import Tensor
+from torch.nn.functional import pad
 
 from .._triton import check_cuda_triton
 
@@ -122,7 +123,9 @@ def dtw(
     a parallel scan over its cells, after `Parallelizing Dynamic Time
     Warping Algorithm Using Prefix Computations on GPU`_ (Xiao et al.,
     2013), in tiles of the grid run as a wavefront, so that a single long
-    pair fills the GPU: :math:`O(NM)` work and memory. The cost can be any
+    pair fills the GPU: :math:`O(NM)` work, and the memory of the cost and
+    the accumulated costs, or from frames, without gradients,
+    :math:`O(B (N + M))`. The cost can be any
     tensor, from any differentiable function of the sequences, such as the
     squared Euclidean distances between their frames.
 
@@ -139,7 +142,8 @@ def dtw(
             :math:`(B, N, F)`. With :attr:`y`, the cost is the squared
             Euclidean distances between their frames, computed in the kernels
             from the frames as direct differences, never stored (memory: the
-            accumulated costs only).
+            accumulated costs only; without gradients not even those, but
+            :math:`O(B (N + M))`).
         y (Tensor, optional): the second sequences' frames, of shape
             :math:`(B, M, F)`, with the dtype of :attr:`x`.
         step_pattern (str): the steps a path may take, as (row, column)
@@ -245,15 +249,29 @@ def _validate(
     return shape
 
 
-def _dtw(cost, x, y, gamma, step_pattern, diagonal_weight, lengths, band):
-    """dtw's distances, and for dtw_path the way to its path: (distance, grid),
-    the grid None if no pair has a path, else (a function of no arguments that
-    backtracks the kernels' grid, whether it was sheared, whether then
-    transposed). From the cost, or from the frames x and y, which the kernels
-    compare in place."""
-    # Imported here so that philtorch.align imports without Triton.
-    from ._dtw_kernels import backtrack, backtrack_features, dtw_dp, dtw_dp_features
+class _Grid(NamedTuple):
+    """What the kernels run on: the grid's costs (B, R, L) as the tensor
+    ``cost``, or in feature mode (None) as ``window``, ``big`` and ``scale``
+    over x and y; the steps; whether the grid is sheared, then transposed;
+    each pair's end cell (B, 2); and the pairs known to have no path."""
 
+    cost: Tensor | None
+    window: Tensor | None
+    big: float
+    scale: float
+    steps: str
+    diag_weight: float
+    sheared: bool
+    transposed: bool
+    R: int
+    L: int
+    ends: Tensor
+    no_path: Tensor
+
+
+def _grid(cost, x, y, gamma, step_pattern, diagonal_weight, lengths, band) -> _Grid | None:
+    """The kernels' grid of the cost, or of the frames x and y, which they
+    compare in place; None if no pair has a path."""
     features = cost is None
     ref = x if features else cost
     B, N = ref.shape[:2]
@@ -269,17 +287,10 @@ def _dtw(cost, x, y, gamma, step_pattern, diagonal_weight, lengths, band):
     # arithmetic finite; a path sums at most w (N + M) of them.
     dtype = ref.dtype if ref.is_floating_point() else torch.get_default_dtype()  # cost * scale's
     big = torch.finfo(dtype).max / (8 * max(diagonal_weight, 1.0) * (N + M))
+    window = None
     if features:
-        window = None if band is None else _band_windows(N, M, n_len, m_len, band)
-        if lengths is not None:
-            # Frames past each pair's length as zeros: any value there, inf
-            # included, would reach the gradients' products.
-            x, y = (
-                torch.where(
-                    (torch.arange(t.size(1), device=t.device) < n[:, None])[..., None], t, 0
-                )
-                for t, n in ((x, n_len), (y, m_len))
-            )
+        if band is not None:
+            window = _band_windows(N, M, n_len, m_len, band)
     else:
         cost = cost * scale
         if band is not None:
@@ -297,42 +308,211 @@ def _dtw(cost, x, y, gamma, step_pattern, diagonal_weight, lengths, band):
         else:
             width = int((n_len - m_len).max()) + 1 if B else 1
         if width <= 0:
-            # No pair has a path; stay in the graph, with zero gradients.
-            first = x.sum((1, 2)) + y.sum((1, 2)) if features else cost[:, 0, 0]
-            return torch.where(no_path, float("inf"), first), None
+            return None
         R, L = M, width
         n_len, m_len = m_len, (n_len - m_len + 1).clamp(min=1)
     transposed = R > L
     if transposed:
         R, L, n_len, m_len = L, R, m_len, n_len
-    # After the shear, the asymmetric steps are orthogonal ones.
-    steps = "symmetric" if step_pattern == "symmetric" else "orthogonal"
-    diag_weight = float(diagonal_weight)
-    ends = torch.stack([n_len, m_len], -1) - 1
-    if features:
-        D = dtw_dp_features(
-            x, y, window, big, scale, gamma > 0, steps, diag_weight, sheared, transposed, R, L
-        )
-
-        def trace():
-            return backtrack_features(
-                D, x, y, window, big, scale, ends, steps, diag_weight, sheared, transposed
-            )
-    else:
+    if not features:
         if sheared:
             cost = _shear(cost, width)
         if transposed:
             cost = cost.mT
-        D = dtw_dp(cost, None, gamma > 0, steps, diag_weight)
+    # After the shear, the asymmetric steps are orthogonal ones.
+    steps = "symmetric" if step_pattern == "symmetric" else "orthogonal"
+    ends = torch.stack([n_len, m_len], -1) - 1
+    return _Grid(
+        cost, window, big, scale, steps, float(diagonal_weight), sheared, transposed, R, L, ends,
+        no_path,
+    )  # fmt: skip
 
-        def trace():
-            return backtrack(D, cost, ends, steps, diag_weight)
 
-    distance = D[torch.arange(B, device=D.device), n_len - 1, m_len - 1]
+def _dtw(cost, x, y, gamma, step_pattern, diagonal_weight, lengths, band):
+    """dtw's distances, the kernels' grid (None if no pair has a path), and,
+    from the cost, its accumulated costs (else None).
+
+    From frames, without gradients, each pair's grid is advanced a row at a
+    time up to its end cell and the accumulated costs are never stored."""
+    # Imported here so that philtorch.align imports without Triton.
+    from ._dtw_kernels import dtw_dp, dtw_dp_features, frontier
+
+    features = cost is None
+    if features and lengths is not None:
+        # Frames past each pair's length as zeros: any value there, inf
+        # included, would reach the gradients' products.
+        x, y = (
+            torch.where((torch.arange(t.size(1), device=t.device) < n[:, None])[..., None], t, 0)
+            for t, n in zip((x, y), (n.to(x.device) for n in lengths))
+        )
+    g = _grid(cost, x, y, gamma, step_pattern, diagonal_weight, lengths, band)
+    if g is None:
+        # No pair has a path; stay in the graph, with zero gradients.
+        first = x.sum((1, 2)) + y.sum((1, 2)) if features else cost[:, 0, 0]
+        return torch.where(torch.ones_like(first, dtype=torch.bool), float("inf"), first), g, None
+    batch = torch.arange(g.ends.size(0), device=g.ends.device)
+    end_row, end_col = g.ends.unbind(-1)
+    soft = gamma > 0
+    D = None
+    if not features:
+        D = dtw_dp(g.cost, None, soft, g.steps, g.diag_weight)
+        distance = D[batch, end_row, end_col]
+    elif torch.is_grad_enabled() and (x.requires_grad or y.requires_grad):
+        distance = dtw_dp_features(
+            x, y, g.window, g.big, g.scale, soft, g.steps, g.diag_weight, g.sheared, g.transposed,
+            g.R, g.L,
+        )[batch, end_row, end_col]  # fmt: skip
+    else:
+        zero = torch.zeros_like(batch)
+        items = torch.stack([batch, zero, zero, end_row + 1, end_col + 1], -1)
+        row = frontier(
+            x, y, g.window, g.big, g.scale, items, soft, g.steps, g.diag_weight, g.sheared,
+            g.transposed, False, g.R, g.L,
+        )  # fmt: skip
+        distance = row.gather(1, end_col[:, None])[:, 0]
+    no_path = g.no_path
     if band is not None:
-        no_path = no_path | (distance >= big / 2)
-    distance = torch.where(no_path, float("inf"), distance) / scale
-    return distance, (trace, sheared, transposed)
+        no_path = no_path | (distance >= g.big / 2)
+    return torch.where(no_path, float("inf"), distance) / g.scale, g, D
+
+
+# The linear-memory path: items of at most this many cells, or this many rows,
+# are backtracked whole, in chunks of at most this many cells in all.
+_LEAF_CELLS = 2**22
+_LEAF_ROWS = 64
+_CHUNK_CELLS = 2**26
+
+
+def _row_costs(g: _Grid, x, y, p, r, col):
+    """The costs of the grid's cells (r, col) of pairs p, as the kernels compute them."""
+    a, s = (col, r) if g.transposed else (r, col)
+    n = (a + s if g.sheared else a).clamp(max=x.size(1) - 1)
+    m = (a if g.sheared else s).clamp(max=y.size(1) - 1)
+    d = x[p, n] - y[p, m]
+    c = (d * d).sum(-1) * g.scale
+    if g.window is not None:
+        lo, hi = g.window[p, n].unbind(-1)
+        c = torch.where((m < lo) | (m > hi), g.big, c)
+    return c
+
+
+def _lines(items: Tensor) -> Tensor:
+    """The cells (pair, row, column) of items of one row or column: a straight path."""
+    p, r0, l0, h, w = items.unbind(-1)
+    count = h + w - 1
+    item = torch.repeat_interleave(torch.arange(len(items), device=items.device), count)
+    k = torch.arange(len(item), device=items.device) - (count.cumsum(0) - count)[item]
+    return torch.stack([p[item], r0[item] + k * (w[item] == 1), l0[item] + k * (h[item] == 1)], -1)
+
+
+def _leaves(g: _Grid, x, y, items: Tensor) -> Tensor:
+    """The cells (pair, row, column) of the optimal path of each item: the item
+    as a grid of its own, padded to the largest of the batch, on the frames it
+    needs: with a shear, the grid's cells (r, l) are x's frame r + l and y's r
+    (l if transposed); else x's r and y's l (swapped if transposed)."""
+    from ._dtw_kernels import backtrack_features, dtw_dp_features
+
+    p, r0, l0, h, w = items.unbind(-1)
+    if g.sheared:
+        x0, nx = r0 + l0, h + w - 1
+        y0, ny = (l0, w) if g.transposed else (r0, h)
+    elif g.transposed:
+        x0, nx, y0, ny = l0, w, r0, h
+    else:
+        x0, nx, y0, ny = r0, h, l0, w
+
+    def frames(f, start, count):
+        at = start[:, None] + torch.arange(int(count.max()), device=f.device)
+        at_clamped = at.clamp(max=f.size(1) - 1)
+        live = (at - start[:, None]) < count[:, None]
+        return torch.where(live[..., None], f[p[:, None], at_clamped], 0.0), at_clamped
+
+    fx, ix = frames(x, x0, nx)
+    fy, _ = frames(y, y0, ny)
+    window = None if g.window is None else g.window[p[:, None], ix] - y0[:, None, None].int()
+    given = (fx, fy, window, g.big, g.scale)
+    options = (g.steps, g.diag_weight, g.sheared, g.transposed)
+    D = dtw_dp_features(*given, False, *options, int(h.max()), int(w.max()))
+    cells = backtrack_features(D, *given, torch.stack([h - 1, w - 1], -1), *options)
+    live = cells[..., 0] >= 0
+    shift = torch.stack([p, r0, l0], -1)[:, None]
+    return (shift + pad(cells, (1, 0)))[live]
+
+
+def _split(g: _Grid, x, y, items: Tensor) -> Tensor:
+    """Each item as two, split by the row after its middle row's crossing.
+
+    Frontiers give the best cost to each cell of the middle row, from the
+    item's first cell, and from each cell of the next row, to its last; the
+    cheapest step across, up or diagonal, is on an optimal path."""
+    from ._dtw_kernels import frontier
+
+    p, r0, l0, h, w = items.unbind(-1)
+    top = h // 2
+    below = r0 + top  # the first row of the second half
+    given = (x, y, g.window, g.big, g.scale)
+    options = (False, g.steps, g.diag_weight, g.sheared, g.transposed)
+    h_max, w_max = (int(t.max()) for t in (h - h // 2, w))
+    D = frontier(*given, torch.stack([p, r0, l0, top, w], -1), *options, False, h_max, w_max)
+    G = frontier(*given, torch.stack([p, below, l0, h - top, w], -1), *options, True, h_max, w_max)
+    j = torch.arange(D.size(1), device=x.device)
+    c = _row_costs(g, x, y, p[:, None], below[:, None], l0[:, None] + j)
+    live = j < w[:, None]
+    across = [torch.where(live, D + c + G, torch.inf)]
+    if g.steps == "symmetric":
+        diagonal = D[:, :-1] + g.diag_weight * c[:, 1:] + G[:, 1:]
+        across.append(pad(torch.where(live[:, 1:], diagonal, torch.inf), (0, 1), value=torch.inf))
+    # The first cheapest: the cell of the middle row, and the step from it.
+    best = torch.stack(across, -1).flatten(1).argmin(1)
+    column = best // len(across)
+    next_column = column + best % len(across)
+    return torch.cat(
+        [
+            torch.stack([p, r0, l0, top, column + 1], -1),
+            torch.stack([p, below, l0 + next_column, h - top, w - next_column], -1),
+        ]
+    )
+
+
+def _linear_path(g: _Grid, x, y, finite: Tensor) -> Tensor:
+    """Each pair's optimal path on the kernels' grid, as :func:`backtrack` gives
+    it, in memory linear in the grid's sides: Hirschberg's divide and conquer.
+
+    An item, a rectangle of the grid between two cells of the path, is a
+    straight line, a leaf backtracked whole, or split in two across its middle
+    rows (:func:`_split`). Each round handles all items together."""
+    B = g.ends.size(0)
+    pairs = finite.nonzero()[:, 0]
+    end_row, end_col = g.ends[pairs].unbind(-1)
+    zero = torch.zeros_like(pairs)
+    work = torch.stack([pairs, zero, zero, end_row + 1, end_col + 1], -1)
+    found = [work.new_empty(0, 3)]
+    while len(work):
+        h, w = work[:, 3], work[:, 4]
+        line = (h == 1) | (w == 1)
+        leaf = ~line & ((h * w <= _LEAF_CELLS) | (h <= _LEAF_ROWS))
+        found.append(_lines(work[line]))
+        # The leaves by size, in chunks.
+        leaves = work[leaf]
+        leaves = leaves[(leaves[:, 3] * leaves[:, 4]).argsort(descending=True)]
+        start, H, W = 0, 0, 0
+        for i, (h, w) in enumerate(leaves[:, 3:].tolist()):
+            if i > start and (i + 1 - start) * max(H, h) * max(W, w) > _CHUNK_CELLS:
+                found.append(_leaves(g, x, y, leaves[start:i]))
+                start, H, W = i, 0, 0
+            H, W = max(H, h), max(W, w)
+        if len(leaves):
+            found.append(_leaves(g, x, y, leaves[start:]))
+        splits = work[~(line | leaf)]
+        work = _split(g, x, y, splits) if len(splits) else splits
+    # Each pair's cells in path order: by row, then column.
+    cells = torch.cat(found)
+    cells = cells[((cells[:, 0] * g.R + cells[:, 1]) * g.L + cells[:, 2]).argsort()]
+    count = torch.bincount(cells[:, 0], minlength=B)
+    at = torch.arange(len(cells), device=x.device) - (count.cumsum(0) - count)[cells[:, 0]]
+    walk = cells.new_full((B, g.R + g.L - 1, 2), -1)
+    walk[cells[:, 0], at] = cells[:, 1:]
+    return walk
 
 
 def dtw_path(
@@ -354,6 +534,11 @@ def dtw_path(
     same path as the distance's gradient marks. Under ties, it is one of the
     optimal paths. The distance is
     :func:`dtw`'s, differentiable to any order, its gradient the path.
+
+    From :attr:`x` and :attr:`y`, the path is found by divide and conquer, in
+    :math:`O(B (N + M))` memory and a few times the forward work: the best
+    crossing of a rectangle's middle rows splits it in two between cells of
+    the path, down to rectangles backtracked whole.
 
     Note:
         Runs only on CUDA GPUs, as Triton kernels: the inputs must be CUDA
@@ -397,18 +582,22 @@ def dtw_path(
                 [-1, -1]], device='cuda:0')
     """
     B, N, M = _validate("dtw_path", cost, x, y, step_pattern, diagonal_weight, lengths)
-    distance, grid = _dtw(cost, x, y, 0.0, step_pattern, diagonal_weight, lengths, band)
+    distance, g, D = _dtw(cost, x, y, 0.0, step_pattern, diagonal_weight, lengths, band)
     path = torch.full((B, N + M - 1, 2), -1, dtype=torch.long, device=distance.device)
-    if grid is None:
+    if g is None:
         return distance, path
-    trace, sheared, transposed = grid
     with torch.no_grad():
-        cells = trace()
+        if cost is None:
+            cells = _linear_path(g, x, y, distance.isfinite())
+        else:
+            from ._dtw_kernels import backtrack
+
+            cells = backtrack(D, g.cost, g.ends, g.steps, g.diag_weight)
         # From the kernels' grid back to (n, m): undo the transpose, then the
         # shear, sheared[m, k] = cost[m + k, m].
-        if transposed:
+        if g.transposed:
             cells = cells.flip(-1)
-        if sheared:
+        if g.sheared:
             cells = torch.stack([cells[..., 0] + cells[..., 1], cells[..., 0]], -1)
         valid = (cells[..., :1] >= 0) & distance.isfinite()[:, None, None]
         path[:, : cells.size(1)] = torch.where(valid, cells, -1)

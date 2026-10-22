@@ -38,12 +38,12 @@ derivatives, rebuilds the same gradient from :func:`shares`, PyTorch ops, and
 direction, whose backward is itself in the other direction, and
 differentiates that.
 
-Two kernels do all of it. ``_dag_kernel`` is the row-by-row recursion in
+Three kernels do all of it. ``_dag_kernel`` is the row-by-row recursion in
 either semiring, min-plus (or soft-min-plus) for the forward pass and
 linear for every accumulation, the first-order backward's included;
 ``_shares_kernel`` computes, for CTC's forced alignment, each cell's best
 step back over all cells at once; with the ctc steps, both take the (B, R)
-skip mask.
+skip mask; ``_frontier_kernel`` is the recursion without storing D (below).
 
 Feature mode. With the features x (B, N, F) and y (B, M, F), the kernels
 compute each cost they need on the spot, as the squared distance of the
@@ -52,6 +52,13 @@ does, so that no (B, N, M) cost is stored. A window of allowed columns per
 row of x masks it by a large finite cost, and the shear, for the asymmetric
 steps, and the transpose, to keep the rows the shorter side, map the
 kernels' cells to those of x and y.
+
+Linear memory. :func:`frontier` runs the forward recursion, or the reverse one
+from a cell to the end of a sub-grid (an "item"), over such a grid without
+storing the cost or D, in the same wavefront of tiles: each tile hands its
+last row to the tile below, its last column to the tile to its right, and the
+rows are kept three tile rows deep, so that the memory is that of one row and
+one column per item (Tralie and Dempsey, ISMIR 2020).
 """
 
 import math
@@ -466,6 +473,139 @@ def _dag_kernel(
             skip_below_next = skip_next
 
 
+@triton.jit(
+    do_not_specialize=[
+        "N",
+        "M",
+        "F",
+        "big_bits",
+        "scale_bits",
+        "d",
+        "I_lo",
+        "n_tiles",
+        "TR",
+        "W",
+        "H",
+    ]
+)
+def _frontier_kernel(
+    items_ptr, rows_ptr, cols_ptr, fx_ptr, fy_ptr, win_ptr, N, M, F, big_bits, scale_bits,
+    diag_weight, d, I_lo, n_tiles, TR, W, H, SOFT: tl.constexpr, SYMMETRIC: tl.constexpr,
+    REVERSE: tl.constexpr, TL: tl.constexpr, SEEDED: tl.constexpr, SHEAR: tl.constexpr,
+    TRANSPOSE: tl.constexpr, BF: tl.constexpr,
+):  # fmt: skip
+    """:func:`frontier`'s wavefront, as :func:`_dag_kernel`'s forward pass, with
+    REVERSE mirrored, but over the items (S, 5) of the grid of ``_cost``.
+
+    The program (item, tile) of launch ``d`` is the item's tile ``I_lo + tile %
+    n_tiles`` of tile row, in the order of processing (the rows from the item's
+    last with REVERSE, the columns likewise), and ``d`` minus that of tile
+    column; it does nothing if the item has no such tile. Only these are kept,
+    all in global memory: ``rows_ptr`` (S, SLOTS, W) holds the rows of tile row
+    i in slot i % 3, so that the tile reads the last row of the tile row above
+    from slot (i - 1) % 3, the diagonal's corner from the tile to its left
+    included, which tile row i + 2 is the first to overwrite, two launches after
+    the last read; the last slot, with REVERSE, passes a row's costs by one lane.
+    ``cols_ptr`` (S, H) holds, per processed row, the last column of the latest
+    tile in it, for the tile to its right. A row's previous row, shifted by a
+    lane for the diagonal, goes through the tile's own slot after a barrier,
+    with the lane 0 from the left column of the previous row.
+
+    With REVERSE the weight of a step is its successor's cost: the row's scan
+    maps are min(T, c(next column) + x), with the next column's cost shifted
+    through the scratch, the tile edge's computed directly, and the row
+    below's terms use its costs, kept.
+    """
+    SLOTS: tl.constexpr = 4 if REVERSE else 3
+    s = (tl.program_id(0) // n_tiles).to(tl.int64)
+    i = I_lo + tl.program_id(0) % n_tiles
+    j = d - i
+    item = items_ptr + s * 5
+    b = tl.load(item)
+    r0 = tl.load(item + 1)
+    h = tl.load(item + 3)
+    w = tl.load(item + 4)
+    first = i * TR
+    n_rows = tl.where((first < h) & (j * TL < w), tl.minimum(TR, h - first), 0).to(tl.int32)
+    lanes = tl.arange(0, TL)
+    pos = j * TL + lanes  # the column's place in the scan
+    mask = pos < w
+    cols = tl.load(item + 2) + ((w - 1 - pos) if REVERSE else pos)
+    own = (s * SLOTS + i % 3) * W
+    above = (s * SLOTS + (i + 2) % 3) * W
+    y_near = tl.load(rows_ptr + above + pos, mask=mask & (i > 0), other=_KERNEL_INF)
+    inf = tl.full([TL], _KERNEL_INF, rows_ptr.dtype.element_ty)
+    left_prev = inf
+    if REVERSE:
+        below = mask & (i > 0) & (n_rows > 0)  # past the item, that row is off its grid
+        c_prev = _cost(
+            None, fx_ptr, fy_ptr, win_ptr, b, r0 + h - first, cols, below, 0, 0, N, M, F,
+            big_bits, scale_bits, SHEAR, TRANSPOSE, BF,
+        )  # fmt: skip
+        c_prev_shift = _cost(
+            None, fx_ptr, fy_ptr, win_ptr, b, r0 + h - first, cols + 1, below & (pos > 0), 0, 0, N,
+            M, F, big_bits, scale_bits, SHEAR, TRANSPOSE, BF,
+        )  # fmt: skip
+    for kk in range(0, n_rows):
+        g = first + kk
+        r = r0 + ((h - 1 - g) if REVERSE else g)
+        c = _cost(
+            None, fx_ptr, fy_ptr, win_ptr, b, r, cols, mask, 0, 0, N, M, F, big_bits, scale_bits,
+            SHEAR, TRANSPOSE, BF,
+        )  # fmt: skip
+        left = inf
+        if SEEDED:
+            left = tl.load(
+                cols_ptr + s * H + g + lanes * 0, mask=(j > 0) & (lanes >= 0), other=_KERNEL_INF
+            )
+        if REVERSE:
+            tl.store(rows_ptr + (s * SLOTS + 3) * W + pos, c, mask=mask)
+        tl.debug_barrier()
+        if SYMMETRIC:
+            src = tl.where(kk == 0, above, own)
+            ok = mask & (pos > 0) & ((kk > 0) | (i > 0)) & ((kk == 0) | (lanes > 0))
+            diag = tl.load(rows_ptr + src + pos - 1, mask=ok, other=_KERNEL_INF)
+            diag = tl.where((kk > 0) & (lanes == 0), left_prev, diag)
+        if REVERSE:
+            c_edge = _cost(
+                None, fx_ptr, fy_ptr, win_ptr, b, r, cols + 1, (lanes == 0) & (pos > 0), 0, 0, N,
+                M, F, big_bits, scale_bits, SHEAR, TRANSPOSE, BF,
+            )  # fmt: skip
+            c_shift = tl.load(
+                rows_ptr + (s * SLOTS + 3) * W + pos - 1, mask=mask & (lanes > 0), other=0.0
+            )
+            c_shift = tl.where(lanes == 0, c_edge, c_shift)
+            a = c_shift
+            base = c_prev + y_near
+            if SYMMETRIC:
+                base = _min(base, diag_weight * c_prev_shift + diag, SOFT)
+            base = tl.where((g == 0) & (pos == 0), 0.0, base)
+        else:
+            a = c
+            base = c + y_near
+            if SYMMETRIC:
+                base = _min(base, diag + diag_weight * c, SOFT)
+            base = tl.where((g == 0) & (pos == 0), c, base)
+        if SOFT:
+            y_near, scan_c = tl.associative_scan((base, a), 0, _compose_softmin)
+            if SEEDED:
+                y_near = _softmin(y_near, scan_c + left)
+        else:
+            y_near, scan_c = tl.associative_scan((base, a), 0, _compose_min)
+            if SEEDED:
+                y_near = tl.minimum(y_near, scan_c + left)
+        tl.store(rows_ptr + own + pos, y_near, mask=mask)
+        if SEEDED:
+            tl.store(
+                cols_ptr + s * H + g + lanes * 0, y_near,
+                mask=(lanes == TL - 1) & ((j + 1) * TL < w),
+            )  # fmt: skip
+        left_prev = left
+        if REVERSE:
+            c_prev = c
+            c_prev_shift = c_shift
+
+
 @triton.jit(do_not_specialize=["N", "M", "F", "big_bits", "scale_bits"])
 def _backtrack_kernel(
     D_ptr, cost_ptr, fx_ptr, fy_ptr, win_ptr, ends_ptr, path_ptr, N, M, F, big_bits, scale_bits,
@@ -660,6 +800,79 @@ def _launch(
             lo, n_tiles, TR, soft, _STEPS[steps], reverse, TL, n_cols > 1, *flags,
             num_warps=_num_warps(TL, backward),
         )  # fmt: skip
+
+
+def _frontier_tile(S: int, R: int, L: int) -> tuple[int, int]:
+    """The tile of :func:`frontier` for S items of at most R rows and L columns: a
+    tile row of R, one launch, where the columns fit in one tile."""
+    TL = min(256 if S < 8 else 1024, triton.next_power_of_2(L))
+    return (R if triton.cdiv(L, TL) == 1 else 32), TL
+
+
+@torch.library.custom_op("philtorch::dtw_frontier", mutates_args=())
+def frontier(
+    x: Tensor, y: Tensor, window: Tensor | None, big: float, scale: float, items: Tensor,
+    soft: bool, steps: str, diag_weight: float, shear: bool, transpose: bool, reverse: bool,
+    h_max: int, w_max: int,
+) -> Tensor:  # fmt: skip
+    """The last row of each item's accumulated costs, in linear memory.
+
+    The cells of the grid have the costs of :func:`dtw_dp_features`, whose
+    arguments x (P, N, F) through ``transpose`` are these. An item of
+    ``items`` (S, 5), int64 on the device, is the pair p and the sub-grid of
+    ``h`` rows from ``r0`` and ``w`` columns from ``l0``: (p, r0, l0, h, w).
+    Forward, D over the sub-grid as :func:`dtw_dp_features` has it, from its
+    first cell, and its last row is returned; with ``reverse``, G(s) is the
+    cost of the best path from s to the sub-grid's last cell, each cell after s
+    weighted by the step into it, and its first row is returned. Of shape (S,
+    max w), by columns in order, inf past an item's ``w``. Only the steps
+    "orthogonal" and "symmetric". ``h_max`` and ``w_max`` bound the items' rows
+    and columns, and ``w_max`` is the width of the result.
+    """
+    S = items.size(0)
+    TR, TL = _frontier_tile(S, h_max, w_max)
+    (fx, fy, win, *sizes), (shear, transpose, bf) = _features(
+        (x, y, window, big, scale, shear, transpose), TL
+    )
+    n_rows, n_cols = triton.cdiv(h_max, TR), triton.cdiv(w_max, TL)
+    W = n_cols * TL
+    rows = x.new_empty(S, 4 if reverse else 3, W)
+    cols = x.new_empty(S, h_max)
+    items = items.contiguous()
+    for d in range(n_rows + n_cols - 1):
+        lo = max(0, d - n_cols + 1)
+        n_tiles = min(n_rows - 1, d) - lo + 1
+        _frontier_kernel[(S * n_tiles,)](
+            items, rows, cols, fx, fy, win, *sizes, diag_weight, d, lo, n_tiles, TR, W, h_max,
+            soft, steps == "symmetric", reverse, TL, n_cols > 1, shear, transpose, bf,
+            num_warps=_num_warps(TL),
+        )  # fmt: skip
+    # Each item's last tile row holds the row.
+    h, w = items[:, 3:].unbind(1)
+    last = rows[torch.arange(S, device=x.device), (h - 1) // TR % 3]
+    k = torch.arange(w_max, device=x.device)
+    out = last.gather(1, ((w[:, None] - 1 - k) if reverse else k.expand(S, -1)).clamp(min=0))
+    return torch.where(k < w[:, None], out, _INF)
+
+
+@frontier.register_fake
+def _(
+    x,
+    y,
+    window,
+    big,
+    scale,
+    items,
+    soft,
+    steps,
+    diag_weight,
+    shear,
+    transpose,
+    reverse,
+    h_max,
+    w_max,
+):
+    return x.new_empty(items.size(0), w_max)
 
 
 def _empty(t: Tensor) -> Tensor:
