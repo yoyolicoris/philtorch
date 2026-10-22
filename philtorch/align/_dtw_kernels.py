@@ -113,6 +113,47 @@ derivatives are those of :func:`shares`, :func:`_strip_cost` and
 :func:`accumulate` (with ``strip``) in the same skew.
 """
 
+
+# Op map: the custom ops (torch.library), from the entry points in dtw.py and
+# ctc.py down to the kernels; launchers in brackets, ">" for "calls".
+#
+#   dtw(cost), ctc_loss .... dtw_dp [_forward > _launch] > _dag_kernel
+#   dtw_path(cost) ......... dtw_dp, then backtrack [_backtrack]
+#                            > _backtrack_kernel
+#   dtw(x=, y=), no grad ... frontier > _frontier_kernel
+#   dtw(x=, y=), DTW with grad, and dtw_path(x=, y=):
+#                            dtw_linear_path (dtw.py): _split > frontier,
+#                            forward and reverse; _leaves > dtw_dp_features,
+#                            backtrack_features; the distance is the path's
+#                            cost, _path_cost, in PyTorch
+#   dtw(x=, y=), soft-DTW with grad:
+#                            dtw_dp_features [_forward > _launch]
+#                            > _dag_kernel; with checkpoint, per block of rows
+#                            (one tile column), or dtw_dp_strip [_launch] per
+#                            strip (several)
+#   soft_dtw_divergence .... dtw, three times
+#   forced_align ........... ctc_viterbi [_forward] > _dag_kernel,
+#                            _shares_kernel
+#
+# From frames, each launch of _dag_kernel or _frontier_kernel reads its costs
+# from the scratch that [_diagonals] fills per chunk of anti-diagonals, with
+# _hit_kernel (given a window), then _cost_kernel.
+#
+# Backward, as registered for autograd; each is itself differentiable:
+#   dtw_dp ................. dtw_dp_backward [_dtw_backward > _launch]
+#                            > _dag_kernel
+#   dtw_dp_features ........ dtw_dp_backward_features (as above), then
+#                            _cost_gradients for x and y
+#   dtw_dp_strip ........... dtw_dp_backward_strip (as above), then
+#                            _strip_gradients
+#   dtw_dp_backward* ....... _vjp of _decomposed_backward: shares (PyTorch)
+#                            and accumulate [_launch] > _dag_kernel, the costs
+#                            rebuilt by grid_cost (or _strip_cost)
+#   accumulate ............. accumulate, the other way
+#   grid_cost .............. _cost_gradients
+# Without autograd, their outputs being integers or taken without gradients:
+# frontier, backtrack, backtrack_features, dtw_linear_path, ctc_viterbi.
+
 import math
 import struct
 
