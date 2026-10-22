@@ -118,9 +118,8 @@ def dtw(
     soft-DTW the expected alignment, each cell's probability of being on a
     path under the Gibbs distribution; with a diagonal weight :math:`w`, a
     cell entered diagonally counts :math:`w` times. From a cost, both come
-    from autograd, with no backtracking; from frames, DTW's is that of its
-    path's cost. The gradient is itself differentiable, to any order. Costs
-    may be ``inf`` to forbid cells.
+    from autograd, with no backtracking. The gradient is itself
+    differentiable, to any order. Costs may be ``inf`` to forbid cells.
 
     Rows of the accumulated costs are computed one after another, each with
     a parallel scan over its cells, after `Parallelizing Dynamic Time
@@ -149,8 +148,7 @@ def dtw(
             from direct differences and never stored, but for soft-DTW's
             second derivatives, which rebuild them. DTW's gradient is then
             that of its path's cost, the path found by divide and conquer as
-            :func:`dtw_path` finds it, in :math:`O(B (N + M))` memory and a
-            few times the forward work.
+            :func:`dtw_path` finds it.
         y (Tensor, optional): the second sequences' frames, of shape
             :math:`(B, M, F)`, with the dtype of :attr:`x`.
         step_pattern (str, optional): the steps a path may take, as (row,
@@ -386,18 +384,7 @@ def _dtw(
 ):  # fmt: skip
     """dtw's distances, the kernels' grid (None if no pair has a path), from the
     cost its accumulated costs (else None), and from frames, for DTW with
-    gradients or ``path``, each pair's path on the grid (else None).
-
-    From frames, without gradients, each pair's grid up to its end cell is run
-    as a tile wavefront (:func:`frontier`), and the accumulated costs are never
-    stored. For DTW with gradients or ``path``, the path is found by divide and
-    conquer, and the distance is the path's cost, which autograd
-    differentiates: the path is the gradient; it is -1 for a pair without a
-    path, whose distance is inf. Soft-DTW's gradient, the expected alignment,
-    needs the accumulated costs: with ``checkpoint`` rows, they are computed in
-    strips of that many rows, of the tile anti-diagonals of a grid of several
-    tile columns, or else blocks of rows, each seeded with the last row or
-    cells of the one before and recomputed in the backward pass."""
+    gradients or ``path``, each pair's path on the grid (else None)."""
     # Imported here so that philtorch.align imports without Triton.
     from ._dtw_kernels import (
         _seed_cells,
@@ -476,8 +463,7 @@ def _dtw(
             picked = D[batch, (end_row - row0).clamp(0, b - row0 - 1), end_col]
             return D[:, -1].clone(), torch.where((end_row >= a) & (end_row < b), picked, 0.0)
 
-        # A grid of many tile columns is cut into strips of tile anti-diagonals:
-        # about ``checkpoint`` rows, and at least two diagonals.
+        # The tile anti-diagonals of a strip: about ``checkpoint`` rows, at least 2.
         strip = None if checkpoint is None else strip_tile(g.ends.size(0), g.R, g.L)
         if strip is not None:
             TR, TL, n_diag = strip

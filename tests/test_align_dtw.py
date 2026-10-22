@@ -746,7 +746,7 @@ def test_dtw_features_derivatives_equal_the_cost(gamma, case):
 def test_dtw_features_without_gradients_equal_the_cost(monkeypatch, gamma, case):
     from philtorch.align import _dtw_kernels
 
-    monkeypatch.setattr(_dtw_kernels, "_frontier_tile", lambda S, R, L: (3, 4))  # many tiles
+    monkeypatch.setattr(_dtw_kernels, "_tile", lambda *args: (3, 4))  # many tiles
     x, y = (t.detach() for t in _features(3, *case[2:4]))
     options = _feature_options(*case)
     actual = dtw(x=x, y=y, gamma=gamma, **options)
@@ -790,7 +790,7 @@ def test_dtw_path_features_by_divide_and_conquer(monkeypatch, case):
     module = importlib.import_module("philtorch.align.dtw")
     for name, value in dict(_LEAF_ROWS=2, _LEAF_CELLS=0, _CHUNK_CELLS=64).items():
         monkeypatch.setattr(module, name, value)
-    monkeypatch.setattr(_dtw_kernels, "_frontier_tile", lambda S, R, L: (3, 4))
+    monkeypatch.setattr(_dtw_kernels, "_tile", lambda *args: (3, 4))
     x, y = (t.detach() for t in _features(3, *case[2:4]))
     options = _feature_options(*case)
     distance, path = dtw_path(x=x, y=y, **options)
