@@ -229,11 +229,16 @@ def test_dtw_rejects_bad_arguments():
         dtw(cost, diagonal_weight=2.0, step_pattern="orthogonal")
     with pytest.raises(ValueError, match="diagonal_weight must be positive"):
         dtw(cost, diagonal_weight=0.0)
+    with pytest.raises(ValueError, match="gamma must be non-negative"):
+        dtw(cost, gamma=-0.5)
+    frames = torch.zeros(1, 3, 1)
+    for call in (dtw, dtw_path):
+        with pytest.raises(ValueError, match="band must be non-negative"):
+            call(x=frames, y=frames, band=-1.0)
     with pytest.raises(ValueError, match="lengths must be within 1 to 3"):
         dtw(cost, lengths=(torch.tensor([4]), torch.tensor([3])))
     with pytest.raises(ValueError, match="lengths must be within"):
         dtw(cost, lengths=(torch.tensor([3]), torch.tensor([0])))
-    frames = torch.zeros(1, 3, 1)
     for bad in (0, -1, 2.5, True):
         with pytest.raises(ValueError, match="checkpoint must be a positive integer"):
             dtw(x=frames, y=frames, checkpoint=bad)
@@ -381,13 +386,13 @@ def test_dtw_path(step_pattern, diagonal_weight):
     torch.testing.assert_close(grad, expected_grad)
 
 
-def _derivatives(run, inputs, gamma):
-    """The values of ``run(**inputs)`` and their gradients, and for soft-DTW
-    second derivatives."""
+def _derivatives(run, inputs, second):
+    """The values of ``run(**inputs)`` and their gradients, and with ``second``
+    (for soft-DTW) second derivatives."""
     inputs = {name: t.detach().requires_grad_() for name, t in inputs.items()}
     value = run(**inputs)
-    grads = torch.autograd.grad(value.sum(), list(inputs.values()), create_graph=gamma > 0)
-    if gamma == 0:
+    grads = torch.autograd.grad(value.sum(), list(inputs.values()), create_graph=second)
+    if not second:
         return value, *grads
     weights = (torch.arange(g.numel(), device=g.device).reshape(g.shape).sin() for g in grads)
     second = torch.autograd.grad(
@@ -417,9 +422,11 @@ def test_dtw_tiles_agree_with_one_tile(monkeypatch, features, gamma, step_patter
     if features and gamma == 0:  # tiles outside the band are skipped
         options["band"] = 3.0
     run = partial(dtw, gamma=gamma, **options)
-    expected = _derivatives(run, inputs, gamma)
+    expected = _derivatives(run, inputs, gamma > 0)
     monkeypatch.setattr(_dtw_kernels, "_tile", lambda *args: (3, 16))
-    actual = _derivatives(run, inputs, gamma)
+    # The costs of one anti-diagonal at a time.
+    monkeypatch.setattr(_dtw_kernels, "_SCRATCH_CELLS", 1)
+    actual = _derivatives(run, inputs, gamma > 0)
     for tiled, whole in zip(actual, expected):
         if gamma == 0:
             torch.testing.assert_close(tiled, whole, rtol=0, atol=0)
@@ -748,9 +755,9 @@ def test_dtw_features_derivatives_equal_the_cost(gamma, case):
         return dtw(cost, gamma, **rest)
 
     inputs = dict(x=x, y=y)
-    actual = _derivatives(partial(dtw, gamma=gamma, **options), inputs, gamma)
+    actual = _derivatives(partial(dtw, gamma=gamma, **options), inputs, gamma > 0)
     assert actual[0].isfinite().all()
-    torch.testing.assert_close(actual, _derivatives(banded, inputs, gamma))
+    torch.testing.assert_close(actual, _derivatives(banded, inputs, gamma > 0))
 
 
 @pytest.mark.cuda
@@ -830,8 +837,8 @@ def test_dtw_checkpoint_equals_storing_every_row(step_pattern, diagonal_weight, 
         lengths=(torch.tensor([26, 15, 24]), torch.tensor([20, 14, 9])),
     )
     run = partial(dtw, gamma=0.5, **options)
-    expected = _derivatives(run, inputs, 0.5)
-    actual = _derivatives(partial(run, checkpoint=3), inputs, 0.5)
+    expected = _derivatives(run, inputs, True)
+    actual = _derivatives(partial(run, checkpoint=3), inputs, True)
     for checkpointed, stored in zip(actual, expected):
         torch.testing.assert_close(checkpointed, stored)
 
@@ -871,9 +878,9 @@ def test_dtw_strips_equal_storing_every_row(
         lengths=tuple(map(torch.tensor, lengths)),
     )
     run = partial(dtw, gamma=0.5, **options)
-    order = 0.5 if dtype == torch.float64 else 0  # float32: first order only
-    expected = _derivatives(run, dict(x=x, y=y), order)
-    actual = _derivatives(partial(run, checkpoint=k), dict(x=x, y=y), order)
+    second = dtype == torch.float64  # float32: first order only
+    expected = _derivatives(run, dict(x=x, y=y), second)
+    actual = _derivatives(partial(run, checkpoint=k), dict(x=x, y=y), second)
     tolerance = {} if dtype == torch.float64 else dict(rtol=1e-4, atol=1e-4)
     for checkpointed, stored in zip(actual, expected):
         torch.testing.assert_close(checkpointed, stored, **tolerance)
@@ -908,6 +915,18 @@ def test_dtw_strips_of_an_empty_batch(monkeypatch):
     assert distance.shape == (0,)
     grads = torch.autograd.grad(distance.sum(), (x, y))
     assert [g.shape for g in grads] == [x.shape, y.shape]
+
+
+@pytest.mark.cuda
+def test_dtw_strips_reject_too_many_cells(monkeypatch):
+    from philtorch.align import _dtw_kernels
+
+    # A strip's buffer is checked before it is allocated.
+    monkeypatch.setattr(_dtw_kernels, "_tile", lambda *args: (3, 16))
+    monkeypatch.setattr(_dtw_kernels, "_MAX_CELLS", 100)
+    x, y = (torch.zeros(1, n, 1, device="cuda", requires_grad=True) for n in (12, 36))
+    with pytest.raises(ValueError, match="at most 2"):
+        dtw(x=x, y=y, gamma=0.5, checkpoint=3)
 
 
 @pytest.mark.cuda
@@ -970,9 +989,8 @@ def test_dtw_features_seeded_row_survives_the_window(monkeypatch, soft):
 
 
 @pytest.mark.cuda
-@pytest.mark.parametrize("checkpoint", [None, 5])
 @pytest.mark.parametrize("case", [*_FEATURE_CASES[3:], ("asymmetric", 1.0, 24, 20, 2.0, True)])
-def test_dtw_asymmetric_gradients_in_chunks(monkeypatch, case, checkpoint):
+def test_dtw_asymmetric_gradients_in_chunks(monkeypatch, case):
     from philtorch.align import _dtw_kernels
 
     # Chunks of the shear's width, the last one partly empty, and past x's end.
@@ -985,8 +1003,8 @@ def test_dtw_asymmetric_gradients_in_chunks(monkeypatch, case, checkpoint):
         cost, rest = _banded(x, y, options)
         return dtw(cost, 0.5, **rest)
 
-    actual = _derivatives(partial(dtw, gamma=0.5, checkpoint=checkpoint, **options), inputs, 0.5)
-    torch.testing.assert_close(actual, _derivatives(banded, inputs, 0.5))
+    actual = _derivatives(partial(dtw, gamma=0.5, checkpoint=5, **options), inputs, True)
+    torch.testing.assert_close(actual, _derivatives(banded, inputs, True))
 
 
 @pytest.mark.cuda

@@ -315,7 +315,7 @@ def test_alignment_and_hmm_ops_opcheck(op, calls):
     [
         ("dtw_dp_strip", "dtw_dp_strip"),
         ("dtw_dp_backward_strip", "dtw_dp_backward_strip"),
-        ("accumulate_strip", "dtw_accumulate_strip"),
+        ("accumulate", "dtw_accumulate"),
     ],
 )
 def test_dtw_strip_ops_opcheck(monkeypatch, name, op):

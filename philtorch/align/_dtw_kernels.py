@@ -38,14 +38,15 @@ derivatives, rebuilds the same gradient from :func:`shares`, PyTorch ops, and
 direction, whose backward is itself in the other direction, and
 differentiates that.
 
-Five kernels do all of it. ``_dag_kernel`` is the row-by-row recursion in
+Six kernels do all of it. ``_dag_kernel`` is the row-by-row recursion in
 either semiring, min-plus (or soft-min-plus) for the forward pass and
 linear for every accumulation, the first-order backward's included;
 ``_shares_kernel`` computes, for CTC's forced alignment, each cell's best
 step back over all cells at once; with the ctc steps, both take the (B, R)
 skip mask. ``_frontier_kernel`` is the recursion without storing D (below),
 ``_backtrack_kernel`` walks a DTW path back from its end cell, and, in feature
-mode, ``_cost_kernel`` computes the costs the others read (below).
+mode, ``_cost_kernel`` computes the costs the others read and ``_hit_kernel``
+flags the tiles with a cell in the window (below).
 
 Feature mode. With the features x (B, N, F) and y (B, M, F), no (B, N, M)
 cost is stored. Before the launches of a few tile anti-diagonals,
@@ -56,17 +57,18 @@ as |x|^2 + |y|^2 - 2 x.y does. They go to a scratch, a slice per tile, and the
 kernels read them there as they read a cost tensor; that, not computing each
 cell in the row loop, which reloads the tile's features every row with few
 programs in flight, is what keeps large F near the speed of a matrix-product
-cost. The scratch holds a chunk of anti-diagonals, at most _CHUNK and
-_SCRATCH_CELLS cells, so that the memory is linear in the sides. The backward
-and the reverse frontier also read the cost of the row above the tile and of
-the column before it, which the slice holds as a halo (the backward's tile
-rows are 31, so that a slice's 32 rows fill the cost blocks). A window of
+cost. The scratch holds a chunk of anti-diagonals, at most _CHUNK of them and
+_SCRATCH_CELLS cells, but for one anti-diagonal's, so that the memory is linear
+in the sides. The
+backward and the reverse frontier also read the cost of the row above the tile
+and of the column before it, which the slice holds as a halo (the backward's
+tile rows are 31, so that a slice's 32 rows fill the cost blocks). A window of
 allowed columns per row of x masks it by a large finite cost, and
 ``_hit_kernel`` flags the tiles with a cell in it, whose costs and recursion
 the others skip. The shear, for the asymmetric steps, and the transpose, to
 keep the rows the shorter side, map the kernels' cells to those of x and y.
-Second derivatives rebuild the costs with :func:`grid_cost`, in the memory of
-the grid.
+Second derivatives rebuild the costs with :func:`grid_cost` (a strip's with
+:func:`_strip_cost`), in the memory of the grid or strip.
 
 Windows. A DTW, soft or hard, skips the tiles with no cell in the window, as
 a band leaves most of the grid out, so that its work follows the window's
@@ -84,11 +86,11 @@ backward's e there, g included, is the seed's gradient, and the cost's row 0
 gets none.
 
 Linear memory. :func:`frontier` runs the forward recursion, or the reverse one
-from a cell to the end of a sub-grid (an "item"), over such a grid without
-storing the cost or D, in the same wavefront of tiles: each tile hands its
-last row to the tile below, its last column to the tile to its right, and the
-rows are kept three tile rows deep, so that the memory is that of one row and
-one column per item (Tralie and Dempsey, ISMIR 2020).
+from a cell to the end of a sub-grid (an "item"), over the feature mode's grid
+without storing the cost or D, in the same wavefront of tiles: each tile hands
+its last row to the tile below, its last column to the tile to its right, and
+the rows are kept three tile rows deep, so that the memory is that of one row
+and one column per item (Tralie and Dempsey, ISMIR 2020).
 
 Strips. A grid of several tile columns, cut into blocks of rows, would fill
 and drain the wavefront in each, so it is cut along the wavefront instead: a
@@ -108,8 +110,8 @@ are the forward ones, and then the diagonal of the seed, whose own shares are
 strip's cells that read them, and the corner cells' the diagonal step of the
 strip's first cell. The costs and their gradients are the blocks of the
 tile columns, each a grid of its own (:func:`_strip_gradients`), and second
-derivatives are those of :func:`shares`, :func:`strip_cost` and
-:func:`accumulate_strip` in the same skew.
+derivatives are those of :func:`shares`, :func:`_strip_cost` and
+:func:`accumulate` (with ``strip``) in the same skew.
 """
 
 import math
@@ -126,6 +128,10 @@ _STEPS = {"orthogonal": 0, "symmetric": 1, "ctc": 2}
 # Triton kernels can only read module constants made with tl.constexpr.
 _KERNEL_INF = tl.constexpr(_INF)
 _ORTHOGONAL, _CTC = (tl.constexpr(_STEPS[name]) for name in ("orthogonal", "ctc"))
+# The block of cells per program of _cost_kernel: 32 rows, to fill a tile row of
+# 31 with its halo.
+_BR, _BC = 32, 64
+_KERNEL_BR, _KERNEL_BC = tl.constexpr(_BR), tl.constexpr(_BC)
 
 
 @triton.jit
@@ -171,7 +177,7 @@ def _compose_affine(a_l, b_l, a_r, b_r):
 
 @triton.jit
 def _cell(r, cols, N, SHEAR: tl.constexpr, TRANSPOSE: tl.constexpr, row0=0):
-    """x's row n and y's column m of cells (r, cols): see :func:`_cost`."""
+    """x's row n and y's row m of cells (r, cols): see :func:`_cost`."""
     a = cols if TRANSPOSE else r + row0
     s = r + row0 if TRANSPOSE else cols
     n = tl.broadcast_to(tl.minimum(a + s if SHEAR else a, N - 1), cols.shape)
@@ -199,14 +205,14 @@ def _window_hit(
 @triton.jit
 def _cost(
     cost_ptr, fx_ptr, fy_ptr, win_ptr, b, r, cols, valid, R, L, N, M, F, big_bits, scale_bits,
-    SHEAR: tl.constexpr, TRANSPOSE: tl.constexpr, BF: tl.constexpr, row0=0,
+    SHEAR: tl.constexpr, TRANSPOSE: tl.constexpr, BF: tl.constexpr,
 ):  # fmt: skip
     """The costs of cells (r, cols) of pair b, 0 where not valid: from the cost
     tensor, or in feature mode, with ``fx_ptr``, from the features.
 
-    The cell is (a, s) = (cols, r + row0) with TRANSPOSE, else (r + row0, cols),
-    of rows a and columns s; with SHEAR it is x's row a + s, clamped to N - 1,
-    and y's a, else x's a and y's s. The cost is the squared distance times the
+    The cell is (a, s) = (cols, r) with TRANSPOSE, else (r, cols), of rows a
+    and columns s; with SHEAR it is x's row a + s, clamped to N - 1, and y's a,
+    else x's a and y's s. The cost is the squared distance times the
     scale (the bits of a float64: a kernel's float scalars are float32),
     ``big`` (likewise) outside the window, columns ``lo`` to ``hi`` of each row
     of x.
@@ -214,7 +220,7 @@ def _cost(
     if fx_ptr is None:
         c = tl.load(cost_ptr + b * R * L + r * L + cols, mask=valid, other=0.0)
     else:
-        n, m = _cell(r, cols, N, SHEAR, TRANSPOSE, row0)
+        n, m = _cell(r, cols, N, SHEAR, TRANSPOSE)
         f_x = fx_ptr + b * N * F + n[:, None].to(tl.int64) * F
         f_y = fy_ptr + b * M * F + m[:, None].to(tl.int64) * F
         c = tl.zeros(cols.shape, fx_ptr.dtype.element_ty)
@@ -262,21 +268,22 @@ def _frame(items_ptr, s, R, L):
         )  # fmt: skip
 
 
-@triton.jit(
-    do_not_specialize=["N", "S", "R", "L", "d0", "n_rows", "n_cols", "TR", "P", "row0"]
-)  # fmt: skip
+@triton.jit(do_not_specialize=["N", "S", "R", "L", "d0", "TR", "row0"])
 def _hit_kernel(
-    hit_ptr, items_ptr, win_ptr, N, S, R, L, d0, n_rows, n_cols, TR, P, row0,
-    SHEAR: tl.constexpr, TRANSPOSE: tl.constexpr, REVERSE: tl.constexpr, GIVEN: tl.constexpr,
-    TL: tl.constexpr,
+    hit_ptr, items_ptr, win_ptr, N, S, R, L, d0, TR, row0, SHEAR: tl.constexpr,
+    TRANSPOSE: tl.constexpr, REVERSE: tl.constexpr, GIVEN: tl.constexpr, TL: tl.constexpr,
 ):  # fmt: skip
     """Whether each tile of the anti-diagonals d0, d0 + 1, ... (axis 1 of the
     grid) has a cell in the window, as :func:`_window_hit` says, to ``hit_ptr``
     at the slot (d - d0) * P plus the tile's program number in its launch: the
     tile decoded as in :func:`_dag_kernel` and :func:`_frontier_kernel`, whose
-    grids are P wide (P >= the tiles of a diagonal); ``items_ptr`` as in
-    :func:`_frame`. With GIVEN, the tiles holding row 0 are flagged whatever
-    the window says: its D is the seed's, and its gradient the seed's."""
+    grids are P = S min(n_rows, n_cols) wide, n_rows and n_cols being those of
+    the R by L frame in tiles of TR by TL; ``items_ptr`` as in :func:`_frame`.
+    With GIVEN, the tiles holding row 0 are flagged whatever the window says:
+    its D is the seed's, and its gradient the seed's."""
+    n_rows = (R + TR - 1) // TR
+    n_cols = (L + TL - 1) // TL
+    P = S * tl.minimum(n_rows, n_cols)
     pid = tl.program_id(0)
     dd = tl.program_id(1)
     d = d0 + dd
@@ -300,21 +307,17 @@ def _hit_kernel(
 
 
 @triton.jit(
-    do_not_specialize=[
-        "N", "M", "big_bits", "scale_bits", "S", "R", "L", "d0", "n_rows", "n_cols", "TR", "P",
-        "row0",
-    ]
+    do_not_specialize=["N", "M", "big_bits", "scale_bits", "S", "R", "L", "d0", "TR", "row0"]
 )  # fmt: skip
 def _cost_kernel(
     scr_ptr, hit_ptr, items_ptr, fx_ptr, fy_ptr, win_ptr, N, M, F, big_bits, scale_bits, S, R, L,
-    d0, n_rows, n_cols, TR, P, row0, SHEAR: tl.constexpr, TRANSPOSE: tl.constexpr,
-    REVERSE: tl.constexpr, TL: tl.constexpr, BR: tl.constexpr, BC: tl.constexpr,
-    BF: tl.constexpr,
+    d0, TR, row0, SHEAR: tl.constexpr, TRANSPOSE: tl.constexpr, REVERSE: tl.constexpr,
+    TL: tl.constexpr, BF: tl.constexpr,
 ):  # fmt: skip
     """The costs of the cells the tiles of the anti-diagonals d0, d0 + 1, ...
     (axis 2 of the grid) need, from the features, into ``scr_ptr``: the
     squared distance of the two rows from direct differences, as :func:`_cost`
-    takes it, a block of BR rows by BC columns of one tile (axis 1) per
+    takes it, a block of _BR rows by _BC columns of one tile (axis 1) per
     program, each feature chunk of BF loaded once for the block.
 
     A tile's slice, at (slot + program number) of the (TR + HALO) by
@@ -327,7 +330,10 @@ def _cost_kernel(
     decoding and the slots.
     """
     HALO: tl.constexpr = REVERSE
-    blocks_wide: tl.constexpr = (TL + HALO + BC - 1) // BC
+    blocks_wide: tl.constexpr = (TL + HALO + _KERNEL_BC - 1) // _KERNEL_BC
+    n_rows = (R + TR - 1) // TR
+    n_cols = (L + TL - 1) // TL
+    P = S * tl.minimum(n_rows, n_cols)
     pid = tl.program_id(0)
     dd = tl.program_id(2)
     d = d0 + dd
@@ -341,8 +347,8 @@ def _cost_kernel(
         if hit_ptr is not None:
             live &= tl.load(hit_ptr + dd * P + pid) != 0
         if live:
-            k = (tl.program_id(1) // blocks_wide) * BR + tl.arange(0, BR)
-            e = (tl.program_id(1) % blocks_wide) * BC + tl.arange(0, BC)
+            k = (tl.program_id(1) // blocks_wide) * _KERNEL_BR + tl.arange(0, _KERNEL_BR)
+            e = (tl.program_id(1) % blocks_wide) * _KERNEL_BC + tl.arange(0, _KERNEL_BC)
             p = i * TR - HALO + k  # the cell's row and place in the scan
             pos = j * TL - HALO + e
             valid = ((p >= 0) & (p < h))[:, None] & ((pos >= 0) & (pos < w))[None, :]
@@ -356,7 +362,7 @@ def _cost_kernel(
             n = tl.maximum(tl.minimum(a + s if SHEAR else a, N - 1), 0)
             m = tl.maximum(tl.minimum(a if SHEAR else s, M - 1), 0)
             dtype = fx_ptr.dtype.element_ty
-            c = tl.zeros([BR, BC], dtype)
+            c = tl.zeros([_KERNEL_BR, _KERNEL_BC], dtype)
             work = valid
             if win_ptr is not None:
                 at = win_ptr + (b * N + n) * 2
@@ -387,16 +393,16 @@ def _cost_kernel(
 @triton.jit
 def _shares(
     D_ptr, cost_ptr, skip_ptr, b, r, cols, R, L, diag_weight, SOFT: tl.constexpr,
-    STEPS: tl.constexpr, GIVEN: tl.constexpr = False,
+    STEPS: tl.constexpr,
 ):  # fmt: skip
     """The shares of cells (r, cols) from their up, left, diagonal and skip.
 
     Zero for cells outside the grid and for predecessors outside it or not
-    among the steps; with GIVEN, all zero in row 0, whose D is given.
+    among the steps.
     """
     valid = (cols >= 0) & (cols < L) & (r >= 0) & (r < R)
     c = tl.load(cost_ptr + b * R * L + r * L + cols, mask=valid, other=0.0)
-    return _shares_of(D_ptr, c, skip_ptr, b, r, cols, R, L, diag_weight, SOFT, STEPS, GIVEN)
+    return _shares_of(D_ptr, c, skip_ptr, b, r, cols, R, L, diag_weight, SOFT, STEPS)
 
 
 @triton.jit
@@ -499,12 +505,12 @@ def _neighbour(ptr, row, L, ROWS: tl.constexpr, COLS: tl.constexpr, REVERSE: tl.
     return ptr + row - ROWS * L - COLS
 
 
-@triton.jit(do_not_specialize=["d", "I_lo", "n_tiles", "TR", "slot", "Rt", "Lt", "RB", "sbase"])
+@triton.jit(do_not_specialize=["d", "TR", "slot", "RB", "sbase"])
 def _dag_kernel(
     cost_ptr, D_ptr, skip_rows_ptr, up_ptr, left_ptr, diag_ptr, skip_ptr, x_ptr, y_ptr,
-    out_ptr, scr_ptr, hit_ptr, R, L, diag_weight, d, I_lo, n_tiles, TR, slot, Rt, Lt, RB, sbase,
-    SOFT: tl.constexpr, STEPS: tl.constexpr, REVERSE: tl.constexpr, TL: tl.constexpr,
-    SEEDED: tl.constexpr, GIVEN: tl.constexpr, STRIP: tl.constexpr,
+    out_ptr, scr_ptr, hit_ptr, R, L, diag_weight, d, TR, slot, RB, sbase, SOFT: tl.constexpr,
+    STEPS: tl.constexpr, REVERSE: tl.constexpr, TL: tl.constexpr, SEEDED: tl.constexpr,
+    GIVEN: tl.constexpr, STRIP: tl.constexpr,
 ):  # fmt: skip
     """y(s) = x(s) (+) the sum over steps of W(s, p) (x) y(p), predecessors p;
     with REVERSE, the transpose, over successors t of W(t, s) (x) y(t). Each
@@ -531,23 +537,25 @@ def _dag_kernel(
 
     A wavefront: the program (tile, b) of launch ``d`` is the tile
     ``I_lo + tile % n_tiles`` of tile row and ``d`` minus that of tile
-    column, TR rows by TL columns, the grid mirrored with REVERSE. It reads
-    only earlier launches' y, written whole, and the costs its slice of the
-    scratch holds, at ``slot`` plus its program number. Row by row, the left
-    step makes each row a scan of the maps x -> A (+) (C (x) x), from the
-    right with REVERSE, applied to y of the column before the tile, whose
-    weight is the row's own. The other rows' terms come from y already
-    written, after a barrier; the first row's from the tile above. With
-    ``D_ptr`` the shares of the rows below, kept in registers, start from the
-    cells themselves. The neighbours' offsets are constants: offsets computed
-    from REVERSE would cost a fifth of the time on long rows.
+    column, TR rows by TL columns, the grid mirrored with REVERSE; the
+    anti-diagonal ``d`` of the R by L grid's tiles has ``n_tiles`` of them,
+    from tile row ``I_lo``. It reads only earlier launches' y, written whole,
+    and the costs its slice of the scratch holds, at ``slot`` plus its program
+    number. Row by row, the left step makes each row a scan of the maps
+    x -> A (+) (C (x) x), from the right with REVERSE, applied to y of the
+    column before the tile, whose weight is the row's own. The other rows'
+    terms come from y already written, after a barrier; the first row's from
+    the tile above. With ``D_ptr`` the shares of the rows below, kept in
+    registers, start from the cells themselves. The neighbours' offsets are
+    constants: offsets computed from REVERSE would cost a fifth of the time on
+    long rows.
 
-    With STRIP, the feature mode's grid of Rt rows and Lt columns is a strip's
+    With STRIP, the feature mode's grid of R rows and L columns is a strip's
     buffer of RB rows (see :func:`dtw_dp_strip`), the cell (r, c)'s at row
     ``sbase`` + r + TR times its tile column, so that a tile is whole rows of
-    it and its left neighbours are TR rows up (down with REVERSE). R and L are
-    then the frame the tiles are numbered in: Rt and Lt, or, with REVERSE,
-    padded to whole tiles, so that the mirrored tiles are the forward ones.
+    it and its left neighbours are TR rows up (down with REVERSE). With
+    REVERSE the tiles are numbered in the grid padded to whole tiles, so that
+    the mirrored tiles are the forward ones.
     A tile with no neighbour in the buffer, the last diagonal's with REVERSE,
     takes it as 0. The backward also runs the diagonal before the strip's,
     the seed's, whose own shares are 0, and gives the corner cell of the one
@@ -558,31 +566,36 @@ def _dag_kernel(
     FORWARD: tl.constexpr = (cost_ptr is not None or FEAT) and not SHARES
     SKIP: tl.constexpr = hit_ptr is not None
     HALO: tl.constexpr = REVERSE
+    tile_rows = (R + TR - 1) // TR
+    tile_cols = (L + TL - 1) // TL
+    I_lo = tl.maximum(0, d - tile_cols + 1)
+    n_tiles = tl.minimum(tile_rows - 1, d) - I_lo + 1
+    Rp, Lp = R, L  # the frame the tiles are numbered in
+    if STRIP and REVERSE:
+        Rp, Lp = tile_rows * TR, tile_cols * TL
     b = (tl.program_id(0) // n_tiles).to(tl.int64)
     i = I_lo + tl.program_id(0) % n_tiles
     j = d - i
     lanes = tl.arange(0, TL)
     pos = j * TL + lanes  # the column's place in the scan
-    cols = (L - 1 - pos) if REVERSE else pos
+    cols = (Lp - 1 - pos) if REVERSE else pos
     first = i * TR  # the tile's first row's place
     # The row before it, the column before the tile in each row.
-    above = (R - first) if REVERSE else (first - 1)
-    edge = (L - j * TL) if REVERSE else (j * TL - 1)
+    above = (Rp - first) if REVERSE else (first - 1)
+    edge = (Lp - j * TL) if REVERSE else (j * TL - 1)
     # The buffer's row of the tile's first row, and of the one before it.
-    rb0 = (R - 1 - first) if REVERSE else first
+    rb0 = (Rp - 1 - first) if REVERSE else first
     above_b = above
     batch = b * R * L
     mask = pos < L
     has_above = i > 0
     left_ok = j > 0
-    Rv, Lv, W = R, L, L  # the grid's size, and its rows' length in memory
     shift = 0
     if STRIP:
-        Rv, Lv, W = Rt, Lt, Lt
-        batch = b * RB * W
-        mask = cols < Lt
-        i_f = (R // TR - 1 - i) if REVERSE else i
-        j_f = (L // TL - 1 - j) if REVERSE else j
+        batch = b * RB * L
+        mask = cols < L
+        i_f = (tile_rows - 1 - i) if REVERSE else i
+        j_f = (tile_cols - 1 - j) if REVERSE else j
         tile_row = (i_f + j_f) * TR + sbase
         rb0 = tile_row + (TR - 1 if REVERSE else 0)
         above_b = tile_row + TR if REVERSE else tile_row - 1
@@ -590,17 +603,17 @@ def _dag_kernel(
         left_ok &= above_b < RB
         shift = TR if REVERSE else -TR
         # The step to the diagonal neighbour across the tile's left edge.
-        lane_skew = tl.where(lanes == 0, TR * W if REVERSE else -TR * W, 0)
+        lane_skew = tl.where(lanes == 0, TR * L if REVERSE else -TR * L, 0)
     zero = _KERNEL_INF if FORWARD else 0.0  # the semiring's zero
-    y_near = tl.load(y_ptr + batch + above_b * W + cols, mask=mask & has_above, other=zero)
-    n_rows = tl.minimum(TR, R - first)
+    y_near = tl.load(y_ptr + batch + above_b * L + cols, mask=mask & has_above, other=zero)
+    n_rows = tl.minimum(TR, Rp - first)
     if FEAT:
         tile = scr_ptr + (slot + tl.program_id(0)).to(tl.int64) * ((TR + HALO) * (TL + HALO))
     if SKIP:
         # A tile with no cell in the window holds the semiring's zero: D = inf.
         skipped = tl.load(hit_ptr + slot + tl.program_id(0)) == 0
         for k in range(0, tl.where(skipped, n_rows, 0)):
-            row = batch + (rb0 + (-k if REVERSE else k)) * W + cols
+            row = batch + (rb0 + (-k if REVERSE else k)) * L + cols
             tl.store(y_ptr + row, tl.full([TL], zero, y_ptr.dtype.element_ty), mask=mask)
             if SHARES and out_ptr is not None:
                 tl.store(out_ptr + row, tl.full([TL], 0.0, out_ptr.dtype.element_ty), mask=mask)
@@ -613,36 +626,34 @@ def _dag_kernel(
             # The row above's costs, kept in the scratch's halo; no skips.
             up_below, _, _, _ = _shares_of(
                 D_ptr, _tile_cost(tile, -1, lanes, mask, TL, HALO), skip_rows_ptr, b, above, cols,
-                Rv, Lv, diag_weight, SOFT, STEPS, GIVEN, STRIP, RB, sbase, TR, TL,
+                R, L, diag_weight, SOFT, STEPS, GIVEN, STRIP, RB, sbase, TR, TL,
             )  # fmt: skip
             _, _, diag_below_next, skip_below_next = _shares_of(
                 D_ptr, _tile_cost(tile, -1, lanes, mask, TL, HALO, -1), skip_rows_ptr, b, above,
-                cols + 1, Rv, Lv, diag_weight, SOFT, STEPS, GIVEN, STRIP, RB, sbase, TR, TL,
+                cols + 1, R, L, diag_weight, SOFT, STEPS, GIVEN, STRIP, RB, sbase, TR, TL,
             )  # fmt: skip
             skip_below2_next = tl.zeros_like(skip_below_next)
         else:
             up_below, _, _, _ = _shares(
-                D_ptr, cost_ptr, skip_rows_ptr, b, above, cols, R, L, diag_weight, SOFT, STEPS,
-                GIVEN,
+                D_ptr, cost_ptr, skip_rows_ptr, b, above, cols, R, L, diag_weight, SOFT, STEPS
             )  # fmt: skip
             _, _, diag_below_next, skip_below_next = _shares(
-                D_ptr, cost_ptr, skip_rows_ptr, b, above, cols + 1, R, L, diag_weight, SOFT, STEPS,
-                GIVEN,
+                D_ptr, cost_ptr, skip_rows_ptr, b, above, cols + 1, R, L, diag_weight, SOFT, STEPS
             )  # fmt: skip
             _, _, _, skip_below2_next = _shares(
                 D_ptr, cost_ptr, skip_rows_ptr, b, above + 1, cols + 1, R, L, diag_weight, SOFT,
-                STEPS, GIVEN,
+                STEPS,
             )  # fmt: skip
     for k in range(0, n_rows):
         p = first + k
-        r = (R - 1 - p) if REVERSE else p
+        r = (Rp - 1 - p) if REVERSE else p
         rb = rb0 + (-k if REVERSE else k)
-        row = batch + rb * W + cols
+        row = batch + rb * L + cols
         rows_1 = p > 0
         # Recomputed per row: kept live, it costs registers that long rows lack.
         side = mask & (pos > 0)
         if SEEDED:
-            left = tl.load(y_ptr + batch + (rb + shift) * W + edge, mask=left_ok, other=zero)
+            left = tl.load(y_ptr + batch + (rb + shift) * L + edge, mask=left_ok, other=zero)
         if FORWARD:
             if FEAT:
                 c = _tile_cost(tile, k, lanes, mask, TL, HALO)
@@ -660,7 +671,7 @@ def _dag_kernel(
                 if STRIP and REVERSE:
                     up_ok = mask & (rb + 1 < RB)
                 w = tl.load(
-                    _neighbour(up_ptr, row, W, 1 * REVERSE, 0 * REVERSE, REVERSE),
+                    _neighbour(up_ptr, row, L, 1 * REVERSE, 0 * REVERSE, REVERSE),
                     mask=up_ok,
                     other=0.0,
                 )
@@ -668,11 +679,11 @@ def _dag_kernel(
         if STEPS != _ORTHOGONAL:
             tl.debug_barrier()
             ok = side & rows_1
-            diag_at = _neighbour(y_ptr, row, W, 1, 1, REVERSE)
+            diag_at = _neighbour(y_ptr, row, L, 1, 1, REVERSE)
             if STRIP:
                 diag_at += lane_skew
                 if REVERSE:
-                    ok = mask & (cols + 1 < Lt) & (r + 1 < Rt)
+                    ok = mask & (cols + 1 < L) & (r + 1 < R)
                     ok &= rb + 1 + tl.where(lanes == 0, TR, 0) < RB
             if FORWARD:
                 y = tl.load(diag_at, mask=ok, other=zero)
@@ -683,7 +694,7 @@ def _dag_kernel(
                 if SHARES:
                     w = diag_below_next
                 else:
-                    w_at = _neighbour(diag_ptr, row, W, 1 * REVERSE, 1 * REVERSE, REVERSE)
+                    w_at = _neighbour(diag_ptr, row, L, 1 * REVERSE, 1 * REVERSE, REVERSE)
                     if STRIP and REVERSE:
                         w_at += lane_skew
                     w = tl.load(w_at, mask=ok, other=0.0)
@@ -715,12 +726,10 @@ def _dag_kernel(
             # share takes e(r, j + 1) into e(r, j).
             if not FEAT:
                 up_here, left_here, diag_here, _ = _shares(
-                    D_ptr, cost_ptr, skip_rows_ptr, b, r, cols, R, L, diag_weight, SOFT, STEPS,
-                    GIVEN,
+                    D_ptr, cost_ptr, skip_rows_ptr, b, r, cols, R, L, diag_weight, SOFT, STEPS
                 )  # fmt: skip
                 _, a, diag_next, skip_next = _shares(
-                    D_ptr, cost_ptr, skip_rows_ptr, b, r, cols + 1, R, L, diag_weight, SOFT, STEPS,
-                    GIVEN,
+                    D_ptr, cost_ptr, skip_rows_ptr, b, r, cols + 1, R, L, diag_weight, SOFT, STEPS
                 )  # fmt: skip
             else:
                 # Column j + 1's cost is the previous lane's (REVERSE), the
@@ -728,19 +737,19 @@ def _dag_kernel(
                 c = _tile_cost(tile, k, lanes, mask, TL, HALO)
                 c_next = _tile_cost(tile, k, lanes, mask, TL, HALO, -1)
                 up_here, left_here, diag_here, _ = _shares_of(
-                    D_ptr, c, skip_rows_ptr, b, r, cols, Rv, Lv, diag_weight, SOFT, STEPS, GIVEN,
+                    D_ptr, c, skip_rows_ptr, b, r, cols, R, L, diag_weight, SOFT, STEPS, GIVEN,
                     STRIP, RB, sbase, TR, TL,
                 )  # fmt: skip
                 _, a, diag_next, skip_next = _shares_of(
-                    D_ptr, c_next, skip_rows_ptr, b, r, cols + 1, Rv, Lv, diag_weight, SOFT, STEPS,
+                    D_ptr, c_next, skip_rows_ptr, b, r, cols + 1, R, L, diag_weight, SOFT, STEPS,
                     GIVEN, STRIP, RB, sbase, TR, TL,
                 )  # fmt: skip
         else:
-            a_at = _neighbour(left_ptr, row, W, 0 * REVERSE, 1 * REVERSE, REVERSE)
+            a_at = _neighbour(left_ptr, row, L, 0 * REVERSE, 1 * REVERSE, REVERSE)
             a_ok = side
             if STRIP and REVERSE:
                 a_at += lane_skew
-                a_ok = mask & (cols + 1 < Lt) & (rb + tl.where(lanes == 0, TR, 0) < RB)
+                a_ok = mask & (cols + 1 < L) & (rb + tl.where(lanes == 0, TR, 0) < RB)
             a = tl.load(a_at, mask=a_ok, other=0.0)
         # Seeded with the column before the tile; unseeded, the scan's other
         # half is left to the compiler to drop.
@@ -784,10 +793,10 @@ def _dag_kernel(
             skip_below_next = skip_next
 
 
-@triton.jit(do_not_specialize=["d", "I_lo", "n_tiles", "TR", "H", "slot"])
+@triton.jit(do_not_specialize=["d", "TR", "H", "slot"])
 def _frontier_kernel(
-    items_ptr, rows_ptr, cols_ptr, scr_ptr, hit_ptr, diag_weight, d, I_lo, n_tiles, TR, W, H,
-    slot, SOFT: tl.constexpr, SYMMETRIC: tl.constexpr, REVERSE: tl.constexpr, TL: tl.constexpr,
+    items_ptr, rows_ptr, cols_ptr, scr_ptr, hit_ptr, diag_weight, d, TR, W, H, slot,
+    SOFT: tl.constexpr, SYMMETRIC: tl.constexpr, REVERSE: tl.constexpr, TL: tl.constexpr,
     SEEDED: tl.constexpr,
 ):  # fmt: skip
     """:func:`frontier`'s wavefront, as :func:`_dag_kernel`'s forward pass, with
@@ -797,7 +806,8 @@ def _frontier_kernel(
     The program (item, tile) of launch ``d`` is the item's tile ``I_lo + tile %
     n_tiles`` of tile row, in the order of processing (the rows from the item's
     last with REVERSE, the columns likewise), and ``d`` minus that of tile
-    column; it does nothing if the item has no such tile. Only these are kept,
+    column, of the H rows by W columns' tiles of TR by TL; it does nothing if
+    the item has no such tile. Only these are kept,
     all in global memory: ``rows_ptr`` (S, 3, W) holds the rows of tile row
     i in slot i % 3, so that the tile reads the last row of the tile row above
     from slot (i - 1) % 3, the diagonal's corner from the tile to its left
@@ -815,6 +825,9 @@ def _frontier_kernel(
     """
     SKIP: tl.constexpr = hit_ptr is not None
     HALO: tl.constexpr = REVERSE
+    n_cols = W // TL
+    I_lo = tl.maximum(0, d - n_cols + 1)
+    n_tiles = tl.minimum((H + TR - 1) // TR - 1, d) - I_lo + 1
     s = (tl.program_id(0) // n_tiles).to(tl.int64)
     i = I_lo + tl.program_id(0) % n_tiles
     j = d - i
@@ -898,7 +911,7 @@ def _frontier_kernel(
 @triton.jit(do_not_specialize=["N", "M", "big_bits", "scale_bits"])
 def _backtrack_kernel(
     D_ptr, cost_ptr, fx_ptr, fy_ptr, win_ptr, ends_ptr, path_ptr, N, M, F, big_bits, scale_bits,
-    R, L, P, diag_weight, STEPS: tl.constexpr, BLOCK: tl.constexpr, SHEAR: tl.constexpr,
+    R, L, diag_weight, STEPS: tl.constexpr, BLOCK: tl.constexpr, SHEAR: tl.constexpr,
     TRANSPOSE: tl.constexpr, BF: tl.constexpr,
 ):  # fmt: skip
     """Each pair's optimal DTW path, walked from its end cell back to (0, 0).
@@ -909,14 +922,14 @@ def _backtrack_kernel(
     diagonally: the walk takes BLOCK cells of the row at a time and finds
     that exit as the last such cell by a max over the lanes, so a run of
     left steps costs a step per BLOCK cells. The cells, the end first, go to
-    path (B, P, 2) as (row, column). One program per pair; each step waits
-    on the last, but the walk stays in cache. (The ctc steps take one frame
-    each, so their traceback is parallel instead: :func:`ctc_viterbi` and
-    :func:`philtorch._trace_kernels.trace`.)
+    path (B, R + L - 1, 2) as (row, column). One program per pair; each step
+    waits on the last, but the walk stays in cache. (The ctc steps take one
+    frame each, so their traceback is parallel instead: :func:`ctc_viterbi`
+    and :func:`philtorch._trace_kernels.trace`.)
     """
     b = tl.program_id(0).to(tl.int64)
     batch = b * R * L
-    out = path_ptr + b * P * 2
+    out = path_ptr + b * (R + L - 1) * 2
     i = tl.load(ends_ptr + 2 * b)
     j = tl.load(ends_ptr + 2 * b + 1)
     written = i * 0
@@ -960,21 +973,19 @@ def _backtrack_kernel(
         i = next_i
 
 
-def _features(feat, lanes: int):
+def _features(feat):
     """feat = (x, y, window, big, scale, shear, transpose), or None for the cost
     tensor mode, as the kernels' arguments: (fx, fy, window, N, M, F, big_bits,
-    scale_bits) and (SHEAR, TRANSPOSE, BF). ``big`` and ``scale`` go as the bits
-    of a float64, as the kernels' float scalars are float32."""
+    scale_bits) and (SHEAR, TRANSPOSE). ``big`` and ``scale`` go as the bits of
+    a float64, as the kernels' float scalars are float32."""
     if feat is None:
-        return (None, None, None, 0, 0, 0, 0, 0), (False, False, 1)
+        return (None, None, None, 0, 0, 0, 0, 0), (False, False)
     x, y, window, big, scale, shear, transpose = feat
     x, y = x.contiguous(), y.contiguous()
     window = None if window is None else window.contiguous()
     bits = (struct.unpack("<q", struct.pack("<d", v))[0] for v in (big, scale))
     N, F = x.shape[1:]
-    arguments = (x, y, window, N, y.shape[1], F, *bits)
-    # The features a kernel reads at once per lane, within a register budget.
-    return arguments, (shear, transpose, max(1, min(32, 8192 // lanes, triton.next_power_of_2(F))))
+    return (x, y, window, N, y.shape[1], F, *bits), (shear, transpose)
 
 
 def _backtrack(D, cost, feat, ends, steps, diag_weight):
@@ -988,10 +999,12 @@ def _backtrack(D, cost, feat, ends, steps, diag_weight):
     # 5060 Ti.
     per_row = L / R + (steps == "orthogonal")
     block = 1 if per_row < 1.5 else min(triton.next_power_of_2(int(2 * per_row)), 128)
-    (fx, fy, window, *sizes), (shear, transpose, bf) = _features(feat, block)
+    (fx, fy, window, *sizes), (shear, transpose) = _features(feat)
+    # The features read at once per lane, within a register budget.
+    bf = 1 if feat is None else max(1, min(32, 8192 // block, triton.next_power_of_2(sizes[2])))
     _backtrack_kernel[(B,)](
         D, None if cost is None else cost.contiguous(), fx, fy, window, ends.contiguous(), walk,
-        *sizes, R, L, P, diag_weight, _STEPS[steps], block, shear, transpose, bf, num_warps=1,
+        *sizes, R, L, diag_weight, _STEPS[steps], block, shear, transpose, bf, num_warps=1,
     )  # fmt: skip
     # The walk runs from the end: each path's cells, reversed.
     count = (walk[..., 0] >= 0).sum(1, keepdim=True)
@@ -1079,7 +1092,7 @@ _SHARES_BLOCK = 1024
 _SCRATCH_CELLS = 2**22
 # The anti-diagonals whose costs one launch of _cost_kernel computes, at most.
 _CHUNK = 8
-# The fewest columns of y per chunk of _sheared_gradients, to keep its batch of
+# The fewest rows of y per chunk of _sheared_gradients, to keep its batch of
 # matrix products small where the shear is narrow.
 _MIN_COLUMNS = 64
 
@@ -1123,7 +1136,7 @@ def _diagonals(
     if feat is None:
         yield from ((d, None, None, 0) for d in range(first, stop))
         return
-    (fx, fy, win, *sizes), (shear, transpose, _) = _features(feat, 1)
+    (fx, fy, win, *sizes), (shear, transpose) = _features(feat)
     BF = min(16, triton.next_power_of_2(sizes[2]))
     halo = reverse
     P = S * min(n_rows, n_cols)  # the most tiles of an anti-diagonal
@@ -1131,40 +1144,43 @@ def _diagonals(
     K = max(1, min(stop - first, _CHUNK, _SCRATCH_CELLS // (P * tile)))
     scratch = fx.new_empty(K * P * tile)
     hit = None if win is None else torch.empty(K * P, dtype=torch.int8, device=fx.device)
-    BR, BC = 32, 64
-    blocks = triton.cdiv(TR + halo, BR) * triton.cdiv(TL + halo, BC)
+    blocks = triton.cdiv(TR + halo, _BR) * triton.cdiv(TL + halo, _BC)
     for d0 in range(first, stop, K):
         k = min(K, stop - d0)
         if win is not None:
             _hit_kernel[(P, k)](
-                hit, items, win, sizes[0], S, R, L, d0, n_rows, n_cols, TR, P, row0, shear,
-                transpose, reverse, given, TL, num_warps=_num_warps(TL),
+                hit, items, win, sizes[0], S, R, L, d0, TR, row0, shear, transpose, reverse, given,
+                TL, num_warps=_num_warps(TL),
             )  # fmt: skip
         _cost_kernel[(P, blocks, k)](
-            scratch, hit, items, fx, fy, win, *sizes, S, R, L, d0, n_rows, n_cols, TR, P, row0,
-            shear, transpose, reverse, TL, BR, BC, BF, num_warps=4,
+            scratch, hit, items, fx, fy, win, *sizes, S, R, L, d0, TR, row0, shear, transpose,
+            reverse, TL, BF, num_warps=4,
         )  # fmt: skip
         yield from ((d, scratch, hit, (d - d0) * P) for d in range(d0, d0 + k))
 
 
 def _launch(
-    B: int, R: int, L: int, cost, D, skip, up, left, diag, skip_share, x, y, out,
-    diag_weight: float, soft: bool, steps: str, reverse: bool, backward: bool = False, feat=None,
-    given: bool = False, row0: int = 0, strip: tuple[int, int, int, int] | None = None,
+    y: Tensor, steps: str, reverse: bool, *, cost=None, D=None, skip=None, weights=(None,) * 4,
+    x=None, out=None, diag_weight: float = 1.0, soft: bool = False, feat=None,
+    given: bool = False, row0: int = 0, strip: tuple[int, int, int, int, int] | None = None,
 ):  # fmt: skip
-    """Run _dag_kernel over the grid, one launch per tile anti-diagonal;
-    ``feat``, as _features takes it, in place of ``cost``, whose rows start at
-    row ``row0`` of the features' grid; ``given`` as the kernel's GIVEN.
+    """Run _dag_kernel over the grid of y (B, R, L), one launch per tile
+    anti-diagonal, with the kernel's pointers by these names: ``weights`` are
+    the up, left, diagonal and skip weights; ``feat``, as _features takes it,
+    in place of ``cost``, whose rows start at row ``row0`` of the features'
+    grid; ``given`` as the kernel's GIVEN. The backward is the launch with D.
 
-    With ``strip`` = (TR, TL, d0, d1), the tiles of the diagonals d0 to d1 - 1
-    of the tile rows TR, as the kernel's STRIP takes them, in the buffer y (and
-    D, x, out) of the strip's rows; the backward runs one diagonal more, the
-    seed's, from the mirrored grid padded to whole tiles."""
+    With ``strip`` = (R, TR, TL, d0, d1), the tiles of the diagonals d0 to
+    d1 - 1 of the grid's R rows, of the tile rows TR, as the kernel's STRIP
+    takes them, in the buffer y (and D, x, out) of the strip's rows; the
+    backward runs one diagonal more, the seed's, from the mirrored grid padded
+    to whole tiles."""
+    B, R, L = y.shape
     if strip is None:
         TR, TL = _tile(B, R, L, feat is not None)
         TR = _halo_rows(TR) if feat is not None and reverse else TR
     else:
-        TR, TL, d0, d1 = strip
+        R, TR, TL, d0, d1 = strip
     n_rows, n_cols = triton.cdiv(R, TR), triton.cdiv(L, TL)
     frame, span, RB, sbase = (R, L), None, 0, 0
     if strip is not None:
@@ -1178,10 +1194,9 @@ def _launch(
         lo = max(0, d - n_cols + 1)
         n_tiles = min(n_rows - 1, d) - lo + 1
         _dag_kernel[(n_tiles * B,)](
-            cost, D, skip, up, left, diag, skip_share, x, y, out, scratch, hit, *frame, diag_weight,
-            d, lo, n_tiles, TR, slot, R, L, RB, sbase, soft, _STEPS[steps], reverse, TL, n_cols > 1,
-            given, strip is not None,
-            num_warps=_num_warps(TL, backward),
+            cost, D, skip, *weights, x, y, out, scratch, hit, R, L, diag_weight, d, TR, slot, RB,
+            sbase, soft, _STEPS[steps], reverse, TL, n_cols > 1, given, strip is not None,
+            num_warps=_num_warps(TL, D is not None),
         )  # fmt: skip
 
 
@@ -1227,7 +1242,7 @@ def frontier(
         lo = max(0, d - n_cols + 1)
         n_tiles = min(n_rows - 1, d) - lo + 1
         _frontier_kernel[(S * n_tiles,)](
-            items, rows, cols, scratch, hit, diag_weight, d, lo, n_tiles, TR, W, h_max, slot, soft,
+            items, rows, cols, scratch, hit, diag_weight, d, TR, W, h_max, slot, soft,
             steps == "symmetric", reverse, TL, n_cols > 1, num_warps=_num_warps(TL),
         )  # fmt: skip
     # Each item's last tile row holds the row.
@@ -1254,13 +1269,12 @@ def _dtw_backward(
     D: Tensor, cost: Tensor | None, skip: Tensor | None, grad: Tensor, soft: bool, steps: str,
     diag_weight: float, feat=None, seeded: bool = False, row0: int = 0,
 ) -> Tensor:  # fmt: skip
-    B, R, L = D.shape
     weighted = diag_weight != 1.0
     e = _empty(D)
     out = _empty(D) if weighted else e
     _launch(
-        B, R, L, cost, D, skip, None, None, None, None, grad.contiguous(), e,
-        out if weighted else None, diag_weight, soft, steps, True, backward=True, feat=feat,
+        e, steps, True, cost=cost, D=D, skip=skip, x=grad.contiguous(),
+        out=out if weighted else None, diag_weight=diag_weight, soft=soft, feat=feat,
         given=seeded, row0=row0,
     )  # fmt: skip
     return out
@@ -1289,24 +1303,10 @@ def _shift(
     return out.index_copy(-1, edge, across)
 
 
-def _accumulate(
-    w_up: Tensor | None, w_left: Tensor, w_diag: Tensor | None, w_skip: Tensor | None,
-    x: Tensor, reverse: bool,
-) -> Tensor:  # fmt: skip
-    B, R, L = x.shape
-    steps = "ctc" if w_up is None else "orthogonal" if w_diag is None else "symmetric"
-    y = _empty(x)
-    weights = (None if w is None else w.contiguous() for w in (w_up, w_left, w_diag, w_skip))
-    _launch(
-        B, R, L, None, None, None, *weights, x.contiguous(), y, None, 1.0, False, steps, reverse
-    )  # fmt: skip
-    return y
-
-
 @torch.library.custom_op("philtorch::dtw_accumulate", mutates_args=())
 def accumulate(
     w_up: Tensor | None, w_left: Tensor, w_diag: Tensor | None, w_skip: Tensor | None,
-    x: Tensor, reverse: bool,
+    x: Tensor, reverse: bool, strip: list[int] | None = None,
 ) -> Tensor:  # fmt: skip
     """y(i, j) = x(i, j) + W_up y(i - 1, j) + W_left y(i, j - 1)
     + W_diag y(i - 1, j - 1) + W_skip y(i - 2, j - 1), or with ``reverse`` its
@@ -1314,12 +1314,36 @@ def accumulate(
 
     Each edge's weight is stored at its successor; the weights of absent
     steps are None.
+
+    With ``strip`` = [R, d0], the steps up, left and up-left over the buffer
+    x (B, TR + 1 + (d1 - d0) TR, L) of the strip d0 to d1 - 1 of a grid of R
+    rows (see :func:`dtw_dp_strip`), whose weights, in the seed's rows, are
+    zero. Forward, the seed's rows of x are given: the cells of the strip
+    start from them. With ``reverse``, the strip's cells pass their sums on to
+    the seed's rows: the cells of the first diagonal's tile, to the corner
+    cells of row 0 by the diagonal step too.
     """
-    return _accumulate(w_up, w_left, w_diag, w_skip, x, reverse)
+    steps = "ctc" if w_up is None else "orthogonal" if w_diag is None else "symmetric"
+    weights = tuple(None if w is None else w.contiguous() for w in (w_up, w_left, w_diag, w_skip))
+    if strip is None:
+        y = _empty(x)
+        _launch(y, steps, reverse, weights=weights, x=x.contiguous())
+        return y
+    B, RB, L = x.shape
+    R, d0 = strip
+    TR, TL = strip_tile(B, R, L)
+    y = torch.zeros_like(x, memory_format=torch.contiguous_format)
+    if not reverse:
+        y[:, : TR + 1] = x[:, : TR + 1]  # the seed's rows are given
+    _launch(
+        y, steps, reverse, weights=weights, x=x.contiguous(),
+        strip=(R, TR, TL, d0, d0 + (RB - TR - 1) // TR),
+    )  # fmt: skip
+    return y
 
 
 @accumulate.register_fake
-def _(w_up, w_left, w_diag, w_skip, x, reverse):
+def _(w_up, w_left, w_diag, w_skip, x, reverse, strip=None):
     return _empty(x)
 
 
@@ -1328,8 +1352,8 @@ _OFFSETS = ((1, 0), (0, 1), (1, 1), (2, 1))
 
 
 def _accumulate_setup(ctx, inputs, output):
-    ctx.reverse = inputs[-1]
-    ctx.save_for_backward(*inputs[:4], output)
+    *weights, _, ctx.reverse, ctx.strip = inputs
+    ctx.save_for_backward(*weights, output)
 
 
 def _accumulate_backward(ctx, grad_y):
@@ -1337,14 +1361,15 @@ def _accumulate_backward(ctx, grad_y):
     # y = (I - W)^-1 x, so x's gradient is the accumulation the other way, and
     # an edge's is that gradient at its successor times y at its predecessor,
     # or, the other way, at its predecessor times y at its successor.
-    grad_x = accumulate(*weights, grad_y, not ctx.reverse)
+    grad_x = accumulate(*weights, grad_y, not ctx.reverse, ctx.strip)
+    skew = None if ctx.strip is None else strip_tile(y.size(0), ctx.strip[0], y.size(2))
     grads = [
         None if w is None
-        else _shift(grad_x, *step) * y if ctx.reverse
-        else grad_x * _shift(y, *step)
+        else _shift(grad_x, *step, skew=skew) * y if ctx.reverse
+        else grad_x * _shift(y, *step, skew=skew)
         for w, step in zip(weights, _OFFSETS)
     ]  # fmt: skip
-    return (*grads, grad_x, None)
+    return (*grads, grad_x, None, None)
 
 
 accumulate.register_autograd(_accumulate_backward, setup_context=_accumulate_setup)
@@ -1367,9 +1392,11 @@ def shares(
     skew; the shares of the seed's rows, and of cells off the grid, are zero.
     """
     present = (steps != "ctc", True, steps != "orthogonal", steps == "ctc")
-    skew = None if strip is None else strip[2:]
+    skew = None
     if strip is not None:
-        cost = F.pad(cost, (0, 0, strip[2] + 1, 0))
+        R, d0, TR, TL = strip
+        skew = (TR, TL)
+        cost = F.pad(cost, (0, 0, TR + 1, 0))
     args = []
     if present[0]:
         args.append(_shift(D, 1, 0, _INF) + cost)
@@ -1380,7 +1407,6 @@ def shares(
         args.append(torch.where(skip.bool()[..., None], _shift(D, 2, 1, _INF) + cost, _INF))
     args = torch.stack(args)
     if strip is not None:
-        R, d0, TR, TL = strip
         s = torch.arange(D.size(1), device=D.device)[:, None]
         r = s - (TR + 1) + d0 * TR - torch.arange(D.size(2), device=D.device) // TL * TR
         cell = (s > TR) & (r >= 0) & (r < R)
@@ -1408,14 +1434,19 @@ def dtw_dp(cost: Tensor, skip: Tensor | None, soft: bool, steps: str, diag_weigh
     return _forward(cost, skip, soft, steps, diag_weight)
 
 
-def _forward(cost, skip, soft, steps, diag_weight, feat=None, grid=None, seed=None, row0=0):
-    B, R, L = cost.shape if grid is None else grid
+def _check_cells(B: int, R: int, L: int) -> None:
+    """Check that a buffer of B pairs' R by L cells has offsets within a pair."""
     if R * L > _MAX_CELLS:
         raise ValueError(f"the DTW kernels take at most 2^31 - 1 cells per pair, got {(B, R, L)}")
+
+
+def _forward(cost, skip, soft, steps, diag_weight, feat=None, grid=None, seed=None, row0=0):
+    B, R, L = cost.shape if grid is None else grid
+    _check_cells(B, R, L)
     D = (cost if feat is None else feat[0]).new_empty(B, R, L)
     _launch(
-        B, R, L, None if cost is None else cost.contiguous(), None, skip, None, None, None, None,
-        None if seed is None else seed.contiguous(), D, None, diag_weight, soft, steps, False,
+        D, steps, False, cost=None if cost is None else cost.contiguous(), skip=skip,
+        x=None if seed is None else seed.contiguous(), diag_weight=diag_weight, soft=soft,
         feat=feat, given=seed is not None, row0=row0,
     )  # fmt: skip
     return D
@@ -1484,10 +1515,7 @@ def _(D, cost, skip, grad, soft, steps, diag_weight):
 def _decomposed_backward(D, cost, skip, grad, soft, steps, diag_weight, seeded=False, strip=None):
     """:func:`dtw_dp_backward` from ops that autograd differentiates."""
     w_up, w_left, w_diag, w_skip = shares(D, cost, skip, soft, steps, diag_weight, seeded, strip)
-    if strip is None:
-        e = accumulate(w_up, w_left, w_diag, w_skip, grad, True)
-    else:
-        e = accumulate_strip(w_up, w_left, w_diag, grad, True, *strip[:2])
+    e = accumulate(w_up, w_left, w_diag, w_skip, grad, True, None if strip is None else strip[:2])
     return _weigh(e, w_up, w_left, w_diag, diag_weight) if diag_weight != 1.0 else e
 
 
@@ -1496,23 +1524,31 @@ def _dtw_dp_backward_setup(ctx, inputs, output):
     ctx.save_for_backward(D, cost, skip, grad)
 
 
-def _dtw_dp_backward_backward(ctx, grad_e):
-    # The vector-Jacobian product of the decomposed gradient. It is taken
-    # with respect to views of D, cost and grad, so that each gradient counts
-    # only the paths through its own input, not cost's through D, while
-    # staying connected to the inputs: its ops are differentiable, so
-    # gradients exist to any order. (torch.func.vjp would take them as
-    # independent too, but custom ops such as accumulate don't support it.)
+def _vjp(decomposed, tensors, grad_e):
+    """The vector-Jacobian product of ``decomposed(*tensors)``, a gradient
+    from differentiable ops, with ``grad_e``, for the backward of an op that
+    computes the same gradient by a kernel.
+
+    It is taken with respect to views of the tensors, so that each gradient
+    counts only the paths through its own input, not one tensor's through
+    another, while staying connected to the inputs: the ops are
+    differentiable, so gradients exist to any order. (torch.func.vjp would
+    take them as independent too, but custom ops such as accumulate don't
+    support it.)"""
     create_graph = torch.is_grad_enabled()
     with torch.enable_grad():
-        inputs = [
-            t.view_as(t) if t.requires_grad else t.detach().requires_grad_()
-            for t in ctx.saved_tensors[:2] + ctx.saved_tensors[3:]
-        ]
-        e = _decomposed_backward(*inputs[:2], ctx.saved_tensors[2], inputs[2], *ctx.options)
-        grad_D, grad_cost, grad_grad = torch.autograd.grad(
-            e, inputs, grad_e, create_graph=create_graph, allow_unused=True
+        inputs = [t.view_as(t) if t.requires_grad else t.detach().requires_grad_() for t in tensors]
+        return torch.autograd.grad(
+            decomposed(*inputs), inputs, grad_e, create_graph=create_graph, allow_unused=True
         )
+
+
+def _dtw_dp_backward_backward(ctx, grad_e):
+    D, cost, skip, grad = ctx.saved_tensors
+    grad_D, grad_cost, grad_grad = _vjp(
+        lambda D, cost, grad: _decomposed_backward(D, cost, skip, grad, *ctx.options),
+        (D, cost, grad), grad_e,
+    )  # fmt: skip
     return grad_D, grad_cost, None, grad_grad, None, None, None
 
 
@@ -1549,7 +1585,7 @@ def dtw_dp_features(
     """:func:`dtw_dp` over the (B, R, L) grid of the costs ``scale`` times the
     squared distances of x (B, N, F) and y (B, M, F), computed in the kernels
     (see the module docstring), outside ``window`` (B, N, 2), the allowed
-    columns [lo, hi] of y per row of x, ``big``. A cell (r, l) is x's row n and
+    rows [lo, hi] of y per row of x, ``big``. A cell (r, l) is x's row n and
     y's row m: (a, s) = (l, r + row0) with ``transpose``, else (r + row0, l);
     n = a + s, clamped to N - 1, and m = a with ``shear``, else n = a and
     m = s: the grid's rows are rows ``row0`` on of a larger one. ``seed``
@@ -1574,9 +1610,9 @@ def _dtw_dp_features_setup(ctx, inputs, output):
 
 def _sheared_gradients(x, y, window, scale, E, n0, m0):
     """:func:`_cost_gradients` for E (B, A, S), the gradient of the costs of
-    the cells (m, s), x's row n0 + m + s, clamped to N - 1, and y's column
+    the cells (m, s), x's row n0 + m + s, clamped to N - 1, and y's row
     m0 + m, in memory linear in E: not the dense (A + S - 1, A) block of x's
-    rows by y's columns, of which only S diagonals are cells.
+    rows by y's rows, of which only S diagonals are cells.
 
     The columns m go in chunks of C, each a dense block of the K = C + S - 1
     rows of x its cells cover by its C columns, with the products of all the
@@ -1630,7 +1666,7 @@ def _cost_gradients(x, y, window, scale, shear, transpose, row0, E):
     :func:`dtw_dp_features` (B, R, L). E is masked in place, but for the
     shear's."""
     # E, the cost's gradient on the grid, back to the (n, m) cells it covers:
-    # rows n0 to n1 of x, columns m0 on of y.
+    # rows n0 to n1 of x, rows m0 on of y.
     N, M = x.size(1), y.size(1)
     if transpose:
         E = E.mT
@@ -1757,17 +1793,12 @@ def _dtw_dp_backward_features_backward(ctx, grad_e):
     # As _dtw_dp_backward_backward, with the cost rebuilt from x and y.
     D, x, y, window, grad = ctx.saved_tensors
     big, scale, _, soft, steps, diag_weight, shear, transpose, seeded, row0 = ctx.options
-    create_graph = torch.is_grad_enabled()
-    with torch.enable_grad():
-        D, x, y, grad = (
-            t.view_as(t) if t.requires_grad else t.detach().requires_grad_()
-            for t in (D, x, y, grad)
-        )
+
+    def decomposed(D, x, y, grad):
         cost = grid_cost(x, y, window, big, scale, shear, transpose, *D.shape[1:], row0)
-        e = _decomposed_backward(D, cost, None, grad, soft, steps, diag_weight, seeded)
-        grad_D, grad_x, grad_y, grad_grad = torch.autograd.grad(
-            e, (D, x, y, grad), grad_e, create_graph=create_graph, allow_unused=True
-        )
+        return _decomposed_backward(D, cost, None, grad, soft, steps, diag_weight, seeded)
+
+    grad_D, grad_x, grad_y, grad_grad = _vjp(decomposed, (D, x, y, grad), grad_e)
     return grad_D, grad_x, grad_y, None, None, None, grad_grad, *(None,) * 7
 
 
@@ -1779,109 +1810,89 @@ dtw_dp_backward_features.register_autograd(
 # Diagonal strips: see the module docstring.
 
 
-def _strip_cells(
-    ends: Tensor, L: int, TR: int, TL: int, d0: int, RB: int, seeded: bool, last: bool
-):
-    """The flat indices :func:`dtw_dp_strip` takes in the buffer of the strip
-    from d0, of RB rows: the seed's cells in its first TR + 1 rows (None
-    without a seed), those of the next seed (None for the last strip), and
-    each pair's end cell (B,), -1 if it is not in the strip.
+def _seed_cells(L: int, TR: int, TL: int, device: torch.device) -> Tensor:
+    """The flat indices of a strip's seed in the first TR + 1 rows of its
+    buffer (see :func:`dtw_dp_strip`), the last rows of the buffer's, RB - TR - 1
+    rows further, being the next strip's.
 
     A seed holds what a strip's tiles read of the diagonals before it: the last
     row of the tiles of the one before, whose columns are a tile's, their last
     columns but the last row's, and the corner cells of the one before that,
-    the same columns. ``ends`` (B, 2) are the pairs' end cells."""
-    right = torch.arange(TL - 1, L - 1, TL, device=ends.device)
-    last_row = torch.arange(L, device=ends.device) + TR * L
-    rows = torch.arange(1, TR, device=ends.device)[:, None] * L + right
-    # In the seed's own TR + 1 rows; those of the strip's buffer are RB - TR - 1
-    # rows further.
-    seed_at = torch.cat([last_row, rows.flatten(), right])
-    at = ends[:, 0] + ends[:, 1] // TL * TR - d0 * TR + TR + 1  # the skewed row
-    found_at = torch.where((at > TR) & (at < RB), at * L + ends[:, 1], -1)
-    return (seed_at if seeded else None), (None if last else seed_at + (RB - TR - 1) * L), found_at
+    the same columns."""
+    right = torch.arange(TL - 1, L - 1, TL, device=device)
+    last_row = torch.arange(L, device=device) + TR * L
+    rows = torch.arange(1, TR, device=device)[:, None] * L + right
+    return torch.cat([last_row, rows.flatten(), right])
 
 
 def _strip_span(B: int, R: int, L: int, step: int, d0: int):
-    """The tile rows and columns of the strip from the diagonal d0, its last
-    diagonal d1 - 1, and whether it is the grid's last."""
+    """The tile rows and columns of the strip from the diagonal d0, and its
+    last diagonal d1 - 1."""
     TR, TL = strip_tile(B, R, L)
-    n_diag = triton.cdiv(R, TR) + triton.cdiv(L, TL) - 1
-    return TR, TL, min(d0 + step, n_diag), d0 + step >= n_diag
+    return TR, TL, min(d0 + step, triton.cdiv(R, TR) + triton.cdiv(L, TL) - 1)
 
 
 @torch.library.custom_op("philtorch::dtw_dp_strip", mutates_args=())
 def dtw_dp_strip(
     x: Tensor, y: Tensor, window: Tensor | None, big: float, scale: float, soft: bool, steps: str,
-    diag_weight: float, shear: bool, transpose: bool, R: int, L: int, ends: Tensor,
-    seed: Tensor | None, step: int, d0: int,
-) -> tuple[Tensor, Tensor, Tensor]:  # fmt: skip
+    diag_weight: float, shear: bool, transpose: bool, R: int, L: int, seed: Tensor | None,
+    step: int, d0: int,
+) -> Tensor:  # fmt: skip
     """The strip of ``step`` tile anti-diagonals from d0 of
     :func:`dtw_dp_features`'s grid, whose arguments x through ``transpose``, R
     and L are these, as the buffer D (B, TR + 1 + step TR, L) of the strips'
-    skew (see the module docstring), the seed for the next strip and the
-    distances: (D, seed, distance).
+    skew (see the module docstring); the last strip may be shorter.
 
-    ``seed`` (B, n), if given, is the last strip's; the next is none (B, 0) for
-    the last strip, which may be shorter. The distance is D at each pair's
-    end cell of ``ends`` (B, 2), 0 for a pair whose cell is not in the strip.
+    ``seed`` (B, n), if given, is the previous strip's, taken from its buffer
+    at :func:`_seed_cells`, shifted by the buffer's rows past its first TR + 1.
     """
     B = x.size(0)
-    TR, TL, d1, last = _strip_span(B, R, L, step, d0)
+    TR, TL, d1 = _strip_span(B, R, L, step, d0)
     RB = TR + 1 + (d1 - d0) * TR
-    D = x.new_zeros(B, RB, L)  # the cells no tile writes are read by no one, but kept 0
-    flat = D.view(B, RB * L)
-    rows_at, buf_at, found_at = _strip_cells(ends, L, TR, TL, d0, RB, seed is not None, last)
+    _check_cells(B, RB, L)
+    # The next seed gathers cells that no tile writes: zeros keep the outputs
+    # deterministic, for opcheck.
+    D = x.new_zeros(B, RB, L)
     if seed is not None:
-        flat.scatter_(1, rows_at.expand(B, -1), seed)
+        D.view(B, RB * L).scatter_(1, _seed_cells(L, TR, TL, x.device).expand(B, -1), seed)
     feat = (x, y, window, big, scale, shear, transpose)
     _launch(
-        B, R, L, None, None, None, None, None, None, None, None, D, None, diag_weight, soft, steps,
-        False, feat=feat, strip=(TR, TL, d0, d1),
+        D, steps, False, diag_weight=diag_weight, soft=soft, feat=feat, strip=(R, TR, TL, d0, d1)
     )  # fmt: skip
-    found = torch.where(found_at >= 0, flat.gather(1, found_at.clamp(min=0)[:, None])[:, 0], 0.0)
-    return D, x.new_empty(B, 0) if last else flat.gather(1, buf_at.expand(B, -1)), found
+    return D
 
 
 @dtw_dp_strip.register_fake
-def _(
-    x, y, window, big, scale, soft, steps, diag_weight, shear, transpose, R, L, ends, seed, step, d0
-):  # fmt: skip
-    B = x.size(0)
-    TR, TL, d1, last = _strip_span(B, R, L, step, d0)
-    n = 0 if last else L + TR * (triton.cdiv(L, TL) - 1)
-    return x.new_empty(B, TR + 1 + (d1 - d0) * TR, L), x.new_empty(B, n), x.new_empty(B)
+def _(x, y, window, big, scale, soft, steps, diag_weight, shear, transpose, R, L, seed, step, d0):
+    TR, _, d1 = _strip_span(x.size(0), R, L, step, d0)
+    return x.new_empty(x.size(0), TR + 1 + (d1 - d0) * TR, L)
 
 
 def _dtw_dp_strip_setup(ctx, inputs, output):
-    x, y, window, *ctx.options, ends, seed, ctx.step, ctx.d0 = inputs
+    x, y, window, *ctx.options, seed, ctx.step, ctx.d0 = inputs
     ctx.seeded = seed is not None
-    ctx.save_for_backward(x, y, window, ends, output[0])
-    ctx.set_materialize_grads(False)
+    ctx.save_for_backward(x, y, window, output)
 
 
-def _dtw_dp_strip_backward(ctx, grad_D, grad_seed, grad_found):
-    x, y, window, ends, D = ctx.saved_tensors
+def _dtw_dp_strip_backward(ctx, grad_D):
+    x, y, window, D = ctx.saved_tensors
     big, scale, soft, steps, diag_weight, shear, transpose, R, L = ctx.options
-    B, RB, _ = D.shape
-    TR, TL, d1, last = _strip_span(B, R, L, ctx.step, ctx.d0)
-    rows_at, buf_at, found_at = _strip_cells(ends, L, TR, TL, ctx.d0, RB, ctx.seeded, last)
-    # The gradients of the seed and of the distances, as those of D's cells.
-    g = D.new_zeros(B, RB * L) if grad_D is None else grad_D.flatten(1)
-    if grad_seed is not None and not last:
-        g = g.scatter_add(1, buf_at.expand(B, -1), grad_seed)
-    if grad_found is not None:
-        grad_found = torch.where(found_at >= 0, grad_found, 0.0)
-        g = g.scatter_add(1, found_at.clamp(min=0)[:, None], grad_found[:, None])
+    B = D.size(0)
+    TR, TL = strip_tile(B, R, L)
     G = dtw_dp_backward_strip(
-        D, x, y, window, big, scale, g.view(B, RB, L), soft, steps, diag_weight, shear, transpose,
-        R, L, ctx.d0,
+        D, x, y, window, big, scale, grad_D, soft, steps, diag_weight, shear, transpose, R, L,
+        ctx.d0,
     )  # fmt: skip
     grad_x, grad_y = _strip_gradients(
         x, y, window, scale, shear, transpose, G[:, TR + 1 :], TR, TL, ctx.d0
     )  # fmt: skip
-    grad_seed = G[:, : TR + 1].flatten(1).gather(1, rows_at.expand(B, -1)) if ctx.seeded else None
-    return grad_x, grad_y, *(None,) * 11, grad_seed, None, None
+    # The seed's gradient is that of its cells.
+    grad_seed = None
+    if ctx.seeded:
+        grad_seed = (
+            G[:, : TR + 1].flatten(1).gather(1, _seed_cells(L, TR, TL, x.device).expand(B, -1))
+        )
+    return grad_x, grad_y, *(None,) * 10, grad_seed, None, None
 
 
 dtw_dp_strip.register_autograd(_dtw_dp_strip_backward, setup_context=_dtw_dp_strip_setup)
@@ -1902,9 +1913,9 @@ def dtw_dp_backward_strip(
     out = torch.zeros_like(e) if weighted else e
     feat = (x, y, window, big, scale, shear, transpose)
     _launch(
-        D.size(0), R, L, None, D.contiguous(), None, None, None, None, None, grad.contiguous(), e,
-        out if weighted else None, diag_weight, soft, steps, True, backward=True, feat=feat,
-        strip=(TR, TL, d0, d0 + (D.size(1) - TR - 1) // TR),
+        e, steps, True, D=D.contiguous(), x=grad.contiguous(), out=out if weighted else None,
+        diag_weight=diag_weight, soft=soft, feat=feat,
+        strip=(R, TR, TL, d0, d0 + (D.size(1) - TR - 1) // TR),
     )  # fmt: skip
     return out
 
@@ -1924,21 +1935,16 @@ def _dtw_dp_backward_strip_backward(ctx, grad_e):
     D, x, y, window, grad = ctx.saved_tensors
     big, scale, _, soft, steps, diag_weight, shear, transpose, R, L, d0 = ctx.options
     TR, TL = strip_tile(D.size(0), R, L)
-    create_graph = torch.is_grad_enabled()
-    with torch.enable_grad():
-        D, x, y, grad = (
-            t.view_as(t) if t.requires_grad else t.detach().requires_grad_()
-            for t in (D, x, y, grad)
-        )
+
+    def decomposed(D, x, y, grad):
         cost = _strip_cost(
             x, y, window, big, scale, shear, transpose, D.size(1) - TR - 1, TR, TL, d0, L
         )
-        e = _decomposed_backward(
+        return _decomposed_backward(
             D, cost, None, grad, soft, steps, diag_weight, strip=(R, d0, TR, TL)
         )  # fmt: skip
-        grad_D, grad_x, grad_y, grad_grad = torch.autograd.grad(
-            e, (D, x, y, grad), grad_e, create_graph=create_graph, allow_unused=True
-        )
+
+    grad_D, grad_x, grad_y, grad_grad = _vjp(decomposed, (D, x, y, grad), grad_e)
     return grad_D, grad_x, grad_y, None, None, None, grad_grad, *(None,) * 8
 
 
@@ -1947,26 +1953,48 @@ dtw_dp_backward_strip.register_autograd(
 )
 
 
+def _strip_windows(shear, transpose, S, TR, TL, d0):
+    """The rows of x and of y that the block of each tile column j of a strip's
+    S rows covers, as windows (first row of block 0, step between blocks, rows).
+
+    The block has the grid's rows (d0 - j) TR on and its columns j TL on, and a
+    cell (r, c) is mapped as :func:`_cost` maps it."""
+    rows, cols = (d0 * TR, -TR, S), (0, TL, TL)
+    if shear:
+        # x's row n = r + c, y's row m = r, or, transposed, m = c.
+        return (d0 * TR, TL - TR, S + TL - 1), cols if transpose else rows
+    return (cols, rows) if transpose else (rows, cols)
+
+
 def _strip_frames(x, y, window, shear, transpose, S, TR, TL, d0, L):
     """The rows of x and y, and the window's columns, shifted to the block's,
-    that the blocks (S, TL) of a strip's rows, one per tile column j, cover:
-    indices (n_cols, rows) and the window (B, n_cols, rows, 2). The block has
-    the grid's rows (d0 - j) TR on and its columns j TL on, and a cell (r, c)
-    is mapped as :func:`_cost` maps it."""
+    that the blocks (S, TL) of a strip's rows, one per tile column j, cover
+    (see :func:`_strip_windows`): indices (n_cols, rows) and the window
+    (B, n_cols, rows, 2)."""
     j = torch.arange(triton.cdiv(L, TL), device=x.device)[:, None]
-    r0, c0 = (d0 - j) * TR, j * TL
-    steps = torch.arange(S + TL - 1, device=x.device)
-    rows, cols = r0 + steps[:S], c0 + steps[:TL]
-    if shear:
-        # x's row n = r + c, y's column m = r, or, transposed, m = c.
-        x_idx = r0 + c0 + steps
-        y_idx = cols if transpose else rows
-    else:
-        x_idx, y_idx = (cols, rows) if transpose else (rows, cols)
-    m_0 = c0 if y_idx is cols else r0  # y's column of the block's first
+    (x_0, x_step, x_n), (y_0, y_step, y_n) = _strip_windows(shear, transpose, S, TR, TL, d0)
+    x_idx = x_0 + j * x_step + torch.arange(x_n, device=x.device)
+    y_idx = y_0 + j * y_step + torch.arange(y_n, device=x.device)
+    m_0 = y_0 + j * y_step  # y's row of the block's first
     x_idx, y_idx = x_idx.clamp(0, x.size(1) - 1), y_idx.clamp(0, y.size(1) - 1)
     win = None if window is None else window[:, x_idx] - m_0[None, :, :, None]
     return x_idx, y_idx, win
+
+
+def _add_blocks(g, window, N):
+    """The blocks' gradients g (B, n_cols, K, F) of the windows (first, step, K)
+    of N rows, added up, the rows below 0 dropped and those past N - 1 added to
+    the last, as their indices clamp: a fold, whose sums are in a fixed order."""
+    first, step, K = window
+    n_cols = g.size(1)
+    if step < 0:  # in order of the rows
+        g, first, step = g.flip(1), first + (n_cols - 1) * step, -step
+    n = (n_cols - 1) * step + K
+    g = F.fold(g.permute(0, 3, 2, 1).flatten(1, 2), (n, 1), (K, 1), stride=(step, 1))
+    g = g.squeeze(3).mT[:, max(0, -first) :]
+    # Rows from max(first, 0), then zeros to past N - 1, whatever the window's end.
+    g = F.pad(g, (0, 0, max(first, 0), N))
+    return torch.cat([g[:, : N - 1], g[:, N - 1 :].sum(1, keepdim=True)], 1)
 
 
 def _strip_gradients(x, y, window, scale, shear, transpose, E, TR, TL, d0):
@@ -1983,9 +2011,10 @@ def _strip_gradients(x, y, window, scale, shear, transpose, E, TR, TL, d0):
         None if win is None else win.flatten(0, 1),
         scale, shear, False, 0, E.mT if transpose else E,
     )  # fmt: skip
+    windows = _strip_windows(shear, transpose, S, TR, TL, d0)
     return tuple(
-        t.new_zeros(t.shape).index_add(1, idx.flatten(), g.unflatten(0, (B, n_cols)).flatten(1, 2))
-        for t, idx, g in ((x, x_idx, grad_x), (y, y_idx, grad_y))
+        _add_blocks(g.unflatten(0, (B, n_cols)), w, t.size(1))
+        for t, w, g in zip((x, y), windows, (grad_x, grad_y))
     )
 
 
@@ -2002,59 +2031,3 @@ def _strip_cost(x, y, window, big, scale, shear, transpose, S, TR, TL, d0, L):
     )  # fmt: skip
     cost = cost.mT if transpose else cost
     return cost.unflatten(0, (B, x_idx.size(0))).transpose(1, 2).flatten(2)[..., :L]
-
-
-@torch.library.custom_op("philtorch::dtw_accumulate_strip", mutates_args=())
-def accumulate_strip(
-    w_up: Tensor, w_left: Tensor, w_diag: Tensor | None, x: Tensor, reverse: bool, R: int, d0: int
-) -> Tensor:  # fmt: skip
-    """:func:`accumulate` of the steps up, left and up-left over the buffer
-    (B, TR + 1 + (d1 - d0) TR, L) of the strip d0 to d1 - 1 of a grid of R
-    rows (see :func:`dtw_dp_strip`), whose weights, in the seed's rows, are
-    zero.
-
-    Forward, the seed's rows of x are given: the cells of the strip start
-    from them. With ``reverse``, the strip's cells pass their sums on to the
-    seed's rows: the cells of the first diagonal's tile, to the corner cells of
-    row 0 by the diagonal step too.
-    """
-    B, RB, L = x.shape
-    TR, TL = strip_tile(B, R, L)
-    steps = "orthogonal" if w_diag is None else "symmetric"
-    y = torch.zeros_like(x, memory_format=torch.contiguous_format)
-    if not reverse:
-        y[:, : TR + 1] = x[:, : TR + 1]  # the seed's rows are given
-    weights = (None if w is None else w.contiguous() for w in (w_up, w_left, w_diag))
-    _launch(
-        B, R, L, None, None, None, *weights, None, x.contiguous(), y, None, 1.0, False, steps,
-        reverse, strip=(TR, TL, d0, d0 + (RB - TR - 1) // TR),
-    )  # fmt: skip
-    return y
-
-
-@accumulate_strip.register_fake
-def _(w_up, w_left, w_diag, x, reverse, R, d0):
-    return _empty(x)
-
-
-def _accumulate_strip_setup(ctx, inputs, output):
-    ctx.reverse, ctx.strip = inputs[4], inputs[5:]
-    ctx.save_for_backward(*inputs[:3], output)
-
-
-def _accumulate_strip_backward(ctx, grad_y):
-    *weights, y = ctx.saved_tensors
-    grad_x = accumulate_strip(*weights, grad_y, not ctx.reverse, *ctx.strip)
-    skew = strip_tile(y.size(0), ctx.strip[0], y.size(2))
-    grads = [
-        None if w is None
-        else _shift(grad_x, *step, skew=skew) * y if ctx.reverse
-        else grad_x * _shift(y, *step, skew=skew)
-        for w, step in zip(weights, _OFFSETS)
-    ]  # fmt: skip
-    return (*grads, grad_x, None, None, None)
-
-
-accumulate_strip.register_autograd(
-    _accumulate_strip_backward, setup_context=_accumulate_strip_setup
-)
