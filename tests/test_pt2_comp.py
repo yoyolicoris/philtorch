@@ -162,16 +162,20 @@ def _dtw_frontier_calls():
         return _recorded_calls(_dtw_kernels, "frontier", lambda: dtw(x=x, y=y, gamma=0.5))
 
 
-def _dtw_dp_features_calls(op):
-    # The forward and, through its backward, dtw_dp_backward_features.
+def _dtw_dp_features_calls(op, seeded=False):
+    # The forward and, through its backward, dtw_dp_backward_features; seeded, the
+    # last four rows of the grid, from a given row.
     from philtorch.align import _dtw_kernels
 
     x, y, window = _features_inputs()
+    seed = torch.rand(2, 6, device="cuda", requires_grad=True)
 
     def run():
-        D = _dtw_kernels.dtw_dp_features(
-            x, y, window, 1e4, 1.5, True, "symmetric", 2.0, False, False, 5, 6
-        )
+        options = ("symmetric", 2.0, False, False)
+        if seeded:
+            D = _dtw_kernels.dtw_dp_features(x, y, window, 1e4, 1.5, True, *options, 4, 6, seed, 1)
+        else:
+            D = _dtw_kernels.dtw_dp_features(x, y, window, 1e4, 1.5, True, *options, 5, 6)
         D.sum().backward()
 
     return _recorded_calls(_dtw_kernels, op, run)
@@ -249,9 +253,19 @@ def _weighted_contract_calls():
             id="dtw_dp_features",
         ),
         pytest.param(
+            "dtw_dp_features",
+            lambda: _dtw_dp_features_calls("dtw_dp_features", seeded=True),
+            id="dtw_dp_features-seeded",
+        ),
+        pytest.param(
             "dtw_dp_backward_features",
             lambda: _dtw_dp_features_calls("dtw_dp_backward_features"),
             id="dtw_dp_backward_features",
+        ),
+        pytest.param(
+            "dtw_dp_backward_features",
+            lambda: _dtw_dp_features_calls("dtw_dp_backward_features", seeded=True),
+            id="dtw_dp_backward_features-seeded",
         ),
         pytest.param(
             "dtw_backtrack_features", _dtw_backtrack_features_calls, id="dtw_backtrack_features"
