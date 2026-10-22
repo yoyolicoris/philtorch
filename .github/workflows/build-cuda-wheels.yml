@@ -364,6 +364,14 @@ jobs:
           files: coverage.xml
           flags: gpu
 
+      - name: Upload test results to Codecov
+        uses: codecov/codecov-action@v5
+        with:
+          token: ${{ secrets.CODECOV_TOKEN }}
+          report_type: test_results
+          files: junit.xml
+          flags: gpu
+
   publish:
     # Attaches every wheel to the release; deploy-cuda-index.yml then lists
     # them in the index. Same tag filter as the PyPI upload in build-wheels.yml.
