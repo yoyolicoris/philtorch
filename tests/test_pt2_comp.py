@@ -467,6 +467,17 @@ def test_dtw_dp_backward_registered_gradients(soft, steps, diag_weight):
     assert torch.autograd.gradgradcheck(fn, inputs)
 
 
+@pytest.mark.cuda
+def test_soft_dtw_asymmetric_second_derivatives():
+    # The asymmetric steps are PyTorch's shear around the orthogonal kernel.
+    from philtorch.align import dtw
+
+    gen = torch.Generator("cuda").manual_seed(0)
+    cost = torch.rand(2, 5, 4, device="cuda", dtype=torch.float64, generator=gen)
+    cost.requires_grad_()
+    assert torch.autograd.gradgradcheck(lambda c: dtw(c, 0.5, step_pattern="asymmetric"), (cost,))
+
+
 def _dtw_path(cost):
     from philtorch.align import dtw_path
 

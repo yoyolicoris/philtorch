@@ -14,6 +14,12 @@ from philtorch.align import dtw, dtw_path, soft_dtw_divergence
 # and import tests run anywhere.
 
 STEP_PATTERNS = ["symmetric", "asymmetric", "orthogonal"]
+_PATTERN_WEIGHTS = [
+    ("symmetric", 1.0),
+    ("symmetric", 2.0),
+    ("asymmetric", 1.0),
+    ("orthogonal", 1.0),
+]
 
 
 def _cost(batch_size, N, M, *, seed=0, dtype=torch.float64, device="cuda"):
@@ -72,50 +78,26 @@ def test_dtw_matches_sequential(step_pattern, gamma, N, M):
     expected = _distance(cost, gamma, step_pattern)
     actual = dtw(cost, gamma, step_pattern=step_pattern)
     torch.testing.assert_close(actual, expected)
+    (grad,) = torch.autograd.grad(actual.sum(), cost)
     if expected.isfinite().all():
-        (grad,) = torch.autograd.grad(actual.sum(), cost)
         (expected_grad,) = torch.autograd.grad(expected.sum(), cost)
         torch.testing.assert_close(grad, expected_grad)
+    else:  # the asymmetric steps with N < M have no path
+        assert grad.eq(0).all()
 
 
 @pytest.mark.cuda
+@pytest.mark.parametrize("step_pattern, diagonal_weight", [*_PATTERN_WEIGHTS, ("symmetric", 0.5)])
 @pytest.mark.parametrize("gamma", [0.0, 0.5])
-@pytest.mark.parametrize("diagonal_weight", [2.0, 0.5])
-def test_dtw_diagonal_weight(gamma, diagonal_weight):
-    cost = _cost(3, 9, 7).requires_grad_()
-    expected = _distance(cost, gamma, diagonal_weight=diagonal_weight)
-    actual = dtw(cost, gamma, diagonal_weight=diagonal_weight)
-    torch.testing.assert_close(actual, expected)
-    (grad,) = torch.autograd.grad(actual.sum(), cost)
-    (expected_grad,) = torch.autograd.grad(expected.sum(), cost)
-    torch.testing.assert_close(grad, expected_grad)
-
-
-@pytest.mark.cuda
-@pytest.mark.parametrize(
-    "step_pattern, diagonal_weight",
-    [("symmetric", 1.0), ("symmetric", 2.0), ("asymmetric", 1.0), ("orthogonal", 1.0)],
-)
-def test_soft_dtw_second_derivatives(step_pattern, diagonal_weight):
-    cost = _cost(2, 5, 4).requires_grad_()
-
-    def run(c):
-        return dtw(c, 0.5, step_pattern=step_pattern, diagonal_weight=diagonal_weight)
-
-    assert torch.autograd.gradgradcheck(run, (cost,))
-
-
-@pytest.mark.cuda
-@pytest.mark.parametrize("step_pattern", STEP_PATTERNS)
-@pytest.mark.parametrize("gamma", [0.0, 0.5])
-def test_dtw_lengths(step_pattern, gamma):
+def test_dtw_lengths(step_pattern, diagonal_weight, gamma):
     cost = _cost(4, 9, 7).requires_grad_()
     n_len = torch.tensor([9, 4, 6, 1])
     m_len = torch.tensor([7, 3, 7, 1])
-    actual = dtw(cost, gamma, step_pattern=step_pattern, lengths=(n_len, m_len))
+    options = dict(step_pattern=step_pattern, diagonal_weight=diagonal_weight)
+    actual = dtw(cost, gamma, lengths=(n_len, m_len), **options)
     expected = torch.stack(
         [
-            _distance(cost[b : b + 1, :n, :m], gamma, step_pattern)[0]
+            _distance(cost[b : b + 1, :n, :m], gamma, **options)[0]
             for b, (n, m) in enumerate(zip(n_len.tolist(), m_len.tolist()))
         ]
     )
@@ -141,7 +123,9 @@ def _band(N, M, band):
 
 @pytest.mark.cuda
 @pytest.mark.parametrize("gamma", [0.0, 0.5])
-@pytest.mark.parametrize("N, M, band", [(12, 9, 2.0), (9, 12, 2.0), (10, 40, 1.0), (1, 5, 1.0)])
+@pytest.mark.parametrize(
+    "N, M, band", [(12, 9, 2.0), (9, 12, 2.0), (10, 40, 1.0), (1, 5, 1.0), (6, 6, 0.0)]
+)
 def test_dtw_band(gamma, N, M, band):
     x, y = _features(2, N, M)
     cost = _squared_distances(x, y)
@@ -152,13 +136,6 @@ def test_dtw_band(gamma, N, M, band):
     torch.testing.assert_close(actual, D)
     grads = torch.autograd.grad(actual.sum(), (x, y))
     torch.testing.assert_close(grads, torch.autograd.grad(D.sum(), (x, y)))
-
-
-@pytest.mark.cuda
-def test_dtw_zero_band_on_a_square_grid_is_the_diagonal():
-    x, y = _features(2, 6, 6)
-    diagonal = _squared_distances(x, y).diagonal(dim1=1, dim2=2).sum(-1)
-    torch.testing.assert_close(dtw(x=x, y=y, band=0.0), diagonal)
 
 
 @pytest.mark.cuda
@@ -193,15 +170,6 @@ def test_dtw_inf_padding_with_lengths(gamma):
     assert grad.isfinite().all()
 
 
-@pytest.mark.cuda
-def test_dtw_asymmetric_without_a_path():
-    cost = _cost(2, 3, 5).requires_grad_()
-    distance = dtw(cost, step_pattern="asymmetric")
-    assert distance.isinf().all()
-    (grad,) = torch.autograd.grad(distance.sum(), cost)
-    assert grad.eq(0).all()
-
-
 def test_dtw_rejects_bad_arguments():
     cost = _cost(1, 3, 3, device="cpu")
     with pytest.raises(ValueError, match="cost must be"):
@@ -234,23 +202,6 @@ def test_dtw_rejects_bad_arguments():
         soft_dtw_divergence(cost, cost, cost, 0.0)
     with pytest.raises(ValueError, match="cost_xx and cost_yy must be"):
         soft_dtw_divergence(cost.expand(2, -1, -1), cost, cost.expand(2, -1, -1), 0.5)
-
-
-@pytest.mark.cuda
-def test_soft_dtw_divergence():
-    gen = torch.Generator().manual_seed(0)
-    x = torch.randn(3, 8, 2, dtype=torch.float64, generator=gen).cuda()
-    y = torch.randn(3, 6, 2, dtype=torch.float64, generator=gen).cuda()
-
-    def cost(a, b):
-        return torch.cdist(a, b) ** 2
-
-    divergence = soft_dtw_divergence(cost(x, y), cost(x, x), cost(y, y), 0.5)
-    expected = dtw(cost(x, y), 0.5) - 0.5 * (dtw(cost(x, x), 0.5) + dtw(cost(y, y), 0.5))
-    torch.testing.assert_close(divergence, expected)
-    assert (divergence >= 0).all()
-    zero = soft_dtw_divergence(cost(x, x), cost(x, x), cost(x, x), 0.5)
-    torch.testing.assert_close(zero, torch.zeros_like(zero))
 
 
 @pytest.mark.cuda
@@ -340,10 +291,7 @@ _STEPS = {
 
 
 @pytest.mark.cuda
-@pytest.mark.parametrize(
-    "step_pattern, diagonal_weight",
-    [("symmetric", 1.0), ("symmetric", 2.0), ("asymmetric", 1.0), ("orthogonal", 1.0)],
-)
+@pytest.mark.parametrize("step_pattern, diagonal_weight", _PATTERN_WEIGHTS)
 def test_dtw_path(step_pattern, diagonal_weight):
     # The path runs from (0, 0) to each pair's last cell in the pattern's
     # steps, its cost is DTW's distance, and its distance's gradient is it.
@@ -449,18 +397,26 @@ def _banded(x, y, options):
     return cost, options
 
 
+def _banded_dtw(options, gamma):
+    def run(x, y):
+        cost, rest = _banded(x, y, options)
+        return dtw(cost, gamma, **rest)
+
+    return run
+
+
 @pytest.mark.cuda
 def test_soft_dtw_divergence_features():
-    x, y = _features()
-    lengths = (torch.tensor([9, 4, 6]), torch.tensor([7, 3, 7]))
+    x, y = _features(3, 8, 6)
+    xy, xx, yy = _squared_distances(x, y), _squared_distances(x, x), _squared_distances(y, y)
+    divergence = soft_dtw_divergence(xy, xx, yy, 0.5)
+    torch.testing.assert_close(divergence, dtw(xy, 0.5) - 0.5 * (dtw(xx, 0.5) + dtw(yy, 0.5)))
+    assert (divergence >= 0).all()
+    zero = soft_dtw_divergence(xx, xx, xx, 0.5)
+    torch.testing.assert_close(zero, torch.zeros_like(zero))
+    lengths = (torch.tensor([8, 4, 6]), torch.tensor([6, 3, 6]))
     actual = soft_dtw_divergence(gamma=0.5, x=x, y=y, lengths=lengths)
-    expected = soft_dtw_divergence(
-        _squared_distances(x, y),
-        _squared_distances(x, x),
-        _squared_distances(y, y),
-        0.5,
-        lengths=lengths,
-    )
+    expected = soft_dtw_divergence(xy, xx, yy, 0.5, lengths=lengths)
     torch.testing.assert_close(actual, expected)
 
 
@@ -647,19 +603,25 @@ def test_dtw_features_keep_the_frames_dtype_under_another_default():
 
 
 @pytest.mark.cuda
-@pytest.mark.parametrize("step_pattern", ["symmetric", "asymmetric"])
-@pytest.mark.parametrize("gamma", [0.0, 0.5])
-def test_dtw_features_of_an_empty_batch(gamma, step_pattern):
-    x = torch.empty(0, 3, 1, device="cuda", requires_grad=True)
-    options = dict(gamma=gamma, step_pattern=step_pattern)
-    assert dtw(x=x.detach(), y=x.detach(), **options).shape == (0,)
-    distance = dtw(x=x, y=x, **options)
+@pytest.mark.parametrize(
+    "gamma, step_pattern, checkpoint",
+    [(0.0, "symmetric", None), (0.5, "symmetric", None), (0.0, "asymmetric", None)]
+    + [(0.5, "asymmetric", None), (0.5, "symmetric", 3)],
+)
+def test_dtw_features_of_an_empty_batch(monkeypatch, gamma, step_pattern, checkpoint):
+    from philtorch.align import _dtw_kernels
+
+    monkeypatch.setattr(_dtw_kernels, "_tile", lambda *args: (3, 16))
+    x, y = (torch.empty(0, n, 1, device="cuda", requires_grad=True) for n in (12, 36))
+    options = dict(gamma=gamma, step_pattern=step_pattern, checkpoint=checkpoint)
+    assert dtw(x=x.detach(), y=y.detach(), **options).shape == (0,)
+    distance = dtw(x=x, y=y, **options)
     assert distance.shape == (0,)
-    (grad,) = torch.autograd.grad(distance.sum(), x)
-    assert grad.shape == x.shape
+    grads = torch.autograd.grad(distance.sum(), (x, y))
+    assert [g.shape for g in grads] == [x.shape, y.shape]
     if gamma == 0 and step_pattern == "symmetric":
-        distance, path = dtw_path(x=x, y=x)
-        assert distance.shape == (0,) and path.shape == (0, 5, 2)
+        distance, path = dtw_path(x=x, y=y)
+        assert distance.shape == (0,) and path.shape == (0, 47, 2)
 
 
 @pytest.mark.cuda
@@ -726,34 +688,26 @@ def _feature_options(step_pattern, diagonal_weight, N, M, band, with_lengths):
 @pytest.mark.cuda
 @pytest.mark.parametrize("gamma", [0.0, 0.5])
 @pytest.mark.parametrize("case", _FEATURE_CASES)
-def test_dtw_features_derivatives_equal_the_cost(gamma, case):
-    x, y = _features(3, *case[2:4])
-    options = _feature_options(*case)
-
-    def banded(x, y):
-        cost, rest = _banded(x, y, options)
-        return dtw(cost, gamma, **rest)
-
-    inputs = dict(x=x, y=y)
-    actual = _derivatives(partial(dtw, gamma=gamma, **options), inputs, gamma > 0)
-    assert actual[0].isfinite().all()
-    torch.testing.assert_close(actual, _derivatives(banded, inputs, gamma > 0))
-
-
-@pytest.mark.cuda
-@pytest.mark.parametrize("gamma", [0.0, 0.5])
-@pytest.mark.parametrize("case", _FEATURE_CASES)
-def test_dtw_features_without_gradients_equal_the_cost(monkeypatch, gamma, case):
+def test_dtw_features_equal_the_cost(monkeypatch, gamma, case):
     from philtorch.align import _dtw_kernels
 
-    monkeypatch.setattr(_dtw_kernels, "_tile", lambda *args: (3, 4))  # many tiles
-    x, y = (t.detach() for t in _features(3, *case[2:4]))
+    # Leaves of at most 2 rows, in chunks of 64 cells, and frontiers of many tiles.
+    module = importlib.import_module("philtorch.align.dtw")
+    for name, value in dict(_LEAF_ROWS=2, _LEAF_CELLS=0, _CHUNK_CELLS=64).items():
+        monkeypatch.setattr(module, name, value)
+    x, y = _features(3, *case[2:4])
     options = _feature_options(*case)
-    actual = dtw(x=x, y=y, gamma=gamma, **options)
-    cost, rest = _banded(x, y, options)
-    expected = dtw(cost, gamma, **rest)
-    assert actual.isfinite().all()
+    inputs = dict(x=x, y=y)
+    actual = _derivatives(partial(dtw, gamma=gamma, **options), inputs, gamma > 0)
+    expected = _derivatives(_banded_dtw(options, gamma), inputs, gamma > 0)
+    assert actual[0].isfinite().all()
     torch.testing.assert_close(actual, expected)
+    monkeypatch.setattr(_dtw_kernels, "_tile", lambda *args: (3, 4))  # many tiles
+    with torch.no_grad():  # the frontier kernel, and the path of DTW's gradient
+        torch.testing.assert_close(dtw(x=x, y=y, gamma=gamma, **options), expected[0])
+        if gamma == 0:
+            cost, rest = _banded(x, y, options)
+            torch.testing.assert_close(dtw_path(x=x, y=y, **options), dtw_path(cost, **rest))
 
 
 @pytest.mark.cuda
@@ -779,25 +733,6 @@ def test_dtw_features_gradient_stays_linear_in_memory():
     torch.cuda.reset_peak_memory_stats()
     torch.autograd.grad(dtw(x=x, y=y).sum(), (x, y))
     assert torch.cuda.max_memory_allocated() - base < N * M * 4 / 4
-
-
-@pytest.mark.cuda
-@pytest.mark.parametrize("case", _FEATURE_CASES)
-def test_dtw_path_features_by_divide_and_conquer(monkeypatch, case):
-    from philtorch.align import _dtw_kernels
-
-    # Leaves of at most 2 rows, in chunks of 64 cells, and frontiers of many tiles.
-    module = importlib.import_module("philtorch.align.dtw")
-    for name, value in dict(_LEAF_ROWS=2, _LEAF_CELLS=0, _CHUNK_CELLS=64).items():
-        monkeypatch.setattr(module, name, value)
-    monkeypatch.setattr(_dtw_kernels, "_tile", lambda *args: (3, 4))
-    x, y = (t.detach() for t in _features(3, *case[2:4]))
-    options = _feature_options(*case)
-    distance, path = dtw_path(x=x, y=y, **options)
-    cost, rest = _banded(x, y, options)
-    expected, expected_path = dtw_path(cost, **rest)
-    torch.testing.assert_close(distance, expected)
-    torch.testing.assert_close(path, expected_path)
 
 
 @pytest.mark.cuda
@@ -867,36 +802,6 @@ def test_dtw_strips_equal_storing_every_row(
 
 
 @pytest.mark.cuda
-def test_dtw_strips_third_derivatives(monkeypatch):
-    from philtorch.align import _dtw_kernels
-
-    # 4 tile rows of 2 by 3 tile columns of 8: 3 strips.
-    monkeypatch.setattr(_dtw_kernels, "_tile", lambda *args: (2, 8))
-    x, y = _features(1, 8, 20, 1)
-    run = partial(dtw, gamma=0.5, step_pattern="symmetric", diagonal_weight=2.0, band=6.0)
-
-    def third(checkpoint):
-        loss = run(x=x, y=y, checkpoint=checkpoint).sum()
-        grads = torch.autograd.grad(loss, (x, y), create_graph=True)
-        second = torch.autograd.grad(sum(g.sin().sum() for g in grads), (x, y), create_graph=True)
-        return torch.autograd.grad(sum(g.cos().sum() for g in second), (x, y))
-
-    torch.testing.assert_close(third(2), third(None))
-
-
-@pytest.mark.cuda
-def test_dtw_strips_of_an_empty_batch(monkeypatch):
-    from philtorch.align import _dtw_kernels
-
-    monkeypatch.setattr(_dtw_kernels, "_tile", lambda *args: (3, 16))
-    x, y = (torch.empty(0, n, 1, device="cuda", requires_grad=True) for n in (12, 36))
-    distance = dtw(x=x, y=y, gamma=0.5, checkpoint=3)
-    assert distance.shape == (0,)
-    grads = torch.autograd.grad(distance.sum(), (x, y))
-    assert [g.shape for g in grads] == [x.shape, y.shape]
-
-
-@pytest.mark.cuda
 def test_dtw_strips_reject_too_many_cells(monkeypatch):
     from philtorch.align import _dtw_kernels
 
@@ -941,12 +846,9 @@ def test_dtw_features_seeded_row_survives_the_window(monkeypatch, soft):
         # Finite on the reference, whose skipped tiles are not inf.
         return (D[:, 0] * weights).sum() + D[:, -1, :16].sum()
 
-    def minimum(a, b):
-        both = torch.stack([a, b])
-        return -torch.logsumexp(-both * math.log(2), 0) / math.log(2) if soft else both.min(0)[0]
-
     # The recursion in PyTorch, over the orthogonal steps.
-    cost = (x[:, :, None] - y[:, None]).pow(2).sum(-1)
+    gamma = 1 / math.log(2) if soft else 0.0
+    cost = _squared_distances(x, y)
     cols = torch.arange(L, device="cuda")
     cost = torch.where((cols < rows[:, None]) | (cols > rows[:, None] + 3), big, cost)
     expected = [seed]
@@ -954,7 +856,7 @@ def test_dtw_features_seeded_row_survives_the_window(monkeypatch, soft):
         row = []
         for j in range(L):
             up = expected[i - 1][:, j]
-            row.append((minimum(up, row[-1]) if j else up) + cost[:, i, j])
+            row.append((_softmin([up, row[-1]], gamma) if j else up) + cost[:, i, j])
         expected.append(torch.stack(row, 1))
     expected = torch.stack(expected, 1)
     D = _dtw_kernels.dtw_dp_features(
@@ -979,13 +881,8 @@ def test_dtw_asymmetric_gradients_in_chunks(monkeypatch, case):
     x, y = _features(3, *case[2:4])
     options = _feature_options(*case)
     inputs = dict(x=x, y=y)
-
-    def banded(x, y):
-        cost, rest = _banded(x, y, options)
-        return dtw(cost, 0.5, **rest)
-
     actual = _derivatives(partial(dtw, gamma=0.5, checkpoint=5, **options), inputs, True)
-    torch.testing.assert_close(actual, _derivatives(banded, inputs, True))
+    torch.testing.assert_close(actual, _derivatives(_banded_dtw(options, 0.5), inputs, True))
 
 
 @pytest.mark.cuda
