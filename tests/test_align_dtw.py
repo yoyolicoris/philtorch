@@ -156,30 +156,26 @@ def _band(N, M, band):
 @pytest.mark.parametrize("gamma", [0.0, 0.5])
 @pytest.mark.parametrize("N, M, band", [(12, 9, 2.0), (9, 12, 2.0), (10, 40, 1.0), (1, 5, 1.0)])
 def test_dtw_band(gamma, N, M, band):
-    cost = _cost(2, N, M).requires_grad_()
+    x, y = _features(2, N, M)
+    cost = _squared_distances(x, y)
     allowed = _band(N, M, band).expand(2, -1, -1).cuda()
     D = _sequential(cost, gamma, allowed=allowed)[:, -1, -1]
-    actual = dtw(cost, gamma, band=band)
+    actual = dtw(x=x, y=y, gamma=gamma, band=band)
     assert actual.isfinite().all()
     torch.testing.assert_close(actual, D)
-    (grad,) = torch.autograd.grad(actual.sum(), cost)
-    (expected_grad,) = torch.autograd.grad(D.sum(), cost)
-    torch.testing.assert_close(grad, expected_grad)
-    assert (grad * ~allowed).abs().max() == 0
+    grads = torch.autograd.grad(actual.sum(), (x, y))
+    torch.testing.assert_close(grads, torch.autograd.grad(D.sum(), (x, y)))
     if gamma == 0:
-        # The path stays in the band, and is the one the gradient marks.
-        _, path = dtw_path(cost, band=band)
-        for b in range(2):
-            cells = path[b][path[b, :, 0] >= 0]
-            assert allowed[b][tuple(cells.T)].all()
-            assert torch.equal(cells, grad[b].nonzero())
+        # The path stays in the band: that of the cost made inf outside it.
+        _, path = dtw_path(x=x, y=y, band=band)
+        torch.testing.assert_close(path, dtw_path(torch.where(allowed, cost, torch.inf))[1])
 
 
 @pytest.mark.cuda
 def test_dtw_zero_band_on_a_square_grid_is_the_diagonal():
-    square = _cost(2, 6, 6)
-    diagonal = square.diagonal(dim1=1, dim2=2).sum(-1)
-    torch.testing.assert_close(dtw(square, band=0.0), diagonal)
+    x, y = _features(2, 6, 6)
+    diagonal = _squared_distances(x, y).diagonal(dim1=1, dim2=2).sum(-1)
+    torch.testing.assert_close(dtw(x=x, y=y, band=0.0), diagonal)
 
 
 @pytest.mark.cuda
@@ -417,6 +413,8 @@ def test_dtw_tiles_agree_with_one_tile(monkeypatch, features, gamma, step_patter
         cost = _cost(2, 70, 37)
         inputs = dict(cost=(cost * 5).floor() if gamma == 0 else cost)
     options = dict(step_pattern=step_pattern, diagonal_weight=diagonal_weight)
+    if features and gamma == 0:  # tiles outside the band are skipped
+        options["band"] = 3.0
     expected = _derivatives(inputs, gamma, **options)
     monkeypatch.setattr(_dtw_kernels, "_tile", lambda *args: (3, 16))
     actual = _derivatives(inputs, gamma, **options)
@@ -436,6 +434,22 @@ def _features(batch_size=3, N=9, M=7, F=2):
 
 def _squared_distances(x, y):
     return (x[:, :, None] - y[:, None]).pow(2).sum(-1)
+
+
+def _banded(x, y, options):
+    """The squared distances, inf outside the band of ``options``, and the other
+    options: the cost's own way to a band."""
+    cost = _squared_distances(x, y)
+    options = dict(options)
+    band = options.pop("band", None)
+    if band is not None:
+        B, N, M = cost.shape
+        lengths = options.get("lengths") or (torch.full((B,), N), torch.full((B,), M))
+        module = importlib.import_module("philtorch.align.dtw")
+        lo, hi = module._band_windows(N, M, *(t.cuda() for t in lengths), band).split(1, -1)
+        j = torch.arange(M, device=cost.device)
+        cost = torch.where((j >= lo) & (j <= hi), cost, torch.inf)
+    return cost, options
 
 
 @pytest.mark.cuda
@@ -458,6 +472,7 @@ def test_soft_dtw_divergence_features():
     "call, match",
     [
         (lambda c, x, y: dtw(c, x=x, y=y), "either the cost or x and y"),
+        (lambda c, x, y: dtw(c, band=2.0), "band needs x and y"),
         (lambda c, x, y: dtw(), "either the cost or x and y"),
         (lambda c, x, y: dtw_path(x=x), "x and y together"),
         (lambda c, x, y: dtw(x=x, y=y[:, :, :1]), "must be"),
@@ -493,7 +508,8 @@ def test_dtw_features_with_a_band_and_each_step_pattern(gamma, step_pattern, N, 
         lengths=(torch.tensor([N, N - 2, N - 1]), torch.tensor([M, M - 2, M - 1])),
     )
     actual = dtw(x=x, y=y, gamma=gamma, **options)
-    expected = dtw(_squared_distances(x, y), gamma, **options)
+    cost, rest = _banded(x, y, options)
+    expected = dtw(cost, gamma, **rest)
     assert actual.isfinite().all()
     torch.testing.assert_close(actual, expected)
     grads = torch.autograd.grad(actual.sum(), (x, y), create_graph=gamma > 0)
@@ -509,7 +525,7 @@ def test_dtw_features_with_a_band_and_each_step_pattern(gamma, step_pattern, N, 
         )
     if gamma == 0:
         path = dtw_path(x=x, y=y, **options)[1]
-        torch.testing.assert_close(path, dtw_path(_squared_distances(x, y), **options)[1])
+        torch.testing.assert_close(path, dtw_path(cost, **rest)[1])
 
 
 @pytest.mark.cuda
@@ -574,7 +590,8 @@ def test_dtw_features_without_gradients_equal_the_cost(monkeypatch, gamma, case)
     x, y = (t.detach() for t in _features(3, *case[2:4]))
     options = _feature_options(*case)
     actual = dtw(x=x, y=y, gamma=gamma, **options)
-    expected = dtw(_squared_distances(x, y), gamma, **options)
+    cost, rest = _banded(x, y, options)
+    expected = dtw(cost, gamma, **rest)
     assert actual.isfinite().all()
     torch.testing.assert_close(actual, expected)
 
@@ -606,7 +623,8 @@ def test_dtw_path_features_by_divide_and_conquer(monkeypatch, case):
     x, y = (t.detach() for t in _features(3, *case[2:4]))
     options = _feature_options(*case)
     distance, path = dtw_path(x=x, y=y, **options)
-    expected, expected_path = dtw_path(_squared_distances(x, y), **options)
+    cost, rest = _banded(x, y, options)
+    expected, expected_path = dtw_path(cost, **rest)
     torch.testing.assert_close(distance, expected)
     torch.testing.assert_close(path, expected_path)
 
