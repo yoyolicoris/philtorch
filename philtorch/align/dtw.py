@@ -338,8 +338,8 @@ def _grid(cost, x, y, gamma, step_pattern, diagonal_weight, lengths, band) -> _G
     # The kernels' soft-min is in base 2: costs in units of gamma / log2(e).
     scale = 1.0 / (gamma * math.log(2)) if gamma > 0 else 1.0
     # A large finite cost outside the band, not inf, keeps soft-min's
-    # arithmetic finite; a path sums at most w (N + M) of them.
-    # cost * scale's dtype.
+    # arithmetic finite; a path sums at most w (N + M) of them, in the dtype of
+    # cost * scale.
     dtype = ref.dtype if ref.is_floating_point() else torch.get_default_dtype()
     big = torch.finfo(dtype).max / (8 * max(diagonal_weight, 1.0) * (N + M))
     window = None
@@ -907,7 +907,6 @@ def soft_dtw_divergence(
     _check_features(name, cost_xy, x, y)
     _check_features(name, cost_xx, x, x)
     _check_features(name, cost_yy, y, y)
-    n_len, m_len = (None, None) if lengths is None else lengths
     if x is None:
         if cost_xy.dim() == 3:
             B, N, M = cost_xy.shape
@@ -919,8 +918,7 @@ def soft_dtw_divergence(
         inputs = (dict(cost=cost_xy), dict(cost=cost_xx), dict(cost=cost_yy))
     else:
         inputs = (dict(x=x, y=y), dict(x=x, y=x), dict(x=y, y=y))
-    xx = None if lengths is None else (n_len, n_len)
-    yy = None if lengths is None else (m_len, m_len)
+    xx, yy = (None, None) if lengths is None else ((lengths[0],) * 2, (lengths[1],) * 2)
     d_xy, d_xx, d_yy = (
         dtw(gamma=gamma, lengths=ls, **kw, **kwargs) for kw, ls in zip(inputs, (lengths, xx, yy))
     )
