@@ -4,8 +4,8 @@ Used by .github/workflows/build-cuda-wheels.yml. The wheel is installed with
 --no-deps next to the official PyTorch build it was compiled against, so the
 exact CI artifact is what gets tested, and then the tests from tests/ marked
 ``cuda`` run against the installed package, with coverage: pytest collects only
-the modules that have them. Their report is
-written to coverage.xml, for the workflow to upload::
+the modules that have them. Their coverage is written to coverage.xml and
+their results to junit.xml, for the workflow to upload::
 
     SMOKE_PYTHON=3.13 SMOKE_TORCH=2.14.1 \\
     SMOKE_TORCH_INDEX_URL=https://download.pytorch.org/whl/cu132 SMOKE_GPU=T4 \\
@@ -78,7 +78,7 @@ app = modal.App("philtorch-cuda-smoke-test", image=image)
 @app.function(gpu=GPU, timeout=45 * 60)
 def run_tests(
     wheel_name: str, wheel: bytes, version: str, files: dict[str, bytes], modules: list[str]
-) -> bytes:
+) -> tuple[bytes, bytes]:
     import subprocess
 
     work = Path("/tmp/smoke")
@@ -97,8 +97,9 @@ def run_tests(
     run(sys.executable, "-c", PRECHECK, version)
     pytest_args = [*modules, "-m", "cuda", "-p", "no:cacheprovider", "-ra"]
     pytest_args += ["--cov-branch", "--cov-report=xml"]
+    pytest_args += ["--junitxml=junit.xml", "-o", "junit_family=legacy"]
     run(sys.executable, "-m", "pytest", *pytest_args)
-    return (work / "coverage.xml").read_bytes()
+    return tuple((work / name).read_bytes() for name in ("coverage.xml", "junit.xml"))
 
 
 @app.local_entrypoint()
@@ -118,5 +119,6 @@ def main(wheel: str):
         for path in tests
         if path.name.startswith("test_") and CUDA_MARK.search(path.read_text())
     ]
-    coverage = run_tests.remote(wheel_path.name, wheel_path.read_bytes(), version, files, modules)
-    Path("coverage.xml").write_bytes(coverage)
+    reports = run_tests.remote(wheel_path.name, wheel_path.read_bytes(), version, files, modules)
+    for name, report in zip(("coverage.xml", "junit.xml"), reports):
+        Path(name).write_bytes(report)

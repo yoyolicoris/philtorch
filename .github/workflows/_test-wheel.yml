@@ -74,10 +74,20 @@ jobs:
           pip install numpy scipy pytest pytest-cov
 
       - name: Test with pytest
-        run: pytest --cov-branch --cov-report=xml
+        run: pytest --cov-branch --cov-report=xml --junitxml=junit.xml -o junit_family=legacy
 
       - name: Upload coverage reports to Codecov
         if: inputs.upload_coverage && matrix.python-version == '3.13'
         uses: codecov/codecov-action@v5
         with:
           token: ${{ secrets.codecov_token }}
+
+      - name: Upload test results to Codecov
+        # Per-test durations and failures, for Codecov's test analytics; also
+        # when tests fail.
+        if: ${{ !cancelled() && inputs.upload_coverage && matrix.python-version == '3.13' }}
+        uses: codecov/codecov-action@v5
+        with:
+          token: ${{ secrets.codecov_token }}
+          report_type: test_results
+          files: junit.xml
