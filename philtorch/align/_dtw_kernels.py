@@ -1466,7 +1466,7 @@ def _sheared_gradients(x, y, window, scale, E, n0, m0):
     # From frames centred on each pair's mean, as the unsheared case.
     mean = torch.cat([x, y], 1).mean(1, keepdim=True)
     x, y = x - mean, F.pad(y[:, m0 : m0 + A] - mean, (0, 0, 0, chunks * C - A))
-    x_rows, y_cols = blocks(x).mT, y.reshape(B, chunks, C, -1)
+    x_rows, y_cols = blocks(x).mT, y.reshape(B, chunks, C, y.size(2))
     grad_x = 2 * scale * (x_rows * E.sum(3, keepdim=True) - E @ y_cols)
     grad_y = 2 * scale * (y_cols * E.sum(2).unsqueeze(-1) - E.mT @ x_rows)
     # The blocks' rows back to x's, the overlaps added: a fold.

@@ -494,7 +494,7 @@ def _path_cost(g: _Grid, x, y, walk: Tensor) -> Tensor:
         col.clamp(min=0), r >= 0,
     )  # fmt: skip
     diagonal = (r[:, 1:] - r[:, :-1] == 1) & (col[:, 1:] - col[:, :-1] == 1)
-    weight = pad(torch.where(diagonal, g.diag_weight, 1.0), (1, 0), value=1.0)
+    weight = pad(1 + (g.diag_weight - 1) * diagonal.to(c.dtype), (1, 0), value=1.0)
     return torch.where(r >= 0, weight * c, 0.0).sum(1)
 
 
@@ -650,7 +650,14 @@ def _linear_path(g: _Grid, x, y, finite: Tensor) -> Tensor:
     return walk
 
 
-@torch.library.custom_op("philtorch::dtw_linear_path", mutates_args=())
+# The path search syncs with the host, which a CUDA graph can't capture: the
+# tag, from PyTorch 2.8, keeps the op out of the graphs of reduce-overhead.
+_UNSAFE = getattr(torch.Tag, "cudagraph_unsafe", None)
+
+
+@torch.library.custom_op(
+    "philtorch::dtw_linear_path", mutates_args=(), **({"tags": (_UNSAFE,)} if _UNSAFE else {})
+)
 def linear_path(
     x: Tensor, y: Tensor, window: Tensor | None, big: float, scale: float, steps: str,
     diag_weight: float, sheared: bool, transposed: bool, R: int, L: int, ends: Tensor,
@@ -856,7 +863,10 @@ def soft_dtw_divergence(
     ):
         # The three pairs share a shape: one call over all of them.
         kw = {k: torch.cat([p[0][k] for p in pairs]) for k in inputs[0]}
-        ls = None if lengths is None else tuple(torch.cat([p[1][i] for p in pairs]) for i in (0, 1))
+        device = next(iter(kw.values())).device
+        ls = None if lengths is None else tuple(
+            torch.cat([p[1][i].to(device) for p in pairs]) for i in (0, 1)
+        )  # fmt: skip
         d_xy, d_xx, d_yy = dtw(gamma=gamma, lengths=ls, **kw, **kwargs).chunk(3)
     else:
         d_xy, d_xx, d_yy = (dtw(gamma=gamma, lengths=ls, **kw, **kwargs) for kw, ls in pairs)

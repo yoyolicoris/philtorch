@@ -455,6 +455,15 @@ def _banded(x, y, options):
 
 
 @pytest.mark.cuda
+def test_soft_dtw_divergence_features_with_lengths_on_other_devices():
+    x, y = _features(M=9)  # the three pairs share a shape: one batched call
+    n_len, m_len = torch.tensor([9, 4, 6]), torch.tensor([7, 3, 9])
+    actual = soft_dtw_divergence(gamma=0.5, x=x, y=y, lengths=(n_len, m_len.cuda()))
+    expected = soft_dtw_divergence(gamma=0.5, x=x, y=y, lengths=(n_len.cuda(), m_len.cuda()))
+    torch.testing.assert_close(actual, expected)
+
+
+@pytest.mark.cuda
 def test_soft_dtw_divergence_features():
     x, y = _features()
     lengths = (torch.tensor([9, 4, 6]), torch.tensor([7, 3, 7]))
@@ -619,15 +628,35 @@ def test_dtw_features_without_a_band_take_any_finite_distance():
 
 
 @pytest.mark.cuda
+def test_dtw_features_keep_the_frames_dtype_under_another_default():
+    x, y = (t.detach().float() for t in _features())
+    expected = dtw(x=x, y=y, diagonal_weight=2.0)
+    expected_path = dtw_path(x=x, y=y, diagonal_weight=2.0)
+    x.requires_grad_()
+    torch.set_default_dtype(torch.float64)
+    try:
+        distance = dtw(x=x, y=y, diagonal_weight=2.0)
+        path_distance, path = dtw_path(x=x, y=y, diagonal_weight=2.0)
+    finally:
+        torch.set_default_dtype(torch.float32)
+    assert distance.dtype == path_distance.dtype == torch.float32
+    torch.testing.assert_close(distance, expected)
+    torch.testing.assert_close(path_distance, expected_path[0])
+    assert path.equal(expected_path[1])
+
+
+@pytest.mark.cuda
+@pytest.mark.parametrize("step_pattern", ["symmetric", "asymmetric"])
 @pytest.mark.parametrize("gamma", [0.0, 0.5])
-def test_dtw_features_of_an_empty_batch(gamma):
+def test_dtw_features_of_an_empty_batch(gamma, step_pattern):
     x = torch.empty(0, 3, 1, device="cuda", requires_grad=True)
-    assert dtw(x=x.detach(), y=x.detach(), gamma=gamma).shape == (0,)
-    distance = dtw(x=x, y=x, gamma=gamma)
+    options = dict(gamma=gamma, step_pattern=step_pattern)
+    assert dtw(x=x.detach(), y=x.detach(), **options).shape == (0,)
+    distance = dtw(x=x, y=x, **options)
     assert distance.shape == (0,)
     (grad,) = torch.autograd.grad(distance.sum(), x)
     assert grad.shape == x.shape
-    if gamma == 0:
+    if gamma == 0 and step_pattern == "symmetric":
         distance, path = dtw_path(x=x, y=x)
         assert distance.shape == (0,) and path.shape == (0, 5, 2)
 
