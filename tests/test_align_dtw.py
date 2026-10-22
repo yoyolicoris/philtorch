@@ -628,6 +628,21 @@ def test_dtw_features_without_a_band_take_any_finite_distance():
 
 
 @pytest.mark.cuda
+def test_dtw_features_with_a_tiny_diagonal_weight():
+    # In float32, 1 + (w - 1) would round the weight to 0.
+    x = torch.tensor([[[0.0], [1.0]]], device="cuda", requires_grad=True)
+    y = torch.zeros(1, 2, 1, device="cuda", requires_grad=True)
+    cost = _squared_distances(x, y)
+    actual = dtw(x=x, y=y, diagonal_weight=1e-8)
+    expected = dtw(cost, diagonal_weight=1e-8)
+    torch.testing.assert_close(actual, expected)
+    assert actual.item() > 0
+    grads = torch.autograd.grad(actual.sum(), (x, y))
+    torch.testing.assert_close(grads, torch.autograd.grad(expected.sum(), (x, y)))
+    torch.testing.assert_close(dtw_path(x=x, y=y, diagonal_weight=1e-8)[0], expected)
+
+
+@pytest.mark.cuda
 def test_dtw_features_keep_the_frames_dtype_under_another_default():
     x, y = (t.detach().float() for t in _features())
     expected = dtw(x=x, y=y, diagonal_weight=2.0)

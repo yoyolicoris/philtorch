@@ -526,7 +526,9 @@ def _path_cost(g: _Grid, x, y, walk: Tensor) -> Tensor:
         col.clamp(min=0), r >= 0,
     )  # fmt: skip
     diagonal = (r[:, 1:] - r[:, :-1] == 1) & (col[:, 1:] - col[:, :-1] == 1)
-    weight = pad(1 + (g.diag_weight - 1) * diagonal.to(c.dtype), (1, 0), value=1.0)
+    weight = pad(
+        torch.where(diagonal, c.new_tensor(g.diag_weight), c.new_tensor(1.0)), (1, 0), value=1.0
+    )
     return torch.where(r >= 0, weight * c, 0.0).sum(1)
 
 
