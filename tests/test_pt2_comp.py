@@ -196,21 +196,6 @@ def _dtw_grid_cost_calls():
     return _recorded_calls(_dtw_kernels, "grid_cost", run)
 
 
-def _dtw_backtrack_features_calls():
-    from philtorch.align import _dtw_kernels
-
-    x, y, window = _features_inputs()
-    with torch.no_grad():
-        args = (x, y, window, 1e4, 1.5)
-        D = _dtw_kernels.dtw_dp_features(*args, False, "symmetric", 2.0, True, True, 4, 6)
-    ends = torch.tensor([[3, 5]] * 2, device="cuda")
-    return _recorded_calls(
-        _dtw_kernels,
-        "backtrack_features",
-        lambda: _dtw_kernels.backtrack_features(D, *args, ends, "symmetric", 2.0, True, True),
-    )
-
-
 def _dtw_backtrack_calls():
     from philtorch.align import _dtw_kernels, dtw_path
 
@@ -290,9 +275,6 @@ def _weighted_contract_calls():
             "dtw_dp_backward_features",
             lambda: _dtw_dp_features_calls("dtw_dp_backward_features", seeded=True),
             id="dtw_dp_backward_features-seeded",
-        ),
-        pytest.param(
-            "dtw_backtrack_features", _dtw_backtrack_features_calls, id="dtw_backtrack_features"
         ),
         pytest.param("dtw_frontier", _dtw_frontier_calls, id="dtw_frontier"),
         pytest.param("dtw_grid_cost", _dtw_grid_cost_calls, id="dtw_grid_cost"),

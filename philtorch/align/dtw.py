@@ -514,10 +514,11 @@ def _dtw(
 
 
 # The linear-memory path: items of at most this many cells, or this many rows,
-# are backtracked whole, in chunks of at most this many cells in all.
-_LEAF_CELLS = 2**22
+# are backtracked whole, in chunks of at most this many cells in all. A leaf's
+# steps back take 2 bits a cell, so a chunk's are at most 256 MiB.
+_LEAF_CELLS = 2**28
 _LEAF_ROWS = 64
-_CHUNK_CELLS = 2**26
+_CHUNK_CELLS = 2**30
 
 
 def _is_walk(g: _Grid, walk: Tensor) -> Tensor:
@@ -564,34 +565,16 @@ def _lines(items: Tensor) -> Tensor:
 
 
 def _leaves(g: _Grid, x, y, items: Tensor) -> Tensor:
-    """The cells (pair, row, column) of the optimal path of each item: the item
-    as a grid of its own, padded to the largest of the batch, on the frames it
-    needs: with a shear, the grid's cells (r, l) are x's frame r + l and y's r
-    (l if transposed); else x's r and y's l (swapped if transposed)."""
-    from ._dtw_kernels import backtrack_features, dtw_dp_features
+    """The cells (pair, row, column) of the optimal path of each item: the
+    frontier's wavefront over the items, which keeps each cell's best step back
+    in 2 bits, and a walk from the item's last cell."""
+    from ._dtw_kernels import leaf_paths
 
     p, r0, l0, h, w = items.unbind(-1)
-    if g.sheared:
-        x0, nx = r0 + l0, h + w - 1
-        y0, ny = (l0, w) if g.transposed else (r0, h)
-    elif g.transposed:
-        x0, nx, y0, ny = l0, w, r0, h
-    else:
-        x0, nx, y0, ny = r0, h, l0, w
-
-    def frames(f, start, count):
-        at = start[:, None] + torch.arange(int(count.max()), device=f.device)
-        at_clamped = at.clamp(max=f.size(1) - 1)
-        live = (at - start[:, None]) < count[:, None]
-        return torch.where(live[..., None], f[p[:, None], at_clamped], 0.0), at_clamped
-
-    fx, ix = frames(x, x0, nx)
-    fy, _ = frames(y, y0, ny)
-    window = None if g.window is None else g.window[p[:, None], ix] - y0[:, None, None].int()
-    given = (fx, fy, window, g.big, g.scale)
-    options = (g.steps, g.diag_weight, g.sheared, g.transposed)
-    D = dtw_dp_features(*given, False, *options, int(h.max()), int(w.max()))
-    cells = backtrack_features(D, *given, torch.stack([h - 1, w - 1], -1), *options)
+    cells = leaf_paths(
+        x, y, g.window, g.big, g.scale, items, g.steps, g.diag_weight, g.sheared, g.transposed,
+        int(h.max()), int(w.max()),
+    )  # fmt: skip
     live = cells[..., 0] >= 0
     shift = torch.stack([p, r0, l0], -1)[:, None]
     return (shift + pad(cells, (1, 0)))[live]
@@ -752,8 +735,11 @@ def dtw_path(
     Dynamic Time Warping Alignment with Linear Memory`_ (Tralie and Dempsey,
     2020), in :math:`O(B (N + M))` memory and a few times the forward work:
     the best crossing of a rectangle's middle rows splits it in two between
-    cells of the path, down to rectangles backtracked whole; the distance is
-    then the path's cost, from the frames, which autograd differentiates.
+    cells of the path, down to rectangles backtracked whole from each cell's
+    best step back, kept in 2 bits, after `A Study of Parallelizable
+    Alternatives to Dynamic Time Warping for Aligning Long Sequences`_ (Yang
+    et al., 2022); the distance is then the path's cost, from the frames,
+    which autograd differentiates.
 
     Note:
         Runs only on CUDA GPUs, as Triton kernels: the inputs must be CUDA
@@ -798,6 +784,8 @@ def dtw_path(
 
     .. _Exact, Parallelizable Dynamic Time Warping Alignment with Linear Memory:
         https://doi.org/10.5281/zenodo.4245470
+    .. _A Study of Parallelizable Alternatives to Dynamic Time Warping for Aligning Long Sequences:
+        https://doi.org/10.1109/TASLP.2022.3180673
     """
     B, N, M = _validate("dtw_path", cost, x, y, step_pattern, diagonal_weight, lengths, band)
     distance, g, D, walk = _dtw(
