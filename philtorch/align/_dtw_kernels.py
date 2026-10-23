@@ -95,8 +95,8 @@ enough to backtrack whole (a leaf) runs the forward recursion with the frontier
 kernel's ``codes_ptr`` on: each cell's best step back, the one :func:`_shares`
 chooses, is kept in 2 bits, 16 rows to an int32 word, and ``_walk_kernel``
 follows them from the leaf's last cell (Yang et al., IEEE/ACM TASLP 2022), so
-that a leaf holds 16 times the cells of the accumulated costs in the same
-memory.
+that a leaf holds 16 times the cells of float32 accumulated costs (32 of
+float64's) in the same memory.
 
 Strips. A grid of several tile columns, cut into blocks of rows, would fill
 and drain the wavefront in each, so it is cut along the wavefront instead: a
@@ -1009,8 +1009,8 @@ def _walk_kernel(codes_ptr, items_ptr, path_ptr, W, G, P, BLOCK: tl.constexpr):
     As :func:`_backtrack_kernel` walks: BLOCK cells of a row at a time, its exit
     the last cell whose step is not left, from which the path goes up, or
     diagonally, or stops. The cells, the last first, go to ``path_ptr`` (S, P,
-    2) as (row, column), P being the items' rows plus columns less one. One
-    program per item.
+    2) as (row, column), P being the most rows plus the most columns less
+    one. One program per item.
     """
     s = tl.program_id(0).to(tl.int64)
     out = path_ptr + s * P * 2
@@ -1035,18 +1035,6 @@ def _walk_kernel(codes_ptr, items_ptr, path_ptr, W, G, P, BLOCK: tl.constexpr):
         next_i = tl.where(found, tl.where(step == 0, -1, i - 1), i)
         j = tl.where(found, tl.where(step == 1, exit_col, exit_col - 1), j - BLOCK)
         i = next_i
-
-
-def _features(feat):
-    """feat = (x, y, window, big, scale, shear, transpose), as the kernels'
-    arguments: (fx, fy, window, N, M, F, big_bits, scale_bits) and (SHEAR,
-    TRANSPOSE). ``big`` and ``scale`` go as bits (see :func:`_unbits`)."""
-    x, y, window, big, scale, shear, transpose = feat
-    x, y = x.contiguous(), y.contiguous()
-    window = None if window is None else window.contiguous()
-    bits = (struct.unpack("<q", struct.pack("<d", v))[0] for v in (big, scale))
-    N, F = x.shape[1:]
-    return (x, y, window, N, y.shape[1], F, *bits), (shear, transpose)
 
 
 def _in_order(walk):
@@ -1175,13 +1163,14 @@ def _diagonals(
     n_tiles being the tiles of d in a grid: those from ``span[0]`` to
     ``span[1]`` - 1, if given, else all.
 
-    In feature mode (``feat``, as _features takes it, with the ``items`` of
-    _frame, if any), a chunk of anti-diagonals at a time, whose costs fit
-    _SCRATCH_CELLS, first has its costs computed by _cost_kernel, in parallel
-    over the blocks of all its tiles, into ``scratch``, and the tiles with a
-    cell in the window flagged in ``hit`` (None without a window; with
-    ``given``, the tiles of the seeded row 0 also): a tile's slice is at
-    ``slot`` plus its program number. Without, the scratch is None.
+    In feature mode (``feat`` = (x, y, window, big, scale, shear, transpose),
+    with the ``items`` of _frame, if any), a chunk of anti-diagonals at a
+    time, whose costs fit _SCRATCH_CELLS, first has its costs computed by
+    _cost_kernel, in parallel over the blocks of all its tiles, into
+    ``scratch``, and the tiles with a cell in the window flagged in ``hit``
+    (None without a window; with ``given``, the tiles of the seeded row 0
+    also): a tile's slice is at ``slot`` plus its program number. Without,
+    the scratch is None.
     """
     if S == 0:
         return
@@ -1194,7 +1183,12 @@ def _diagonals(
     if feat is None:
         yield from ((d, None, None, 0, tiles(d)) for d in range(first, stop))
         return
-    (fx, fy, win, *sizes), (shear, transpose) = _features(feat)
+    x, y, win, big, scale, shear, transpose = feat
+    fx, fy = x.contiguous(), y.contiguous()
+    win = None if win is None else win.contiguous()
+    # ``big`` and ``scale`` go to the kernels as bits (see :func:`_unbits`).
+    bits = (struct.unpack("<q", struct.pack("<d", v))[0] for v in (big, scale))
+    sizes = (fx.size(1), fy.size(1), fx.size(2), *bits)  # N, M, F and the bits
     BF = min(16, triton.next_power_of_2(sizes[2]))
     halo = reverse
     P = S * min(n_rows, n_cols)  # the most tiles of an anti-diagonal
@@ -1224,7 +1218,7 @@ def _launch(
 ):  # fmt: skip
     """Run _dag_kernel over the grid of y (B, R, L), one launch per tile
     anti-diagonal, with the kernel's pointers by these names: ``weights`` are
-    the up, left, diagonal and skip weights; ``feat``, as _features takes it,
+    the up, left, diagonal and skip weights; ``feat``, as _diagonals takes it,
     in place of ``cost``, whose rows start at row ``row0`` of the features'
     grid; ``given`` as the kernel's GIVEN. The backward is the launch with D.
 
@@ -1261,7 +1255,7 @@ def _wavefront(feat, items, soft, steps, diag_weight, reverse, h_max, w_max, bac
     """The launches of :func:`frontier` over the items of the features ``feat``:
     the rows of tile row i in slot i % 3 of ``rows``, the tile rows TR, and,
     with ``back``, forward and hard, the packed steps back, as
-    :func:`_frontier_kernel` keeps them."""
+    :func:`_frontier_kernel` keeps them. ``items`` is contiguous."""
     S = items.size(0)
     TR, TL = _tile(S, h_max, w_max, True)
     TR = _halo_rows(TR) if reverse else TR
@@ -1273,7 +1267,6 @@ def _wavefront(feat, items, soft, steps, diag_weight, reverse, h_max, w_max, bac
     codes = None
     if back:
         codes = torch.zeros(S, triton.cdiv(h_max, 16), W, dtype=torch.int32, device=x.device)
-    items = items.contiguous()
     for d, scratch, hit, slot, n_tiles in _diagonals(S, h_max, w_max, TR, TL, reverse, feat, items):
         _frontier_kernel[(S * n_tiles,)](
             items, rows, cols, scratch, hit, codes, diag_weight, d, TR, W, h_max, slot, soft,
@@ -1293,7 +1286,10 @@ def leaf_paths(
     steps "orthogonal" and "symmetric"."""
     feat = (x, y, window, big, scale, shear, transpose)
     items = items.contiguous()
-    _, _, codes = _wavefront(feat, items, False, steps, diag_weight, False, h_max, w_max, True)
+    _, _, codes = _wavefront(
+        feat, items, soft=False, steps=steps, diag_weight=diag_weight, reverse=False,
+        h_max=h_max, w_max=w_max, back=True,
+    )  # fmt: skip
     P = h_max + w_max - 1
     walk = items.new_full((items.size(0), P, 2), -1)
     _walk_kernel[(items.size(0),)](
@@ -1325,7 +1321,9 @@ def frontier(
     """
     S = items.size(0)
     feat = (x, y, window, big, scale, shear, transpose)
-    rows, TR, _ = _wavefront(feat, items, soft, steps, diag_weight, reverse, h_max, w_max)
+    rows, TR, _ = _wavefront(
+        feat, items.contiguous(), soft, steps, diag_weight, reverse, h_max, w_max
+    )
     # Each item's last tile row holds the row.
     h, w = items[:, 3:].unbind(1)
     last = rows[torch.arange(S, device=x.device), (h - 1) // TR % 3]
@@ -1726,8 +1724,7 @@ def _sheared_gradients(x, y, window, scale, E, n0, m0):
     mean = torch.cat([x, y], 1).mean(1, keepdim=True)
     x, y = x - mean, F.pad(y[:, m0 : m0 + A] - mean, (0, 0, 0, chunks * C - A))
     x_rows, y_cols = blocks(x).mT, y.reshape(B, chunks, C, y.size(2))
-    grad_x = 2 * scale * (x_rows * E.sum(3, keepdim=True) - E @ y_cols)
-    grad_y = 2 * scale * (y_cols * E.sum(2).unsqueeze(-1) - E.mT @ x_rows)
+    grad_x, grad_y = _products(x_rows, y_cols, E, scale)
     grad_x = _add_blocks(grad_x, (n0, C, K), N)
     return grad_x, F.pad(grad_y.flatten(1, 2)[:, :A], (0, 0, m0, M - m0 - A))
 
@@ -1755,8 +1752,7 @@ def _cost_gradients(x, y, window, scale, shear, transpose, row0, E):
     # cancels only their spread, not an offset they share.
     mean = torch.cat([x, y], 1).mean(1, keepdim=True)
     x, y = x[:, n0 : n1 + 1] - mean, y[:, m0:m1] - mean
-    grad_x = 2 * scale * (x * E.sum(2, keepdim=True) - E @ y)
-    grad_y = 2 * scale * (y * E.sum(1).unsqueeze(-1) - E.mT @ x)
+    grad_x, grad_y = _products(x, y, E, scale)
     grad_x, grad_y = F.pad(grad_x, (0, 0, n0, N - 1 - n1)), F.pad(grad_y, (0, 0, m0, M - m1))
     return grad_x, grad_y
 

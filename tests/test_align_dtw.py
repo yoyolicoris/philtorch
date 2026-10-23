@@ -686,14 +686,17 @@ def _feature_options(step_pattern, diagonal_weight, N, M, band, with_lengths):
 
 
 @pytest.mark.cuda
-@pytest.mark.parametrize("gamma", [0.0, 0.5])
+@pytest.mark.parametrize("gamma, small_leaves", [(0.0, True), (0.5, True), (0.0, False)])
 @pytest.mark.parametrize("case", _FEATURE_CASES)
-def test_dtw_features_equal_the_cost(monkeypatch, gamma, case):
+def test_dtw_features_equal_the_cost(monkeypatch, gamma, small_leaves, case):
     from philtorch.align import _dtw_kernels
 
-    # Leaves of at most 2 rows, in chunks of 64 cells, and frontiers of many tiles.
+    # Leaves of at most 2 rows, in chunks of 64 cells, and frontiers of many
+    # tiles; or, without small_leaves, the whole grid one leaf, whose 16-row
+    # groups of steps back cross the tile rows of 3 below.
     module = importlib.import_module("philtorch.align.dtw")
-    for name, value in dict(_LEAF_ROWS=2, _LEAF_CELLS=0, _CHUNK_CELLS=64).items():
+    small = dict(_LEAF_ROWS=2, _LEAF_CELLS=0, _CHUNK_CELLS=64)
+    for name, value in (small if small_leaves else {}).items():
         monkeypatch.setattr(module, name, value)
     x, y = _features(3, *case[2:4])
     options = _feature_options(*case)
@@ -724,9 +727,11 @@ def test_dtw_features_without_gradients_stay_linear_in_memory():
 
 
 @pytest.mark.cuda
-def test_dtw_features_gradient_stays_linear_in_memory():
+def test_dtw_features_gradient_stays_linear_in_memory(monkeypatch):
     # DTW's gradient is its path's: no accumulated costs are stored, only the
-    # divide and conquer's leaves, of bounded size.
+    # divide and conquer's leaves, of bounded size: with leaves of at most 2^22
+    # cells, as the grid of 2^26 is split, not one leaf.
+    monkeypatch.setattr(importlib.import_module("philtorch.align.dtw"), "_LEAF_CELLS", 2**22)
     N = M = 8192
     x, y = (t.requires_grad_() for t in torch.randn(2, 1, N, 3, device="cuda"))
     base = torch.cuda.memory_allocated()

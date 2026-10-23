@@ -514,8 +514,10 @@ def _dtw(
 
 
 # The linear-memory path: items of at most this many cells, or this many rows,
-# are backtracked whole, in chunks of at most this many cells in all. A leaf's
-# steps back take 2 bits a cell, so a chunk's are at most 256 MiB.
+# are backtracked whole, in chunks of at most this many cells in all, the rows
+# rounded up to 16. A leaf's steps back take 2 bits a cell, so a chunk's are at
+# most 256 MiB, but for a leaf of at most _LEAF_ROWS rows, chunked alone however
+# wide.
 _LEAF_CELLS = 2**28
 _LEAF_ROWS = 64
 _CHUNK_CELLS = 2**30
@@ -687,7 +689,8 @@ def linear_path(
         leaves = leaves[(leaves[:, 3] * leaves[:, 4]).argsort(descending=True)]
         start, H, W = 0, 0, 0
         for i, (h, w) in enumerate(leaves[:, 3:].tolist()):
-            if i > start and (i + 1 - start) * max(H, h) * max(W, w) > _CHUNK_CELLS:
+            rows = -(-max(H, h) // 16) * 16  # the steps back's words, 16 rows each
+            if i > start and (i + 1 - start) * rows * max(W, w) > _CHUNK_CELLS:
                 found.append(_leaves(g, x, y, leaves[start:i]))
                 start, H, W = i, 0, 0
             H, W = max(H, h), max(W, w)
