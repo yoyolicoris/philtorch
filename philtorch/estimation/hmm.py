@@ -33,7 +33,6 @@ time with :func:`._contract_kernels.weighted_contract`.
 
 import torch
 from torch import Tensor
-from torch.nn.functional import softplus
 
 from .._triton import check_cuda_triton
 
@@ -105,10 +104,10 @@ def _log_softmax(x: Tensor) -> Tensor:
     empty = torch.isneginf(top)
     diff = x - torch.where(empty, torch.zeros_like(top), top)
     others = _logsumexp(diff.scatter(-1, k, float("-inf")), dim=-1, keepdim=True)
-    # The top entry's difference is a constant, not x[k] - x[k]: its gradient
-    # would cancel to 0 against the top's own, which is the loss to avoid.
+    # The top entry's difference is a constant, not x[k] - x[k], whose own
+    # term would cancel the top's, rounding the top entry's gradient to 0.
     diff = diff.scatter(-1, k, torch.where(empty, float("-inf"), 0.0).to(x.dtype))
-    return diff - softplus(others)
+    return diff - torch.nn.functional.softplus(others)
 
 
 def _log(x: Tensor) -> Tensor:
@@ -412,7 +411,9 @@ def hmm_filter(log_emit: Tensor, log_trans: Tensor, log_init: Tensor) -> tuple[T
 
     Returns:
         tuple of Tensor: the log-likelihood, of shape :math:`(B)`, and the
-        filtered log-probabilities, of shape :math:`(B, N, K)`.
+        filtered log-probabilities, of shape :math:`(B, N, K)`. If no state
+        can emit some :math:`y[n]`, the log-likelihood is ``-inf``, and so
+        are the log-probabilities from step :math:`n` on.
 
     Raises:
         ValueError: if the inputs are not CUDA tensors or have unsupported
@@ -424,11 +425,13 @@ def hmm_filter(log_emit: Tensor, log_trans: Tensor, log_init: Tensor) -> tuple[T
         >>> from philtorch.estimation import hmm_filter
         >>> # Two states that stay with probability 0.9, each emitting its own
         >>> # symbol with probability 0.8; the measurements are 0, 0, 1, 1.
-        >>> log_trans = torch.tensor([[0.9, 0.1], [0.1, 0.9]], device="cuda").log()
-        >>> log_init = torch.tensor([0.5, 0.5], device="cuda").log()
+        >>> trans = torch.tensor([[0.9, 0.1], [0.1, 0.9]], device="cuda")
+        >>> init = torch.tensor([0.5, 0.5], device="cuda")
         >>> emit = torch.tensor([[0.8, 0.2], [0.2, 0.8]], device="cuda")
         >>> log_emit = emit[[0, 0, 1, 1]].log()[None]  # (B, N, K) = (1, 4, 2)
-        >>> log_likelihood, log_posteriors = hmm_filter(log_emit, log_trans, log_init)
+        >>> log_likelihood, log_posteriors = hmm_filter(
+        ...     log_emit, trans.log(), init.log()
+        ... )
         >>> log_likelihood
         tensor([-3.0930], device='cuda:0')
         >>> log_posteriors.exp()
@@ -481,7 +484,8 @@ def hmm_smoother(log_emit: Tensor, log_trans: Tensor, log_init: Tensor) -> tuple
 
     Returns:
         tuple of Tensor: the log-likelihood, of shape :math:`(B)`, and the
-        posterior log-probabilities, of shape :math:`(B, N, K)`.
+        posterior log-probabilities, of shape :math:`(B, N, K)`. If no state
+        can emit some :math:`y[n]`, all of them are ``-inf``.
 
     Raises:
         ValueError: if the inputs are not CUDA tensors or have unsupported
@@ -492,11 +496,13 @@ def hmm_smoother(log_emit: Tensor, log_trans: Tensor, log_init: Tensor) -> tuple
 
         >>> from philtorch.estimation import hmm_smoother
         >>> # The model and measurements of :func:`hmm_filter`'s example.
-        >>> log_trans = torch.tensor([[0.9, 0.1], [0.1, 0.9]], device="cuda").log()
-        >>> log_init = torch.tensor([0.5, 0.5], device="cuda").log()
+        >>> trans = torch.tensor([[0.9, 0.1], [0.1, 0.9]], device="cuda")
+        >>> init = torch.tensor([0.5, 0.5], device="cuda")
         >>> emit = torch.tensor([[0.8, 0.2], [0.2, 0.8]], device="cuda")
         >>> log_emit = emit[[0, 0, 1, 1]].log()[None]  # (B, N, K) = (1, 4, 2)
-        >>> log_likelihood, log_posteriors = hmm_smoother(log_emit, log_trans, log_init)
+        >>> log_likelihood, log_posteriors = hmm_smoother(
+        ...     log_emit, trans.log(), init.log()
+        ... )
         >>> log_posteriors.exp()  # the last step's are the filter's
         tensor([[[0.7678, 0.2322],
                  [0.6916, 0.3084],
@@ -564,11 +570,11 @@ def hmm_viterbi(log_emit: Tensor, log_trans: Tensor, log_init: Tensor) -> tuple[
 
         >>> from philtorch.estimation import hmm_viterbi
         >>> # The model and measurements of :func:`hmm_filter`'s example.
-        >>> log_trans = torch.tensor([[0.9, 0.1], [0.1, 0.9]], device="cuda").log()
-        >>> log_init = torch.tensor([0.5, 0.5], device="cuda").log()
+        >>> trans = torch.tensor([[0.9, 0.1], [0.1, 0.9]], device="cuda")
+        >>> init = torch.tensor([0.5, 0.5], device="cuda")
         >>> emit = torch.tensor([[0.8, 0.2], [0.2, 0.8]], device="cuda")
         >>> log_emit = emit[[0, 0, 1, 1]].log()[None]  # (B, N, K) = (1, 4, 2)
-        >>> score, path = hmm_viterbi(log_emit, log_trans, log_init)
+        >>> score, path = hmm_viterbi(log_emit, trans.log(), init.log())
         >>> path
         tensor([[0, 0, 1, 1]], device='cuda:0')
 
@@ -636,12 +642,12 @@ def hmm_em_step(
 
         >>> from philtorch.estimation import hmm_em_step
         >>> # The model and measurements of :func:`hmm_filter`'s example.
-        >>> log_trans = torch.tensor([[0.9, 0.1], [0.1, 0.9]], device="cuda").log()
-        >>> log_init = torch.tensor([0.5, 0.5], device="cuda").log()
+        >>> trans = torch.tensor([[0.9, 0.1], [0.1, 0.9]], device="cuda")
+        >>> init = torch.tensor([0.5, 0.5], device="cuda")
         >>> emit = torch.tensor([[0.8, 0.2], [0.2, 0.8]], device="cuda")
         >>> log_emit = emit[[0, 0, 1, 1]].log()[None]  # (B, N, K) = (1, 4, 2)
         >>> log_likelihood, (log_trans, log_init), posteriors = hmm_em_step(
-        ...     log_emit, log_trans, log_init
+        ...     log_emit, trans.log(), init.log()
         ... )
         >>> log_trans.exp()
         tensor([[0.6742, 0.3258],

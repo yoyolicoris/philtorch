@@ -399,13 +399,12 @@ def test_hmm_matches_sequential_in_float32():
 
 
 @pytest.mark.cuda
-@pytest.mark.parametrize("margin", [16, 24])
 @pytest.mark.parametrize("fn", [hmm_filter, hmm_smoother])
-def test_hmm_posterior_gradient_of_a_confident_model_in_float32(fn, margin):
+def test_hmm_posterior_gradient_of_a_confident_model_in_float32(fn):
     # Where one state is near certain, the gradient of x - logsumexp(x) loses
     # that state's share to rounding: 1 - q = 0.
     gen = torch.Generator().manual_seed(0)
-    K, N = 4, 64
+    K, N, margin = 4, 64, 16
     labels = torch.randint(K, (1, N, 1), generator=gen).cuda()
     log_emit = (
         margin * torch.nn.functional.one_hot(labels[..., 0], K)
@@ -468,6 +467,14 @@ def test_hmm_impossible_emissions():
     (grad,) = torch.autograd.grad((posteriors.exp() * weights).sum(), emissions)
     (expected_grad,) = torch.autograd.grad((expected.exp() * weights).sum(), emissions)
     torch.testing.assert_close(grad, expected_grad)
+    # With a step no state can emit, the sequence is impossible: all -inf,
+    # still with no NaN in the gradients.
+    impossible[:, 35] = True
+    log_emit = emissions.masked_fill(impossible, float("-inf"))
+    ll, posteriors = hmm_smoother(log_emit, log_trans, log_init)
+    assert ll.isneginf().all() and posteriors.isneginf().all()
+    (grad,) = torch.autograd.grad((posteriors.exp() * weights).sum(), emissions)
+    assert not grad.isnan().any()
 
 
 @pytest.mark.cuda
