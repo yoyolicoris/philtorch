@@ -33,6 +33,7 @@ time with :func:`._contract_kernels.weighted_contract`.
 
 import torch
 from torch import Tensor
+from torch.nn.functional import softplus
 
 from .._triton import check_cuda_triton
 
@@ -86,6 +87,28 @@ def _logsumexp(x: Tensor, dim: int, keepdim: bool = False) -> Tensor:
     out = torch.logsumexp(torch.where(empty, torch.zeros_like(x), x), dim=dim, keepdim=True)
     out = torch.where(empty, float("-inf"), out)
     return out if keepdim else out.squeeze(dim)
+
+
+def _log_softmax(x: Tensor) -> Tensor:
+    """The log-softmax over the last dimension, with a sound top-entry gradient.
+
+    With k the index of the largest entry, entry j is
+    ``(x[j] - x[k]) - softplus(logsumexp(x[i] - x[k] for i != k))``: the
+    normalizer is the softplus of the others' log-odds against the top entry,
+    as in "A Fix for Softmax and Cross-Entropy" (Barron et al., 2026). The
+    gradient of ``x - logsumexp(x)`` has 1 - q at a near-certain entry, which
+    rounds to 0 once q is within epsilon of 1; here it is a sum of small
+    terms. Slices of -inf stay -inf, as in :func:`_logsumexp`.
+    """
+    k = x.argmax(dim=-1, keepdim=True)
+    top = x.gather(-1, k)
+    empty = torch.isneginf(top)
+    diff = x - torch.where(empty, torch.zeros_like(top), top)
+    others = _logsumexp(diff.scatter(-1, k, float("-inf")), dim=-1, keepdim=True)
+    # The top entry's difference is a constant, not x[k] - x[k]: its gradient
+    # would cancel to 0 against the top's own, which is the loss to avoid.
+    diff = diff.scatter(-1, k, torch.where(empty, float("-inf"), 0.0).to(x.dtype))
+    return diff - softplus(others)
 
 
 def _log(x: Tensor) -> Tensor:
@@ -366,7 +389,9 @@ def hmm_filter(log_emit: Tensor, log_trans: Tensor, log_init: Tensor) -> tuple[T
     to :attr:`log_emit` is the posteriors of :func:`hmm_smoother`. Forward-mode
     automatic differentiation is not supported. The scan runs in chunks of
     steps, a few Triton kernel launches whatever N is, with O(N K^3) work,
-    and its gradients are scans of the same kind.
+    and its gradients are scans of the same kind. The posteriors are
+    normalized as in `A Fix for Softmax and Cross-Entropy`_ (Barron et al.,
+    2026), so that their gradients keep a near-certain state's share.
 
     Note:
         Runs only on CUDA GPUs, as Triton kernels: the inputs must be CUDA
@@ -395,14 +420,15 @@ def hmm_filter(log_emit: Tensor, log_trans: Tensor, log_init: Tensor) -> tuple[T
 
     .. _Temporal Parallelization of Inference in Hidden Markov Models:
         https://doi.org/10.1109/TSP.2021.3103338
+    .. _A Fix for Softmax and Cross-Entropy:
+        https://arxiv.org/abs/2610.31642
     """
     log_emit, log_trans, log_init = _parse("hmm_filter", log_emit, log_trans, log_init)
     if log_emit.size(1) == 0:
         return _empty(log_emit, log_trans, log_init)
     # alpha[n][j] = log p(y[0..n], z[n] = j), from the predicted messages.
     alpha = _LogChain.apply(log_init, log_trans, log_emit[:, :-1]) + log_emit
-    norm = _logsumexp(alpha, dim=-1, keepdim=True)
-    return norm[:, -1, 0], alpha - norm
+    return _logsumexp(alpha[:, -1], dim=-1), _log_softmax(alpha)
 
 
 def hmm_smoother(log_emit: Tensor, log_trans: Tensor, log_init: Tensor) -> tuple[Tensor, Tensor]:
@@ -455,7 +481,7 @@ def hmm_smoother(log_emit: Tensor, log_trans: Tensor, log_init: Tensor) -> tuple
     # messages grow to thousands over long inputs, and most of their rounding
     # error is shared by all states at a step, so this cancels it.
     joint = predicted + log_emit + beta
-    return log_likelihood, joint - _logsumexp(joint, dim=-1, keepdim=True)
+    return log_likelihood, _log_softmax(joint)
 
 
 def hmm_viterbi(log_emit: Tensor, log_trans: Tensor, log_init: Tensor) -> tuple[Tensor, Tensor]:

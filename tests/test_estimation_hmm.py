@@ -399,6 +399,33 @@ def test_hmm_matches_sequential_in_float32():
 
 
 @pytest.mark.cuda
+@pytest.mark.parametrize("margin", [16, 24])
+@pytest.mark.parametrize("fn", [hmm_filter, hmm_smoother])
+def test_hmm_posterior_gradient_of_a_confident_model_in_float32(fn, margin):
+    # Where one state is near certain, the gradient of x - logsumexp(x) loses
+    # that state's share to rounding: 1 - q = 0.
+    gen = torch.Generator().manual_seed(0)
+    K, N = 4, 64
+    labels = torch.randint(K, (1, N, 1), generator=gen).cuda()
+    log_emit = (
+        margin * torch.nn.functional.one_hot(labels[..., 0], K)
+        + torch.randn(1, N, K, generator=gen).cuda()
+    ).double()
+    log_trans = (
+        torch.full((K, K), 0.1, dtype=torch.float64, device="cuda").fill_diagonal_(0.7).log()
+    )
+    log_init = torch.full((K,), 1 / K, dtype=torch.float64, device="cuda").log()
+
+    def grad(dtype):
+        x = log_emit.to(dtype).requires_grad_()
+        loss = -fn(x, log_trans.to(dtype), log_init.to(dtype))[1].gather(-1, labels).sum()
+        return torch.autograd.grad(loss, x)[0].double()
+
+    expected = grad(torch.float64)
+    assert (grad(torch.float32) - expected).norm() < 1e-2 * expected.norm()
+
+
+@pytest.mark.cuda
 def test_hmm_gradients_with_unreachable_states():
     # A left-to-right model that starts in state 0 and stays or advances:
     # most entries of the prior and the transitions are -inf.
