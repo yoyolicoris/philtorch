@@ -1,8 +1,10 @@
 """Kalman filters and smoothers parallelized over time with associative scans,
 and their expectation-maximization step.
 
-These follow Särkkä and García-Fernández, "On the performance of prefix-sum
-parallel Kalman filters and smoothers on GPUs" (arXiv:2511.10363).
+These follow Särkkä and García-Fernández, "Temporal parallelization of
+Bayesian smoothers" (IEEE Transactions on Automatic Control, 2021), and their
+"On the performance of prefix-sum parallel Kalman filters and smoothers on
+GPUs" (arXiv:2511.10363).
 """
 
 import math
@@ -265,7 +267,8 @@ class KalmanFilterResult(NamedTuple):
     means: Tensor
     #: Filtered covariances, of shape :math:`(B, N, M, M)`.
     covs: Tensor
-    #: Each signal's log marginal likelihood :math:`\log p(\mathbf{y})`, of shape :math:`(B)`.
+    #: Each signal's log marginal likelihood :math:`\log p(\mathbf{y})`, of
+    #: shape :math:`(B)`.
     log_likelihood: Tensor
 
 
@@ -277,10 +280,11 @@ class KalmanSmootherResult(NamedTuple):
     #: Smoothed covariances, of shape :math:`(B, N, M, M)`.
     covs: Tensor
     #: Lag-one cross-covariances
-    #: :math:`\mathrm{Cov}(\mathbf{x}[n + 1], \mathbf{x}[n] \mid \mathbf{y})`, of shape
-    #: :math:`(B, N - 1, M, M)`.
+    #: :math:`\mathrm{Cov}(\mathbf{x}[n + 1], \mathbf{x}[n] \mid \mathbf{y})`,
+    #: of shape :math:`(B, N - 1, M, M)`.
     cross_covs: Tensor
-    #: Each signal's log marginal likelihood :math:`\log p(\mathbf{y})`, of shape :math:`(B)`.
+    #: Each signal's log marginal likelihood :math:`\log p(\mathbf{y})`, of
+    #: shape :math:`(B)`.
     log_likelihood: Tensor
 
 
@@ -315,9 +319,11 @@ def kalman_filter(
     log-likelihood is differentiable, for fitting the model's matrices by
     gradient ascent, including matrices predicted by a network. These are the
     results of the sequential Kalman filter, computed instead with an
-    associative scan of depth :math:`O(\log N)`, as in `On The Performance of
-    Prefix-Sum Parallel Kalman Filters and Smoothers on GPUs`_ (Särkkä and
-    García-Fernández, 2025). The scan is PyTorch's
+    associative scan of depth :math:`O(\log N)`, as in `Temporal
+    Parallelization of Bayesian Smoothers`_ (Särkkä and García-Fernández,
+    2021), whose performance on GPUs `On The Performance of Prefix-Sum
+    Parallel Kalman Filters and Smoothers on GPUs`_ (Särkkä and
+    García-Fernández, 2025) studies. The scan is PyTorch's
     :func:`associative_scan <torch._higher_order_ops.associative_scan.associative_scan>`
     in its generic mode, which needs PyTorch 2.11 or later.
 
@@ -406,6 +412,8 @@ def kalman_filter(
         >>> result.means.squeeze()
         tensor([0.5000, 0.7500, 0.8750], dtype=torch.float64)
 
+    .. _Temporal Parallelization of Bayesian Smoothers:
+        https://doi.org/10.1109/TAC.2020.2976316
     .. _On The Performance of Prefix-Sum Parallel Kalman Filters and Smoothers on GPUs:
         https://arxiv.org/abs/2511.10363
     """
@@ -425,9 +433,11 @@ def kalman_smoother(
     cross-covariances :math:`\mathrm{Cov}(\mathbf{x}[n + 1], \mathbf{x}[n]
     \mid \mathbf{y})`, and :func:`kalman_filter`'s log-likelihood: the
     results of the Rauch--Tung--Striebel smoother, computed with a reverse
-    associative scan after the filter's, as in `On The Performance of
-    Prefix-Sum Parallel Kalman Filters and Smoothers on GPUs`_ (Särkkä and
-    García-Fernández, 2025). The cross-covariances come from the smoother's
+    associative scan after the filter's, as in `Temporal Parallelization of
+    Bayesian Smoothers`_ (Särkkä and García-Fernández, 2021) and `On The
+    Performance of Prefix-Sum Parallel Kalman Filters and Smoothers on GPUs`_
+    (Särkkä and García-Fernández, 2025). The cross-covariances come from the
+    smoother's
     gains, :math:`\mathrm{Cov}(\mathbf{x}[n], \mathbf{x}[n + 1] \mid
     \mathbf{y}) = E[n] \, \mathrm{Cov}(\mathbf{x}[n + 1] \mid \mathbf{y})`.
     The arguments are those of :func:`kalman_filter`, and the same PyTorch
@@ -479,6 +489,8 @@ def kalman_smoother(
         >>> result.means.squeeze()  # the last state has no later measurements
         tensor([0.6562, 0.8125, 0.8750], dtype=torch.float64)
 
+    .. _Temporal Parallelization of Bayesian Smoothers:
+        https://doi.org/10.1109/TAC.2020.2976316
     .. _On The Performance of Prefix-Sum Parallel Kalman Filters and Smoothers on GPUs:
         https://arxiv.org/abs/2511.10363
     """
@@ -536,6 +548,22 @@ def kalman_em_step(
             :attr:`Q`, :attr:`C` and :attr:`R`, or :attr:`m0` and :attr:`P0`
             differ in layout.
         RuntimeError: on PyTorch older than 2.11.
+
+    Example::
+
+        >>> from philtorch.estimation import kalman_em_step
+        >>> # A random walk with unit noise variances, fitted to five
+        >>> # measurements.
+        >>> y = torch.tensor([0.0, 1.0, 1.5, 3.0, 3.5], dtype=torch.float64)
+        >>> y = y.view(1, 5, 1)  # (B, N, P)
+        >>> one = torch.ones(1, 1, dtype=torch.float64)
+        >>> m0 = torch.zeros(1, dtype=torch.float64)
+        >>> params = (one, one, one, one, m0, one)  # A, C, Q, R, m0, P0
+        >>> log_likelihood, params = kalman_em_step(y, *params)
+        >>> log_likelihood
+        tensor([-8.1241], dtype=torch.float64)
+        >>> kalman_em_step(y, *params)[0]  # the next step's is higher
+        tensor([-6.7385], dtype=torch.float64)
 
     .. _An Approach to Time Series Smoothing and Forecasting Using the EM Algorithm:
         https://doi.org/10.1111/j.1467-9892.1982.tb00349.x
