@@ -97,7 +97,7 @@ def get_extensions():
     extra_compile_args = {}
     if use_openmp:
         if sys.platform == "win32":
-            # host_dot.h uses `#pragma omp simd`, which requires MSVC's
+            # host_recur.cpp uses `#pragma omp simd`, which requires MSVC's
             # experimental OpenMP mode; the legacy `/openmp` flag only
             # supports OpenMP 2.0 constructs (no `simd`) and fails to compile.
             extra_compile_args["cxx"] = ["/openmp:experimental"]
