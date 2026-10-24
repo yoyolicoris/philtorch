@@ -50,7 +50,8 @@ from torch import Tensor
 _SEMIRINGS = {"log": 0, "max": 1, "linear": 2}
 # Triton kernels can only read module constants made with tl.constexpr.
 _MAX, _LINEAR = (tl.constexpr(_SEMIRINGS[name]) for name in ("max", "linear"))
-_KERNEL_NEG_INF = tl.constexpr(float("-inf"))
+# The kernels write -inf in place: torch.compile copies the source of those
+# launched outside an op, and would write such a constant back as -inf, a name.
 # The chunk length: each kernel program takes T sequential steps.
 _CHUNK = 64
 # The largest K whose products a program holds in registers; twice that for a
@@ -66,7 +67,7 @@ def _reduce(x, axis: tl.constexpr, SEMIRING: tl.constexpr):
     top = tl.max(x, axis)
     if SEMIRING == _MAX:
         return top
-    shift = tl.where(top == _KERNEL_NEG_INF, 0.0, top)
+    shift = tl.where(top == float("-inf"), 0.0, top)
     return shift + tl.log(tl.sum(tl.exp(x - tl.expand_dims(shift, axis)), axis))
 
 
@@ -100,15 +101,15 @@ def _step_matrix(
     offsets = trans + n * stride_tn + i * K + j
     if SEMIRING == _LINEAR and p is None:
         return tl.load(offsets, mask=mask, other=0.0)
-    m = tl.load(offsets, mask=mask, other=_KERNEL_NEG_INF)
+    m = tl.load(offsets, mask=mask, other=float("-inf"))
     # The emissions of the states i leaves. On an adjoint chain's columns they
     # join q; on rows they take the tile's shape, as a broadcast row vector
     # would cost a layout conversion.
     if emit is not None and not ADJOINT:
         m += tl.load(emit + n * K + i + 0 * j, mask=mask, other=0.0)
     if p is not None:
-        p_rows = tl.load(p + n * K + rows, mask=rows < K, other=_KERNEL_NEG_INF)
-        q_cols = tl.load(q + n * K + cols, mask=cols < K, other=_KERNEL_NEG_INF)
+        p_rows = tl.load(p + n * K + rows, mask=rows < K, other=float("-inf"))
+        q_cols = tl.load(q + n * K + cols, mask=cols < K, other=float("-inf"))
         if emit is not None and ADJOINT:
             q_cols += tl.load(emit + n * K + cols, mask=cols < K, other=0.0)
         m = tl.exp(m + p_rows + q_cols)

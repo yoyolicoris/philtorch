@@ -370,6 +370,18 @@ def _dtw(gamma, **options):
     return loss
 
 
+def _hmm_posteriors(name):
+    def loss(x):
+        from philtorch import estimation
+
+        # The transitions and initial probabilities from x too, (7, 4) frames each.
+        log_trans, log_init = x[0, :4].log_softmax(-1), x[1, 0].log_softmax(-1)
+        fn = getattr(estimation, name)
+        return fn(x.log_softmax(-1), log_trans, log_init)[1][..., 0].sum()
+
+    return loss
+
+
 _LENGTHS = (torch.tensor([6, 4]), torch.tensor([5, 3]))
 
 
@@ -386,6 +398,8 @@ _LENGTHS = (torch.tensor([6, 4]), torch.tensor([5, 3]))
         pytest.param(_soft_dtw_divergence, (2, 7, 3), id="soft_dtw_divergence"),
         pytest.param(_ctc_loss, (2, 7, 4), id="ctc_loss"),
         pytest.param(_ctc_loss_tensor_lengths, (2, 7, 4), id="ctc_loss-tensor_lengths"),
+        pytest.param(_hmm_posteriors("hmm_filter"), (2, 7, 4), id="hmm_filter"),
+        pytest.param(_hmm_posteriors("hmm_smoother"), (2, 7, 4), id="hmm_smoother"),
     ],
 )
 def test_compiled_alignment_gradients(loss, shape):
