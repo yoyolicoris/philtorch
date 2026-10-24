@@ -1,6 +1,5 @@
 #include <ATen/OpMathType.h>
 #include <ATen/Parallel.h>
-#include <torch/script.h>
 #include <torch/torch.h>
 
 #include <algorithm>
@@ -37,7 +36,8 @@ inline acc_t host_dot(const scalar_t *left, const acc_t *right, int size)
 }
 
 // Whether every entry is below the smallest normal number (zero for integers):
-// products of contractions go on with denormals, which are slow, and no more.
+// products of contractions would go on in denormals, which are slow, and
+// contribute below rounding.
 template <typename acc_t>
 bool tiny(const acc_t *v, int64_t n)
 {
@@ -58,14 +58,25 @@ bool tiny(const acc_t *v, int64_t n)
     return true;
 }
 
+// Whether every entry is finite (integers wrap, and always are).
+template <typename acc_t>
+bool finite(const acc_t *v, int64_t n)
+{
+    if constexpr (!std::is_integral_v<acc_t>)
+        for (int64_t i = 0; i < n; ++i)
+            if (!std::isfinite(std::abs(v[i])))
+                return false;
+    return true;
+}
+
 // A_b points at the matrix of step 1, A_b + (t - 1) * stride_t at step t's.
 // Steps s to e - 1 of a sequence from the state h, which is updated: H_b[t]
-// holds x[t] and gets h[t] if write.
+// holds x[t] and gets h[t] if write. M is an int, which makes the loop faster.
 template <bool write, typename scalar_t, typename acc_t>
 void run_steps(const scalar_t *A_b, int64_t stride_t, scalar_t *H_b,
-               int64_t s, int64_t e, int N, acc_t *h, acc_t *tmp)
+               int64_t s, int64_t e, int M, acc_t *h, acc_t *tmp)
 {
-    if (N == 1)
+    if (M == 1)
     {
         acc_t v = h[0];
         for (int64_t t = s; t < e; ++t)
@@ -82,203 +93,174 @@ void run_steps(const scalar_t *A_b, int64_t stride_t, scalar_t *H_b,
     for (int64_t t = s; t < e; ++t)
     {
         const scalar_t *A_t = A_b + (t - 1) * stride_t;
-        scalar_t *H_t = H_b + t * N;
-        for (int i = 0; i < N; ++i)
+        scalar_t *H_t = H_b + t * M;
+        for (int i = 0; i < M; ++i)
         {
-            curr[i] = static_cast<acc_t>(H_t[i]) + host_dot(A_t + i * N, prev, N);
+            curr[i] = static_cast<acc_t>(H_t[i]) + host_dot(A_t + i * M, prev, M);
             if constexpr (write)
                 H_t[i] = curr[i];
         }
         std::swap(prev, curr);
     }
     if (prev != h)
-        std::copy(prev, prev + N, h);
+        std::copy(prev, prev + M, h);
 }
 
-// out = X Y for row-major N x N matrices.
-template <typename acc_t>
-void matmul(const acc_t *X, const acc_t *Y, acc_t *out, int64_t N)
+// out = X Y for row-major M x M matrices.
+template <typename x_t, typename acc_t>
+void matmul(const x_t *X, const acc_t *Y, acc_t *out, int64_t M)
 {
-    std::fill(out, out + N * N, acc_t(0));
-    for (int64_t i = 0; i < N; ++i)
-        for (int64_t k = 0; k < N; ++k)
-            for (int64_t j = 0; j < N; ++j)
-                out[i * N + j] += X[i * N + k] * Y[k * N + j];
+    std::fill(out, out + M * M, acc_t(0));
+    for (int64_t i = 0; i < M; ++i)
+        for (int64_t k = 0; k < M; ++k)
+            for (int64_t j = 0; j < M; ++j)
+                out[i * M + j] += X[i * M + k] * Y[k * M + j];
 }
 
-// Phi = A[e - 1] ... A[s], stored by columns: PhiT[j * N + i] = Phi[i][j]. A
-// constant A (stride_t == 0) gives A^(e - s), by binary exponentiation.
+// Phi = A[e - 1] ... A[s], row-major. A constant A (stride_t == 0) gives
+// A^(e - s), by binary exponentiation.
 template <typename scalar_t, typename acc_t>
 void transition(const scalar_t *A_b, int64_t stride_t, int64_t s, int64_t e,
-                int64_t N, acc_t *PhiT, acc_t *tmp)
+                int64_t M, acc_t *Phi)
 {
+    std::vector<acc_t> R(M * M, acc_t(0)), W(M * M);
+    for (int64_t i = 0; i < M; ++i)
+        R[i * M + i] = 1;
     if (stride_t == 0)
     {
-        std::vector<acc_t> R(N * N, acc_t(0)), M(A_b, A_b + N * N), W(N * N);
-        for (int64_t i = 0; i < N; ++i)
-            R[i * N + i] = 1;
+        std::vector<acc_t> power(A_b, A_b + M * M);
         for (int64_t L = e - s; L; L >>= 1)
         {
             if (L & 1)
             {
-                matmul(R.data(), M.data(), W.data(), N);
+                matmul(R.data(), power.data(), W.data(), M);
                 std::swap(R, W);
             }
             if (L > 1)
             {
-                matmul(M.data(), M.data(), W.data(), N);
-                std::swap(M, W);
-                if (tiny(M.data(), N * N)) // the rest of the product is tiny
-                {
+                matmul(power.data(), power.data(), W.data(), M);
+                std::swap(power, W);
+                if (tiny(power.data(), M * M)) // the remaining factor, a power
+                {                              // of this one, is tiny
                     std::fill(R.begin(), R.end(), acc_t(0));
                     break;
                 }
             }
         }
-        for (int64_t i = 0; i < N; ++i)
-            for (int64_t j = 0; j < N; ++j)
-                PhiT[j * N + i] = R[i * N + j];
-        return;
     }
-    if (N == 1)
+    else
     {
-        acc_t p = 1;
         for (int64_t t = s; t < e; ++t)
         {
-            p = static_cast<acc_t>(A_b[(t - 1) * stride_t]) * p;
-            if (tiny(&p, 1))
+            matmul(A_b + (t - 1) * stride_t, R.data(), W.data(), M);
+            std::swap(R, W);
+            if (tiny(R.data(), M * M))
             {
-                p = 0;
+                std::fill(R.begin(), R.end(), acc_t(0));
                 break;
             }
         }
-        PhiT[0] = p;
-        return;
     }
-    for (int64_t i = 0; i < N; ++i)
-        for (int64_t j = 0; j < N; ++j)
-            PhiT[j * N + i] = i == j ? 1 : 0;
-    for (int64_t t = s; t < e; ++t)
-    {
-        const scalar_t *A_t = A_b + (t - 1) * stride_t;
-        for (int64_t j = 0; j < N; ++j)
-        {
-            acc_t *v = PhiT + j * N;
-            for (int64_t i = 0; i < N; ++i)
-                tmp[i] = host_dot(A_t + i * N, v, N);
-            for (int64_t i = 0; i < N; ++i)
-                v[i] = tmp[i];
-        }
-        if (tiny(PhiT, N * N))
-        {
-            std::fill(PhiT, PhiT + N * N, acc_t(0));
-            break;
-        }
-    }
+    std::copy(R.begin(), R.end(), Phi);
 }
 
-// A[b, t] is the N x N row-major matrix at A + b * stride_b + (t - 1) * stride_t
-// for t = 1 to T - 1. H is [B][T][N], in place: H[b][0] is the initial state,
+// A[b, t] is the M x M row-major matrix at A + b * stride_b + (t - 1) * stride_t
+// for t = 1 to T - 1. H is [B][T][M], in place: H[b][0] is the initial state,
 // H[b][t] holds x[t] on entry and h[t] on exit.
 template <typename scalar_t>
 void chunked_recurrence(const scalar_t *A, int64_t stride_b, int64_t stride_t,
-                        scalar_t *H, int64_t B, int64_t T, int64_t N)
+                        scalar_t *H, int64_t B, int64_t T, int M)
 {
     using acc_t = at::opmath_type<scalar_t>;
     const int64_t steps = T - 1;
     const int64_t P = at::get_num_threads();
-    int64_t C = 1;
-    // A varying in time costs N^3 a step for Phi, against N^2 for a step.
-    if (B < P && (stride_t == 0 || P / B > N + 2))
-        C = std::min((P + B - 1) / B,
-                     std::max<int64_t>(1, steps / min_chunk));
-
-    if (C == 1)
-    {
-        at::parallel_for(0, B, 1, [&](int64_t begin, int64_t end)
-                         {
-            std::vector<acc_t> h(N), tmp(N);
-            for (int64_t b = begin; b < end; ++b)
-            {
-                scalar_t *H_b = H + b * T * N;
-                std::copy(H_b, H_b + N, h.begin());
-                run_steps<true>(A + b * stride_b, stride_t, H_b, 1, T, N,
-                                h.data(), tmp.data());
-            } });
-        return;
-    }
+    int64_t C = B > 0 ? std::min(P / B, steps / min_chunk) : 1;
+    // A constant A costs 2 passes over the steps, a varying one M + 2.
+    if (C <= (stride_t == 0 ? 2 : M + 2))
+        C = 1;
 
     // Chunk c is steps [start(c), start(c + 1)).
     auto start = [&](int64_t c)
     { return 1 + c * steps / C; };
-    std::vector<acc_t> Phi(B * C * N * N), hin(B * C * N);
+    // Phi[b][c - 1] is chunk c's, for c >= 1.
+    std::vector<acc_t> Phi(B * (C - 1) * M * M), hin(B * C * M);
+    std::vector<char> unsplit(B, 0);
 
     // Local end states, and Phi; chunk 0 is the true recurrence, and writes.
     at::parallel_for(0, B * C, 1, [&](int64_t begin, int64_t end)
                      {
-        std::vector<acc_t> h(N), tmp(N);
+        std::vector<acc_t> h(M), tmp(M);
         for (int64_t k = begin; k < end; ++k)
         {
             int64_t b = k / C, c = k % C;
             const scalar_t *A_b = A + b * stride_b;
-            scalar_t *H_b = H + b * T * N;
+            scalar_t *H_b = H + b * T * M;
             if (c == 0)
             {
-                std::copy(H_b, H_b + N, h.begin());
-                run_steps<true>(A_b, stride_t, H_b, start(0), start(1), N,
+                std::copy(H_b, H_b + M, h.begin());
+                run_steps<true>(A_b, stride_t, H_b, start(0), start(1), M,
                                 h.data(), tmp.data());
             }
             else
             {
                 std::fill(h.begin(), h.end(), acc_t(0));
-                run_steps<false>(A_b, stride_t, H_b, start(c), start(c + 1), N,
+                run_steps<false>(A_b, stride_t, H_b, start(c), start(c + 1), M,
                                  h.data(), tmp.data());
-                transition(A_b, stride_t, start(c), start(c + 1), N,
-                           Phi.data() + k * N * N, tmp.data());
+                transition(A_b, stride_t, start(c), start(c + 1), M,
+                           Phi.data() + (b * (C - 1) + c - 1) * M * M);
             }
-            std::copy(h.begin(), h.end(), hin.begin() + k * N);
+            std::copy(h.begin(), h.end(), hin.begin() + k * M);
         } });
+    if (C == 1)
+        return;
 
     // The true end states over the chunks. hin[b][c] holds the local end state
-    // on entry and the incoming state on exit.
+    // on entry and the incoming state on exit. A sequence with an infinite
+    // Phi, whose product with a zero would be NaN, is left unsplit.
     at::parallel_for(0, B, 1, [&](int64_t begin, int64_t end)
                      {
-        std::vector<acc_t> prev(N), next(N);
+        std::vector<acc_t> prev(M), next(M);
         for (int64_t b = begin; b < end; ++b)
         {
-            acc_t *hin_b = hin.data() + b * C * N;
-            std::copy(hin_b, hin_b + N, prev.begin());
+            acc_t *hin_b = hin.data() + b * C * M;
+            std::copy(hin_b, hin_b + M, prev.begin());
             for (int64_t c = 1; c < C; ++c)
             {
-                acc_t *local = hin_b + c * N;
-                const acc_t *PhiT = Phi.data() + (b * C + c) * N * N;
-                for (int64_t i = 0; i < N; ++i)
-                {
-                    next[i] = local[i];
-                    for (int64_t j = 0; j < N; ++j)
-                        next[i] += PhiT[j * N + i] * prev[j];
-                }
+                acc_t *local = hin_b + c * M;
+                const acc_t *Phi_c = Phi.data() + (b * (C - 1) + c - 1) * M * M;
+                std::copy(local, local + M, next.begin());
                 std::copy(prev.begin(), prev.end(), local);
+                if (!finite(Phi_c, M * M))
+                {
+                    unsplit[b] = 1;
+                    break;
+                }
+                for (int i = 0; i < M; ++i)
+                    next[i] += host_dot(Phi_c + i * M, prev.data(), M);
                 std::swap(prev, next);
             }
         } });
 
-    // The chunks c >= 1 again, from their incoming states, writing.
+    // The chunks c >= 1 again, from their incoming states, writing; an unsplit
+    // sequence from chunk 1 on, whose hin[b][1] is chunk 0's end state.
     at::parallel_for(0, B * (C - 1), 1, [&](int64_t begin, int64_t end)
                      {
-        std::vector<acc_t> h(N), tmp(N);
+        std::vector<acc_t> h(M), tmp(M);
         for (int64_t k = begin; k < end; ++k)
         {
             int64_t b = k / (C - 1), c = k % (C - 1) + 1;
-            std::copy_n(hin.begin() + (b * C + c) * N, N, h.begin());
-            run_steps<true>(A + b * stride_b, stride_t, H + b * T * N,
-                            start(c), start(c + 1), N, h.data(), tmp.data());
+            if (unsplit[b] && c > 1)
+                continue;
+            std::copy_n(hin.begin() + (b * C + c) * M, M, h.begin());
+            run_steps<true>(A + b * stride_b, stride_t, H + b * T * M,
+                            start(c), unsplit[b] ? T : start(c + 1), M,
+                            h.data(), tmp.data());
         } });
 }
 
-// x is [B][T][N], or [B][T] with N = 1.
+// x is [B][T][M], or [B][T] with M = 1.
 at::Tensor recur_cpu_launch(const at::Tensor &A, const at::Tensor &zi,
-                            const at::Tensor &x, int64_t N, int64_t stride_b,
+                            const at::Tensor &x, int64_t M, int64_t stride_b,
                             int64_t stride_t)
 {
     TORCH_CHECK(zi.scalar_type() == x.scalar_type(),
@@ -293,7 +275,7 @@ at::Tensor recur_cpu_launch(const at::Tensor &A, const at::Tensor &zi,
         { chunked_recurrence<scalar_t>(
               A_contiguous.const_data_ptr<scalar_t>(), stride_b, stride_t,
               out.mutable_data_ptr<scalar_t>(), out.size(0), out.size(1),
-              N); });
+              static_cast<int>(M)); });
     return out.slice(1, 1, out.size(1))
         .contiguous(); // Remove the initial state from the output
 }
