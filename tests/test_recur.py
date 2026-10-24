@@ -420,6 +420,43 @@ def test_recurrence_in_integers_against_sequential(sharing, M):
     assert torch.equal(recurrence(A, zi, x).cpu(), expected)
 
 
+@pytest.fixture
+def eight_threads():
+    threads = torch.get_num_threads()
+    torch.set_num_threads(8)
+    yield
+    torch.set_num_threads(threads)
+
+
+@pytest.mark.parametrize("dtype", [torch.float64, torch.complex128])
+@pytest.mark.parametrize("M", [1, 2, 3])
+@pytest.mark.parametrize("sharing", SHARING)
+@pytest.mark.parametrize("B", [1, 2])
+def test_cpu_recurrence_split_over_time(eight_threads, B, sharing, M, dtype):
+    # Fewer sequences than threads: the CPU kernels split each over 4 chunks.
+    # Time-varying A is split only for M <= 5 with B = 1.
+    A, zi, x = _problem(B, 5000, M, sharing, dtype)
+    torch.testing.assert_close(recurrence(A, zi, x), _sequential(A, zi, x))
+
+
+def test_cpu_recurrence_split_over_time_underflows(eight_threads):
+    # A chunk's transition matrix underflows to zero within its 1250 steps.
+    A, zi, x = _problem(1, 5000, 2, "one")
+    A = A * (0.5 / 0.97)
+    torch.testing.assert_close(recurrence(A, zi, x), _sequential(A, zi, x))
+
+
+@pytest.mark.parametrize("sharing", ["one", "both"])
+def test_cpu_recurrence_split_over_time_in_integers(eight_threads, sharing):
+    # One entry of -1, 0 or 1 a row, so that the states grow only linearly.
+    _, zi, x = _integer_problem(1, 5000, 2, sharing, torch.int64, "cpu")
+    shape = (1, 1 if sharing == "one" else 5000, 2)
+    gen = torch.Generator().manual_seed(0)
+    column = torch.nn.functional.one_hot(torch.randint(0, 2, shape, generator=gen), 2)
+    A = column * torch.randint(-1, 2, shape, generator=gen)[..., None]
+    assert torch.equal(recurrence(A, zi, x), _sequential(A, zi, x))
+
+
 @pytest.mark.cuda
 @pytest.mark.parametrize("dtype", [torch.int32, torch.bool])
 def test_recurrence_takes_integers_as_int64_only(dtype):

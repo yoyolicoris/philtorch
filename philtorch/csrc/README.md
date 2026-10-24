@@ -15,7 +15,8 @@ MPS dispatch uses one three-stage hierarchical SIMD implementation that replays 
 
 | File | Role |
 | --- | --- |
-| [`host_recur2.cpp`](host_recur2.cpp) | Defines the `philtorch::lti_recur` dispatcher schema. |
+| [`ops.cpp`](ops.cpp) | Creates the `philtorch._C` module and defines the dispatcher schemas of the recurrence ops, `philtorch::lti_recur` among them. |
+| [`host_recur.cpp`](host_recur.cpp) | CPU kernels of the recurrence ops, split over time when a batch has fewer sequences than threads. |
 | [`lti_recur_mps_replay.mm`](lti_recur_mps_replay.mm) | Objective-C++ host code and the embedded Metal Shading Language source. |
 | [`../_ops.py`](../_ops.py) | Registers fake implementations and autograd for `philtorch::lti_recur`. |
 | [`../../tests/test_recur_ext.py`](../../tests/test_recur_ext.py) | Checks CPU/MPS parity, boundary lengths, long scans, and gradients. |
@@ -204,7 +205,7 @@ It creates a device only when compiling pipelines; execution uses PyTorch's comm
 
 ## Dispatcher and autograd
 
-`host_recur2.cpp` defines the operator schema.
+`ops.cpp` defines the operator schema.
 The MPS registration at the end of `lti_recur_mps_replay.mm` maps
 
 ```text
