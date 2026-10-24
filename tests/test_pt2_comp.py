@@ -4,7 +4,9 @@ from unittest import mock
 import pytest
 import torch
 
-import philtorch  # noqa: F401  (registers its ops)
+from philtorch._recur import recur_triton
+from philtorch.align import ctc_loss, dtw, dtw_path, forced_align, soft_dtw_divergence
+from philtorch.estimation import hmm_filter, hmm_smoother, hmm_viterbi
 
 
 def _op_inputs(op, shared, dtype):
@@ -77,8 +79,6 @@ def test_pararnn_opcheck_and_registered_gradients(M):
 def test_recur_triton_registered_gradients(time_invariant):
     # Compiled code differentiates the Triton op through its registered
     # backward: check it, and its own derivatives, against finite differences.
-    from philtorch._recur import recur_triton
-
     gen = torch.Generator().manual_seed(0)
     A = torch.randn(2, 1 if time_invariant else 7, 3, 3, generator=gen, dtype=torch.float64) * 0.2
     zi, x = (
@@ -111,7 +111,7 @@ def _recorded_calls(module, name, run):
 
 
 def _dtw_dp_calls():
-    from philtorch.align import _dtw_kernels, dtw
+    from philtorch.align import _dtw_kernels
 
     cost = torch.rand(2, 5, 6, device="cuda", requires_grad=True)
     return _recorded_calls(_dtw_kernels, "dtw_dp", lambda: dtw(cost, gamma=0.1).sum().backward())
@@ -127,7 +127,7 @@ def _dtw_dp_backward_calls(loss, shape):
 
 def _dtw_accumulate_calls():
     # Only the gradient's own gradient builds on the accumulation op.
-    from philtorch.align import _dtw_kernels, dtw
+    from philtorch.align import _dtw_kernels
 
     cost = torch.rand(2, 5, 6, device="cuda", requires_grad=True)
 
@@ -139,7 +139,7 @@ def _dtw_accumulate_calls():
 
 
 def _ctc_viterbi_calls():
-    from philtorch.align import _dtw_kernels, forced_align
+    from philtorch.align import _dtw_kernels
 
     log_probs = torch.randn(2, 7, 4, device="cuda").log_softmax(-1)
     targets = torch.tensor([[1, 2, 2], [3, 1, 0]], device="cuda")
@@ -155,7 +155,7 @@ def _features_inputs():
 
 def _dtw_frontier_calls():
     # The no-gradient feature form of dtw.
-    from philtorch.align import _dtw_kernels, dtw
+    from philtorch.align import _dtw_kernels
 
     x, y = (t.detach() for t in _features_inputs()[:2])
     with torch.no_grad():
@@ -183,7 +183,7 @@ def _dtw_dp_features_calls(op, seeded=False):
 
 def _dtw_grid_cost_calls():
     # From the second derivatives of soft-DTW from frames, with a shear.
-    from philtorch.align import _dtw_kernels, dtw
+    from philtorch.align import _dtw_kernels
 
     gen = torch.Generator("cuda").manual_seed(0)
     x, y = (torch.randn(2, n, 3, device="cuda", generator=gen, requires_grad=True) for n in (6, 4))
@@ -197,7 +197,7 @@ def _dtw_grid_cost_calls():
 
 
 def _dtw_backtrack_calls():
-    from philtorch.align import _dtw_kernels, dtw_path
+    from philtorch.align import _dtw_kernels
 
     cost = torch.rand(2, 9, 6, device="cuda")
     return _recorded_calls(_dtw_kernels, "backtrack", lambda: dtw_path(cost))
@@ -205,16 +205,12 @@ def _dtw_backtrack_calls():
 
 def _dtw_linear_path_calls():
     # The path search of DTW from frames, for its gradient.
-    from philtorch.align import dtw
-
     module = importlib.import_module("philtorch.align.dtw")
     x, y = (torch.rand(2, n, 3, device="cuda", requires_grad=True) for n in (9, 6))
     return _recorded_calls(module, "linear_path", lambda: dtw(x=x, y=y).sum().backward())
 
 
 def _hmm_viterbi_chain_calls():
-    from philtorch.estimation import hmm_viterbi
-
     hmm = importlib.import_module("philtorch.estimation.hmm")
     log_emit = torch.randn(2, 6, 3, device="cuda").log_softmax(-1)
     log_trans = torch.randn(3, 3, device="cuda").log_softmax(-1)
@@ -226,7 +222,7 @@ def _hmm_viterbi_chain_calls():
 
 def _weighted_contract_calls():
     # Shared transitions: their gradient sums over the batch and steps.
-    from philtorch.estimation import _contract_kernels, hmm_filter
+    from philtorch.estimation import _contract_kernels
 
     log_emit = torch.randn(2, 6, 3, device="cuda").log_softmax(-1)
     log_trans = torch.randn(3, 3, device="cuda").log_softmax(-1).requires_grad_()
@@ -301,7 +297,7 @@ def test_alignment_and_hmm_ops_opcheck(op, calls):
     ],
 )
 def test_dtw_strip_ops_opcheck(monkeypatch, name, op):
-    from philtorch.align import _dtw_kernels, dtw
+    from philtorch.align import _dtw_kernels
 
     # Strips of two tile anti-diagonals over a grid of 7 by 3 tiles, a band, and
     # second derivatives, which reach the backward's own ops; for the forward,
@@ -329,8 +325,6 @@ def test_dtw_strip_ops_opcheck(monkeypatch, name, op):
 
 
 def _ctc_loss(log_probs, lengths=((7, 6), (3, 2))):
-    from philtorch.align import ctc_loss
-
     targets = torch.tensor([[1, 2, 2], [3, 1, 0]], device="cuda")
     return ctc_loss(log_probs.log_softmax(-1), targets, *lengths, reduction="sum")
 
@@ -340,8 +334,6 @@ def _ctc_loss_tensor_lengths(log_probs):
 
 
 def _soft_dtw_divergence(x):
-    from philtorch.align import soft_dtw_divergence
-
     y = x.flip(1)[:, :5]
     costs = [torch.cdist(a, b).square() for a, b in ((x, y), (x, x), (y, y))]
     return soft_dtw_divergence(*costs, 0.1).sum()
@@ -349,23 +341,26 @@ def _soft_dtw_divergence(x):
 
 def _soft_dtw_band(x):
     # From frames, whose band Inductor must round as eager does.
-    from philtorch.align import dtw
-
     return dtw(x=x, y=x[:, :20].flip(1), gamma=0.5, band=4.0).sum()
 
 
 def _dtw_features(x):
     # DTW from frames with gradients: the path's search is an op.
-    from philtorch.align import dtw
-
     return dtw(x=x, y=x[:, :20].flip(1)).sum()
 
 
 def _dtw(gamma, **options):
     def loss(cost):
-        from philtorch.align import dtw
-
         return dtw(cost, gamma, **options).sum()
+
+    return loss
+
+
+def _hmm_posteriors(fn):
+    def loss(x):
+        # The transitions and initial probabilities from x too, (7, 4) frames each.
+        log_trans, log_init = x[0, :4].log_softmax(-1), x[1, 0].log_softmax(-1)
+        return fn(x.log_softmax(-1), log_trans, log_init)[1][..., 0].sum()
 
     return loss
 
@@ -386,11 +381,15 @@ _LENGTHS = (torch.tensor([6, 4]), torch.tensor([5, 3]))
         pytest.param(_soft_dtw_divergence, (2, 7, 3), id="soft_dtw_divergence"),
         pytest.param(_ctc_loss, (2, 7, 4), id="ctc_loss"),
         pytest.param(_ctc_loss_tensor_lengths, (2, 7, 4), id="ctc_loss-tensor_lengths"),
+        pytest.param(_hmm_posteriors(hmm_filter), (2, 7, 4), id="hmm_filter"),
+        pytest.param(_hmm_posteriors(hmm_smoother), (2, 7, 4), id="hmm_smoother"),
     ],
 )
 def test_compiled_alignment_gradients(loss, shape):
     # Compiled code differentiates dtw_dp through its registered backward,
-    # the fused kernels as one op: the same gradients as eager, in one graph.
+    # the fused kernels as one op, and the HMM chains through their
+    # autograd.Functions, whose kernels Inductor compiles: the same gradients
+    # as eager, in one graph.
     x = torch.randn(shape, device="cuda", generator=torch.Generator("cuda").manual_seed(0))
     x.requires_grad_()
     (expected,) = torch.autograd.grad(loss(x), x)
@@ -400,7 +399,7 @@ def test_compiled_alignment_gradients(loss, shape):
 
 @pytest.mark.cuda
 def test_compiled_dtw_strips_with_dynamic_shapes(monkeypatch):
-    from philtorch.align import _dtw_kernels, dtw
+    from philtorch.align import _dtw_kernels
 
     # Strips of two tile anti-diagonals, whose tile is chosen by the shapes:
     # compiled as a whole, with them dynamic.
@@ -452,8 +451,6 @@ def test_dtw_dp_backward_registered_gradients(soft, steps, diag_weight):
 @pytest.mark.cuda
 def test_soft_dtw_asymmetric_second_derivatives():
     # The asymmetric steps are PyTorch's shear around the orthogonal kernel.
-    from philtorch.align import dtw
-
     gen = torch.Generator("cuda").manual_seed(0)
     cost = torch.rand(2, 5, 4, device="cuda", dtype=torch.float64, generator=gen)
     cost.requires_grad_()
@@ -461,27 +458,19 @@ def test_soft_dtw_asymmetric_second_derivatives():
 
 
 def _dtw_path(cost):
-    from philtorch.align import dtw_path
-
     return dtw_path(cost, lengths=_LENGTHS)
 
 
 def _dtw_path_features(x):
-    from philtorch.align import dtw_path
-
     return dtw_path(x=x, y=x[:, :4].flip(1))
 
 
 def _forced_align(log_probs):
-    from philtorch.align import forced_align
-
     targets = torch.tensor([[1, 2, 2], [3, 1, 0]], device="cuda")
     return forced_align(log_probs.log_softmax(-1), targets, (7, 6), (3, 2))
 
 
 def _hmm_viterbi(x):
-    from philtorch.estimation import hmm_viterbi
-
     # The transitions and initial probabilities from x too, (7, 4) frames each.
     log_trans, log_init = x[0, :4].log_softmax(-1), x[1, 0].log_softmax(-1)
     return hmm_viterbi(x.log_softmax(-1), log_trans, log_init)
