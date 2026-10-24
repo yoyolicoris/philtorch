@@ -428,14 +428,23 @@ def eight_threads():
     torch.set_num_threads(threads)
 
 
+# (B, T, sharing, M) that the CPU kernels split over time at 8 threads: they
+# take min(8 // B, (T - 1) // 1024) chunks, when that is more than 2 for a
+# constant A, and more than M + 2 for a varying one.
+SPLIT_CASES = [
+    (2, 5000, "one", 1),
+    (2, 5000, "per_item", 1),
+    (2, 5000, "one", 2),
+    (2, 5000, "per_item", 3),
+    (1, 8200, "per_step", 2),
+    (1, 8200, "both", 3),
+]
+
+
 @pytest.mark.parametrize("dtype", [torch.float64, torch.complex128])
-@pytest.mark.parametrize("M", [1, 2, 3])
-@pytest.mark.parametrize("sharing", SHARING)
-@pytest.mark.parametrize("B", [1, 2])
-def test_cpu_recurrence_split_over_time(eight_threads, B, sharing, M, dtype):
-    # Fewer sequences than threads: the CPU kernels split each over 4 chunks.
-    # Time-varying A is split only for M <= 5 with B = 1.
-    A, zi, x = _problem(B, 5000, M, sharing, dtype)
+@pytest.mark.parametrize("B, T, sharing, M", SPLIT_CASES)
+def test_cpu_recurrence_split_over_time(eight_threads, B, T, sharing, M, dtype):
+    A, zi, x = _problem(B, T, M, sharing, dtype)
     torch.testing.assert_close(recurrence(A, zi, x), _sequential(A, zi, x))
 
 
@@ -446,11 +455,26 @@ def test_cpu_recurrence_split_over_time_underflows(eight_threads):
     torch.testing.assert_close(recurrence(A, zi, x), _sequential(A, zi, x))
 
 
+@pytest.mark.parametrize("M", [1, 2])
+def test_cpu_recurrence_unstable_is_not_split(eight_threads, M):
+    # A chunk's transition matrix, 2^1250 I, overflows: its product with a zero
+    # state would be NaN, so the sequence runs unsplit.
+    A = 2 * torch.eye(M, dtype=torch.float64).expand(1, 1, M, M)
+    zi, x = torch.zeros(1, M, dtype=torch.float64), torch.zeros(1, 5000, M, dtype=torch.float64)
+    x[:, -1] = 1
+    torch.testing.assert_close(recurrence(A, zi, x), _sequential(A, zi, x))
+
+
+def test_cpu_recurrence_of_no_sequences(eight_threads):
+    A, zi, x = torch.eye(2), torch.zeros(0, 2), torch.zeros(0, 5000, 2)
+    assert torch.ops.philtorch.lti_recurN(A, zi, x).shape == (0, 5000, 2)
+
+
 @pytest.mark.parametrize("sharing", ["one", "both"])
 def test_cpu_recurrence_split_over_time_in_integers(eight_threads, sharing):
     # One entry of -1, 0 or 1 a row, so that the states grow only linearly.
-    _, zi, x = _integer_problem(1, 5000, 2, sharing, torch.int64, "cpu")
-    shape = (1, 1 if sharing == "one" else 5000, 2)
+    _, zi, x = _integer_problem(1, 8200, 2, sharing, torch.int64, "cpu")
+    shape = (1, 1 if sharing == "one" else 8200, 2)
     gen = torch.Generator().manual_seed(0)
     column = torch.nn.functional.one_hot(torch.randint(0, 2, shape, generator=gen), 2)
     A = column * torch.randint(-1, 2, shape, generator=gen)[..., None]
