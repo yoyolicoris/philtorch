@@ -88,6 +88,28 @@ def _logsumexp(x: Tensor, dim: int, keepdim: bool = False) -> Tensor:
     return out if keepdim else out.squeeze(dim)
 
 
+def _log_softmax(x: Tensor) -> Tensor:
+    """The log-softmax over the last dimension, with a sound top-entry gradient.
+
+    With k the index of the largest entry, entry j is
+    ``(x[j] - x[k]) - softplus(logsumexp(x[i] - x[k] for i != k))``: the
+    normalizer is the softplus of the others' log-odds against the top entry,
+    as in "A Fix for Softmax and Cross-Entropy" (Barron et al., 2026). The
+    gradient of ``x - logsumexp(x)`` has 1 - q at a near-certain entry, which
+    rounds to 0 once q is within epsilon of 1; here it is a sum of small
+    terms. Slices of -inf stay -inf, as in :func:`_logsumexp`.
+    """
+    k = x.argmax(dim=-1, keepdim=True)
+    top = x.gather(-1, k)
+    empty = torch.isneginf(top)
+    diff = x - torch.where(empty, torch.zeros_like(top), top)
+    others = _logsumexp(diff.scatter(-1, k, float("-inf")), dim=-1, keepdim=True)
+    # The top entry's difference is a constant, not x[k] - x[k], whose own
+    # term would cancel the top's, rounding the top entry's gradient to 0.
+    diff = diff.scatter(-1, k, torch.where(empty, float("-inf"), 0.0).to(x.dtype))
+    return diff - torch.nn.functional.softplus(others)
+
+
 def _log(x: Tensor) -> Tensor:
     """The log of x >= 0, with a zero gradient, not NaN, where x is 0."""
     positive = x > 0
@@ -357,16 +379,19 @@ def hmm_filter(log_emit: Tensor, log_trans: Tensor, log_init: Tensor) -> tuple[T
     :math:`z[n + 1]`, this returns :math:`\log p(y[0], \dots, y[N - 1])` and
     :math:`\log p(z[n] \mid y[0], \dots, y[n])`: the forward algorithm,
     computed as a scan over time instead of step by step, as in `Temporal
-    Parallelization of Inference in Hidden Markov Models`_ (Hassan, Särkkä
-    and García-Fernández, 2021).
+    Parallelization of Inference in Hidden Markov Models`_ (Hassan et al.,
+    2021).
 
     The results are differentiable to any order in reverse mode, with
     respect to every input, so the log-likelihood can train the model's
     probabilities, or a network that predicts them; its gradient with respect
     to :attr:`log_emit` is the posteriors of :func:`hmm_smoother`. Forward-mode
     automatic differentiation is not supported. The scan runs in chunks of
-    steps, a few Triton kernel launches whatever N is, with O(N K^3) work,
-    and its gradients are scans of the same kind.
+    steps, a few Triton kernel launches whatever :math:`N` is, with
+    :math:`O(N K^3)` work, and its gradients are scans of the same kind. The
+    posteriors are normalized as in `A Fix for Softmax and Cross-Entropy`_
+    (Barron et al., 2026), so that their gradients keep a near-certain state's
+    share.
 
     Note:
         Runs only on CUDA GPUs, as Triton kernels: the inputs must be CUDA
@@ -386,23 +411,46 @@ def hmm_filter(log_emit: Tensor, log_trans: Tensor, log_init: Tensor) -> tuple[T
 
     Returns:
         tuple of Tensor: the log-likelihood, of shape :math:`(B)`, and the
-        filtered log-probabilities, of shape :math:`(B, N, K)`.
+        filtered log-probabilities, of shape :math:`(B, N, K)`. If no state
+        can emit some :math:`y[n]`, the log-likelihood is ``-inf``, and so
+        are the log-probabilities from step :math:`n` on.
 
     Raises:
         ValueError: if the inputs are not CUDA tensors or have unsupported
             shapes.
         RuntimeError: if Triton is not installed.
 
+    Example::
+
+        >>> from philtorch.estimation import hmm_filter
+        >>> # Two states that stay with probability 0.9, each emitting its own
+        >>> # symbol with probability 0.8; the measurements are 0, 0, 1, 1.
+        >>> trans = torch.tensor([[0.9, 0.1], [0.1, 0.9]], device="cuda")
+        >>> init = torch.tensor([0.5, 0.5], device="cuda")
+        >>> emit = torch.tensor([[0.8, 0.2], [0.2, 0.8]], device="cuda")
+        >>> log_emit = emit[[0, 0, 1, 1]].log()[None]  # (B, N, K) = (1, 4, 2)
+        >>> log_likelihood, log_posteriors = hmm_filter(
+        ...     log_emit, trans.log(), init.log()
+        ... )
+        >>> log_likelihood
+        tensor([-3.0930], device='cuda:0')
+        >>> log_posteriors.exp()
+        tensor([[[0.8000, 0.2000],
+                 [0.9193, 0.0807],
+                 [0.5593, 0.4407],
+                 [0.2322, 0.7678]]], device='cuda:0')
+
     .. _Temporal Parallelization of Inference in Hidden Markov Models:
         https://doi.org/10.1109/TSP.2021.3103338
+    .. _A Fix for Softmax and Cross-Entropy:
+        https://arxiv.org/abs/2610.31642
     """
     log_emit, log_trans, log_init = _parse("hmm_filter", log_emit, log_trans, log_init)
     if log_emit.size(1) == 0:
         return _empty(log_emit, log_trans, log_init)
     # alpha[n][j] = log p(y[0..n], z[n] = j), from the predicted messages.
     alpha = _LogChain.apply(log_init, log_trans, log_emit[:, :-1]) + log_emit
-    norm = _logsumexp(alpha, dim=-1, keepdim=True)
-    return norm[:, -1, 0], alpha - norm
+    return _logsumexp(alpha[:, -1], dim=-1), _log_softmax(alpha)
 
 
 def hmm_smoother(log_emit: Tensor, log_trans: Tensor, log_init: Tensor) -> tuple[Tensor, Tensor]:
@@ -436,12 +484,30 @@ def hmm_smoother(log_emit: Tensor, log_trans: Tensor, log_init: Tensor) -> tuple
 
     Returns:
         tuple of Tensor: the log-likelihood, of shape :math:`(B)`, and the
-        posterior log-probabilities, of shape :math:`(B, N, K)`.
+        posterior log-probabilities, of shape :math:`(B, N, K)`. If no state
+        can emit some :math:`y[n]`, all of them are ``-inf``.
 
     Raises:
         ValueError: if the inputs are not CUDA tensors or have unsupported
             shapes.
         RuntimeError: if Triton is not installed.
+
+    Example::
+
+        >>> from philtorch.estimation import hmm_smoother
+        >>> # The model and measurements of :func:`hmm_filter`'s example.
+        >>> trans = torch.tensor([[0.9, 0.1], [0.1, 0.9]], device="cuda")
+        >>> init = torch.tensor([0.5, 0.5], device="cuda")
+        >>> emit = torch.tensor([[0.8, 0.2], [0.2, 0.8]], device="cuda")
+        >>> log_emit = emit[[0, 0, 1, 1]].log()[None]  # (B, N, K) = (1, 4, 2)
+        >>> log_likelihood, log_posteriors = hmm_smoother(
+        ...     log_emit, trans.log(), init.log()
+        ... )
+        >>> log_posteriors.exp()  # the last step's are the filter's
+        tensor([[[0.7678, 0.2322],
+                 [0.6916, 0.3084],
+                 [0.3084, 0.6916],
+                 [0.2322, 0.7678]]], device='cuda:0')
 
     .. _Temporal Parallelization of Inference in Hidden Markov Models:
         https://doi.org/10.1109/TSP.2021.3103338
@@ -455,7 +521,7 @@ def hmm_smoother(log_emit: Tensor, log_trans: Tensor, log_init: Tensor) -> tuple
     # messages grow to thousands over long inputs, and most of their rounding
     # error is shared by all states at a step, so this cancels it.
     joint = predicted + log_emit + beta
-    return log_likelihood, joint - _logsumexp(joint, dim=-1, keepdim=True)
+    return log_likelihood, _log_softmax(joint)
 
 
 def hmm_viterbi(log_emit: Tensor, log_trans: Tensor, log_init: Tensor) -> tuple[Tensor, Tensor]:
@@ -499,6 +565,18 @@ def hmm_viterbi(log_emit: Tensor, log_trans: Tensor, log_init: Tensor) -> tuple[
         ValueError: if the inputs are not CUDA tensors or have unsupported
             shapes.
         RuntimeError: if Triton is not installed.
+
+    Example::
+
+        >>> from philtorch.estimation import hmm_viterbi
+        >>> # The model and measurements of :func:`hmm_filter`'s example.
+        >>> trans = torch.tensor([[0.9, 0.1], [0.1, 0.9]], device="cuda")
+        >>> init = torch.tensor([0.5, 0.5], device="cuda")
+        >>> emit = torch.tensor([[0.8, 0.2], [0.2, 0.8]], device="cuda")
+        >>> log_emit = emit[[0, 0, 1, 1]].log()[None]  # (B, N, K) = (1, 4, 2)
+        >>> score, path = hmm_viterbi(log_emit, trans.log(), init.log())
+        >>> path
+        tensor([[0, 0, 1, 1]], device='cuda:0')
 
     .. _On the Temporal Parallelisation of the Viterbi Algorithm:
         https://doi.org/10.23919/EUSIPCO58844.2023.10289998
@@ -559,6 +637,21 @@ def hmm_em_step(
         ValueError: if the inputs are not CUDA tensors or have unsupported
             shapes.
         RuntimeError: if Triton is not installed.
+
+    Example::
+
+        >>> from philtorch.estimation import hmm_em_step
+        >>> # The model and measurements of :func:`hmm_filter`'s example.
+        >>> trans = torch.tensor([[0.9, 0.1], [0.1, 0.9]], device="cuda")
+        >>> init = torch.tensor([0.5, 0.5], device="cuda")
+        >>> emit = torch.tensor([[0.8, 0.2], [0.2, 0.8]], device="cuda")
+        >>> log_emit = emit[[0, 0, 1, 1]].log()[None]  # (B, N, K) = (1, 4, 2)
+        >>> log_likelihood, (log_trans, log_init), posteriors = hmm_em_step(
+        ...     log_emit, trans.log(), init.log()
+        ... )
+        >>> log_trans.exp()
+        tensor([[0.6742, 0.3258],
+                [0.0328, 0.9672]], device='cuda:0')
 
     .. _Temporal Parallelization of Inference in Hidden Markov Models:
         https://doi.org/10.1109/TSP.2021.3103338

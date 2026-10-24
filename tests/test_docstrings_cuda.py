@@ -12,7 +12,8 @@ import torch
 
 # By import_module, as philtorch.align.dtw is also the name of a function.
 CUDA_MODULES = [
-    importlib.import_module(name) for name in ("philtorch.align.ctc", "philtorch.align.dtw")
+    importlib.import_module(name)
+    for name in ("philtorch.align.ctc", "philtorch.align.dtw", "philtorch.estimation.hmm")
 ]
 
 
