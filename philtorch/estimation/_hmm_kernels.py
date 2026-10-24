@@ -345,10 +345,12 @@ def chain(
     assert not adjoint or weights is not None, "adjoint chains are weighted linear ones"
     assert argmax is None or semiring == "max", "argmax is for max-plus chains"
     p, q = weights if weights is not None else (None, None)
-    per_step = [t for t in (out, log_emit, inj, p, q, argmax) if t is not None]
-    assert all(t.stride()[1:] == (K, 1) for t in per_step), "steps of K contiguous values"
     stride_b = out.stride(0)
-    assert all(t.stride(0) == stride_b for t in per_step), "one batch stride"
+    # A loop, not all() of a generator, which torch 2.14's Dynamo can't close.
+    for t in (out, log_emit, inj, p, q, argmax):
+        if t is not None:
+            assert t.stride()[1:] == (K, 1), "steps of K contiguous values"
+            assert t.stride(0) == stride_b, "one batch stride"
     T = _CHUNK
     C = triton.cdiv(N, T)
     # The matrices' half stride and per-half batch size, batch and time strides.
