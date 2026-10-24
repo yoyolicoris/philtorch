@@ -387,7 +387,9 @@ _LENGTHS = (torch.tensor([6, 4]), torch.tensor([5, 3]))
 )
 def test_compiled_alignment_gradients(loss, shape):
     # Compiled code differentiates dtw_dp through its registered backward,
-    # the fused kernels as one op: the same gradients as eager, in one graph.
+    # the fused kernels as one op, and the HMM chains through their
+    # autograd.Functions, whose kernels Inductor compiles: the same gradients
+    # as eager, in one graph.
     x = torch.randn(shape, device="cuda", generator=torch.Generator("cuda").manual_seed(0))
     x.requires_grad_()
     (expected,) = torch.autograd.grad(loss(x), x)

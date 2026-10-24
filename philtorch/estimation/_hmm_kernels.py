@@ -48,10 +48,11 @@ import triton.language as tl
 from torch import Tensor
 
 _SEMIRINGS = {"log": 0, "max": 1, "linear": 2}
-# Triton kernels can only read module constants made with tl.constexpr.
+# Triton kernels can only read module constants made with tl.constexpr. They
+# write float("-inf") in place: torch.compile copies the source of kernels
+# launched outside an op, with the constants they read, and would write a -inf
+# constant back by its repr, -inf, an undefined name.
 _MAX, _LINEAR = (tl.constexpr(_SEMIRINGS[name]) for name in ("max", "linear"))
-# The kernels write -inf in place: torch.compile copies the source of those
-# launched outside an op, and would write such a constant back as -inf, a name.
 # The chunk length: each kernel program takes T sequential steps.
 _CHUNK = 64
 # The largest K whose products a program holds in registers; twice that for a
