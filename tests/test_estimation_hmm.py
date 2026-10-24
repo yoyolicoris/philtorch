@@ -6,6 +6,7 @@ import pytest
 import torch
 
 from philtorch.estimation import em, hmm_em_step, hmm_filter, hmm_smoother, hmm_viterbi
+from philtorch.estimation.hmm import _LogChain
 
 # The HMM scans run Triton kernels, so the tests that run them need CUDA; the
 # references, validation and import tests run anywhere.
@@ -333,8 +334,6 @@ def test_estimation_imports_without_triton(tmp_path):
 def test_hmm_chain_takes_an_expanded_gradient():
     # The gradient of a sum reaches the chain with every stride 0; the
     # kernels need each step's K entries contiguous.
-    from philtorch.estimation.hmm import _LogChain
-
     log_emit, log_trans, log_init = _model(2, 70, 3, time_varying=False)
     first = (log_init + log_emit[:, 0]).requires_grad_()
     alpha = _LogChain.apply(first, log_trans[None, None], log_emit[:, 1:])
