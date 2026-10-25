@@ -91,7 +91,7 @@ def _lti_recurN_applies(A: Tensor, x: Tensor) -> bool:
 
 
 def _lti_recurN(A: Tensor, zi: Tensor, x: Tensor) -> Tensor:
-    return torch.ops.philtorch.lti_recurN(to_lti(A).contiguous(), zi, x.contiguous())
+    return torch.ops.philtorch.lti_recurN(to_lti(A), zi, x)
 
 
 def _recurN_applies(A: Tensor, x: Tensor) -> bool:
@@ -99,7 +99,7 @@ def _recurN_applies(A: Tensor, x: Tensor) -> bool:
 
 
 def _recurN(A: Tensor, zi: Tensor, x: Tensor) -> Tensor:
-    return torch.ops.philtorch.recurN(to_lpv(A).contiguous(), zi, x.contiguous())
+    return torch.ops.philtorch.recurN(to_lpv(A), zi, x)
 
 
 def _lti_recur2_applies(A: Tensor, x: Tensor) -> bool:

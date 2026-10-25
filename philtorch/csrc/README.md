@@ -16,7 +16,7 @@ MPS dispatch uses one three-stage hierarchical SIMD implementation that replays 
 | File | Role |
 | --- | --- |
 | [`ops.cpp`](ops.cpp) | Creates the `philtorch._C` module and defines the dispatcher schemas of the recurrence ops, `philtorch::lti_recur` among them. |
-| [`host_recur.cpp`](host_recur.cpp) | CPU kernels of the recurrence ops, split over time when a batch has fewer sequences than threads. |
+| [`host_recur.cpp`](host_recur.cpp) | CPU kernels of the recurrence ops, split over time when a batch has fewer sequences than threads, long enough for the split to pay. |
 | [`lti_recur_mps_replay.mm`](lti_recur_mps_replay.mm) | Objective-C++ host code and the embedded Metal Shading Language source. |
 | [`../_ops.py`](../_ops.py) | Registers fake implementations and autograd for `philtorch::lti_recur`. |
 | [`../../tests/test_recur_ext.py`](../../tests/test_recur_ext.py) | Checks CPU/MPS parity, boundary lengths, long scans, and gradients. |
@@ -251,7 +251,7 @@ The MPS timer synchronizes PyTorch's MPS stream at each measurement boundary.
 CPU peak memory is reconstructed from allocation events captured by `torch.profiler.profile(profile_memory=True)`.
 Because PyTorch `2.10.0` does not expose MPS as a `ProfilerActivity`, MPS peak memory is sampled with `torch.mps.current_allocated_memory()` during repeated calls inside a profiler range.
 Memory figures exclude inputs and allocator cache but include output and native temporary tensors.
-The CPU column predates the CPU kernel of `host_recur.cpp`, which splits a sequence over the threads when there are fewer sequences than threads: its B = 1 rows ran on one thread, and the kernel now takes them in parallel.
+The CPU column predates the CPU kernel of `host_recur.cpp`, which splits a sequence over the threads when there are fewer sequences than threads, long enough for the split to pay: its B = 1 rows ran on one thread, and the kernel now takes them in parallel.
 
 | B | T | Coefficients | CPU median ms (IQR) | MPS median ms (IQR) | Speedup | CPU peak MiB | MPS peak MiB | Memory ratio |
 | ---: | ---: | :--- | ---: | ---: | ---: | ---: | ---: | ---: |

@@ -4,14 +4,13 @@
 
 #include <algorithm>
 #include <cmath>
-#include <limits>
 #include <type_traits>
 #include <vector>
 
 // The recurrence h[t] = A[t] h[t - 1] + x[t] on CPU. A sequence is split over
 // time into chunks, when there are fewer sequences than threads: each chunk's
 // transition matrix and local end state give its true incoming state, and the
-// chunks then run in parallel again from it.
+// chunks then run in parallel again from it. Each has at least min_chunk steps.
 constexpr int64_t min_chunk = 1024;
 
 template <typename scalar_t, typename acc_t>
@@ -35,39 +34,14 @@ inline acc_t host_dot(const scalar_t *left, const acc_t *right, int size)
     return sum;
 }
 
-// Whether every entry is below the smallest normal number (zero for integers).
-// For a constant A, the remaining factors of A^L are powers of a tiny matrix,
-// and the rest of the product would go on in denormals, which are slow, and
-// contribute below rounding.
+// A zero product stays zero (a tiny one may grow again), so the rest of it
+// can be skipped.
 template <typename acc_t>
-bool tiny(const acc_t *v, int64_t n)
+bool is_zero(const std::vector<acc_t> &v)
 {
-    for (int64_t i = 0; i < n; ++i)
-    {
-        if constexpr (std::is_integral_v<acc_t>)
-        {
-            if (v[i] != 0)
-                return false;
-        }
-        else
-        {
-            using real = typename c10::scalar_value_type<acc_t>::type;
-            if (!(std::abs(v[i]) < std::numeric_limits<real>::min()))
-                return false;
-        }
-    }
-    return true;
-}
-
-// Whether every entry is finite (integers wrap, and always are).
-template <typename acc_t>
-bool finite(const acc_t *v, int64_t n)
-{
-    if constexpr (!std::is_integral_v<acc_t>)
-        for (int64_t i = 0; i < n; ++i)
-            if (!std::isfinite(std::abs(v[i])))
-                return false;
-    return true;
+    return std::all_of(v.begin(), v.end(),
+                       [](acc_t x)
+                       { return x == acc_t(0); });
 }
 
 // A_b + t * stride_t is the matrix of step t. Steps s to e - 1 of a sequence
@@ -142,8 +116,8 @@ void transition(const scalar_t *A_b, int64_t stride_t, int64_t s, int64_t e,
             {
                 matmul(power.data(), power.data(), W.data(), M);
                 std::swap(power, W);
-                if (tiny(power.data(), M * M)) // the remaining factor, a power
-                {                              // of this one, is tiny
+                if (is_zero(power)) // the remaining factor is a power of it
+                {
                     std::fill(R.begin(), R.end(), acc_t(0));
                     break;
                 }
@@ -156,8 +130,7 @@ void transition(const scalar_t *A_b, int64_t stride_t, int64_t s, int64_t e,
         {
             matmul(A_b + t * stride_t, R.data(), W.data(), M);
             std::swap(R, W);
-            // A zero product stays zero; a tiny one may grow again.
-            if (std::all_of(R.begin(), R.end(), [](acc_t v) { return v == acc_t(0); }))
+            if (is_zero(R))
                 break;
         }
     }
@@ -231,7 +204,8 @@ void chunked_recurrence(const scalar_t *A, int64_t stride_b, int64_t stride_t,
                 const acc_t *Phi_c = Phi.data() + (b * (C - 1) + c - 1) * M * M;
                 std::copy(local, local + M, next.begin());
                 std::copy(prev.begin(), prev.end(), local);
-                if (!finite(Phi_c, M * M))
+                if (!std::all_of(Phi_c, Phi_c + M * M, [](acc_t v)
+                                 { return std::isfinite(std::abs(v)); }))
                 {
                     unsplit[b] = 1;
                     break;
@@ -252,7 +226,8 @@ void chunked_recurrence(const scalar_t *A, int64_t stride_b, int64_t stride_t,
             int64_t b = k / (C - 1), c = k % (C - 1) + 1;
             if (unsplit[b] && c > 1)
                 continue;
-            std::copy_n(hin.begin() + (b * C + c) * M, M, h.begin());
+            const acc_t *hin_c = hin.data() + (b * C + c) * M;
+            std::copy(hin_c, hin_c + M, h.begin());
             run_steps<true>(A + b * stride_b, stride_t, X + b * T * M,
                             Y + b * T * M, start(c),
                             unsplit[b] ? T : start(c + 1), M, h.data(),
@@ -285,22 +260,25 @@ at::Tensor recur_cpu_launch(const at::Tensor &A, const at::Tensor &zi,
     return out;
 }
 
-at::Tensor lti_recur_cpu_impl(const at::Tensor &a,
-                              const at::Tensor &zi, const at::Tensor &x)
+at::Tensor lti_recur_cpu(const at::Tensor &a, const at::Tensor &zi,
+                         const at::Tensor &x)
 {
     TORCH_CHECK(a.dim() <= 1, "A must be a vector or a scalar");
-    TORCH_CHECK(zi.dim() == 1, "zi must be a vector");
+    TORCH_CHECK(x.dim() == 2 && zi.dim() == 1 && zi.size(0) == x.size(0),
+                "x must be (B, T) and zi (B,)");
     TORCH_CHECK(x.size(1) > 0, "x must contain at least one time step");
     bool per_item = a.dim() == 1 && a.numel() == x.size(0);
     TORCH_CHECK(per_item || a.numel() == 1, "A must be a scalar or (B,)");
     return recur_cpu_launch(a, zi, x, 1, per_item ? 1 : 0, 0);
 }
 
-at::Tensor lti_mat_recur_N_order_cpu_impl(const at::Tensor &A,
-                                          const at::Tensor &zi,
-                                          const at::Tensor &x)
+at::Tensor lti_recurN_cpu(const at::Tensor &A, const at::Tensor &zi,
+                          const at::Tensor &x)
 {
     TORCH_CHECK(A.dim() == 2 || A.dim() == 3, "A must be a 2D or 3D tensor");
+    TORCH_CHECK(x.dim() == 3 && zi.dim() == 2 && zi.size(0) == x.size(0) &&
+                    zi.size(1) == A.size(-1),
+                "x must be (B, T, M) and zi (B, M)");
     TORCH_CHECK(x.size(2) == A.size(-1),
                 "Last dimension of x must match last dimension of A");
     TORCH_CHECK(A.size(-1) == A.size(-2),
@@ -311,10 +289,13 @@ at::Tensor lti_mat_recur_N_order_cpu_impl(const at::Tensor &A,
     return recur_cpu_launch(A, zi, x, order, A.dim() == 3 ? order * order : 0, 0);
 }
 
-at::Tensor mat_recur_N_order_cpu_impl(const at::Tensor &A, const at::Tensor &zi,
-                                      const at::Tensor &x)
+at::Tensor recurN_cpu(const at::Tensor &A, const at::Tensor &zi,
+                      const at::Tensor &x)
 {
     TORCH_CHECK(A.dim() == 3 || A.dim() == 4, "A must be a 3D or 4D tensor");
+    TORCH_CHECK(x.dim() == 3 && zi.dim() == 2 && zi.size(0) == x.size(0) &&
+                    zi.size(1) == A.size(-1),
+                "x must be (B, T, M) and zi (B, M)");
     TORCH_CHECK(x.size(2) == A.size(-1),
                 "Last dimension of x must match last dimension of A");
     TORCH_CHECK(A.size(-1) == A.size(-2),
@@ -331,9 +312,9 @@ at::Tensor mat_recur_N_order_cpu_impl(const at::Tensor &A, const at::Tensor &zi,
 
 TORCH_LIBRARY_IMPL(philtorch, CPU, m)
 {
-    m.impl("lti_recur", &lti_recur_cpu_impl);
-    m.impl("lti_recurN", &lti_mat_recur_N_order_cpu_impl);
-    m.impl("lti_recur2", &lti_mat_recur_N_order_cpu_impl);
-    m.impl("recurN", &mat_recur_N_order_cpu_impl);
-    m.impl("recur2", &mat_recur_N_order_cpu_impl);
+    m.impl("lti_recur", &lti_recur_cpu);
+    m.impl("lti_recurN", &lti_recurN_cpu);
+    m.impl("lti_recur2", &lti_recurN_cpu);
+    m.impl("recurN", &recurN_cpu);
+    m.impl("recur2", &recurN_cpu);
 }

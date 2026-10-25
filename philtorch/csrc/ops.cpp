@@ -1,6 +1,5 @@
 #include <Python.h>
-#include <torch/script.h>
-#include <torch/torch.h>
+#include <torch/library.h>
 
 /* Creates a dummy empty _C module that can be imported from Python.
    The import from Python will load the .so/.pyd associated with this extension

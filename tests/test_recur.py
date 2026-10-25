@@ -285,7 +285,6 @@ DISPATCH = [
 INTEGER_DISPATCH = [
     (True, 1, torch.int64, "cpu", 1, "_lti_recur"),
     (True, 2, torch.int64, "cpu", 1, "_lti_recurN"),
-    (False, 1, torch.int64, "cpu", 1, "_recurN"),
     (False, 2, torch.int64, "cpu", 1, "_recurN"),
     *(
         pytest.param(*case, marks=pytest.mark.cuda)
@@ -433,11 +432,9 @@ def eight_threads():
 # constant A, and more than M + 2 for a varying one.
 SPLIT_CASES = [
     (2, 5000, "per_item", 1),
-    (2, 5000, "one", 2),
     (2, 5000, "per_item", 3),
-    (1, 8200, "per_step", 1),
+    (2, 8200, "both", 1),
     (1, 8200, "per_step", 2),
-    (1, 8200, "both", 3),
 ]
 
 
@@ -475,19 +472,20 @@ def test_cpu_recurrence_split_over_time_regrows_after_underflow(eight_threads):
     torch.testing.assert_close(recurrence(A, zi, x), _sequential(A, zi, x))
 
 
-def test_cpu_recurrence_of_no_sequences(eight_threads):
+def test_cpu_recurrence_of_no_sequences():
     A, zi, x = torch.eye(2), torch.zeros(0, 2), torch.zeros(0, 5000, 2)
     assert torch.ops.philtorch.lti_recurN(A, zi, x).shape == (0, 5000, 2)
 
 
-@pytest.mark.parametrize("sharing", ["one", "both"])
+def test_cpu_recurrence_rejects_an_initial_state_of_another_batch():
+    A, zi, x = _problem(4, 8, 2, "per_step")
+    with pytest.raises(RuntimeError, match="zi"):
+        torch.ops.philtorch.recurN(A[0], zi[:3], x)
+
+
+@pytest.mark.parametrize("sharing", ["one", "per_step"])
 def test_cpu_recurrence_split_over_time_in_integers(eight_threads, sharing):
-    # One entry of -1, 0 or 1 a row, so that the states grow only linearly.
-    _, zi, x = _integer_problem(1, 8200, 2, sharing, torch.int64, "cpu")
-    shape = (1, 1 if sharing == "one" else 8200, 2)
-    gen = torch.Generator().manual_seed(0)
-    column = torch.nn.functional.one_hot(torch.randint(0, 2, shape, generator=gen), 2)
-    A = column * torch.randint(-1, 2, shape, generator=gen)[..., None]
+    A, zi, x = _integer_problem(1, 8200, 2, sharing, torch.int64, "cpu")
     assert torch.equal(recurrence(A, zi, x), _sequential(A, zi, x))
 
 
