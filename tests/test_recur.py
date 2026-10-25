@@ -261,7 +261,7 @@ def _kernel(time_invariant, M, dtype, device, B=1, T=2):
 DISPATCH = [
     (True, 1, torch.float64, "cpu", 1, "_lti_recur"),
     (True, 3, torch.float64, "cpu", 1, "_lti_recurN"),
-    (False, 1, torch.float64, "cpu", 1, "_scan"),
+    (False, 1, torch.float64, "cpu", 1, "_recurN"),
     *(
         pytest.param(*case, marks=pytest.mark.cuda)
         for case in [
@@ -435,6 +435,7 @@ SPLIT_CASES = [
     (2, 5000, "per_item", 1),
     (2, 5000, "one", 2),
     (2, 5000, "per_item", 3),
+    (1, 8200, "per_step", 1),
     (1, 8200, "per_step", 2),
     (1, 8200, "both", 3),
 ]
