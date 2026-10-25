@@ -261,7 +261,7 @@ def _kernel(time_invariant, M, dtype, device, B=1, T=2):
 DISPATCH = [
     (True, 1, torch.float64, "cpu", 1, "_lti_recur"),
     (True, 3, torch.float64, "cpu", 1, "_lti_recurN"),
-    (False, 1, torch.float64, "cpu", 1, "_scan"),
+    (False, 1, torch.float64, "cpu", 1, "_recurN"),
     *(
         pytest.param(*case, marks=pytest.mark.cuda)
         for case in [
@@ -285,7 +285,6 @@ DISPATCH = [
 INTEGER_DISPATCH = [
     (True, 1, torch.int64, "cpu", 1, "_lti_recur"),
     (True, 2, torch.int64, "cpu", 1, "_lti_recurN"),
-    (False, 1, torch.int64, "cpu", 1, "_recurN"),
     (False, 2, torch.int64, "cpu", 1, "_recurN"),
     *(
         pytest.param(*case, marks=pytest.mark.cuda)
@@ -418,6 +417,76 @@ def test_recurrence_in_integers_against_sequential(sharing, M):
     # CUDA's matmuls take no integers: the reference runs on CPU.
     expected = _sequential(*(t.cpu() for t in (A, zi, x)))
     assert torch.equal(recurrence(A, zi, x).cpu(), expected)
+
+
+@pytest.fixture
+def eight_threads():
+    threads = torch.get_num_threads()
+    torch.set_num_threads(8)
+    yield
+    torch.set_num_threads(threads)
+
+
+# (B, T, sharing, M) that the CPU kernels split over time at 8 threads: they
+# take min(8 // B, T // 1024) chunks, when that is more than 2 for a
+# constant A, and more than M + 2 for a varying one.
+SPLIT_CASES = [
+    (2, 5000, "per_item", 1),
+    (2, 5000, "per_item", 3),
+    (2, 8200, "both", 1),
+    (1, 8200, "per_step", 2),
+]
+
+
+@pytest.mark.parametrize("dtype", [torch.float64, torch.complex128])
+@pytest.mark.parametrize("B, T, sharing, M", SPLIT_CASES)
+def test_cpu_recurrence_split_over_time(eight_threads, B, T, sharing, M, dtype):
+    A, zi, x = _problem(B, T, M, sharing, dtype)
+    torch.testing.assert_close(recurrence(A, zi, x), _sequential(A, zi, x))
+
+
+def test_cpu_recurrence_split_over_time_underflows(eight_threads):
+    # A chunk's transition matrix underflows to zero within its 1250 steps.
+    A, zi, x = _problem(1, 5000, 2, "one")
+    A = A * (0.5 / 0.97)
+    torch.testing.assert_close(recurrence(A, zi, x), _sequential(A, zi, x))
+
+
+def test_cpu_recurrence_unstable_is_not_split(eight_threads):
+    # A chunk's transition matrix, 2^1250 I, overflows: its product with a zero
+    # state would be NaN, so the sequence runs unsplit.
+    A = 2 * torch.eye(2, dtype=torch.float64).expand(1, 1, 2, 2)
+    zi, x = torch.zeros(1, 2, dtype=torch.float64), torch.zeros(1, 5000, 2, dtype=torch.float64)
+    x[:, -1] = 1
+    torch.testing.assert_close(recurrence(A, zi, x), _sequential(A, zi, x))
+
+
+def test_cpu_recurrence_split_over_time_regrows_after_underflow(eight_threads):
+    # Chunk 1's transition matrix passes through 1e-320 I, a denormal, and then
+    # grows back to 1e30 I.
+    A = torch.eye(2, dtype=torch.float64).repeat(1, 8200, 1, 1)
+    A[:, 1030:1032] *= 1e-160
+    A[:, 1032:1067] *= 1e10
+    zi, x = torch.zeros(1, 2, dtype=torch.float64), torch.zeros(1, 8200, 2, dtype=torch.float64)
+    x[:, 0] = 1
+    torch.testing.assert_close(recurrence(A, zi, x), _sequential(A, zi, x))
+
+
+def test_cpu_recurrence_of_no_sequences():
+    A, zi, x = torch.eye(2), torch.zeros(0, 2), torch.zeros(0, 5000, 2)
+    assert torch.ops.philtorch.lti_recurN(A, zi, x).shape == (0, 5000, 2)
+
+
+def test_cpu_recurrence_rejects_an_initial_state_of_another_batch():
+    A, zi, x = _problem(4, 8, 2, "per_step")
+    with pytest.raises(RuntimeError, match="zi"):
+        torch.ops.philtorch.recurN(A[0], zi[:3], x)
+
+
+@pytest.mark.parametrize("sharing", ["one", "per_step"])
+def test_cpu_recurrence_split_over_time_in_integers(eight_threads, sharing):
+    A, zi, x = _integer_problem(1, 8200, 2, sharing, torch.int64, "cpu")
+    assert torch.equal(recurrence(A, zi, x), _sequential(A, zi, x))
 
 
 @pytest.mark.cuda

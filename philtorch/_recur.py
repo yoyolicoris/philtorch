@@ -17,7 +17,7 @@ no forward mode.
 The forward pass runs the first kernel of ``_KERNELS`` that takes the input:
 
 * CPU: the C++ kernels, ``lti_recur`` (M = 1) and ``lti_recurN`` for
-  time-invariant A, ``scan`` (M = 1) and ``recurN`` otherwise;
+  time-invariant A, ``recurN`` otherwise;
 * CUDA: CUB scans for M <= 2 (``lti_recur``, ``lti_recur2``, ``scan``, and
   ``recur2`` for real time-varying M = 2), the ParaRNN kernels for real
   time-varying M = 2 and 3 within their limits, and the Triton kernels of
@@ -91,7 +91,7 @@ def _lti_recurN_applies(A: Tensor, x: Tensor) -> bool:
 
 
 def _lti_recurN(A: Tensor, zi: Tensor, x: Tensor) -> Tensor:
-    return torch.ops.philtorch.lti_recurN(to_lti(A).contiguous(), zi, x.contiguous())
+    return torch.ops.philtorch.lti_recurN(to_lti(A), zi, x)
 
 
 def _recurN_applies(A: Tensor, x: Tensor) -> bool:
@@ -99,7 +99,7 @@ def _recurN_applies(A: Tensor, x: Tensor) -> bool:
 
 
 def _recurN(A: Tensor, zi: Tensor, x: Tensor) -> Tensor:
-    return torch.ops.philtorch.recurN(to_lpv(A).contiguous(), zi, x.contiguous())
+    return torch.ops.philtorch.recurN(to_lpv(A), zi, x)
 
 
 def _lti_recur2_applies(A: Tensor, x: Tensor) -> bool:
@@ -115,13 +115,9 @@ _SCAN_DTYPES = (torch.float32, torch.float64, torch.complex64, torch.complex128)
 
 
 def _scan_applies(A: Tensor, x: Tensor) -> bool:
-    # On CPU too: 3-7 times faster than recurN at M = 1.
-    return (
-        x.device.type in ("cpu", "cuda")
-        and not _time_invariant(A)
-        and x.size(-1) == 1
-        and x.dtype in _SCAN_DTYPES
-    )
+    # On CPU, recurN is as fast, and faster for one long sequence, which it
+    # splits over the threads.
+    return x.is_cuda and not _time_invariant(A) and x.size(-1) == 1 and x.dtype in _SCAN_DTYPES
 
 
 def _scan(A: Tensor, zi: Tensor, x: Tensor) -> Tensor:
