@@ -35,8 +35,9 @@ inline acc_t host_dot(const scalar_t *left, const acc_t *right, int size)
     return sum;
 }
 
-// Whether every entry is below the smallest normal number (zero for integers):
-// products of contractions would go on in denormals, which are slow, and
+// Whether every entry is below the smallest normal number (zero for integers).
+// For a constant A, the remaining factors of A^L are powers of a tiny matrix,
+// and the rest of the product would go on in denormals, which are slow, and
 // contribute below rounding.
 template <typename acc_t>
 bool tiny(const acc_t *v, int64_t n)
@@ -108,12 +109,12 @@ void run_steps(const scalar_t *A_b, int64_t stride_t, scalar_t *H_b,
 
 // out = X Y for row-major M x M matrices.
 template <typename x_t, typename acc_t>
-void matmul(const x_t *X, const acc_t *Y, acc_t *out, int64_t M)
+void matmul(const x_t *X, const acc_t *Y, acc_t *out, int M)
 {
     std::fill(out, out + M * M, acc_t(0));
-    for (int64_t i = 0; i < M; ++i)
-        for (int64_t k = 0; k < M; ++k)
-            for (int64_t j = 0; j < M; ++j)
+    for (int i = 0; i < M; ++i)
+        for (int k = 0; k < M; ++k)
+            for (int j = 0; j < M; ++j)
                 out[i * M + j] += X[i * M + k] * Y[k * M + j];
 }
 
@@ -121,10 +122,10 @@ void matmul(const x_t *X, const acc_t *Y, acc_t *out, int64_t M)
 // A^(e - s), by binary exponentiation.
 template <typename scalar_t, typename acc_t>
 void transition(const scalar_t *A_b, int64_t stride_t, int64_t s, int64_t e,
-                int64_t M, acc_t *Phi)
+                int M, acc_t *Phi)
 {
     std::vector<acc_t> R(M * M, acc_t(0)), W(M * M);
-    for (int64_t i = 0; i < M; ++i)
+    for (int i = 0; i < M; ++i)
         R[i * M + i] = 1;
     if (stride_t == 0)
     {
@@ -154,11 +155,9 @@ void transition(const scalar_t *A_b, int64_t stride_t, int64_t s, int64_t e,
         {
             matmul(A_b + (t - 1) * stride_t, R.data(), W.data(), M);
             std::swap(R, W);
-            if (tiny(R.data(), M * M))
-            {
-                std::fill(R.begin(), R.end(), acc_t(0));
+            // A zero product stays zero; a tiny one may grow again.
+            if (std::all_of(R.begin(), R.end(), [](acc_t v) { return v == acc_t(0); }))
                 break;
-            }
         }
     }
     std::copy(R.begin(), R.end(), Phi);
@@ -215,7 +214,7 @@ void chunked_recurrence(const scalar_t *A, int64_t stride_b, int64_t stride_t,
         return;
 
     // The true end states over the chunks. hin[b][c] holds the local end state
-    // on entry and the incoming state on exit. A sequence with an infinite
+    // on entry and the incoming state on exit. A sequence with a non-finite
     // Phi, whose product with a zero would be NaN, is left unsplit.
     at::parallel_for(0, B, 1, [&](int64_t begin, int64_t end)
                      {

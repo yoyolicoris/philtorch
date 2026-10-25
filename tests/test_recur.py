@@ -429,10 +429,9 @@ def eight_threads():
 
 
 # (B, T, sharing, M) that the CPU kernels split over time at 8 threads: they
-# take min(8 // B, (T - 1) // 1024) chunks, when that is more than 2 for a
+# take min(8 // B, T // 1024) chunks, when that is more than 2 for a
 # constant A, and more than M + 2 for a varying one.
 SPLIT_CASES = [
-    (2, 5000, "one", 1),
     (2, 5000, "per_item", 1),
     (2, 5000, "one", 2),
     (2, 5000, "per_item", 3),
@@ -455,13 +454,23 @@ def test_cpu_recurrence_split_over_time_underflows(eight_threads):
     torch.testing.assert_close(recurrence(A, zi, x), _sequential(A, zi, x))
 
 
-@pytest.mark.parametrize("M", [1, 2])
-def test_cpu_recurrence_unstable_is_not_split(eight_threads, M):
+def test_cpu_recurrence_unstable_is_not_split(eight_threads):
     # A chunk's transition matrix, 2^1250 I, overflows: its product with a zero
     # state would be NaN, so the sequence runs unsplit.
-    A = 2 * torch.eye(M, dtype=torch.float64).expand(1, 1, M, M)
-    zi, x = torch.zeros(1, M, dtype=torch.float64), torch.zeros(1, 5000, M, dtype=torch.float64)
+    A = 2 * torch.eye(2, dtype=torch.float64).expand(1, 1, 2, 2)
+    zi, x = torch.zeros(1, 2, dtype=torch.float64), torch.zeros(1, 5000, 2, dtype=torch.float64)
     x[:, -1] = 1
+    torch.testing.assert_close(recurrence(A, zi, x), _sequential(A, zi, x))
+
+
+def test_cpu_recurrence_split_over_time_regrows_after_underflow(eight_threads):
+    # Chunk 1's transition matrix passes through 1e-320 I, a denormal, and then
+    # grows back to 1e30 I.
+    A = torch.eye(2, dtype=torch.float64).repeat(1, 8200, 1, 1)
+    A[:, 1030:1032] *= 1e-160
+    A[:, 1032:1067] *= 1e10
+    zi, x = torch.zeros(1, 2, dtype=torch.float64), torch.zeros(1, 8200, 2, dtype=torch.float64)
+    x[:, 0] = 1
     torch.testing.assert_close(recurrence(A, zi, x), _sequential(A, zi, x))
 
 

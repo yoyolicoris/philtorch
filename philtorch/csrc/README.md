@@ -251,6 +251,7 @@ The MPS timer synchronizes PyTorch's MPS stream at each measurement boundary.
 CPU peak memory is reconstructed from allocation events captured by `torch.profiler.profile(profile_memory=True)`.
 Because PyTorch `2.10.0` does not expose MPS as a `ProfilerActivity`, MPS peak memory is sampled with `torch.mps.current_allocated_memory()` during repeated calls inside a profiler range.
 Memory figures exclude inputs and allocator cache but include output and native temporary tensors.
+The CPU column predates the CPU kernel of `host_recur.cpp`, which splits a sequence over the threads when there are fewer sequences than threads: its B = 1 rows ran on one thread, and the kernel now takes them in parallel.
 
 | B | T | Coefficients | CPU median ms (IQR) | MPS median ms (IQR) | Speedup | CPU peak MiB | MPS peak MiB | Memory ratio |
 | ---: | ---: | :--- | ---: | ---: | ---: | ---: | ---: | ---: |

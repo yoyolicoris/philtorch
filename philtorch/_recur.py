@@ -115,7 +115,8 @@ _SCAN_DTYPES = (torch.float32, torch.float64, torch.complex64, torch.complex128)
 
 
 def _scan_applies(A: Tensor, x: Tensor) -> bool:
-    # On CPU too: 3-7 times faster than recurN at M = 1.
+    # On CPU too: 1.3-2.2 times faster than recurN at M = 1, but for one long
+    # sequence, which recurN splits over the threads.
     return (
         x.device.type in ("cpu", "cuda")
         and not _time_invariant(A)
