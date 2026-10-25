@@ -70,22 +70,23 @@ bool finite(const acc_t *v, int64_t n)
     return true;
 }
 
-// A_b points at the matrix of step 1, A_b + (t - 1) * stride_t at step t's.
-// Steps s to e - 1 of a sequence from the state h, which is updated: H_b[t]
-// holds x[t] and gets h[t] if write. M is an int, which makes the loop faster.
+// A_b + t * stride_t is the matrix of step t. Steps s to e - 1 of a sequence
+// from the state h, which is updated: X_b[t] is x[t], and Y_b[t] gets h[t] if
+// write. M is an int, which makes the loop faster.
 template <bool write, typename scalar_t, typename acc_t>
-void run_steps(const scalar_t *A_b, int64_t stride_t, scalar_t *H_b,
-               int64_t s, int64_t e, int M, acc_t *h, acc_t *tmp)
+void run_steps(const scalar_t *A_b, int64_t stride_t, const scalar_t *X_b,
+               scalar_t *Y_b, int64_t s, int64_t e, int M, acc_t *h,
+               acc_t *tmp)
 {
     if (M == 1)
     {
         acc_t v = h[0];
         for (int64_t t = s; t < e; ++t)
         {
-            v = static_cast<acc_t>(H_b[t]) +
-                static_cast<acc_t>(A_b[(t - 1) * stride_t]) * v;
+            v = static_cast<acc_t>(X_b[t]) +
+                static_cast<acc_t>(A_b[t * stride_t]) * v;
             if constexpr (write)
-                H_b[t] = v;
+                Y_b[t] = v;
         }
         h[0] = v;
         return;
@@ -93,13 +94,13 @@ void run_steps(const scalar_t *A_b, int64_t stride_t, scalar_t *H_b,
     acc_t *prev = h, *curr = tmp;
     for (int64_t t = s; t < e; ++t)
     {
-        const scalar_t *A_t = A_b + (t - 1) * stride_t;
-        scalar_t *H_t = H_b + t * M;
+        const scalar_t *A_t = A_b + t * stride_t;
+        const scalar_t *X_t = X_b + t * M;
         for (int i = 0; i < M; ++i)
         {
-            curr[i] = static_cast<acc_t>(H_t[i]) + host_dot(A_t + i * M, prev, M);
+            curr[i] = static_cast<acc_t>(X_t[i]) + host_dot(A_t + i * M, prev, M);
             if constexpr (write)
-                H_t[i] = curr[i];
+                Y_b[t * M + i] = curr[i];
         }
         std::swap(prev, curr);
     }
@@ -153,7 +154,7 @@ void transition(const scalar_t *A_b, int64_t stride_t, int64_t s, int64_t e,
     {
         for (int64_t t = s; t < e; ++t)
         {
-            matmul(A_b + (t - 1) * stride_t, R.data(), W.data(), M);
+            matmul(A_b + t * stride_t, R.data(), W.data(), M);
             std::swap(R, W);
             // A zero product stays zero; a tiny one may grow again.
             if (std::all_of(R.begin(), R.end(), [](acc_t v) { return v == acc_t(0); }))
@@ -163,24 +164,24 @@ void transition(const scalar_t *A_b, int64_t stride_t, int64_t s, int64_t e,
     std::copy(R.begin(), R.end(), Phi);
 }
 
-// A[b, t] is the M x M row-major matrix at A + b * stride_b + (t - 1) * stride_t
-// for t = 1 to T - 1. H is [B][T][M], in place: H[b][0] is the initial state,
-// H[b][t] holds x[t] on entry and h[t] on exit.
+// A[b, t] is the M x M row-major matrix at A + b * stride_b + t * stride_t.
+// X and Y are [B][T][M], Z is [B][M]: Y[b][t] = A[b, t] Y[b][t - 1] + X[b][t],
+// from Y[b][-1] = Z[b].
 template <typename scalar_t>
 void chunked_recurrence(const scalar_t *A, int64_t stride_b, int64_t stride_t,
-                        scalar_t *H, int64_t B, int64_t T, int M)
+                        const scalar_t *X, const scalar_t *Z, scalar_t *Y,
+                        int64_t B, int64_t T, int M)
 {
     using acc_t = at::opmath_type<scalar_t>;
-    const int64_t steps = T - 1;
     const int64_t P = at::get_num_threads();
-    int64_t C = B > 0 ? std::min(P / B, steps / min_chunk) : 1;
+    int64_t C = B > 0 ? std::min(P / B, T / min_chunk) : 1;
     // A constant A costs 2 passes over the steps, a varying one M + 2.
     if (C <= (stride_t == 0 ? 2 : M + 2))
         C = 1;
 
     // Chunk c is steps [start(c), start(c + 1)).
     auto start = [&](int64_t c)
-    { return 1 + c * steps / C; };
+    { return c * T / C; };
     // Phi[b][c - 1] is chunk c's, for c >= 1.
     std::vector<acc_t> Phi(B * (C - 1) * M * M), hin(B * C * M);
     std::vector<char> unsplit(B, 0);
@@ -193,18 +194,19 @@ void chunked_recurrence(const scalar_t *A, int64_t stride_b, int64_t stride_t,
         {
             int64_t b = k / C, c = k % C;
             const scalar_t *A_b = A + b * stride_b;
-            scalar_t *H_b = H + b * T * M;
+            const scalar_t *X_b = X + b * T * M;
+            scalar_t *Y_b = Y + b * T * M;
             if (c == 0)
             {
-                std::copy(H_b, H_b + M, h.begin());
-                run_steps<true>(A_b, stride_t, H_b, start(0), start(1), M,
+                std::copy(Z + b * M, Z + (b + 1) * M, h.begin());
+                run_steps<true>(A_b, stride_t, X_b, Y_b, start(0), start(1), M,
                                 h.data(), tmp.data());
             }
             else
             {
                 std::fill(h.begin(), h.end(), acc_t(0));
-                run_steps<false>(A_b, stride_t, H_b, start(c), start(c + 1), M,
-                                 h.data(), tmp.data());
+                run_steps<false>(A_b, stride_t, X_b, Y_b, start(c),
+                                 start(c + 1), M, h.data(), tmp.data());
                 transition(A_b, stride_t, start(c), start(c + 1), M,
                            Phi.data() + (b * (C - 1) + c - 1) * M * M);
             }
@@ -251,9 +253,10 @@ void chunked_recurrence(const scalar_t *A, int64_t stride_b, int64_t stride_t,
             if (unsplit[b] && c > 1)
                 continue;
             std::copy_n(hin.begin() + (b * C + c) * M, M, h.begin());
-            run_steps<true>(A + b * stride_b, stride_t, H + b * T * M,
-                            start(c), unsplit[b] ? T : start(c + 1), M,
-                            h.data(), tmp.data());
+            run_steps<true>(A + b * stride_b, stride_t, X + b * T * M,
+                            Y + b * T * M, start(c),
+                            unsplit[b] ? T : start(c + 1), M, h.data(),
+                            tmp.data());
         } });
 }
 
@@ -267,16 +270,19 @@ at::Tensor recur_cpu_launch(const at::Tensor &A, const at::Tensor &zi,
     TORCH_CHECK(A.scalar_type() == x.scalar_type(),
                 "A must have the same scalar type as input");
     auto A_contiguous = A.contiguous();
-    auto out = at::cat({zi.unsqueeze(1), x}, 1).contiguous();
+    auto x_contiguous = x.contiguous();
+    auto zi_contiguous = zi.contiguous();
+    auto out = at::empty_like(x_contiguous);
     AT_DISPATCH_FLOATING_AND_COMPLEX_TYPES_AND3(
         at::kLong, at::kHalf, at::kBFloat16, x.scalar_type(),
         "chunked_recurrence", [&]
         { chunked_recurrence<scalar_t>(
               A_contiguous.const_data_ptr<scalar_t>(), stride_b, stride_t,
-              out.mutable_data_ptr<scalar_t>(), out.size(0), out.size(1),
+              x_contiguous.const_data_ptr<scalar_t>(),
+              zi_contiguous.const_data_ptr<scalar_t>(),
+              out.mutable_data_ptr<scalar_t>(), x.size(0), x.size(1),
               static_cast<int>(M)); });
-    return out.slice(1, 1, out.size(1))
-        .contiguous(); // Remove the initial state from the output
+    return out;
 }
 
 at::Tensor lti_recur_cpu_impl(const at::Tensor &a,
