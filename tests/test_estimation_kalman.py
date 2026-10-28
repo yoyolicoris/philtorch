@@ -236,6 +236,29 @@ def test_kalman_gradcheck(fn):
 
 
 @pytest.mark.parametrize("fn", [kalman_filter, kalman_smoother])
+def test_kalman_compiled_matches_eager(fn):
+    """The scan's combine functions trace without aliasing or mutating inputs.
+
+    PyTorch 2.15 rejects both in a higher-order op's body, so fullgraph=True
+    fails here if a combine function returns an input unchanged.
+    """
+    args = [t.requires_grad_() for t in _model(2, 6, 2, 2)]
+    compiled = torch.compile(fn, backend="aot_eager", fullgraph=True)
+
+    def run(f):
+        result = f(*args)
+        grads = torch.autograd.grad(sum(t.square().sum() for t in result), args, allow_unused=True)
+        return tuple(result), grads
+
+    expected, expected_grads = run(fn)
+    actual, actual_grads = run(compiled)
+    for a, e in zip(actual, expected):
+        torch.testing.assert_close(a, e, rtol=1e-9, atol=1e-9)
+    for a, e in zip(actual_grads, expected_grads):
+        torch.testing.assert_close(a, e, rtol=1e-8, atol=1e-8)
+
+
+@pytest.mark.parametrize("fn", [kalman_filter, kalman_smoother])
 def test_kalman_known_inputs_recipe(fn):
     """The recipe in kalman_filter's docstring, from shapes it says to expand."""
     B, N, M, P = 3, 9, 3, 2

@@ -22,20 +22,30 @@ MATRIX_PATH = REPO_ROOT / "cuda_wheel_matrix.json"
 # (torch, cuda) pairs PyTorch publishes per release, mirrored in the matrix,
 # minus CUDA 12.6, which the CUDA sources don't build with unchanged.
 EXPECTED_BUILDS = [
-    ("2.12.1", "12.9"),
-    ("2.12.1", "13.0"),
-    ("2.12.1", "13.2"),
     ("2.13.0", "12.9"),
     ("2.13.0", "13.0"),
     ("2.13.0", "13.2"),
     ("2.14.1", "13.0"),
     ("2.14.1", "13.2"),
+    ("2.15.0", "13.2"),
+    ("2.15.0", "13.4"),
 ]
+# The CPython versions PyPI's regular (not free-threaded) torch wheels cover.
+OLD_PYTHONS = ["3.11", "3.12", "3.13", "3.14"]
+EXPECTED_PYTHONS = {
+    "2.13.0": OLD_PYTHONS,
+    "2.14.1": OLD_PYTHONS,
+    "2.15.0": ["3.11", "3.12", "3.13", "3.14", "3.15"],
+}
 # PyTorch's x86_64 release arch lists (.ci/manywheel/build_env_setup.py).
 EXPECTED_ARCHS = {
     "12.9": "7.5 8.0 8.6 9.0 10.0 12.0",
     "13.0": "7.5 8.0 8.6 9.0 10.0 12.0",
     "13.2": "7.5 8.0 8.6 9.0 10.0 12.0",
+    "13.4": "7.5 8.0 8.6 9.0 10.0 12.0",
+}
+LEGS = {
+    (python, torch, cuda) for torch, cuda in EXPECTED_BUILDS for python in EXPECTED_PYTHONS[torch]
 }
 
 
@@ -46,16 +56,16 @@ def _build(**fields):
         "torch_index_url": "https://download.pytorch.org/whl/cu130",
         # Valid for every CUDA version, so tests can change "cuda" alone.
         "cuda_arch_list": "8.0 9.0+PTX",
+        "python_versions": ["3.10"],
         **fields,
     }
 
 
 def _matrix(**fields):
     return {
-        "schema_version": 2,
+        "schema_version": 3,
         "platform": "manylinux_2_28_x86_64",
         "build_image": "quay.io/pypa/manylinux_2_28_x86_64:2026.09.30-1",
-        "python_versions": ["3.10"],
         "builds": [_build()],
         **fields,
     }
@@ -63,15 +73,15 @@ def _matrix(**fields):
 
 def test_matrix_file_validates_against_schema():
     data = VERSION_SCRIPT.validate_matrix(VERSION_SCRIPT.load_matrix(MATRIX_PATH), MATRIX_PATH)
-    assert data["schema_version"] == 2
+    assert data["schema_version"] == 3
     assert data["platform"] == "manylinux_2_28_x86_64"
     assert data["build_image"].startswith("quay.io/pypa/manylinux_2_28_x86_64:")
-    assert data["python_versions"] == ["3.10", "3.11", "3.12", "3.13"]
     # Latest patch of each of the three newest stable PyTorch minors, with one
     # build per CUDA version PyTorch publishes for that minor.
     assert [(build["torch"], build["cuda"]) for build in data["builds"]] == EXPECTED_BUILDS
     for build in data["builds"]:
         assert build["cuda_arch_list"] == EXPECTED_ARCHS[build["cuda"]], build
+        assert build["python_versions"] == EXPECTED_PYTHONS[build["torch"]], build
 
 
 def test_version_label_is_deterministic_pep440():
@@ -131,20 +141,13 @@ def test_validate_matrix_accepts_minimal_matrix():
 @pytest.mark.parametrize(
     "data, message",
     [
-        pytest.param(_matrix(schema_version=1), "schema_version must be 2", id="schema"),
+        pytest.param(_matrix(schema_version=1), "schema_version must be 3", id="schema"),
         pytest.param(_matrix(platform=""), "'platform' must be", id="platform"),
         # The image must match the platform auditwheel certifies.
         pytest.param(
             _matrix(build_image="nvidia/cuda:13.2.1-devel-ubuntu22.04"),
             "'build_image' must be an image for 'manylinux_2_28_x86_64'",
             id="build-image",
-        ),
-        pytest.param(_matrix(python_versions=[]), "'python_versions' must be", id="no-python"),
-        pytest.param(
-            _matrix(python_versions=["3.10\n"]), "'python_versions' must be", id="python-newline"
-        ),
-        pytest.param(
-            _matrix(python_versions=["3.10", "3.10"]), "contains a duplicate", id="python-dup"
         ),
         pytest.param(_matrix(builds=[]), "'builds' must be a non-empty list", id="no-builds"),
         pytest.param(
@@ -189,8 +192,23 @@ def test_validate_matrix_accepts_minimal_matrix():
             "CUDA 13 dropped 7.0",
             id="arch-dropped-by-cuda",
         ),
+        pytest.param(
+            _matrix(builds=[_build(python_versions=[])]),
+            "'python_versions' must be",
+            id="no-python",
+        ),
+        pytest.param(
+            _matrix(builds=[_build(python_versions=["3.10\n"])]),
+            "'python_versions' must be",
+            id="python-newline",
+        ),
+        pytest.param(
+            _matrix(builds=[_build(python_versions=["3.10", "3.10"])]),
+            "contains a duplicate",
+            id="python-dup",
+        ),
         # A stray "python" key inside a build would otherwise flow through **build
-        # in expand_matrix and silently override the matrix's python_versions.
+        # in expand_matrix and silently override the build's python_versions.
         pytest.param(_matrix(builds=[_build(python="3.9")]), "unknown field", id="stray-field"),
         # One torch release ships several CUDA builds, but a repeated
         # (torch, CUDA) pair would emit the same wheel twice.
@@ -247,25 +265,24 @@ def test_load_matrix_rejects_missing_file(tmp_path):
 
 
 def test_matrix_python_versions_match_package_classifiers():
-    # CUDA wheels cover the same Python versions the package metadata advertises.
+    # CUDA wheels cover the Python versions the package metadata advertises.
     pyproject = (REPO_ROOT / "pyproject.toml").read_text(encoding="utf-8")
     classifiers = re.findall(r'"Programming Language :: Python :: (3\.\d+)"', pyproject)
-    assert VERSION_SCRIPT.load_matrix(MATRIX_PATH)["python_versions"] == classifiers
+    builds = VERSION_SCRIPT.load_matrix(MATRIX_PATH)["builds"]
+    pythons = {python for build in builds for python in build["python_versions"]}
+    assert sorted(pythons, key=lambda v: int(v.split(".")[1])) == classifiers
 
 
-def test_expand_matrix_covers_python_x_torch_cuda():
+def test_expand_matrix_covers_each_builds_pythons():
     data = VERSION_SCRIPT.validate_matrix(VERSION_SCRIPT.load_matrix(MATRIX_PATH))
     expanded = VERSION_SCRIPT.expand_matrix(data)
-    assert len(expanded) == 4 * len(EXPECTED_BUILDS)
-    assert {(entry["python"], entry["torch"], entry["cuda"]) for entry in expanded} == {
-        (python, torch, cuda)
-        for python in ["3.10", "3.11", "3.12", "3.13"]
-        for torch, cuda in EXPECTED_BUILDS
-    }
+    assert len(expanded) == len(LEGS)
+    assert {(entry["python"], entry["torch"], entry["cuda"]) for entry in expanded} == LEGS
     # Every leg carries what the workflow needs to pick its container and tag.
     for entry in expanded:
         assert entry["platform"] == data["platform"]
         assert entry["build_image"] == data["build_image"]
+        assert "python_versions" not in entry
 
 
 def test_cli_prints_version(tmp_path):
@@ -357,7 +374,7 @@ def test_cli_list_prints_valid_json():
     assert result.returncode == 0, result.stderr
     # One line, so the workflow can write it to $GITHUB_OUTPUT as matrix=<json>.
     assert result.stdout.count("\n") == 1
-    assert len(json.loads(result.stdout)) == 4 * len(EXPECTED_BUILDS)
+    assert len(json.loads(result.stdout)) == len(LEGS)
 
 
 def test_cli_fails_loudly_on_unknown_pair():

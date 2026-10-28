@@ -32,7 +32,7 @@ def _outside_philtorch_stacklevel() -> int:
     """The ``stacklevel`` of :func:`warnings.warn` that points at the first frame
     outside philtorch, counting from the frame that calls this helper.
 
-    ``skip_file_prefixes`` does this from Python 3.12; 3.10 is supported too.
+    ``skip_file_prefixes`` does this from Python 3.12; 3.11 is supported too.
     """
     # Frame 0 is this helper's; the warn call is in its caller, frame 1.
     depth = 1

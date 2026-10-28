@@ -30,7 +30,7 @@ from packaging.version import InvalidVersion, Version
 
 REPO_ROOT = Path(__file__).parents[1]
 DEFAULT_MATRIX = REPO_ROOT / "cuda_wheel_matrix.json"
-SCHEMA_VERSION = 2
+SCHEMA_VERSION = 3
 
 # Patterns are matched with fullmatch, which unlike match plus "$" rejects a
 # trailing newline.
@@ -42,7 +42,7 @@ _PYTHON_RE = re.compile(r"\d+\.\d+")
 # "Ampere" hide what is built, so only explicit compute capabilities pass.
 _ARCH_RE = re.compile(r"(\d+)\.(\d+)a?(\+PTX)?")
 
-_BUILD_FIELDS = frozenset({"torch", "cuda", "torch_index_url", "cuda_arch_list"})
+_BUILD_FIELDS = frozenset({"torch", "cuda", "torch_index_url", "cuda_arch_list", "python_versions"})
 
 # Oldest CUDA the CUDA sources build with unchanged. recur2.cuh treats
 # thrust::tuple and cuda::std::tuple as one type; CUDA 12.6 keeps them
@@ -98,15 +98,6 @@ def validate_matrix(data, path="<matrix>"):
     build_image = data.get("build_image")
     if not isinstance(build_image, str) or platform not in build_image:
         raise RuntimeError(f"{path}: 'build_image' must be an image for {platform!r}")
-    python_versions = data.get("python_versions")
-    if (
-        not isinstance(python_versions, list)
-        or not python_versions
-        or any(not isinstance(v, str) or not _PYTHON_RE.fullmatch(v) for v in python_versions)
-    ):
-        raise RuntimeError(f"{path}: 'python_versions' must be a non-empty list like ['3.10']")
-    if len(set(python_versions)) != len(python_versions):
-        raise RuntimeError(f"{path}: 'python_versions' contains a duplicate")
     builds = data.get("builds")
     if not isinstance(builds, list) or not builds:
         raise RuntimeError(f"{path}: 'builds' must be a non-empty list")
@@ -146,6 +137,17 @@ def validate_matrix(data, path="<matrix>"):
         arch_error = _arch_support_error(cuda_version, arch_list)
         if arch_error:
             raise RuntimeError(f"{where}: 'cuda_arch_list': {arch_error}")
+        # The CPython versions the torch release has wheels for, which differ
+        # from one release to the next.
+        python_versions = build.get("python_versions")
+        if (
+            not isinstance(python_versions, list)
+            or not python_versions
+            or any(not isinstance(v, str) or not _PYTHON_RE.fullmatch(v) for v in python_versions)
+        ):
+            raise RuntimeError(f"{where}: 'python_versions' must be a non-empty list like ['3.10']")
+        if len(set(python_versions)) != len(python_versions):
+            raise RuntimeError(f"{where}: 'python_versions' contains a duplicate")
         # Each torch minor/CUDA pair gets its own package index (see
         # scripts/generate_simple_index.py), which must hold one build per
         # PhilTorch version; two patches of one minor would add a second.
@@ -198,13 +200,16 @@ def cuda_wheel_version(base, torch_version, cuda_version):
 
 
 def expand_matrix(data):
-    """Cartesian product of Python versions and torch/CUDA builds, in file order."""
+    """One leg per torch/CUDA build and each Python version it lists, in file order."""
     shared = {"platform": data["platform"], "build_image": data["build_image"]}
-    return [
-        {"python": python_version, **shared, **build}
-        for python_version in data["python_versions"]
-        for build in data["builds"]
-    ]
+    legs = []
+    for build in data["builds"]:
+        fields = {key: value for key, value in build.items() if key != "python_versions"}
+        legs += [
+            {"python": python_version, **shared, **fields}
+            for python_version in build["python_versions"]
+        ]
+    return legs
 
 
 def main(argv=None):
