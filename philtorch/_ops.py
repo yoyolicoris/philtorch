@@ -4,8 +4,8 @@ The fakes give :func:`torch.compile` the ops' output shapes. The gradients
 are what compiled code differentiates: there :mod:`philtorch._recur` calls the
 ops directly, outside its autograd function. Every recurrence op maps its
 layout to that module's, (B or 1, T or 1, M, M) matrices, whose ``_gradients``
-defines the gradients once; torchlpc's ``lpc``, an all-pole filter, keeps its
-own.
+defines the gradients once; torchlpc's ``lpc``, an all-pole filter, has its
+own, in :mod:`philtorch._torchlpc`, which its ``AllPole`` shares.
 """
 
 from typing import Any
@@ -14,6 +14,7 @@ import torch
 import torch.nn.functional as F
 
 from . import _ssm
+from ._torchlpc import _lpc_gradients
 
 
 def _recurrence_gradients(A, zi, h, grad, needs_A, needs_zi):
@@ -99,37 +100,7 @@ def _lpc_setup_context(ctx, inputs, output):
 
 
 def _lpc_backward(ctx, grad_y):
-    A, zi, y = ctx.saved_tensors
-    B, T, order = A.shape
-    flipped_A = A.flip(2)
-    padded_flipped_A = F.pad(flipped_A.transpose(1, 2), (0, order + 1))
-    shifted_A = (
-        padded_flipped_A.reshape(B, T + order + 1, order)[:, :-1, :]
-        .reshape(B, order, T + order)
-        .transpose(1, 2)
-        .flip(2)
-    )
-    if not ctx.needs_input_grad[2]:
-        shifted_A = shifted_A[:, order:, :]
-        padded_grad_y = grad_y
-    else:
-        padded_grad_y = F.pad(grad_y.unsqueeze(1), (order, 0)).squeeze(1)
-    flipped_grad_x = torch.ops.philtorch.lpc(
-        padded_grad_y.flip(1),
-        shifted_A.flip(1).conj_physical(),
-        torch.zeros_like(zi),
-    )
-    grad_zi = flipped_grad_x[:, -order:] if ctx.needs_input_grad[2] else None
-    if ctx.needs_input_grad[2]:
-        flipped_grad_x = flipped_grad_x[:, :-order]
-    grad_x = flipped_grad_x.flip(1) if ctx.needs_input_grad[0] else None
-    grad_A = None
-    if ctx.needs_input_grad[1]:
-        valid_y = y[:, :-1]
-        padded_y = torch.cat([zi.flip(1), valid_y], dim=1)
-        unfolded_y = padded_y.unfold(1, order, 1).flip(2)
-        grad_A = unfolded_y.conj_physical() * -flipped_grad_x.flip(1).unsqueeze(2)
-    return grad_x, grad_A, grad_zi
+    return _lpc_gradients(torch.ops.philtorch.lpc, *ctx.saved_tensors, grad_y, ctx.needs_input_grad)
 
 
 def _pararnn_setup_context(ctx, inputs, output):
