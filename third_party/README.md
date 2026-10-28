@@ -19,7 +19,7 @@ as `philtorch::lpc`, so it doesn't conflict with an installed torchlpc. The
 CPU kernel of `lpc` is in `philtorch/csrc/torchlpc_shim.cpp`, and the autograd
 wrappers in `philtorch/_torchlpc.py`. The kernels of `philtorch::scan` are
 PhilTorch's own: `philtorch/csrc/host_recur.cpp` (CPU) and
-`philtorch/csrc/lti_recur.cu` (CUDA).
+`philtorch/csrc/scalar_recur.cu` (CUDA).
 
 ## pararnn
 
