@@ -30,12 +30,9 @@ void allpole_kernel(const scalar_t *x, const scalar_t *a, const scalar_t *zi,
             for (int64_t t = 0; t < head; ++t)
             {
                 const scalar_t *a_t = a_b + t * M;
-                acc_t sum = 0;
-                for (int64_t i = 0; i < t; ++i)
-                    sum += static_cast<acc_t>(a_t[i]) * static_cast<acc_t>(y_b[t - 1 - i]);
-                for (int64_t i = t; i < M; ++i)
-                    sum += static_cast<acc_t>(a_t[i]) * static_cast<acc_t>(zi_b[i - t]);
-                y_b[t] = static_cast<acc_t>(x_b[t]) - sum;
+                y_b[t] = static_cast<acc_t>(x_b[t]) -
+                         host_dot<-1>(a_t, y_b + t - 1, static_cast<int>(t)) -
+                         host_dot(a_t + t, zi_b, static_cast<int>(M - t));
             }
             for (int64_t t = head; t < T; ++t)
             {
