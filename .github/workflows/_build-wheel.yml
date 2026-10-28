@@ -67,13 +67,7 @@ jobs:
         shell: bash
         env:
           PYTHON_VERSIONS: ${{ inputs.python_versions }}
-        run: |
-          python - <<'EOF' >> "$GITHUB_ENV"
-          import json, os
-
-          versions = json.loads(os.environ["PYTHON_VERSIONS"])
-          print("CIBW_BUILD=" + " ".join("cp" + v.replace(".", "") + "-*" for v in versions))
-          EOF
+        run: echo "CIBW_BUILD=$(jq -r 'map("cp" + sub("[.]"; "") + "-*") | join(" ")' <<< "$PYTHON_VERSIONS")" >> "$GITHUB_ENV"
 
       - name: Build wheels
         run: cibuildwheel --output-dir wheelhouse

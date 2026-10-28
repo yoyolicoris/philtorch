@@ -58,7 +58,8 @@ jobs:
 
           # Building against every supported minor is expensive; PRs only need
           # a quick sanity check against the latest stable release.
-          selected = top3[:1] if os.environ["GITHUB_EVENT_NAME"] == "pull_request" else top3
+          pr = os.environ["GITHUB_EVENT_NAME"] == "pull_request"
+          selected = top3[:1] if pr else top3
 
           # The Pythons each torch ships wheels for, within philtorch's: a new
           # torch minor can drop the oldest (torch 2.15 has no 3.10 wheels).
@@ -72,11 +73,7 @@ jobs:
               available = [p for p in supported if "cp" + p.replace(".", "") in tags]
               if not available:
                   raise RuntimeError(f"torch {v} has no wheels for Python {supported}")
-              pythons[v] = (
-                  [available[0], available[-1]]
-                  if os.environ["GITHUB_EVENT_NAME"] == "pull_request"
-                  else available
-              )
+              pythons[v] = [available[0], available[-1]] if pr else available
 
           print(f"Resolved torch versions: {selected}, with Pythons {pythons}")
           with open(os.environ["GITHUB_OUTPUT"], "a") as f:
