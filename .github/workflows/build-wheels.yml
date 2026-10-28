@@ -18,6 +18,8 @@ jobs:
       matrix: ${{ steps.resolve.outputs.matrix }}
       pythons: ${{ steps.resolve.outputs.pythons }}
     steps:
+      - uses: actions/checkout@v7
+
       - name: Install packaging
         run: pip install packaging
 
@@ -27,7 +29,8 @@ jobs:
           GITHUB_EVENT_NAME: ${{ github.event_name }}
         run: |
           python3 - <<'EOF'
-          import os, urllib.request, json
+          import json, os, re, tomllib, urllib.request
+          from packaging.specifiers import SpecifierSet
           from packaging.version import Version
 
           # PyPI's JSON API is a stable, documented contract (unlike scraping
@@ -61,18 +64,27 @@ jobs:
           pr = os.environ["GITHUB_EVENT_NAME"] == "pull_request"
           selected = top3[:1] if pr else top3
 
-          # The Pythons each torch ships wheels for, within philtorch's: a new
-          # torch minor can drop the oldest (torch 2.15 has no 3.10 wheels).
-          # PRs build and test the oldest and newest, which catches most
+          # The Pythons each torch ships wheels for, from pyproject.toml's
+          # requires-python on: a new torch minor can drop the oldest (torch
+          # 2.15 has no 3.10 wheels) and add the newest. PyPI lists
+          # free-threaded wheels under the same python_version (cp315), so
+          # they need no filtering here. PRs build and test the oldest and
+          # newest, which catches most
           # version-specific breakage (e.g. NumPy 2.2 being the last release
           # for 3.10, see #56); other events the full range.
-          supported = ["3.10", "3.11", "3.12", "3.13"]
+          with open("pyproject.toml", "rb") as f:
+              requires = SpecifierSet(tomllib.load(f)["project"]["requires-python"])
           pythons = {}
           for v in selected:
-              tags = {f["python_version"] for f in data["releases"][v]}
-              available = [p for p in supported if "cp" + p.replace(".", "") in tags]
-              if not available:
-                  raise RuntimeError(f"torch {v} has no wheels for Python {supported}")
+              minors = {
+                  int(m.group(1))
+                  for f in data["releases"][v]
+                  if (m := re.fullmatch(r"cp3(\d+)", f["python_version"]))
+                  and f"3.{m.group(1)}" in requires
+              }
+              if not minors:
+                  raise RuntimeError(f"torch {v} has no wheels for Python {requires}")
+              available = [f"3.{m}" for m in sorted(minors)]
               pythons[v] = [available[0], available[-1]] if pr else available
 
           print(f"Resolved torch versions: {selected}, with Pythons {pythons}")

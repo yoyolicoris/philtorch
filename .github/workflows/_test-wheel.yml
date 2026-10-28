@@ -11,7 +11,8 @@ on:
         required: true
         type: string
       python_versions:
-        # JSON array string, e.g. '["3.10", "3.11", "3.12", "3.13"]'
+        # JSON array string of the Pythons to test, e.g. '["3.11", "3.15"]'
+        # (see resolve-torch-versions in build-wheels.yml).
         required: true
         type: string
       torch_version:
@@ -21,7 +22,8 @@ on:
         type: string
       upload_coverage:
         # Set true only for the one leg that should upload Codecov coverage
-        # (latest Torch on ubuntu), to avoid duplicate reports per commit.
+        # (latest Torch on ubuntu), to avoid duplicate reports per commit; it
+        # uploads from the first, oldest Python of python_versions.
         required: false
         type: boolean
         default: false
@@ -77,7 +79,7 @@ jobs:
         run: pytest --cov-branch --cov-report=xml --junitxml=junit.xml -o junit_family=legacy
 
       - name: Upload coverage reports to Codecov
-        if: inputs.upload_coverage && matrix.python-version == '3.13'
+        if: inputs.upload_coverage && matrix.python-version == fromJson(inputs.python_versions)[0]
         uses: codecov/codecov-action@v5
         with:
           token: ${{ secrets.codecov_token }}
@@ -85,7 +87,7 @@ jobs:
       - name: Upload test results to Codecov
         # Per-test durations and failures, for Codecov's test analytics; also
         # when tests fail.
-        if: ${{ !cancelled() && inputs.upload_coverage && matrix.python-version == '3.13' }}
+        if: ${{ !cancelled() && inputs.upload_coverage && matrix.python-version == fromJson(inputs.python_versions)[0] }}
         uses: codecov/codecov-action@v5
         with:
           token: ${{ secrets.codecov_token }}

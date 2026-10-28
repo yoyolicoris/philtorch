@@ -36,8 +36,8 @@ jobs:
 
       - uses: actions/setup-python@v7
         with:
-          # The interpreter cibuildwheel runs on, not the wheels' (CIBW_BUILD):
-          # its pinned virtualenv can't seed pip on Python 3.15.
+          # The interpreter cibuildwheel runs on, not the wheels' (CIBW_BUILD);
+          # cibuildwheel 4 needs Python 3.11 or newer.
           python-version: "3.13"
 
       - name: Install Homebrew dependencies for OpenMP (macOS)
@@ -59,9 +59,9 @@ jobs:
           echo "MACOSX_DEPLOYMENT_TARGET=14.0" >> "$GITHUB_ENV"
 
       - name: Install cibuildwheel
-        # 2.23.4 or later: older releases download virtualenv from a GitHub
-        # blob URL, which GitHub now answers with HTTP 503 (Windows builds).
-        run: pip install cibuildwheel==2.23.4
+        # 4.2.0 or later builds CPython 3.15 by default. Free-threaded builds
+        # are on by default too, but CIBW_BUILD below names only regular ones.
+        run: pip install cibuildwheel==4.3.5
 
       - name: Select the Pythons to build for
         shell: bash
@@ -112,6 +112,9 @@ jobs:
           # already-loaded copy.
           CIBW_REPAIR_WHEEL_COMMAND_MACOS: >-
             delocate-wheel --require-archs {delocate_archs} -e libtorch -e libc10 --ignore-missing-dependencies -w {dest_dir} -v {wheel}
+          # cibuildwheel 4 repairs Windows wheels with delvewheel by default,
+          # which would bundle torch's DLLs; leave them to torch, as above.
+          CIBW_REPAIR_WHEEL_COMMAND_WINDOWS: ""
 
       - name: Check the torch pin
         shell: bash

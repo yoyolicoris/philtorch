@@ -31,7 +31,10 @@ include-package-data = false
 # they were built against (see build_support.torch_requirement).
 dynamic = ["version", "dependencies"]
 name = "philtorch"
-requires-python = ">=3.10"
+# The CPython versions not yet at end of life (https://devguide.python.org/versions/):
+# raise it as the oldest reaches it. The wheel workflows build none older, and
+# tests/test_cuda_wheel_version.py checks cuda_wheel_matrix.json lists none.
+requires-python = ">=3.11"
 authors = [{ name = "Chin-Yun Yu", email = "chin-yun.yu@qmul.ac.uk" }]
 maintainers = [{ name = "Chin-Yun Yu", email = "chin-yun.yu@qmul.ac.uk" }]
 description = "A PyTorch library for time-varying IIR filters."
@@ -42,10 +45,11 @@ classifiers = [
     "Development Status :: 3 - Alpha",
     "Intended Audience :: Developers",
     "Programming Language :: Python :: 3",
-    "Programming Language :: Python :: 3.10",
     "Programming Language :: Python :: 3.11",
     "Programming Language :: Python :: 3.12",
     "Programming Language :: Python :: 3.13",
+    "Programming Language :: Python :: 3.14",
+    "Programming Language :: Python :: 3.15",
 ]
 
 [project.urls]
@@ -99,7 +103,7 @@ source = ["philtorch/", "*/site-packages/philtorch/"]
 # CI and pixi pin 0.16.9; formatting style can change between minor releases.
 required-version = ">=0.16,<0.17"
 line-length = 100
-target-version = "py310"
+target-version = "py311"
 extend-exclude = ["third_party"]
 
 [tool.ruff.lint]

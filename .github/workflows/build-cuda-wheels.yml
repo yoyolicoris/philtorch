@@ -22,8 +22,8 @@ name: Build CUDA wheels
 #   tests against it (scripts/modal_smoke_test.py).
 # - PRs and dev pushes build one smoke leg (newest Python x newest torch x
 #   newest CUDA), and only when the build inputs change. Releases and manual
-#   dispatches build the full matrix (currently 32 legs) and GPU-test each of
-#   its 8 torch/CUDA builds.
+#   dispatches build the full matrix (currently 30 legs) and GPU-test each of
+#   its 7 torch/CUDA builds.
 # - A release's wheels are published only once every leg has built and every
 #   GPU test has passed. Assets already on the release are never replaced:
 #   a wheel already there with the same contents is skipped, so failed jobs
@@ -191,12 +191,14 @@ jobs:
     steps:
       - name: Install CUDA toolkit
         # Only nvcc and the headers the build includes (cudart, CCCL, CRT). The
-        # CUDA runtime libraries come from the matching torch install.
+        # CUDA runtime libraries come from the matching torch install. CCCL is
+        # not named: cudart-devel requires it, and from CUDA 13.3 its package
+        # is cccl-<V>, not cuda-cccl-<V>.
         run: |
           curl -fsSL -o /etc/yum.repos.d/cuda-rhel8.repo \
             https://developer.download.nvidia.com/compute/cuda/repos/rhel8/x86_64/cuda-rhel8.repo
           V=$(echo "${{ matrix.leg.cuda }}" | tr . -)
-          dnf install -y -q "cuda-nvcc-$V" "cuda-cudart-devel-$V" "cuda-cccl-$V" "cuda-crt-$V"
+          dnf install -y -q "cuda-nvcc-$V" "cuda-cudart-devel-$V" "cuda-crt-$V"
           echo "$CUDA_HOME/bin" >> "$GITHUB_PATH"
 
       # The container runs as root while the workspace belongs to the runner

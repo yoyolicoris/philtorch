@@ -51,7 +51,7 @@ _SEMIRINGS = {"log": 0, "max": 1, "linear": 2}
 # Triton kernels can only read module constants made with tl.constexpr. They
 # write float("-inf") in place: torch.compile copies the source of kernels
 # launched outside an op, with the constants they read, and would write a -inf
-# constant back by its repr, -inf, an undefined name.
+# constant back by its repr, -inf, an undefined name (still so in PyTorch 2.15).
 _MAX, _LINEAR = (tl.constexpr(_SEMIRINGS[name]) for name in ("max", "linear"))
 # The chunk length: each kernel program takes T sequential steps.
 _CHUNK = 64
