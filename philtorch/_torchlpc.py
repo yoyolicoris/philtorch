@@ -9,6 +9,45 @@ from torch.autograd import Function
 from . import _C  # noqa: F401
 
 
+def _lpc_gradients(run, A, zi, y, grad_y, needs_input_grad):
+    """The gradients of x, A and zi from ``grad_y``; ``run`` is lpc: the op or
+    ``AllPole.apply``.
+
+    The adjoint of an all-pole filter is the same filter backward in time,
+    with A's coefficients shifted to the steps they act on.
+    """
+    B, T, order = A.shape
+    flipped_A = A.flip(2)
+    padded_flipped_A = F.pad(flipped_A.transpose(1, 2), (0, order + 1))
+    shifted_A = (
+        padded_flipped_A.reshape(B, T + order + 1, order)[:, :-1, :]
+        .reshape(B, order, T + order)
+        .transpose(1, 2)
+        .flip(2)
+    )
+    if not needs_input_grad[2]:
+        shifted_A = shifted_A[:, order:, :]
+        padded_grad_y = grad_y
+    else:
+        padded_grad_y = F.pad(grad_y.unsqueeze(1), (order, 0)).squeeze(1)
+    flipped_grad_x = run(
+        padded_grad_y.flip(1),
+        shifted_A.flip(1).conj_physical(),
+        torch.zeros_like(zi),
+    )
+    grad_zi = flipped_grad_x[:, -order:] if needs_input_grad[2] else None
+    if needs_input_grad[2]:
+        flipped_grad_x = flipped_grad_x[:, :-order]
+    grad_x = flipped_grad_x.flip(1) if needs_input_grad[0] else None
+    grad_A = None
+    if needs_input_grad[1]:
+        valid_y = y[:, :-1]
+        padded_y = torch.cat([zi.flip(1), valid_y], dim=1)
+        unfolded_y = padded_y.unfold(1, order, 1).flip(2)
+        grad_A = unfolded_y.conj_physical() * -flipped_grad_x.flip(1).unsqueeze(2)
+    return grad_x, grad_A, grad_zi
+
+
 class AllPole(Function):
     @staticmethod
     def forward(x: torch.Tensor, A: torch.Tensor, zi: torch.Tensor) -> torch.Tensor:
@@ -23,37 +62,7 @@ class AllPole(Function):
 
     @staticmethod
     def backward(ctx: Any, grad_y: torch.Tensor):  # type: ignore[override]
-        A, zi, y = ctx.saved_tensors
-        B, T, order = A.shape
-        flipped_A = A.flip(2)
-        padded_flipped_A = F.pad(flipped_A.transpose(1, 2), (0, order + 1))
-        shifted_A = (
-            padded_flipped_A.reshape(B, T + order + 1, order)[:, :-1, :]
-            .reshape(B, order, T + order)
-            .transpose(1, 2)
-            .flip(2)
-        )
-        if not ctx.needs_input_grad[2]:
-            shifted_A = shifted_A[:, order:, :]
-            padded_grad_y = grad_y
-        else:
-            padded_grad_y = F.pad(grad_y.unsqueeze(1), (order, 0)).squeeze(1)
-        flipped_grad_x = AllPole.apply(
-            padded_grad_y.flip(1),
-            shifted_A.flip(1).conj_physical(),
-            torch.zeros_like(zi),
-        )
-        grad_zi = flipped_grad_x[:, -order:] if ctx.needs_input_grad[2] else None
-        if ctx.needs_input_grad[2]:
-            flipped_grad_x = flipped_grad_x[:, :-order]
-        grad_x = flipped_grad_x.flip(1) if ctx.needs_input_grad[0] else None
-        grad_A = None
-        if ctx.needs_input_grad[1]:
-            valid_y = y[:, :-1]
-            padded_y = torch.cat([zi.flip(1), valid_y], dim=1)
-            unfolded_y = padded_y.unfold(1, order, 1).flip(2)
-            grad_A = unfolded_y.conj_physical() * -flipped_grad_x.flip(1).unsqueeze(2)
-        return grad_x, grad_A, grad_zi
+        return _lpc_gradients(AllPole.apply, *ctx.saved_tensors, grad_y, ctx.needs_input_grad)
 
     @staticmethod
     def jvp(

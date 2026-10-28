@@ -4,35 +4,15 @@
 
 #include <algorithm>
 #include <cmath>
-#include <type_traits>
 #include <vector>
+
+#include "host_dot.h"
 
 // The recurrence h[t] = A[t] h[t - 1] + x[t] on CPU. A sequence is split over
 // time into chunks, when there are fewer sequences than threads: each chunk's
 // transition matrix and local end state give its true incoming state, and the
 // chunks then run in parallel again from it. Each has at least min_chunk steps.
 constexpr int64_t min_chunk = 1024;
-
-template <typename scalar_t, typename acc_t>
-inline acc_t host_dot(const scalar_t *left, const acc_t *right, int size)
-{
-    constexpr int minimum_simd_size = 8;
-    acc_t sum = 0;
-    if constexpr (std::is_same_v<acc_t, float> ||
-                  std::is_same_v<acc_t, double>)
-    {
-        if (size >= minimum_simd_size)
-        {
-#pragma omp simd reduction(+ : sum)
-            for (int index = 0; index < size; ++index)
-                sum += left[index] * right[index];
-            return sum;
-        }
-    }
-    for (int index = 0; index < size; ++index)
-        sum += left[index] * right[index];
-    return sum;
-}
 
 // A zero product stays zero (a tiny one may grow again), so the rest of it
 // can be skipped.
@@ -123,6 +103,13 @@ void transition(const scalar_t *A_b, int64_t stride_t, int64_t s, int64_t e,
                 }
             }
         }
+    }
+    else if (M == 1) // a scalar product, which matmul and is_zero would slow
+    {
+        acc_t p = 1;
+        for (int64_t t = s; t < e && p != acc_t(0); ++t)
+            p *= static_cast<acc_t>(A_b[t * stride_t]);
+        R[0] = p;
     }
     else
     {
@@ -310,8 +297,26 @@ at::Tensor recurN_cpu(const at::Tensor &A, const at::Tensor &zi,
                             order * order);
 }
 
+// h[t] = decay[t] h[t - 1] + impulse[t]: the scalar recurrence with a
+// (B, T) A, one coefficient per step.
+at::Tensor scan_cpu(const at::Tensor &impulse, const at::Tensor &decay,
+                    const at::Tensor &init)
+{
+    TORCH_CHECK(impulse.dim() == 2 && decay.sizes() == impulse.sizes() &&
+                    init.dim() == 1 && init.size(0) == impulse.size(0),
+                "impulse and decay must be (B, T) and init (B,)");
+    // recur_cpu_launch also takes integers and half precision.
+    TORCH_CHECK(impulse.scalar_type() == at::kFloat ||
+                    impulse.scalar_type() == at::kDouble ||
+                    impulse.scalar_type() == at::kComplexFloat ||
+                    impulse.scalar_type() == at::kComplexDouble,
+                "Input must be float32, float64, complex64 or complex128");
+    return recur_cpu_launch(decay, init, impulse, 1, impulse.size(1), 1);
+}
+
 TORCH_LIBRARY_IMPL(philtorch, CPU, m)
 {
+    m.impl("scan", &scan_cpu);
     m.impl("lti_recur", &lti_recur_cpu);
     m.impl("lti_recurN", &lti_recurN_cpu);
     m.impl("lti_recur2", &lti_recurN_cpu);
