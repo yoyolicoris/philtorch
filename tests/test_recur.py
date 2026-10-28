@@ -419,6 +419,14 @@ def test_recurrence_in_integers_against_sequential(sharing, M):
     assert torch.equal(recurrence(A, zi, x).cpu(), expected)
 
 
+@pytest.fixture
+def eight_threads():
+    threads = torch.get_num_threads()
+    torch.set_num_threads(8)
+    yield
+    torch.set_num_threads(threads)
+
+
 # (B, T, sharing, M) that the CPU kernels split over time at 8 threads: they
 # take min(8 // B, T // 1024) chunks, when that is more than 2 for a
 # constant A, and more than M + 2 for a varying one.

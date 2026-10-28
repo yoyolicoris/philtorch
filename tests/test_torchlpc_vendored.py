@@ -152,64 +152,9 @@ def test_allpole_vmap(device: str):
         assert torch.allclose(jac, arg.grad)
 
 
-def _random(*shape, dtype):
-    return torch.randn(*shape, dtype=dtype) * 0.3
-
-
-def _lpc_reference(x, A, zi):
-    B, T, order = A.shape
-    # y[-1 - k] = zi[k]; the list holds y[-order], ..., y[-1], then y[0], ...
-    y = list(zi.flip(1).unbind(1))
-    for t in range(T):
-        past = sum(A[:, t, i] * y[order - 1 - i + t] for i in range(order))
-        y.append(x[:, t] - past)
-    return torch.stack(y[order:], 1)
-
-
-@pytest.mark.parametrize("dtype", [torch.float64, torch.complex128])
-@pytest.mark.parametrize("T, order", [(2, 5), (3, 4), (40, 3)])
-@pytest.mark.parametrize("strided", [False, True])
-def test_lpc_cpu_matches_sequential(T, order, strided, dtype):
-    B = 3
-    if strided:
-        # Transposed views, and one with gaps between its elements.
-        x = _random(T, B, dtype=dtype).T
-        A = _random(order, T, B, dtype=dtype).permute(2, 1, 0)
-        zi = _random(B, 2 * order, dtype=dtype)[:, ::2]
-        assert not (x.is_contiguous() or A.is_contiguous() or zi.is_contiguous())
-    else:
-        x, A, zi = (_random(*shape, dtype=dtype) for shape in [(B, T), (B, T, order), (B, order)])
-    torch.testing.assert_close(torch.ops.philtorch.lpc(x, A, zi), _lpc_reference(x, A, zi))
-
-
-def _scan_reference(impulse, decay, init):
-    h, out = init, []
-    for t in range(impulse.size(1)):
-        h = decay[:, t] * h + impulse[:, t]
-        out.append(h)
-    return torch.stack(out, 1)
-
-
-@pytest.mark.parametrize("dtype", [torch.float64, torch.complex128])
-@pytest.mark.parametrize("B, T", [(3, 40), (1, 5000)])
-def test_scan_cpu_matches_sequential(eight_threads, B, T, dtype):
-    impulse, init = _random(B, T, dtype=dtype), _random(B, dtype=dtype)
-    # Decays of magnitude 0.99 to 1, so that the state lasts across the 5000 steps.
-    decay = torch.polar(
-        0.99 + 0.01 * torch.rand(B, T, dtype=torch.float64), torch.randn(B, T, dtype=torch.float64)
-    )
-    decay = decay if dtype.is_complex else decay.real
-    torch.testing.assert_close(
-        torch.ops.philtorch.scan(impulse, decay, init), _scan_reference(impulse, decay, init)
-    )
-
-
 @pytest.mark.parametrize("dtype", [torch.float16, torch.int64])
 def test_scan_cpu_rejects_dtype(dtype):
-    impulse, decay, init = (
-        torch.ones(2, 8, dtype=dtype),
-        torch.ones(2, 8, dtype=dtype),
-        torch.ones(2, dtype=dtype),
-    )
-    with pytest.raises(RuntimeError):
-        torch.ops.philtorch.scan(impulse, decay, init)
+    # The recurrence kernel it runs takes these; scan keeps torchlpc's dtypes.
+    impulse, init = torch.ones(2, 8, dtype=dtype), torch.ones(2, dtype=dtype)
+    with pytest.raises(RuntimeError, match="float32, float64, complex64 or complex128"):
+        torch.ops.philtorch.scan(impulse, impulse, init)

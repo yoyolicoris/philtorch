@@ -1,9 +1,7 @@
 """The ``cuda`` mark: tests that need a CUDA device.
 
 Marked tests are skipped where no CUDA device is available, as on the CPU CI,
-and the GPU CI runs exactly them, with ``-m cuda``. The ``eight_threads``
-fixture runs a test on 8 CPU threads, enough for the CPU recurrence kernel to
-split one sequence over time.
+and the GPU CI runs exactly them, with ``-m cuda``.
 """
 
 import pytest
@@ -27,11 +25,3 @@ def pytest_collection_modifyitems(config, items):
     for item in items:
         if item.get_closest_marker("cuda"):
             item.add_marker(skip)
-
-
-@pytest.fixture
-def eight_threads():
-    threads = torch.get_num_threads()
-    torch.set_num_threads(8)
-    yield
-    torch.set_num_threads(threads)
