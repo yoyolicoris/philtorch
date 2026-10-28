@@ -460,7 +460,11 @@ def resample(
 
     orig = _positive_int(orig_freq, "orig_freq")
     new = _positive_int(new_freq, "new_freq")
-    gcd = math.gcd(orig, new)
+    # Euclid's algorithm, as torch.compile can't fold math.gcd on Python 3.15
+    # (PyTorch 2.15).
+    gcd, rest = orig, new
+    while rest:
+        gcd, rest = rest, gcd % rest
     orig, new = orig // gcd, new // gcd
 
     if quality is not None and not (isinstance(quality, str) and quality in _QUALITY_PRESETS):
