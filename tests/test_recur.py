@@ -487,9 +487,13 @@ def test_cpu_recurrence_rejects_an_initial_state_of_another_batch():
 @pytest.mark.parametrize("op", ["lti_recur", "scan"])
 def test_cuda_scalar_recurrence_rejects_an_initial_state_of_another_batch(op):
     # The CUDA kernel reads zi[b] for every sequence b of x.
-    a, zi, x = (torch.ones(*shape, device="cuda") for shape in [(4,), (3,), (4, 8)])
-    args = (a, zi, x) if op == "lti_recur" else (x, a[:, None].expand(4, 8), zi)
-    with pytest.raises(RuntimeError, match="zi|init"):
+    a, zi, x = (
+        torch.ones(4, device="cuda"),
+        torch.ones(3, device="cuda"),
+        torch.ones(4, 8, device="cuda"),
+    )
+    args = (a, zi, x) if op == "lti_recur" else (x, x, zi)
+    with pytest.raises(RuntimeError, match=r"\(B,\)"):
         getattr(torch.ops.philtorch, op)(*args)
 
 

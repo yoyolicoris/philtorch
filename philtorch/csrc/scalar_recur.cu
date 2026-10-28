@@ -1,14 +1,11 @@
-#include <assert.h>
 #include <c10/cuda/CUDAException.h>
 #include <c10/cuda/CUDAGuard.h>
-#include <stdio.h>
 #include <thrust/iterator/counting_iterator.h>
 #include <thrust/iterator/transform_iterator.h>
 #include <thrust/iterator/transform_output_iterator.h>
 #include <thrust/iterator/zip_iterator.h>
 #include <thrust/zip_function.h>
 #include <ATen/OpMathType.h>
-#include <torch/script.h>
 #include <torch/torch.h>
 
 #include "recur2.cuh"
@@ -86,6 +83,12 @@ at::Tensor scalar_recur_cuda_launch(const at::Tensor &decays, int64_t stride_b,
                                     int64_t stride_t, const at::Tensor &zi,
                                     const at::Tensor &x)
 {
+    TORCH_CHECK(zi.scalar_type() == x.scalar_type(),
+                "zi must have the same scalar type as input");
+    TORCH_CHECK(decays.scalar_type() == x.scalar_type(),
+                "A must have the same scalar type as input");
+    TORCH_CHECK(decays.device() == x.device() && zi.device() == x.device(),
+                "A and zi must be on the same device as input");
     const at::cuda::OptionalCUDAGuard device_guard(device_of(x));
 
     auto decays_contiguous = decays.contiguous();
@@ -111,25 +114,17 @@ at::Tensor scalar_recur_cuda_launch(const at::Tensor &decays, int64_t stride_b,
 at::Tensor lti_recur_cuda_impl(const at::Tensor &a,
                                const at::Tensor &zi, const at::Tensor &x)
 {
-    TORCH_CHECK(zi.scalar_type() == x.scalar_type(),
-                "zi must have the same scalar type as input");
-    TORCH_CHECK(a.scalar_type() == x.scalar_type(),
-                "A must have the same scalar type as input");
-    TORCH_CHECK(a.device() == x.device(),
-                "A must be on the same device as input");
     TORCH_CHECK(a.dim() <= 1, "A must be a vector or a scalar");
-    TORCH_CHECK(zi.dim() == 1, "zi must be a vector");
-    TORCH_CHECK(x.dim() == 2 && zi.size(0) == x.size(0),
+    TORCH_CHECK(x.dim() == 2 && zi.dim() == 1 && zi.size(0) == x.size(0),
                 "x must be (B, T) and zi (B,)");
     TORCH_CHECK(x.size(1) > 0, "x must contain at least one time step");
-
-    // One decay per sequence, or one shared by all of them.
-    int64_t stride_b = a.dim() == 1 && a.numel() == x.size(0) ? 1 : 0;
-    return scalar_recur_cuda_launch(a, stride_b, 0, zi, x);
+    bool per_item = a.dim() == 1 && a.numel() == x.size(0);
+    TORCH_CHECK(per_item || a.numel() == 1, "A must be a scalar or (B,)");
+    return scalar_recur_cuda_launch(a, per_item ? 1 : 0, 0, zi, x);
 }
 
 // h[t] = decay[t] h[t - 1] + impulse[t]: the scalar recurrence with a
-// (B, T) A, one coefficient per step. Like scan_cpu in host_recur.cpp.
+// (B, T) A, one coefficient per step.
 at::Tensor scan_cuda(const at::Tensor &impulse, const at::Tensor &decay,
                      const at::Tensor &init)
 {
@@ -141,15 +136,6 @@ at::Tensor scan_cuda(const at::Tensor &impulse, const at::Tensor &decay,
                     impulse.scalar_type() == at::kComplexFloat ||
                     impulse.scalar_type() == at::kComplexDouble,
                 "Input must be float32, float64, complex64 or complex128");
-    TORCH_CHECK(decay.scalar_type() == impulse.scalar_type(),
-                "decay must have the same scalar type as impulse");
-    TORCH_CHECK(init.scalar_type() == impulse.scalar_type(),
-                "init must have the same scalar type as impulse");
-    TORCH_CHECK(decay.device() == impulse.device(),
-                "decay must be on the same device as impulse");
-    TORCH_CHECK(init.device() == impulse.device(),
-                "init must be on the same device as impulse");
-
     return scalar_recur_cuda_launch(decay, impulse.size(1), 1, init, impulse);
 }
 
