@@ -16,6 +16,7 @@ jobs:
       contents: read
     outputs:
       matrix: ${{ steps.resolve.outputs.matrix }}
+      pythons: ${{ steps.resolve.outputs.pythons }}
     steps:
       - name: Install packaging
         run: pip install packaging
@@ -59,10 +60,28 @@ jobs:
           # a quick sanity check against the latest stable release.
           selected = top3[:1] if os.environ["GITHUB_EVENT_NAME"] == "pull_request" else top3
 
-          matrix = json.dumps(selected)
-          print(f"Resolved torch versions: {selected}")
+          # The Pythons each torch ships wheels for, within philtorch's: a new
+          # torch minor can drop the oldest (torch 2.15 has no 3.10 wheels).
+          # PRs build and test the oldest and newest, which catches most
+          # version-specific breakage (e.g. NumPy 2.2 being the last release
+          # for 3.10, see #56); other events the full range.
+          supported = ["3.10", "3.11", "3.12", "3.13"]
+          pythons = {}
+          for v in selected:
+              tags = {f["python_version"] for f in data["releases"][v]}
+              available = [p for p in supported if "cp" + p.replace(".", "") in tags]
+              if not available:
+                  raise RuntimeError(f"torch {v} has no wheels for Python {supported}")
+              pythons[v] = (
+                  [available[0], available[-1]]
+                  if os.environ["GITHUB_EVENT_NAME"] == "pull_request"
+                  else available
+              )
+
+          print(f"Resolved torch versions: {selected}, with Pythons {pythons}")
           with open(os.environ["GITHUB_OUTPUT"], "a") as f:
-              f.write(f"matrix={matrix}\n")
+              f.write(f"matrix={json.dumps(selected)}\n")
+              f.write(f"pythons={json.dumps(pythons)}\n")
           EOF
 
   # One job per OS (each calling the reusable _build-wheel.yml) rather than a
@@ -83,6 +102,7 @@ jobs:
     uses: ./.github/workflows/_build-wheel.yml
     with:
       os: ubuntu-latest
+      python_versions: ${{ toJson(fromJson(needs.resolve-torch-versions.outputs.pythons)[matrix.torch-version]) }}
       torch_version: ${{ matrix.torch-version }}
 
   # macOS runners are expensive: build/test only on pull requests and
@@ -103,6 +123,7 @@ jobs:
     uses: ./.github/workflows/_build-wheel.yml
     with:
       os: macos-latest
+      python_versions: ${{ toJson(fromJson(needs.resolve-torch-versions.outputs.pythons)[matrix.torch-version]) }}
       torch_version: ${{ matrix.torch-version }}
 
   # Windows: torchlpc is now vendored (DiffAPF/torchlpc@1bfde4a) and bundled into
@@ -115,6 +136,7 @@ jobs:
     uses: ./.github/workflows/_build-wheel.yml
     with:
       os: windows-latest
+      python_versions: ${{ toJson(fromJson(needs.resolve-torch-versions.outputs.pythons)[fromJson(needs.resolve-torch-versions.outputs.matrix)[0]]) }}
       torch_version: ${{ fromJson(needs.resolve-torch-versions.outputs.matrix)[0] }}
 
   # Same Ruff lint and format checks as the standalone Lint workflow, so
@@ -138,10 +160,8 @@ jobs:
     uses: ./.github/workflows/_test-wheel.yml
     with:
       os: ubuntu-latest
-      # Mirrors the CIBW_BUILD selection in _build-wheel.yml: PRs only get
-      # wheels for the oldest and newest Python, other events build/test the
-      # full range.
-      python_versions: ${{ github.event_name == 'pull_request' && '["3.10", "3.13"]' || '["3.10", "3.11", "3.12", "3.13"]' }}
+      # The Pythons the wheels were built for (see resolve-torch-versions).
+      python_versions: ${{ toJson(fromJson(needs.resolve-torch-versions.outputs.pythons)[matrix.torch-version]) }}
       torch_version: ${{ matrix.torch-version }}
       # Only the leg for the latest resolved Torch minor (matrix[0]) uploads
       # coverage, to avoid duplicate reports for the same commit.
@@ -166,7 +186,7 @@ jobs:
     uses: ./.github/workflows/_test-wheel.yml
     with:
       os: macos-latest
-      python_versions: ${{ github.event_name == 'pull_request' && '["3.10", "3.13"]' || '["3.10", "3.11", "3.12", "3.13"]' }}
+      python_versions: ${{ toJson(fromJson(needs.resolve-torch-versions.outputs.pythons)[matrix.torch-version]) }}
       torch_version: ${{ matrix.torch-version }}
     secrets:
       codecov_token: ${{ secrets.CODECOV_TOKEN }}
@@ -185,7 +205,7 @@ jobs:
     uses: ./.github/workflows/_test-wheel.yml
     with:
       os: windows-latest
-      python_versions: ${{ github.event_name == 'pull_request' && '["3.10", "3.13"]' || '["3.10", "3.11", "3.12", "3.13"]' }}
+      python_versions: ${{ toJson(fromJson(needs.resolve-torch-versions.outputs.pythons)[fromJson(needs.resolve-torch-versions.outputs.matrix)[0]]) }}
       torch_version: ${{ fromJson(needs.resolve-torch-versions.outputs.matrix)[0] }}
     secrets:
       codecov_token: ${{ secrets.CODECOV_TOKEN }}

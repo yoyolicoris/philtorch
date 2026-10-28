@@ -16,6 +16,11 @@ on:
         # to catch source-level breakage against older Torch. See PR #20.
         required: true
         type: string
+      python_versions:
+        # JSON array string of the Pythons to build for, e.g. '["3.11", "3.13"]'
+        # (see resolve-torch-versions in build-wheels.yml).
+        required: true
+        type: string
 
 jobs:
   build:
@@ -58,6 +63,18 @@ jobs:
         # blob URL, which GitHub now answers with HTTP 503 (Windows builds).
         run: pip install cibuildwheel==2.23.4
 
+      - name: Select the Pythons to build for
+        shell: bash
+        env:
+          PYTHON_VERSIONS: ${{ inputs.python_versions }}
+        run: |
+          python - <<'EOF' >> "$GITHUB_ENV"
+          import json, os
+
+          versions = json.loads(os.environ["PYTHON_VERSIONS"])
+          print("CIBW_BUILD=" + " ".join("cp" + v.replace(".", "") + "-*" for v in versions))
+          EOF
+
       - name: Build wheels
         run: cibuildwheel --output-dir wheelhouse
         env:
@@ -68,11 +85,7 @@ jobs:
           # Linux builds run in a container, which doesn't inherit the runner's
           # environment; macOS and Windows build on the runner itself.
           CIBW_ENVIRONMENT_PASS_LINUX: PHILTORCH_TORCH_PIN
-          # PRs build the oldest and newest supported Python, which catches
-          # most version-specific breakage (e.g. NumPy 2.2 being the last
-          # release for 3.10, see #56); other events (push/tag/release/
-          # dispatch) build the full supported range.
-          CIBW_BUILD: ${{ github.event_name == 'pull_request' && 'cp310-* cp313-*' || 'cp310-* cp311-* cp312-* cp313-*' }}
+          # CIBW_BUILD, the Pythons to build for, is set by the step above.
           CIBW_SKIP: "*-musllinux_*"
           CIBW_ARCHS_LINUX: x86_64
           CIBW_ARCHS_MACOS: arm64
