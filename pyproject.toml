@@ -32,7 +32,8 @@ include-package-data = false
 dynamic = ["version", "dependencies"]
 name = "philtorch"
 # The CPython versions not yet at end of life (https://devguide.python.org/versions/):
-# raise it as the oldest reaches it. The wheel workflows build none older.
+# raise it as the oldest reaches it. The wheel workflows build none older, and
+# tests/test_cuda_wheel_version.py checks cuda_wheel_matrix.json lists none.
 requires-python = ">=3.11"
 authors = [{ name = "Chin-Yun Yu", email = "chin-yun.yu@qmul.ac.uk" }]
 maintainers = [{ name = "Chin-Yun Yu", email = "chin-yun.yu@qmul.ac.uk" }]

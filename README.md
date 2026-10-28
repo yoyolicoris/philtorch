@@ -34,7 +34,7 @@ PhilTorch requires its compiled `philtorch._C` extension; there is no pure-PyTor
 
 | Route | Platforms | Kernels | Python | PyTorch |
 | --- | --- | --- | --- | --- |
-| PyPI wheel | Linux x86_64 (manylinux_2_28), macOS 14+ arm64, Windows AMD64 | CPU, plus float32 scalar-LTI MPS on macOS (macOS 15+ from PyTorch 2.15) | 3.11 on, the Pythons its PyTorch minor has wheels for: 3.11–3.14 up to PyTorch 2.14, 3.11–3.15 from 2.15 | The latest stable minor at publication, which each wheel requires (e.g. `torch == 2.14.*`); listed in the [release notes](https://github.com/yoyolicoris/philtorch/releases) |
+| PyPI wheel | Linux x86_64 (manylinux_2_28), macOS 14+ arm64, Windows AMD64 | CPU, plus float32 scalar-LTI MPS on macOS (macOS 15+ from PyTorch 2.15) | 3.11 on, the Pythons its PyTorch minor has wheels for (3.11–3.15 for PyTorch 2.15) | The latest stable minor at publication, which each wheel requires (e.g. `torch == 2.14.*`); listed in the [release notes](https://github.com/yoyolicoris/philtorch/releases) |
 | CUDA wheel, from the [PhilTorch index](https://yoyolicoris.github.io/philtorch/) | Linux x86_64 (manylinux_2_28) | CPU and CUDA | 3.11 on, the Pythons its PyTorch minor has wheels for: 3.11–3.14 up to PyTorch 2.14, 3.11–3.15 from 2.15 | One build per PyTorch minor and CUDA version; see [CUDA wheels](#cuda-wheels) |
 | Source build | Any platform with a C++ toolchain | CPU, MPS, or CUDA | 3.11+ | 2.4 or newer |
 
@@ -74,7 +74,7 @@ On Linux, `pip install torch` from PyPI installs the CUDA 13.0 build up to PyTor
 
 The index URLs are relative to `https://yoyolicoris.github.io/philtorch/`, which lists every index, including those for earlier releases.
 
-- **Requirements:** Python 3.11 or newer that PyTorch publishes wheels for (3.11–3.14 up to PyTorch 2.14, 3.11–3.15 from 2.15), an NVIDIA GPU with compute capability 7.5, 8.x, 9.0, 10.x or 12.x, and a driver that supports the wheel's CUDA version.
+- **Requirements:** a Python the table above lists for the wheel's PyTorch, an NVIDIA GPU with compute capability 7.5, 8.x, 9.0, 10.x or 12.x, and a driver that supports the wheel's CUDA version.
 - **PyTorch:** each wheel requires its PyTorch minor (e.g. `torch == 2.14.*`), so pip keeps the PyTorch you installed.
 - **Mismatches:** `import philtorch` raises an `ImportError` if the installed PyTorch is a different minor release, has no CUDA support, or uses a different CUDA major version. It only warns if the CUDA minor version differs.
 - **Use `--index-url`, not `--extra-index-url`:** with PyPI also searched, pip installs PyPI's CPU-only wheel whenever it is a newer release than the CUDA build in the index, without warning.

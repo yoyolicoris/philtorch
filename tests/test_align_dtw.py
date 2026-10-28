@@ -902,12 +902,12 @@ def test_dtw_asymmetric_gradient_stays_linear_in_the_block():
         distance = dtw(x=x, y=y, gamma=0.5, step_pattern="asymmetric", checkpoint=checkpoint)
         return torch.autograd.grad(distance.sum(), (x, y))
 
-    run()  # warm up: the kernels and the matrix products' workspaces
-    # From PyTorch 2.15, cuBLAS allocates its workspace for each product
-    # rather than once per stream, so the peak below holds one of them.
+    run()  # warm up: the kernels
+    # From PyTorch 2.15, the caching allocator holds cuBLAS's workspace only
+    # for each product, not once per stream, so the peak below holds one.
     base = torch.cuda.memory_allocated()
     torch.cuda.reset_peak_memory_stats()
-    torch.mm(x[0], x[0].T[:, :1])
+    torch.mm(x.detach()[0], x.detach()[0].T[:, :1])
     workspace = torch.cuda.max_memory_allocated() - base - N * 4
     base = torch.cuda.memory_allocated()
     torch.cuda.reset_peak_memory_stats()

@@ -66,9 +66,10 @@ jobs:
 
           # The Pythons each torch ships wheels for, from pyproject.toml's
           # requires-python on: a new torch minor can drop the oldest (torch
-          # 2.15 has no 3.10 wheels) and add the newest. A free-threaded wheel
-          # carries the same tag, so it counts for its regular Python. PRs
-          # build and test the oldest and newest, which catches most
+          # 2.15 has no 3.10 wheels) and add the newest. PyPI lists
+          # free-threaded wheels under the same python_version (cp315), so
+          # they need no filtering here. PRs build and test the oldest and
+          # newest, which catches most
           # version-specific breakage (e.g. NumPy 2.2 being the last release
           # for 3.10, see #56); other events the full range.
           with open("pyproject.toml", "rb") as f:

@@ -14,8 +14,9 @@ Intended use in the CUDA wheel workflow::
 The ``_FOR_PHILTORCH`` form scopes the override to this project, so packages
 built from source in the same environment keep their own versions.
 
-``--list`` prints the expanded build matrix (Python x PyTorch/CUDA) as JSON
-on a single line, so it can be written straight to ``$GITHUB_OUTPUT``.
+``--list`` prints the expanded build matrix, one leg per PyTorch/CUDA build and
+Python it lists, as JSON on a single line, so it can be written straight to
+``$GITHUB_OUTPUT``.
 """
 
 from __future__ import annotations
@@ -145,7 +146,7 @@ def validate_matrix(data, path="<matrix>"):
             or not python_versions
             or any(not isinstance(v, str) or not _PYTHON_RE.fullmatch(v) for v in python_versions)
         ):
-            raise RuntimeError(f"{where}: 'python_versions' must be a non-empty list like ['3.10']")
+            raise RuntimeError(f"{where}: 'python_versions' must be a non-empty list like ['3.11']")
         if len(set(python_versions)) != len(python_versions):
             raise RuntimeError(f"{where}: 'python_versions' contains a duplicate")
         # Each torch minor/CUDA pair gets its own package index (see

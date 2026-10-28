@@ -8,6 +8,7 @@ import sys
 from pathlib import Path
 
 import pytest
+from packaging.specifiers import SpecifierSet
 from packaging.version import Version
 
 SCRIPT = Path(__file__).parents[1] / "scripts" / "cuda_wheel_version.py"
@@ -37,7 +38,7 @@ EXPECTED_PYTHONS = {
     "2.14.1": OLD_PYTHONS,
     "2.15.0": ["3.11", "3.12", "3.13", "3.14", "3.15"],
 }
-# PyTorch's x86_64 release arch lists (.ci/manywheel/build_env_setup.py).
+# PyTorch's x86_64 release arch lists (.ci/wheel/linux/build_env_setup.py).
 EXPECTED_ARCHS = {
     "12.9": "7.5 8.0 8.6 9.0 10.0 12.0",
     "13.0": "7.5 8.0 8.6 9.0 10.0 12.0",
@@ -56,7 +57,7 @@ def _build(**fields):
         "torch_index_url": "https://download.pytorch.org/whl/cu130",
         # Valid for every CUDA version, so tests can change "cuda" alone.
         "cuda_arch_list": "8.0 9.0+PTX",
-        "python_versions": ["3.10"],
+        "python_versions": ["3.11"],
         **fields,
     }
 
@@ -198,12 +199,12 @@ def test_validate_matrix_accepts_minimal_matrix():
             id="no-python",
         ),
         pytest.param(
-            _matrix(builds=[_build(python_versions=["3.10\n"])]),
+            _matrix(builds=[_build(python_versions=["3.11\n"])]),
             "'python_versions' must be",
             id="python-newline",
         ),
         pytest.param(
-            _matrix(builds=[_build(python_versions=["3.10", "3.10"])]),
+            _matrix(builds=[_build(python_versions=["3.11", "3.11"])]),
             "contains a duplicate",
             id="python-dup",
         ),
@@ -265,12 +266,15 @@ def test_load_matrix_rejects_missing_file(tmp_path):
 
 
 def test_matrix_python_versions_match_package_classifiers():
-    # CUDA wheels cover the Python versions the package metadata advertises.
+    # CUDA wheels cover the Python versions the package metadata advertises,
+    # none older than requires-python.
     pyproject = (REPO_ROOT / "pyproject.toml").read_text(encoding="utf-8")
     classifiers = re.findall(r'"Programming Language :: Python :: (3\.\d+)"', pyproject)
+    requires = SpecifierSet(re.search(r'requires-python = "([^"]+)"', pyproject).group(1))
     builds = VERSION_SCRIPT.load_matrix(MATRIX_PATH)["builds"]
     pythons = {python for build in builds for python in build["python_versions"]}
     assert sorted(pythons, key=lambda v: int(v.split(".")[1])) == classifiers
+    assert all(python in requires for python in pythons)
 
 
 def test_expand_matrix_covers_each_builds_pythons():
