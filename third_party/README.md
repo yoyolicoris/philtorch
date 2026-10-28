@@ -13,17 +13,13 @@ MIT, Copyright (c) 2023 Chin-Yun Yu (`torchlpc/LICENSE`).
 | File | Upstream path |
 | --- | --- |
 | `torchlpc/cuda/lpc.cu` | `torchlpc/csrc/cuda/lpc.cu` |
-| `torchlpc/cuda/linear_recurrence.cu` | `torchlpc/csrc/cuda/linear_recurrence.cu` |
-| `torchlpc/cuda/LICENSE.txt` | `torchlpc/csrc/cuda/LICENSE.txt` |
 
-`linear_recurrence.cu` comes from Eric Martin's linear recurrence kernels,
-MIT, Copyright (c) 2017 Eric Martin (`torchlpc/cuda/LICENSE.txt`).
-
-`philtorch/csrc/torchlpc_cuda.cu` compiles both files and registers the
-kernels as `philtorch::lpc` and `philtorch::scan`, so they don't conflict with
-an installed torchlpc. The CPU kernels are in `philtorch/csrc/torchlpc_shim.cpp`
-(`lpc`) and `philtorch/csrc/host_recur.cpp` (`scan`), and the autograd wrappers
-in `philtorch/_torchlpc.py`.
+`philtorch/csrc/torchlpc_cuda.cu` compiles `lpc.cu` and registers its kernel
+as `philtorch::lpc`, so it doesn't conflict with an installed torchlpc. The
+CPU kernel of `lpc` is in `philtorch/csrc/torchlpc_shim.cpp`, and the autograd
+wrappers in `philtorch/_torchlpc.py`. The kernels of `philtorch::scan` are
+PhilTorch's own: `philtorch/csrc/host_recur.cpp` (CPU) and
+`philtorch/csrc/lti_recur.cu` (CUDA).
 
 ## pararnn
 
@@ -53,12 +49,6 @@ results.
 - `torchlpc/cuda/lpc.cu`: launch on the current stream, check each launch,
   check the order limit with `TORCH_CHECK` instead of `assert`, and require
   the coefficients on the input's device.
-- `torchlpc/cuda/linear_recurrence.cu`: launch on the current stream, check
-  each launch, take the working memory from PyTorch's caching allocator
-  instead of `cudaMalloc`/`cudaFree` (which synchronized the device and
-  ignored errors), size it in `size_t`, make the initial states contiguous,
-  require the decays and initial states on the input's device, and raise
-  instead of overflowing past `INT_MAX` elements.
 - `pararnn/csrc/parallel_reduction_kernel.h`: launch on the current stream,
   check each launch, drop the `cudaDeviceSynchronize()` calls between the
   kernels, which the stream already orders, and raise a clear error past the
