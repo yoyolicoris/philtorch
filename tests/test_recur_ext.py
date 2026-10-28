@@ -374,15 +374,21 @@ def test_cuda_scan_runs_on_the_current_stream(case: str):
 
 @pytest.mark.cuda
 @pytest.mark.parametrize(
-    "case",
-    ["lti_recur-shared", "lti_recur2-batched", "recur2-batched", "lpc", "scan"],
+    ("case", "on_cpu"),
+    [
+        ("lti_recur-shared", 0),
+        ("lti_recur2-batched", 0),
+        ("recur2-batched", 0),
+        ("lpc", 1),
+        ("scan", 1),
+        ("lti_recur-shared", 1),
+        ("scan", 2),
+    ],
 )
-def test_cuda_ops_reject_coefficients_on_another_device(case: str):
-    """Coefficients the kernels read directly must be on the input's device."""
+def test_cuda_ops_reject_coefficients_on_another_device(case: str, on_cpu: int):
+    """Coefficients and initial states the kernels read directly must be on the input's device."""
     op, args, _ = _cuda_scan_case(case)
-    # Coefficients first for the recurrences, second for lpc and scan.
-    coefficient = 1 if case in ("lpc", "scan") else 0
-    cuda_args = [arg if i == coefficient else arg.cuda() for i, arg in enumerate(args)]
+    cuda_args = [arg if i == on_cpu else arg.cuda() for i, arg in enumerate(args)]
     with pytest.raises(RuntimeError, match="same device"):
         op(*cuda_args)
 

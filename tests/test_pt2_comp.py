@@ -35,7 +35,7 @@ def _op_inputs(op, shared, dtype):
 
 # The recurrence ops, with A shared over the batch or one per signal.
 _RECURRENCE_OPS = ["recur2", "recurN", "lti_recur2", "lti_recurN", "lti_recur"]
-# Each op with the layouts it takes: torchlpc's scan and lpc have per-signal
+# Each op with the layouts it takes: scan and lpc have per-signal
 # coefficients only.
 _LAYOUTS = [(op, shared) for op in _RECURRENCE_OPS for shared in (True, False)]
 _LAYOUTS += [("scan", False), ("lpc", False)]

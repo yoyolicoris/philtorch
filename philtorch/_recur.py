@@ -110,7 +110,7 @@ def _lti_recur2(A: Tensor, zi: Tensor, x: Tensor) -> Tensor:
     return torch.ops.philtorch.lti_recur2(to_lti(A).contiguous(), zi, x.contiguous())
 
 
-# The dtypes of the ``scan`` kernel, the vendored torchlpc's.
+# The dtypes ``scan`` takes, the vendored torchlpc's.
 _SCAN_DTYPES = (torch.float32, torch.float64, torch.complex64, torch.complex128)
 
 
