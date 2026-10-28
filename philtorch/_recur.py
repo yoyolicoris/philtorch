@@ -115,8 +115,7 @@ _SCAN_DTYPES = (torch.float32, torch.float64, torch.complex64, torch.complex128)
 
 
 def _scan_applies(A: Tensor, x: Tensor) -> bool:
-    # On CPU, recurN is as fast, and faster for one long sequence, which it
-    # splits over the threads.
+    # On CPU, scan runs recurN's kernel.
     return x.is_cuda and not _time_invariant(A) and x.size(-1) == 1 and x.dtype in _SCAN_DTYPES
 
 

@@ -10,7 +10,8 @@ from . import _C  # noqa: F401
 
 
 def _lpc_gradients(run, A, zi, y, grad_y, needs_input_grad):
-    """The gradients of x, A and zi from y's, ``grad_y``; ``run`` runs lpc.
+    """The gradients of x, A and zi from ``grad_y``; ``run`` is lpc: the op or
+    ``AllPole.apply``.
 
     The adjoint of an all-pole filter is the same filter backward in time,
     with A's coefficients shifted to the steps they act on.

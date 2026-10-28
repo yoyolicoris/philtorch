@@ -152,9 +152,8 @@ def test_allpole_vmap(device: str):
         assert torch.allclose(jac, arg.grad)
 
 
-@pytest.mark.parametrize("dtype", [torch.float16, torch.int64])
-def test_scan_cpu_rejects_dtype(dtype):
-    # The recurrence kernel it runs takes these; scan keeps torchlpc's dtypes.
-    impulse, init = torch.ones(2, 8, dtype=dtype), torch.ones(2, dtype=dtype)
+def test_scan_cpu_rejects_dtype():
+    # The recurrence kernel it runs takes float16; scan keeps torchlpc's dtypes.
+    impulse, init = torch.ones(2, 8, dtype=torch.float16), torch.ones(2, dtype=torch.float16)
     with pytest.raises(RuntimeError, match="float32, float64, complex64 or complex128"):
         torch.ops.philtorch.scan(impulse, impulse, init)

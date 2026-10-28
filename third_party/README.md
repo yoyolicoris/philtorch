@@ -22,7 +22,8 @@ MIT, Copyright (c) 2017 Eric Martin (`torchlpc/cuda/LICENSE.txt`).
 `philtorch/csrc/torchlpc_cuda.cu` compiles both files and registers the
 kernels as `philtorch::lpc` and `philtorch::scan`, so they don't conflict with
 an installed torchlpc. The CPU kernels are in `philtorch/csrc/torchlpc_shim.cpp`
-and the autograd wrappers in `philtorch/_torchlpc.py`.
+(`lpc`) and `philtorch/csrc/host_recur.cpp` (`scan`), and the autograd wrappers
+in `philtorch/_torchlpc.py`.
 
 ## pararnn
 

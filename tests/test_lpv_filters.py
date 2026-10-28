@@ -19,7 +19,8 @@ def test_fir_defaults_to_transposed():
 
 @pytest.mark.parametrize("B", [1, 8])
 @pytest.mark.parametrize("T", [64])
-@pytest.mark.parametrize("order", [1, 2, 4])
+# Order 9 runs the vectorized dot of the CPU kernel.
+@pytest.mark.parametrize("order", [1, 2, 4, 9])
 def test_allpole_inverse(B: int, T: int, order: int):
     """Test all-pole filter inverse operation"""
     a = torch.randn(B, T, order).double()
