@@ -21,6 +21,7 @@ import os
 import re
 import sys
 import urllib.error
+import urllib.parse
 import urllib.request
 from pathlib import Path
 
@@ -102,19 +103,15 @@ def api(path: str, token: str | None, data: dict | None = None):
 
 
 def fetch_releases(token: str | None) -> list[dict]:
+    # Newest first, so the first page has the newest minor release.
     return api(f"/repos/{UPSTREAM}/releases?per_page=100", token)
 
 
 def issue_exists(repo: str, title: str, token: str | None) -> bool:
     """Whether an issue of ours, open or closed, has exactly this title."""
-    for page in range(1, 11):
-        path = f"/repos/{repo}/issues?state=all&per_page=100&page={page}"
-        issues = api(path, token)
-        if any(i["title"] == title for i in issues):
-            return True
-        if len(issues) < 100:
-            break
-    return False
+    query = urllib.parse.quote(f'repo:{repo} is:issue in:title "{title}"')
+    items = api(f"/search/issues?q={query}&per_page=100", token)["items"]
+    return any(i["title"] == title for i in items)
 
 
 def prepare(out: Path, repo: str | None, token: str | None) -> int:

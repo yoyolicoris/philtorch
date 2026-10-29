@@ -32,6 +32,7 @@ ARCH_TABLE_URL = (
     "https://raw.githubusercontent.com/pytorch/pytorch/release/{minor}"
     "/.ci/wheel/linux/build_env_setup.py"
 )
+# Newest first, so the first page has the newest dated tag.
 QUAY_TAGS_URL = (
     "https://quay.io/api/v1/repository/pypa/manylinux_2_28_x86_64/tag/"
     "?onlyActiveTags=true&limit=100"

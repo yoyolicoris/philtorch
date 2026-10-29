@@ -31,6 +31,16 @@ def test_newest_minor_release_skips_patches_drafts_and_prereleases():
     assert impact.issue_title("v2.99.0") == "PyTorch 2.99 release impact"
 
 
+def test_issue_exists_matches_the_exact_title(monkeypatch):
+    found = [
+        {"title": "PyTorch 2.99 release impact (old)"},
+        {"title": "PyTorch 2.99 release impact"},
+    ]
+    monkeypatch.setattr(impact, "api", lambda path, token: {"items": found})
+    assert impact.issue_exists("o/r", "PyTorch 2.99 release impact", None)
+    assert not impact.issue_exists("o/r", "PyTorch 2.9 release impact", None)
+
+
 @pytest.mark.parametrize("exists", [True, False])
 def test_prepare_skips_an_existing_issue(monkeypatch, tmp_path, exists):
     notes = "- Use CUB for `cumsum` on CUDA (#201)\n" + "→" * impact.MAX_NOTES_BYTES
