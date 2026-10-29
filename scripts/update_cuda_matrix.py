@@ -261,7 +261,7 @@ def main(argv=None, today=None):
     args = parser.parse_args(argv)
     today = today or datetime.datetime.now(datetime.UTC).date()
     for name, text in run(args.root, today).items():
-        (Path(args.root) / name).write_text(text, encoding="utf-8")
+        (Path(args.root) / name).write_text(text, encoding="utf-8", newline="\n")
 
 
 if __name__ == "__main__":

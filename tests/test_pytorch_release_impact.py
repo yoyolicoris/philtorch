@@ -41,10 +41,10 @@ def test_prepare_skips_an_existing_issue(monkeypatch, tmp_path, exists):
     if exists:
         assert not out.exists()
     else:
-        prompt = (out / "prompt.md").read_text()
+        prompt = (out / "prompt.md").read_text(encoding="utf-8")
         assert "Use CUB for `cumsum`" in prompt and "Use only the notes below" in prompt
         assert len(prompt) < len(impact.PROMPT) + impact.MAX_NOTES_CHARS  # the notes are cut
-        assert json.loads((out / "meta.json").read_text()) == {
+        assert json.loads((out / "meta.json").read_text(encoding="utf-8")) == {
             "title": "PyTorch 2.99 release impact",
             "tag": "v2.99.0",
             "url": "https://example.org/v2.99.0",
@@ -73,9 +73,9 @@ def test_issue_body_links_the_notes_and_sanitizes_the_summary(monkeypatch):
 @pytest.mark.parametrize("reply", ["A reply.", "  \n", None])
 def test_post_dry_run_uses_a_non_empty_summary_file(tmp_path, capsys, reply):
     meta = {"title": "T", "tag": "v2.99.0", "url": "u"}
-    (tmp_path / "meta.json").write_text(json.dumps(meta))
+    (tmp_path / "meta.json").write_text(json.dumps(meta), encoding="utf-8")
     if reply is not None:
-        (tmp_path / "summary.md").write_text(reply)
+        (tmp_path / "summary.md").write_text(reply, encoding="utf-8")
     args = ["--post", str(tmp_path), "--dry-run", "--summary-file", str(tmp_path / "summary.md")]
     assert impact.main(args) == 0
     out = capsys.readouterr().out

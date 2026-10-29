@@ -128,8 +128,8 @@ def prepare(out: Path, repo: str | None, token: str | None) -> int:
     notes = (release.get("body") or "")[:MAX_NOTES_CHARS]
     meta = {"title": title, "tag": release["tag_name"], "url": release["html_url"]}
     out.mkdir(parents=True, exist_ok=True)
-    (out / "prompt.md").write_text(PROMPT.format(notes=notes))
-    (out / "meta.json").write_text(json.dumps(meta, indent=2))
+    (out / "prompt.md").write_text(PROMPT.format(notes=notes), encoding="utf-8")
+    (out / "meta.json").write_text(json.dumps(meta, indent=2), encoding="utf-8")
     print(f"Wrote {out / 'prompt.md'} for {title!r}.")
     return 0
 
@@ -157,10 +157,10 @@ def build_body(meta: dict, summary: str | None) -> str:
 
 def post(out: Path, summary_file: str | None, repo: str | None, token: str | None, dry_run: bool):
     """Open the issue described by ``out/meta.json``."""
-    meta = json.loads((out / "meta.json").read_text())
+    meta = json.loads((out / "meta.json").read_text(encoding="utf-8"))
     summary = None
     if summary_file and Path(summary_file).is_file():
-        summary = Path(summary_file).read_text().strip() or None
+        summary = Path(summary_file).read_text(encoding="utf-8").strip() or None
     body = build_body(meta, summary)
     if dry_run:
         print(f"Title: {meta['title']}\n\n{body}")
