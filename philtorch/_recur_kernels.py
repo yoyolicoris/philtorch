@@ -98,18 +98,21 @@ def _times(yr, yi, mr, mi, COMPLEX: tl.constexpr):
 
 
 @triton.jit
+def _dot(a, b):
+    """(a b)[i, k] = sum over j of a[i, j] b[j, k]."""
+    if a.dtype != tl.int64 and a.shape[1] >= 16:
+        # Triton would turn the sum below into a dot in TF32 for float32, whose
+        # 10-bit mantissas lose float32's accuracy: an explicit dot keeps it.
+        return tl.dot(a, b, input_precision="ieee")
+    return tl.sum(a[:, :, None] * b[None, :, :], 1)
+
+
+@triton.jit
 def _matmul(pr, pi, mr, mi, COMPLEX: tl.constexpr):
     """(P A)[i, k] = sum over j of P[i, j] A[j, k], real and imaginary parts."""
     if COMPLEX:
-        re = tl.sum(pr[:, :, None] * mr[None, :, :] - pi[:, :, None] * mi[None, :, :], 1)
-        im = tl.sum(pr[:, :, None] * mi[None, :, :] + pi[:, :, None] * mr[None, :, :], 1)
-        return re, im
-    if pr.dtype == tl.float32 and pr.shape[0] >= 16 and pr.shape[1] >= 16 and mr.shape[1] >= 16:
-        # Triton turns this product's sum, at these sizes, into a dot in TF32,
-        # whose 10-bit mantissas lose float32's accuracy: an explicit dot keeps it.
-        re = tl.dot(pr, mr, input_precision="ieee")
-    else:
-        re = tl.sum(pr[:, :, None] * mr[None, :, :], 1)
+        return _dot(pr, mr) - _dot(pi, mi), _dot(pr, mi) + _dot(pi, mr)
+    re = _dot(pr, mr)
     return re, re
 
 

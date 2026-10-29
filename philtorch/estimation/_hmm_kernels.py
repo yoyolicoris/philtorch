@@ -85,12 +85,11 @@ def _times(a, b, SEMIRING: tl.constexpr):
 @triton.jit
 def _matmul(a, m, SEMIRING: tl.constexpr):
     """(a (x) m)[i, k] = sum over j of a[i, j] (x) m[j, k]."""
-    if SEMIRING == _LINEAR and a.dtype == tl.float32:
-        if a.shape[0] >= 16 and a.shape[1] >= 16 and m.shape[1] >= 16:
-            # Triton turns the sum below, at these sizes, into a dot in TF32,
-            # whose 10-bit mantissas lose float32's accuracy: an explicit dot
-            # keeps it.
-            return tl.dot(a, m, input_precision="ieee")
+    if SEMIRING == _LINEAR and a.shape[0] >= 16 and a.shape[1] >= 16:
+        # Triton would turn the sum below into a dot in TF32 for float32, whose
+        # 10-bit mantissas lose float32's accuracy: an explicit dot keeps it.
+        # The tiles' few rows (BR) keep the sum, which is faster there.
+        return tl.dot(a, m, input_precision="ieee")
     return _reduce(_times(a[:, :, None], m[None, :, :], SEMIRING), 1, SEMIRING)
 
 
