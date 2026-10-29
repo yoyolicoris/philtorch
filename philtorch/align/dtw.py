@@ -336,16 +336,17 @@ def _grid(cost, x, y, gamma, step_pattern, diagonal_weight, lengths, band) -> _G
     # The kernels' soft-min is in base 2: costs in units of gamma / log2(e).
     scale = 1.0 / (gamma * math.log(2)) if gamma > 0 else 1.0
     # A large finite cost outside the band, not inf, keeps soft-min's
-    # arithmetic finite; a path sums at most w (N + M) of them, in the dtype of
-    # cost * scale.
+    # arithmetic finite; a path sums at most w (N + M) of them, in the dtype the
+    # kernels accumulate in (float32 for half and bfloat16).
     dtype = ref.dtype if ref.is_floating_point() else torch.get_default_dtype()
+    dtype = torch.promote_types(dtype, torch.float32)
     big = torch.finfo(dtype).max / (8 * max(diagonal_weight, 1.0) * (N + M))
     window = None
     if features:
         if band is not None:
             window = _band_windows(N, M, n_len, m_len, band, step_pattern == "orthogonal")
     elif gamma > 0 or not cost.is_floating_point():
-        cost = cost * scale  # in units of gamma; integers become floats
+        cost = cost.to(dtype) * scale  # in units of gamma; integers become floats
 
     no_path = torch.zeros(B, dtype=torch.bool, device=ref.device)
     sheared = step_pattern == "asymmetric"
@@ -510,7 +511,9 @@ def _dtw(
     no_path = g.no_path
     if band is not None:
         no_path = no_path | (distance >= g.big / 2)
-    return torch.where(no_path, float("inf"), distance) / g.scale, g, D, walk
+    distance = torch.where(no_path, float("inf"), distance) / g.scale
+    ref = x if features else cost
+    return (distance.to(ref.dtype) if ref.is_floating_point() else distance), g, D, walk
 
 
 # The linear-memory path: items of at most this many cells, or this many rows,

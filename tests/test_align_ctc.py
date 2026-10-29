@@ -121,6 +121,30 @@ def test_ctc_float32():
     )
 
 
+@pytest.mark.cuda
+@pytest.mark.parametrize("dtype, tolerance", [(torch.float16, 3e-3), (torch.bfloat16, 2e-2)])
+def test_ctc_low_precision(dtype, tolerance):
+    # Half and bfloat16 log-probabilities accumulate in float32: the losses,
+    # gradients and scores are within a few roundings of their dtype of the
+    # float64 run on the same inputs, and the alignments are the same.
+    logits, targets = _problem(3, 60, 6, 10)
+    log_probs = logits.detach().log_softmax(-1).to(dtype).requires_grad_()
+    args = (targets, (60, 45, 30), (10, 7, 4))
+    loss = ctc_loss(log_probs, *args, reduction="none")
+    high = log_probs.detach().double().requires_grad_()
+    expected = ctc_loss(high, *args, reduction="none")
+    (grad,) = torch.autograd.grad(loss.sum(), log_probs)
+    (want,) = torch.autograd.grad(expected.sum(), high)
+    assert loss.dtype == grad.dtype == dtype
+    torch.testing.assert_close(loss.double(), expected, rtol=tolerance, atol=0)
+    atol = tolerance * want.abs().max().item()
+    torch.testing.assert_close(grad.double(), want, rtol=tolerance, atol=atol)
+    path, scores = forced_align(log_probs.detach(), *args)
+    expected_path, expected_scores = forced_align(log_probs.detach().double(), *args)
+    assert scores.dtype == dtype and path.equal(expected_path)
+    torch.testing.assert_close(scores.double(), expected_scores, rtol=0, atol=0)
+
+
 def test_ctc_rejects_bad_arguments():
     logits, targets = _problem(2, 5, 3, 2, device="cpu")
     lengths = ((5, 5), (2, 2))

@@ -35,6 +35,9 @@ A max-plus chain can also record each message's maximizing previous state,
 and :func:`philtorch._trace_kernels.trace` follows such backpointers in the same two
 levels: Viterbi decoding's traceback, in parallel.
 
+Half and bfloat16 inputs accumulate in float32: the kernels load them and
+convert, and the messages and every buffer between launches are float32.
+
 Up to ``_REGISTER_STATES`` states, or twice that for a linear chain, a
 program holds the K x K x K terms of a product in registers. Above, it
 computes them in tiles of rows and columns, and the totals' running product
@@ -89,7 +92,7 @@ def _time(c, s, N, T: tl.constexpr, REVERSE: tl.constexpr):
 @triton.jit
 def _step_matrix(
     trans, emit, p, q, n, K, stride_tn, rows, cols, ADJOINT: tl.constexpr,
-    SEMIRING: tl.constexpr,
+    SEMIRING: tl.constexpr, ACC: tl.constexpr,
 ):  # fmt: skip
     """Entries (rows, cols) of A at time n, from pointers offset to the batch item.
 
@@ -101,18 +104,18 @@ def _step_matrix(
     i, j = (cols, rows) if ADJOINT else (rows, cols)
     offsets = trans + n * stride_tn + i * K + j
     if SEMIRING == _LINEAR and p is None:
-        return tl.load(offsets, mask=mask, other=0.0)
-    m = tl.load(offsets, mask=mask, other=float("-inf"))
+        return tl.load(offsets, mask=mask, other=0.0).to(ACC)
+    m = tl.load(offsets, mask=mask, other=float("-inf")).to(ACC)
     # The emissions of the states i leaves. On an adjoint chain's columns they
     # join q; on rows they take the tile's shape, as a broadcast row vector
     # would cost a layout conversion.
     if emit is not None and not ADJOINT:
-        m += tl.load(emit + n * K + i + 0 * j, mask=mask, other=0.0)
+        m += tl.load(emit + n * K + i + 0 * j, mask=mask, other=0.0).to(ACC)
     if p is not None:
         p_rows = tl.load(p + n * K + rows, mask=rows < K, other=float("-inf"))
         q_cols = tl.load(q + n * K + cols, mask=cols < K, other=float("-inf"))
         if emit is not None and ADJOINT:
-            q_cols += tl.load(emit + n * K + cols, mask=cols < K, other=0.0)
+            q_cols += tl.load(emit + n * K + cols, mask=cols < K, other=0.0).to(ACC)
         m = tl.exp(m + p_rows + q_cols)
     return m
 
@@ -126,6 +129,7 @@ def _chunk_totals_kernel(
     """Chunk c's map: total = A[cT] (x) ... (x) A[cT + T - 1], in chain order, and
     for a linear chain with injections, offset, the chain through those steps
     of the injections alone."""
+    ACC: tl.constexpr = total_ptr.dtype.element_ty
     pid = tl.program_id(0)
     b = (pid // C).to(tl.int64)
     c = (pid % C).to(tl.int64)
@@ -144,13 +148,13 @@ def _chunk_totals_kernel(
         offset = tl.load(inj + n * K + states, mask=states < K, other=0.0)
     out = total_ptr + pid.to(tl.int64) * K * K
     if BC == BK:
-        total = _step_matrix(trans, emit, p, q, n, K, stride_tn, rows, cols, ADJOINT, SEMIRING)
+        total = _step_matrix(trans, emit, p, q, n, K, stride_tn, rows, cols, ADJOINT, SEMIRING, ACC)
         # A loop of constant length, with steps past the end masked, unrolls
         # and pipelines better for these small matrices.
         for s in range(1, T):
             valid = s < steps
             n = _time(c, tl.where(valid, s, 0), N, T, ADJOINT)
-            m = _step_matrix(trans, emit, p, q, n, K, stride_tn, rows, cols, ADJOINT, SEMIRING)
+            m = _step_matrix(trans, emit, p, q, n, K, stride_tn, rows, cols, ADJOINT, SEMIRING, ACC)
             # (total (x) m)[i, k] = sum over j of total[i, j] (x) m[j, k].
             product = _reduce(_times(total[:, :, None], m[None, :, :], SEMIRING), 1, SEMIRING)
             total = tl.where(valid, product, total)
@@ -166,7 +170,9 @@ def _chunk_totals_kernel(
         block = tl.arange(0, BC)
         for k0 in range(0, BK, BC):
             columns = k0 + block[None, :]
-            m = _step_matrix(trans, emit, p, q, n, K, stride_tn, rows, columns, ADJOINT, SEMIRING)
+            m = _step_matrix(
+                trans, emit, p, q, n, K, stride_tn, rows, columns, ADJOINT, SEMIRING, ACC
+            )
             tl.store(scratch + rows * BK + columns, m)
         tl.debug_barrier()
         for s in range(1, steps):
@@ -177,7 +183,7 @@ def _chunk_totals_kernel(
                 columns = k0 + block
                 m = _step_matrix(
                     trans, emit, p, q, n, K, stride_tn, rows, columns[None, :], ADJOINT,
-                    SEMIRING,
+                    SEMIRING, ACC,
                 )  # fmt: skip
                 for i0 in range(0, BK, BR):
                     a = tl.load(current + (i0 + tile_rows) * BK + cols)
@@ -212,6 +218,7 @@ def _chunk_sweep_kernel(
     With ``argmax_ptr``, a max-plus chain also writes, for each state k, the
     lowest-index state i attaining y[t][k] = y[t - 1][i] + A[t][i, k].
     """
+    ACC: tl.constexpr = out_ptr.dtype.element_ty
     pid = tl.program_id(0)
     b = (pid // C).to(tl.int64)
     c = (pid % C).to(tl.int64)
@@ -234,7 +241,7 @@ def _chunk_sweep_kernel(
             n = _time(c, tl.where(valid, s, 0), N, T, ADJOINT)
             m = _step_matrix(
                 trans, emit, p, q, n, K, stride_tn, rows, states[None, :], ADJOINT,
-                SEMIRING,
+                SEMIRING, ACC,
             )  # fmt: skip
             # (y (x) m)[k] = sum over i of y[i] (x) m[i, k].
             terms = _times(y[:, None], m, SEMIRING)
@@ -255,7 +262,7 @@ def _chunk_sweep_kernel(
                 columns = k0 + block
                 m = _step_matrix(
                     trans, emit, p, q, n, K, stride_tn, rows, columns[None, :], ADJOINT,
-                    SEMIRING,
+                    SEMIRING, ACC,
                 )  # fmt: skip
                 terms = _times(y[:, None], m, SEMIRING)
                 y_block = _reduce(terms, 0, SEMIRING)
@@ -332,6 +339,8 @@ def chain(
     halves = trans.dim() == 5
     B = trans.shape[0] * trans.shape[1] if halves else trans.shape[0]
     N, K = trans.shape[-3], trans.shape[-1]
+    # Half and bfloat16 inputs accumulate in float32, and ``out`` must be in that dtype.
+    y0 = y0.to(torch.promote_types(trans.dtype, torch.float32))
     if out is None:
         out = y0.new_empty(B, N, K)
     if B == 0 or N == 0 or K == 0:
