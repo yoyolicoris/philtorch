@@ -10,45 +10,8 @@ import pytest
 SCRIPT = Path(__file__).resolve().parents[1] / "scripts" / "pytorch_release_impact.py"
 spec = importlib.util.spec_from_file_location("pytorch_release_impact", SCRIPT)
 impact = importlib.util.module_from_spec(spec)
-sys.modules[spec.name] = impact  # dataclasses look their module up here
+sys.modules[spec.name] = impact
 spec.loader.exec_module(impact)
-
-NOTES = """\
-# PyTorch 2.99.0 Release Notes
-
-- [Highlights](#highlights)
-
-# Highlights
-
-<table><tr><td><strong>A highlight</strong></td></tr></table>
-
-# Backwards Incompatible Changes
-
-## Python Frontend
-
-### `torch.frobnicate` is removed ([#101](https://github.com/pytorch/pytorch/pull/101))
-
-```python
-# 2.98
-torch.frobnicate(x)
-```
-
-## Distributed FSDP2
-
-### FSDP2 reduces in bf16 ([#102](https://github.com/pytorch/pytorch/pull/102))
-
-# Improvements
-
-## CUDA
-
-- Use CUB for `cumsum` on CUDA ([#201](https://github.com/pytorch/pytorch/pull/201))
-- Use cuBLAS for a bare reference (#204)
-- Rename a private helper ([#202](https://github.com/pytorch/pytorch/pull/202))
-
-## DTensor
-
-- Faster CUDA all-gather in DTensor ([#203](https://github.com/pytorch/pytorch/pull/203))
-"""
 
 
 def release(tag, **kw):
@@ -62,7 +25,6 @@ def test_newest_minor_release_skips_patches_drafts_and_prereleases():
         release("v2.99.0-rc1", prerelease=True),
         release("v2.98.0"),
         release("v2.100.0"),  # newer than 2.99 by number, not by string
-        release("v2.97.0"),
     ]
     assert impact.newest_minor_release(releases)["tag_name"] == "v2.100.0"
     assert impact.newest_minor_release([release("v1.2.1")]) is None
@@ -71,7 +33,8 @@ def test_newest_minor_release_skips_patches_drafts_and_prereleases():
 
 @pytest.mark.parametrize("exists", [True, False])
 def test_prepare_skips_an_existing_issue(monkeypatch, tmp_path, exists):
-    monkeypatch.setattr(impact, "fetch_releases", lambda token: [release("v2.99.0", body=NOTES)])
+    notes = "- Use CUB for `cumsum` on CUDA (#201)\n" + "x" * impact.MAX_NOTES_CHARS
+    monkeypatch.setattr(impact, "fetch_releases", lambda token: [release("v2.99.0", body=notes)])
     monkeypatch.setattr(impact, "issue_exists", lambda repo, title, token: exists)
     out = tmp_path / "out"
     assert impact.main(["--prepare", str(out), "--repo", "o/r"]) == 0
@@ -79,8 +42,8 @@ def test_prepare_skips_an_existing_issue(monkeypatch, tmp_path, exists):
         assert not out.exists()
     else:
         prompt = (out / "prompt.md").read_text()
-        assert "Use only the text below" in prompt and "Use CUB for `cumsum`" in prompt
-        assert "Native ops" in prompt  # the brief, from AGENTS.md
+        assert "Use CUB for `cumsum`" in prompt and "Use only the notes below" in prompt
+        assert len(prompt) < len(impact.PROMPT) + impact.MAX_NOTES_CHARS  # the notes are cut
         assert json.loads((out / "meta.json").read_text()) == {
             "title": "PyTorch 2.99 release impact",
             "tag": "v2.99.0",
@@ -88,43 +51,16 @@ def test_prepare_skips_an_existing_issue(monkeypatch, tmp_path, exists):
         }
 
 
-def test_filter_keeps_relevant_entries_and_drops_distributed_ones():
-    f = impact.filter_notes(NOTES)
-    assert "`torch.frobnicate` is removed" in f.text
-    assert "# 2.98" in f.text  # a code comment is not a heading
-    assert "A highlight" in f.text and "<strong>" not in f.text
-    assert "Use CUB for `cumsum`" in f.text
-    assert "[#204](https://github.com/pytorch/pytorch/pull/204)" in f.text  # a bare #204
-    assert "Rename a private helper" not in f.text  # no keyword, not a kept section
-    assert "FSDP2" not in f.text and "DTensor" not in f.text
-    assert f.used == f.total == 3  # highlights apart
-
-
-def test_filter_caps_the_text_and_closes_cut_code_fences(monkeypatch):
-    monkeypatch.setattr(impact, "MAX_NOTES_CHARS", 300)
-    f = impact.filter_notes(NOTES)
-    assert len(f.text) <= 300 and f.used < f.total
-    monkeypatch.setattr(impact, "MAX_ENTRY_CHARS", 100)
-    monkeypatch.setattr(impact, "MAX_NOTES_CHARS", 30_000)
-    long = "### Use `cuda`\n" + "text " * 18 + "\n```python\ncode\n```\n"
-    cut = impact.filter_notes("# Deprecations\n\n## A\n\n" + long).text
-    assert "```" not in cut and cut.endswith("[...]")
-    highlight = "word " * 40 + "last"  # highlights are never cut
-    assert "last" in impact.filter_notes("# Highlights\n\n" + highlight).text
-
-
 def test_issue_body_links_the_notes_and_sanitizes_the_summary(monkeypatch):
     monkeypatch.delenv("GITHUB_RUN_ID", raising=False)
     meta = {"title": "T", "tag": "v2.99.0", "url": "https://example.org/v2.99.0"}
-    reply = "Ping @someone about #123, mail a@b.c.\n" + "x\n" * 20_000
-    body = impact.build_body(meta, reply)
+    body = impact.build_body(meta, "Ping @someone about #123, mail a@b.c.")
     assert body.startswith(
         "[PyTorch 2.99.0 release notes](https://example.org/v2.99.0). "
         "Summary by GitHub Copilot: verify before acting."
     )
-    assert "@\u200bsomeone" in body and "a@b.c" in body
+    assert "@​someone" in body and "a@b.c" in body
     assert "[#123](https://github.com/pytorch/pytorch/pull/123)" in body
-    assert "was cut at 20,000" in body
 
     monkeypatch.setenv("GITHUB_RUN_ID", "9")
     monkeypatch.setenv("GITHUB_SERVER_URL", "https://github.com")

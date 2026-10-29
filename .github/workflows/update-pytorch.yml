@@ -84,7 +84,7 @@ jobs:
   impact:
     # Opens an issue on what a new PyTorch release means for PhilTorch. It
     # edits no files. Its summary comes from GitHub Copilot CLI, run without
-    # tools on the filtered release notes, if the COPILOT_GITHUB_TOKEN secret
+    # tools on the release notes, if the COPILOT_GITHUB_TOKEN secret
     # (a fine-grained personal access token with the "Copilot Requests"
     # permission) is set. Without it, or if Copilot fails, the issue is opened
     # without a summary. Each step gets only the credential it needs.
@@ -115,7 +115,7 @@ jobs:
           fi
           # A fresh empty directory (-C), no tools, no MCP servers, no custom
           # instructions: Copilot can only return text. The prompt goes in the
-          # argument (about 40 KB), as piped input is ignored with -p.
+          # argument (at most about 100 KB), as piped input is ignored with -p.
           mkdir "$dir/empty"
           if npm install -g "@github/copilot@$COPILOT_VERSION" \
             && copilot -C "$dir/empty" -p "$(cat "$dir/prompt.md")" -s \
