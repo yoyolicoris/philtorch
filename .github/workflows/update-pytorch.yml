@@ -38,7 +38,12 @@ jobs:
           # settings.
           GH_TOKEN: ${{ github.token }}
         run: |
+          number="$(gh pr list --head "$BRANCH" --base dev --state open --json number --jq '.[0].number // empty')"
           if [ -z "$(git status --porcelain)" ]; then
+            # dev is current, so an open pull request is stale.
+            if [ -n "$number" ]; then
+              gh pr close "$number" --comment "Nothing to update: dev is current."
+            fi
             echo "Nothing to update."
             exit 0
           fi
@@ -56,7 +61,6 @@ jobs:
             same=true
           fi
           title="ci: update the CUDA wheel matrix for new PyTorch releases"
-          number="$(gh pr list --head "$BRANCH" --base dev --state open --json number --jq '.[0].number // empty')"
           if $same && [ -n "$number" ]; then
             echo "Branch and pull request are up to date."
             exit 0
@@ -69,7 +73,6 @@ jobs:
           Check before merging:
 
           - the diff of \`cuda_wheel_matrix.json\`, \`pyproject.toml\` and the README table;
-          - the README prose: the PyPI CUDA-build sentence, the install table's Python cells and the \`torch == X.Y.*\` example, when the torch minors or Pythons change;
           - the places that name the oldest Python, when \`requires-python\` rises;
           - that the new \`build_image\`, if it changed, has the new CPython (the CUDA build fails otherwise).
 
@@ -86,8 +89,9 @@ jobs:
     # edits no files. Its summary comes from GitHub Copilot CLI, run without
     # tools on the release notes, if the COPILOT_GITHUB_TOKEN secret
     # (a fine-grained personal access token with the "Copilot Requests"
-    # permission) is set. Without it, or if Copilot fails, the issue is opened
-    # without a summary. Each step gets only the credential it needs.
+    # permission) is set. Without it, the issue is opened without a summary;
+    # if Copilot fails, no issue is opened and the next run tries again. Each
+    # step gets only the credential it needs.
     runs-on: ubuntu-latest
     permissions:
       contents: read
@@ -125,8 +129,9 @@ jobs:
               --no-auto-update > "$dir/summary.md"; then
             :
           else
-            echo "::warning::The Copilot step failed; the issue is opened without a summary."
-            rm -f "$dir/summary.md"
+            # No issue this run, so the next one tries again.
+            echo "::error::The Copilot step failed."
+            exit 1
           fi
 
       - name: Open the issue

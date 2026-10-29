@@ -183,7 +183,9 @@ def test_current_upstream_reproduces_the_repository_files(tmp_path, monkeypatch)
     # and on a second run, and the README's table is the one the matrix
     # generates. The newest minor has an arch table, older ones 404.
     for name in FILES:
-        (tmp_path / name).write_text((REPO_ROOT / name).read_text(encoding="utf-8"))
+        (tmp_path / name).write_text(
+            (REPO_ROOT / name).read_text(encoding="utf-8"), encoding="utf-8"
+        )
     matrix = json.loads((tmp_path / FILES[0]).read_text(encoding="utf-8"))
     minors = sorted({UPDATE._minor(b["torch"]) for b in matrix["builds"]}, key=UPDATE._key)
     urls = upstream(matrix["builds"], arch_404=minors[:-1])

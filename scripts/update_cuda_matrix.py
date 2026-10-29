@@ -50,13 +50,8 @@ def fetch(url):
         return response.read().decode("utf-8")
 
 
-def _key(version):
-    """Sort key of an ``X.Y`` or ``X.Y.Z`` version."""
-    return tuple(map(int, version.split(".")))
-
-
-def _minor(version):
-    return version.rsplit(".", 1)[0]
+_key = cwv._version_tuple
+_minor = cwv.torch_minor
 
 
 def parse_pypi_torch(data):

@@ -33,7 +33,7 @@ def test_newest_minor_release_skips_patches_drafts_and_prereleases():
 
 @pytest.mark.parametrize("exists", [True, False])
 def test_prepare_skips_an_existing_issue(monkeypatch, tmp_path, exists):
-    notes = "- Use CUB for `cumsum` on CUDA (#201)\n" + "x" * impact.MAX_NOTES_CHARS
+    notes = "- Use CUB for `cumsum` on CUDA (#201)\n" + "→" * impact.MAX_NOTES_BYTES
     monkeypatch.setattr(impact, "fetch_releases", lambda token: [release("v2.99.0", body=notes)])
     monkeypatch.setattr(impact, "issue_exists", lambda repo, title, token: exists)
     out = tmp_path / "out"
@@ -43,7 +43,7 @@ def test_prepare_skips_an_existing_issue(monkeypatch, tmp_path, exists):
     else:
         prompt = (out / "prompt.md").read_text(encoding="utf-8")
         assert "Use CUB for `cumsum`" in prompt and "Use only the notes below" in prompt
-        assert len(prompt) < len(impact.PROMPT) + impact.MAX_NOTES_CHARS  # the notes are cut
+        assert len(prompt.encode()) < len(impact.PROMPT) + impact.MAX_NOTES_BYTES  # cut in bytes
         assert json.loads((out / "meta.json").read_text(encoding="utf-8")) == {
             "title": "PyTorch 2.99 release impact",
             "tag": "v2.99.0",
@@ -51,23 +51,24 @@ def test_prepare_skips_an_existing_issue(monkeypatch, tmp_path, exists):
         }
 
 
-def test_issue_body_links_the_notes_and_sanitizes_the_summary(monkeypatch):
-    monkeypatch.delenv("GITHUB_RUN_ID", raising=False)
+def test_issue_body_links_the_notes_and_sanitizes_the_summary():
     meta = {"title": "T", "tag": "v2.99.0", "url": "https://example.org/v2.99.0"}
-    body = impact.build_body(meta, "Ping @someone about #123, mail a@b.c.")
+    reply = (
+        "Ping @someone about #123, mail a@b.c. [Fix (#7)](https://x/pull/7), "
+        "`@torch.compile`, https://npmjs.com/package/@github/copilot."
+    )
+    body = impact.build_body(meta, reply)
     assert body.startswith(
         "[PyTorch 2.99.0 release notes](https://example.org/v2.99.0). "
         "Summary by GitHub Copilot: verify before acting."
     )
     assert "@​someone" in body and "a@b.c" in body
     assert "[#123](https://github.com/pytorch/pytorch/pull/123)" in body
+    # Links, code and URLs are left alone.
+    assert "[Fix (#7)](https://x/pull/7)" in body and "`@torch.compile`" in body
+    assert "/package/@github/copilot" in body
 
-    monkeypatch.setenv("GITHUB_RUN_ID", "9")
-    monkeypatch.setenv("GITHUB_SERVER_URL", "https://github.com")
-    monkeypatch.setenv("GITHUB_REPOSITORY", "o/r")
-    plain = impact.build_body(meta, None)
-    assert "Copilot isn't set up" in plain
-    assert "[the workflow run](https://github.com/o/r/actions/runs/9)" in plain
+    assert impact.build_body(meta, None).endswith("the COPILOT_GITHUB_TOKEN secret isn't set.")
 
 
 @pytest.mark.parametrize("reply", ["A reply.", "  \n", None])

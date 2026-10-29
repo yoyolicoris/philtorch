@@ -77,7 +77,7 @@ def test_matrix_file_validates_against_schema():
         assert len({build["torch"] for build in builds}) == 1
         assert len({tuple(build["python_versions"]) for build in builds}) == 1
     keys = [
-        (Version(build["torch"]), VERSION_SCRIPT._cuda_tuple(build["cuda"]))
+        (Version(build["torch"]), VERSION_SCRIPT._version_tuple(build["cuda"]))
         for build in data["builds"]
     ]
     assert keys == sorted(keys), "builds are in ascending torch and CUDA order"

@@ -42,10 +42,12 @@ jobs:
           with urllib.request.urlopen(req) as r:
               data = json.load(r)
 
+          # Yanked files don't count, as in scripts/update_cuda_matrix.py.
+          releases = {
+              v: [f for f in files if not f["yanked"]] for v, files in data["releases"].items()
+          }
           versions = [
-              Version(v)
-              for v, files in data["releases"].items()
-              if files and not Version(v).is_prerelease
+              Version(v) for v, files in releases.items() if files and not Version(v).is_prerelease
           ]
           if not versions:
               raise RuntimeError("No stable torch releases found via PyPI JSON API")
@@ -69,16 +71,16 @@ jobs:
           # 2.15 has no 3.10 wheels) and add the newest. PyPI lists
           # free-threaded wheels under the same python_version (cp315), so
           # they need no filtering here. PRs build and test the oldest and
-          # newest, which catches most
-          # version-specific breakage (e.g. NumPy 2.2 being the last release
-          # for 3.10, see #56); other events the full range.
+          # newest, which catches most version-specific breakage (e.g. NumPy
+          # 2.2 being the last release for 3.10, see #56); other events the
+          # full range.
           with open("pyproject.toml", "rb") as f:
               requires = SpecifierSet(tomllib.load(f)["project"]["requires-python"])
           pythons = {}
           for v in selected:
               minors = {
                   int(m.group(1))
-                  for f in data["releases"][v]
+                  for f in releases[v]
                   if (m := re.fullmatch(r"cp3(\d+)", f["python_version"]))
                   and f"3.{m.group(1)}" in requires
               }

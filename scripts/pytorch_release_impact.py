@@ -27,11 +27,13 @@ from pathlib import Path
 UPSTREAM = "pytorch/pytorch"
 LABEL = "build"
 # The prompt goes to Copilot as one argument, which Linux caps at 128 KiB.
-MAX_NOTES_CHARS = 100_000
+MAX_NOTES_BYTES = 100_000
 # The model may cite pull requests as bare "#123", which GitHub would link to
-# this repository's issue 123.
-BARE_REF = re.compile(r"(?<![\w\[/&])#(\d+)\b")
-MENTION = re.compile(r"(?<![\w`])@(?=\w)")
+# this repository's issue 123, and write "@name", which would notify a user.
+# Code and Markdown links are left alone.
+PROTECTED = re.compile(r"```.*?```|`[^`\n]*`|\[[^\]\n]*\]\([^)\s]*\)", re.S)
+BARE_REF = re.compile(r"(?<![\w/&])#(\d+)\b")
+MENTION = re.compile(r"(?<![\w/.])@(?=\w)")
 
 PROMPT = """\
 Summarise these PyTorch release notes, briefly, for the maintainer of \
@@ -105,8 +107,8 @@ def fetch_releases(token: str | None) -> list[dict]:
 
 def issue_exists(repo: str, title: str, token: str | None) -> bool:
     """Whether an issue of ours, open or closed, has exactly this title."""
-    for page in range(1, 6):
-        path = f"/repos/{repo}/issues?labels={LABEL}&state=all&per_page=100&page={page}"
+    for page in range(1, 11):
+        path = f"/repos/{repo}/issues?state=all&per_page=100&page={page}"
         issues = api(path, token)
         if any(i["title"] == title for i in issues):
             return True
@@ -125,7 +127,7 @@ def prepare(out: Path, repo: str | None, token: str | None) -> int:
     if repo and issue_exists(repo, title, token):
         print(f"Issue {title!r} already exists.")
         return 0
-    notes = (release.get("body") or "")[:MAX_NOTES_CHARS]
+    notes = (release.get("body") or "").encode()[:MAX_NOTES_BYTES].decode(errors="ignore")
     meta = {"title": title, "tag": release["tag_name"], "url": release["html_url"]}
     out.mkdir(parents=True, exist_ok=True)
     (out / "prompt.md").write_text(PROMPT.format(notes=notes), encoding="utf-8")
@@ -136,8 +138,16 @@ def prepare(out: Path, repo: str | None, token: str | None) -> int:
 
 def sanitize(reply: str) -> str:
     """Make a model's reply safe to post: pull request links, no mentions."""
-    reply = BARE_REF.sub(rf"[#\1](https://github.com/{UPSTREAM}/pull/\1)", reply.strip())
-    return MENTION.sub("@\u200b", reply)
+
+    def fix(text: str) -> str:
+        text = BARE_REF.sub(rf"[#\1](https://github.com/{UPSTREAM}/pull/\1)", text)
+        return MENTION.sub("@\u200b", text)
+
+    reply, parts, end = reply.strip(), [], 0
+    for m in PROTECTED.finditer(reply):
+        parts += [fix(reply[end : m.start()]), m.group()]
+        end = m.end()
+    return "".join(parts + [fix(reply[end:])])
 
 
 def build_body(meta: dict, summary: str | None) -> str:
@@ -145,14 +155,7 @@ def build_body(meta: dict, summary: str | None) -> str:
     notes = f"[PyTorch {meta['tag'].removeprefix('v')} release notes]({meta['url']})"
     if summary:
         return f"{notes}. Summary by GitHub Copilot: verify before acting.\n\n{sanitize(summary)}"
-    env = os.environ
-    run = "the workflow run"
-    if "GITHUB_RUN_ID" in env:
-        run = (
-            f"[the workflow run]({env['GITHUB_SERVER_URL']}/{env['GITHUB_REPOSITORY']}"
-            f"/actions/runs/{env['GITHUB_RUN_ID']})"
-        )
-    return f"{notes}. No summary: Copilot isn't set up, or its step failed; see {run}."
+    return f"{notes}. No summary: the COPILOT_GITHUB_TOKEN secret isn't set."
 
 
 def post(out: Path, summary_file: str | None, repo: str | None, token: str | None, dry_run: bool):
