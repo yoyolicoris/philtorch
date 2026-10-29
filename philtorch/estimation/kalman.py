@@ -12,7 +12,6 @@ import re
 from typing import NamedTuple
 
 import torch
-import torch.nn.functional as F
 from torch import Tensor
 
 try:
@@ -599,26 +598,25 @@ def kalman_em_step(
     def outer(u: Tensor, v: Tensor) -> Tensor:
         return u.unsqueeze(-1) @ v.unsqueeze(-2).conj()
 
-    def regress(joint: Tensor, u: Tensor, v: Tensor, per_signal: bool) -> Tensor:
-        """W solving W (avg(V_uu) + avg(u u^H)) = avg(V_vu) + avg(v u^H), joint
-        being the covariance of (u, v), as least squares on square roots:
-        normal equations would square the condition number, which large means
-        make about |m|^2 / lambda_min(V)."""
-        w, U = torch.linalg.eigh(avg(joint, per_signal))
-        root = w.clamp(min=0).sqrt().unsqueeze(-1) * U.mH  # root^H root = joint
-        if not per_signal:
-            u, v = u.flatten(0, 1), v.flatten(0, 1)
-        scale = u.size(-2) ** -0.5
-        K = u.size(-1)
-        lhs = torch.cat([root[..., :K], u.conj() * scale], -2)
-        rhs = torch.cat([root[..., K:], v.conj() * scale], -2)
-        return torch.linalg.lstsq(lhs, rhs).solution.mH
+    def regress(u: Tensor, v: Tensor, V_uu: Tensor, V_vu: Tensor | None, per_signal: bool):
+        """W solving W avg(V_uu + u u^H) = avg(V_vu + v u^H). Large means would
+        swamp V_uu in those moments, so they are taken about the means mu_u and
+        mu_v, and with z = W mu_u - mu_v, [W, z] [[S_uu, mu_u], [mu_u^H, -1]] =
+        [S_vu, mu_v] is solved instead."""
+        dims = 1 if per_signal else (0, 1)
+        mu_u, mu_v = u.mean(dims, keepdim=True), v.mean(dims, keepdim=True)
+        du, dv = u - mu_u, v - mu_v
+        S_uu = avg(V_uu + outer(du, du), per_signal)
+        S_vu = avg(outer(dv, du) if V_vu is None else V_vu + outer(dv, du), per_signal)
+        mu_u, mu_v = avg(mu_u, per_signal), avg(mu_v, per_signal)
+        border = torch.cat([mu_u.conj(), -torch.ones_like(mu_u[..., :1])], -1)
+        lhs = torch.cat([torch.cat([S_uu, mu_u.unsqueeze(-1)], -1), border.unsqueeze(-2)], -2)
+        rhs = torch.cat([S_vu, mu_v.unsqueeze(-1)], -1)
+        return torch.linalg.solve(lhs, rhs, left=False)[..., :-1]
 
     V0, V1 = V[:, :-1], V[:, 1:]
-    A = regress(torch.cat([torch.cat([V0, V10.mH], -1), torch.cat([V10, V1], -1)], -2),
-                m[:, :-1], m[:, 1:], per_A)  # fmt: skip
-    joint = F.pad(V, (0, y.size(-1), 0, y.size(-1)))  # y has no covariance
-    C = regress(joint, m, y, per_C)
+    A = regress(m[:, :-1], m[:, 1:], V0, V10, per_A)
+    C = regress(m, y, V, None, per_C)  # y has no covariance
     # Covariances from the residuals: differences of second moments round away.
     a, c = (A[:, None] if per_A else A), (C[:, None] if per_C else C)
     r, e = m[:, 1:] - _mv(a, m[:, :-1]), y - _mv(c, m)
