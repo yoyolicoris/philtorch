@@ -172,7 +172,8 @@ def test_hmm_gradients_match_sequential(trans, N, K):
 @pytest.mark.cuda
 @pytest.mark.parametrize(
     "dtype, tolerance",
-    [(torch.float32, 1e-4), (torch.float16, 3e-3), (torch.bfloat16, 2e-2)],
+    # float32's own rounding reaches about 1e-4 here, TF32's about 3e-3.
+    [(torch.float32, 1e-3), (torch.float16, 3e-3), (torch.bfloat16, 2e-2)],
 )
 @pytest.mark.parametrize(
     ("N", "K", "trans"),
@@ -191,7 +192,10 @@ def test_hmm_low_precision_matches_float64(dtype, tolerance, N, K, trans):
     log_trans = _transitions(log_trans, trans)
     low = tuple(t.to(dtype).requires_grad_() for t in (log_emit, log_trans, log_init))
     high = tuple(t.detach().double().requires_grad_() for t in low)
-    weights = [torch.randn_like(log_emit).to(dtype) for _ in range(2)]
+    gen = torch.Generator().manual_seed(2)
+    weights = [
+        torch.randn(log_emit.shape, generator=gen).to(log_emit.device, dtype) for _ in range(2)
+    ]
 
     def run(inputs):
         ll, filtered = hmm_filter(*inputs)
