@@ -170,16 +170,22 @@ def test_hmm_gradients_match_sequential(trans, N, K):
 
 
 @pytest.mark.cuda
-@pytest.mark.parametrize("dtype, tolerance", [(torch.float16, 3e-3), (torch.bfloat16, 2e-2)])
 @pytest.mark.parametrize(
-    ("N", "K", "trans"), [(130, 3, "time"), (60, 17, "shared"), (130, 33, "time")]
+    "dtype, tolerance",
+    [(torch.float32, 1e-4), (torch.float16, 3e-3), (torch.bfloat16, 2e-2)],
+)
+@pytest.mark.parametrize(
+    ("N", "K", "trans"),
+    [(130, 3, "time"), (60, 17, "shared"), (130, 32, "shared"), (130, 33, "time")],
 )
 def test_hmm_low_precision_matches_float64(dtype, tolerance, N, K, trans):
-    """Half and bfloat16 inputs accumulate in float32: outputs, gradients and
-    paths match a float64 run on the same inputs, to the output's roundings.
+    """Float32, half and bfloat16 inputs accumulate in float32: outputs,
+    gradients and paths match a float64 run on the same inputs, to the
+    output's roundings.
 
     K = 17 tiles the log chains and K = 33 the derivatives' linear chains;
-    130 steps are three chunks.
+    at K = 32, Triton would compute the linear chains' totals in TF32. 130
+    steps are three chunks.
     """
     log_emit, log_trans, log_init = _model(2, N, K)
     log_trans = _transitions(log_trans, trans)

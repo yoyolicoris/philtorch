@@ -83,6 +83,18 @@ def _times(a, b, SEMIRING: tl.constexpr):
 
 
 @triton.jit
+def _matmul(a, m, SEMIRING: tl.constexpr):
+    """(a (x) m)[i, k] = sum over j of a[i, j] (x) m[j, k]."""
+    if SEMIRING == _LINEAR and a.dtype == tl.float32:
+        if a.shape[0] >= 16 and a.shape[1] >= 16 and m.shape[1] >= 16:
+            # Triton turns the sum below, at these sizes, into a dot in TF32,
+            # whose 10-bit mantissas lose float32's accuracy: an explicit dot
+            # keeps it.
+            return tl.dot(a, m, input_precision="ieee")
+    return _reduce(_times(a[:, :, None], m[None, :, :], SEMIRING), 1, SEMIRING)
+
+
+@triton.jit
 def _time(c, s, N, T: tl.constexpr, REVERSE: tl.constexpr):
     """The time of step s of chunk c, a 64-bit index."""
     t = c * T + s
@@ -155,8 +167,7 @@ def _chunk_totals_kernel(
             valid = s < steps
             n = _time(c, tl.where(valid, s, 0), N, T, ADJOINT)
             m = _step_matrix(trans, emit, p, q, n, K, stride_tn, rows, cols, ADJOINT, SEMIRING, ACC)
-            # (total (x) m)[i, k] = sum over j of total[i, j] (x) m[j, k].
-            product = _reduce(_times(total[:, :, None], m[None, :, :], SEMIRING), 1, SEMIRING)
+            product = _matmul(total, m, SEMIRING)
             total = tl.where(valid, product, total)
             if inj is not None:
                 j = tl.load(inj + n * K + states, mask=states < K, other=0.0)
@@ -187,7 +198,7 @@ def _chunk_totals_kernel(
                 )  # fmt: skip
                 for i0 in range(0, BK, BR):
                     a = tl.load(current + (i0 + tile_rows) * BK + cols)
-                    product = _reduce(_times(a[:, :, None], m[None, :, :], SEMIRING), 1, SEMIRING)
+                    product = _matmul(a, m, SEMIRING)
                     tl.store(following + (i0 + tile_rows) * BK + columns[None, :], product)
                 if inj is not None:
                     j = tl.load(inj + n * K + columns, mask=columns < K, other=0.0)

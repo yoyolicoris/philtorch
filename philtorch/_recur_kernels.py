@@ -104,7 +104,12 @@ def _matmul(pr, pi, mr, mi, COMPLEX: tl.constexpr):
         re = tl.sum(pr[:, :, None] * mr[None, :, :] - pi[:, :, None] * mi[None, :, :], 1)
         im = tl.sum(pr[:, :, None] * mi[None, :, :] + pi[:, :, None] * mr[None, :, :], 1)
         return re, im
-    re = tl.sum(pr[:, :, None] * mr[None, :, :], 1)
+    if pr.dtype == tl.float32 and pr.shape[0] >= 16 and pr.shape[1] >= 16 and mr.shape[1] >= 16:
+        # Triton turns this product's sum, at these sizes, into a dot in TF32,
+        # whose 10-bit mantissas lose float32's accuracy: an explicit dot keeps it.
+        re = tl.dot(pr, mr, input_precision="ieee")
+    else:
+        re = tl.sum(pr[:, :, None] * mr[None, :, :], 1)
     return re, re
 
 

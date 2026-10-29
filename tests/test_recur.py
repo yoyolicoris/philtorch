@@ -110,6 +110,19 @@ def test_recurrence_low_precision(dtype, tolerance, sharing, M):
     assert error < tolerance
 
 
+@pytest.mark.cuda
+@pytest.mark.parametrize("sharing", SHARING)
+@pytest.mark.parametrize("M", [16, 32])
+def test_recurrence_float32_chunk_maps(sharing, M):
+    # Near rotations, whose chunk maps keep their size: at 16 and 32 states,
+    # Triton would compute the maps' products in TF32, of 10-bit mantissas.
+    A, zi, x = _problem(4, 300, M, sharing, device="cuda")
+    A = torch.linalg.qr(A)[0] * 0.999
+    expected = _sequential(A, zi, x)
+    actual = recurrence(*(t.float() for t in (A, zi, x)))
+    assert (actual.double() - expected).abs().max() / expected.abs().max() < 1e-5
+
+
 @pytest.mark.parametrize("device", DEVICES)
 @pytest.mark.parametrize("sharing", SHARING)
 @pytest.mark.parametrize("M", [1, 2, 3, 5])
