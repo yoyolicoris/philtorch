@@ -336,14 +336,9 @@ class _Viterbi(torch.autograd.Function):
         # or time dimension to its single index.
         b = torch.arange(B, device=path.device)[:, None] % groups[0]
         t = torch.arange(N - 1, device=path.device)[None, :] % max(groups[1], 1)
-        # The path's transitions are counted in float32 for 16-bit grad.
-        acc = torch.promote_types(grad.dtype, torch.float32)
-        counts = grad.new_zeros(ctx.trans_shape, dtype=acc)
-        grad_trans = counts.index_put(
-            (b, t, path[:, :-1], path[:, 1:]),
-            grad[:, None].expand(B, N - 1).to(acc),
-            accumulate=True,
-        ).to(grad.dtype)
+        grad_trans = grad.new_zeros(ctx.trans_shape).index_put(
+            (b, t, path[:, :-1], path[:, 1:]), grad[:, None].expand(B, N - 1), accumulate=True
+        )
         return grad_emit, grad_trans, grad_emit[:, 0]
 
 
@@ -694,4 +689,4 @@ def hmm_em_step(
     rows = counts.sum(-1, keepdim=True)
     new_trans = torch.where(rows > 0, _log(counts) - _log(rows), log_trans)
     new_init = _log(starts) - _log(starts.sum(-1, keepdim=True))
-    return log_likelihood, (new_trans, new_init), posteriors
+    return log_likelihood.to(log_emit.dtype), (new_trans, new_init), posteriors

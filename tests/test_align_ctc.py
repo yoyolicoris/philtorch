@@ -135,7 +135,7 @@ def test_ctc_low_precision(dtype, tolerance):
     expected = ctc_loss(high, *args, reduction="none")
     (grad,) = torch.autograd.grad(loss.sum(), log_probs)
     (want,) = torch.autograd.grad(expected.sum(), high)
-    assert loss.dtype == grad.dtype == dtype
+    assert loss.dtype == grad.dtype == ctc_loss(log_probs, *args).dtype == dtype
     torch.testing.assert_close(loss.double(), expected, rtol=tolerance, atol=0)
     atol = tolerance * want.abs().max().item()
     torch.testing.assert_close(grad.double(), want, rtol=tolerance, atol=atol)

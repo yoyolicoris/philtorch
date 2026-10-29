@@ -102,7 +102,8 @@ def _dot(a, b):
     """(a b)[i, k] = sum over j of a[i, j] b[j, k]."""
     if a.dtype != tl.int64 and a.shape[1] >= 16:
         # Triton would turn the sum below into a dot in TF32 for float32, whose
-        # 10-bit mantissas lose float32's accuracy: an explicit dot keeps it.
+        # 10-bit mantissas lose float32's accuracy: an explicit dot keeps it,
+        # and runs float64 faster. int64 has no dot.
         return tl.dot(a, b, input_precision="ieee")
     return tl.sum(a[:, :, None] * b[None, :, :], 1)
 

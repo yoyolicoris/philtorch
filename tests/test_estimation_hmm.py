@@ -205,6 +205,8 @@ def test_hmm_low_precision_matches_float64(dtype, tolerance, N, K, trans):
     outputs, grads, path = run(low)
     expected_outputs, expected_grads, expected_path = run(high)
     assert torch.equal(path, expected_path)
+    if trans == "shared":  # hmm_em_step takes no (N - 1, K, K) transitions
+        assert hmm_em_step(*low)[0].dtype == dtype
     for actual, expected in (*zip(outputs, expected_outputs), *zip(grads, expected_grads)):
         assert actual.dtype == dtype
         assert (actual.double() - expected).abs().max() / expected.abs().max() < tolerance

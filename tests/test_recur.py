@@ -99,7 +99,8 @@ def test_recurrence_ignores_memory_past_the_states(dtype):
     ],
 )
 @pytest.mark.parametrize("sharing", SHARING)
-@pytest.mark.parametrize("M", [1, 2, 3, 6])
+# 12 states take the products of 16 x 16 blocks as dots (a complex one as four).
+@pytest.mark.parametrize("M", [1, 2, 3, 6, 12])
 def test_recurrence_low_precision(dtype, tolerance, sharing, M):
     A, zi, x = _problem(4, 300, M, sharing, dtype, "cuda")
     expected = _sequential(*(t.to(torch.complex128 if dtype.is_complex else torch.float64)
