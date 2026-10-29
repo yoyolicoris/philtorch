@@ -2,12 +2,10 @@
 
 Finds the newest published minor release of pytorch/pytorch (``vX.Y.0``) and,
 unless an issue titled ``PyTorch X.Y release impact`` already exists (open or
-closed), opens one. The issue has three parts:
-
-1. a deterministic header: the release, its date, and how the notes were
-   filtered;
-2. optionally, a summary written by a language model, labelled as such;
-3. the release-note entries that matched, with their pull request links.
+closed), opens one: a link to the release notes, then a brief summary by a
+language model, labelled as such, of what changed upstream, how it affects
+PhilTorch and what to do now. It links few pull requests, as each one linked
+in an issue gets an event on its timeline.
 
 The release notes of a minor release run to 100 KB or more, so they are
 filtered first: the highlights, backwards-incompatible changes and deprecations
@@ -20,8 +18,8 @@ The script runs in two steps around a model call it does not make itself:
 ``DIR/prompt.md`` (instructions, a brief of PhilTorch from AGENTS.md, the
 filtered notes) and ``DIR/meta.json``; nothing is written when there is nothing
 to do. The workflow runs GitHub Copilot CLI on ``prompt.md`` with no tools.
-``--post DIR`` then opens the issue, with the reply (``--summary-file``) under
-a heading that says it is AI-generated, or without one when there is no reply.
+``--post DIR`` then opens the issue with the reply (``--summary-file``), or
+says there is none.
 
 Standard library only.
 """
@@ -34,18 +32,16 @@ import os
 import re
 import sys
 import urllib.error
-import urllib.parse
 import urllib.request
-from dataclasses import dataclass, field
+from dataclasses import dataclass
 from pathlib import Path
 
 REPO_ROOT = Path(__file__).resolve().parents[1]
 UPSTREAM = "pytorch/pytorch"
-LABEL = "build"  # exists in the repository; a missing label would be created
+LABEL = "build"
 MAX_NOTES_CHARS = 30_000
 MAX_ENTRY_CHARS = 500
 MAX_SUMMARY_CHARS = 20_000
-MAX_BODY_CHARS = 60_000  # GitHub's limit is 65,536.
 
 # Sections kept whole, bar the dropped areas; elsewhere an entry needs a keyword.
 KEEP_SECTIONS = ("highlights", "backwards incompatible changes", "deprecations")
@@ -69,8 +65,6 @@ KEYWORDS = re.compile(
 )
 # Sections cut first when the notes are too long.
 LOW_PRIORITY = ("bug fixes", "documentation", "developers", "security")
-PR_LINK = re.compile(r"\[#(\d+)\]\((https://github\.com/[^)\s]+)\)")
-PR_SUFFIX = re.compile(r"\s*\(\s*(?:\[#\d+\]\([^)]*\)[,\s]*)+\)\s*$")
 # Published notes cite pull requests as bare "#123", which GitHub would link to
 # this repository's issue 123 in our issue.
 BARE_REF = re.compile(r"(?<![\w\[/&])#(\d+)\b")
@@ -88,23 +82,12 @@ class Entry:
     def where(self) -> str:
         return f"{self.section} / {self.area}" if self.area else self.section
 
-    @property
-    def summary(self) -> str:
-        first = re.sub(r"^(-|#+)\s+", "", self.text.split("\n", 1)[0])
-        first = PR_SUFFIX.sub("", first)
-        return first if len(first) <= 160 else first[:157].rstrip() + "..."
-
-    @property
-    def links(self) -> list[tuple[str, str]]:
-        return list(dict.fromkeys(PR_LINK.findall(self.text)))
-
 
 @dataclass
 class Filtered:
     text: str
-    entries: list[Entry] = field(default_factory=list)
+    used: int = 0  # entries in the text, highlights apart
     total: int = 0  # entries kept before the cap, highlights apart
-    cut: bool = False
 
 
 def parse_entries(notes: str) -> list[Entry]:
@@ -157,14 +140,13 @@ def filter_notes(notes: str) -> Filtered:
         if entry.section.lower() in KEEP_SECTIONS or KEYWORDS.search(entry.text):
             kept.append(entry)
     kept.sort(key=lambda e: e.section.lower() in LOW_PRIORITY)  # stable
-    entries: list[Entry] = []
     parts: list[str] = []
-    size = 0
+    size = used = 0
     last = None
     for entry in kept:
         highlight = entry.section.lower() == "highlights"
         text = HTML_TAG.sub("", entry.text) if highlight else entry.text
-        if len(text) > MAX_ENTRY_CHARS:
+        if not highlight and len(text) > MAX_ENTRY_CHARS:
             text = text[:MAX_ENTRY_CHARS]
             if "```" in text:  # no code fence stays open
                 text = text[: text.index("```")]
@@ -177,10 +159,9 @@ def filter_notes(notes: str) -> Filtered:
             break
         parts.append(head + text)
         size += len(head) + len(text) + 1
-        if not highlight:
-            entries.append(entry)  # whole, for its summary and links
+        used += not highlight
     total = sum(e.section.lower() != "highlights" for e in kept)
-    return Filtered("\n".join(parts), entries, total, len(entries) < total)
+    return Filtered("\n".join(parts), used, total)
 
 
 def release_version(tag: str) -> tuple[int, int] | None:
@@ -223,10 +204,15 @@ def fetch_releases(token: str | None) -> list[dict]:
 
 
 def issue_exists(repo: str, title: str, token: str | None) -> bool:
-    """Whether an issue, open or closed, has exactly this title."""
-    query = urllib.parse.quote(f'repo:{repo} is:issue in:title "{title}"')
-    found = api(f"/search/issues?q={query}", token)
-    return any(i["title"] == title for i in found["items"])
+    """Whether an issue of ours, open or closed, has exactly this title."""
+    for page in range(1, 6):
+        path = f"/repos/{repo}/issues?labels={LABEL}&state=all&per_page=100&page={page}"
+        issues = api(path, token)
+        if any(i["title"] == title for i in issues):
+            return True
+        if len(issues) < 100:
+            break
+    return False
 
 
 def project_brief() -> str:
@@ -241,24 +227,25 @@ def project_brief() -> str:
 
 
 PROMPT = """\
-You review PyTorch release notes for the maintainer of the library described \
-below. The notes are filtered: entries irrelevant to it were dropped. Reply \
-with Markdown only, in exactly three sections:
+Summarise these PyTorch release notes, briefly, for the maintainer of the \
+library described below. The notes are filtered: entries irrelevant to it were \
+dropped. Reply with Markdown only, in exactly these three sections, each a \
+short list of one-line items:
 
-### Needs action in PhilTorch
-Entries that may break it or require a change (build, wheels, Python or CUDA \
-support, custom ops, torch.compile, autograd, C++ API). Say what to check.
+**What changed upstream**
+The few changes that matter to PhilTorch, at most 6.
 
-### Useful new features
-Entries PhilTorch could adopt or benefit from.
+**How it affects PhilTorch**
+What they mean for its code, tests, wheels or users, at most 6.
 
-### Behaviour changes that likely do not affect PhilTorch
-One line each.
+**To do now**
+Immediate actions, as a task list (`- [ ] ...`), at most 5.
 
-Rules: every item cites its release-note entry by the pull request link as \
-written in the notes. Use only the text below; never invent an entry, link or \
-claim. Do not use tools or read files. Write "None." for an empty section. \
-Be brief.
+Rules: about 15 lines in all. Link a pull request \
+(https://github.com/pytorch/pytorch/pull/N, as written in the notes) only \
+where it helps, at most 5 links in all. Use only the text below; never invent \
+an entry, link or claim. Do not use tools or read files. Write "None." for an \
+empty section.
 
 {brief}
 
@@ -279,18 +266,11 @@ def prepare(out: Path, repo: str | None, token: str | None) -> int:
         print(f"Issue {title!r} already exists.")
         return 0
     f = filter_notes(release.get("body") or "")
-    meta = {
-        "title": title,
-        "url": release["html_url"],
-        "published": (release.get("published_at") or "")[:10],
-        "total": f.total,
-        "cut": f.cut,
-        "entries": [{"where": e.where, "summary": e.summary, "links": e.links} for e in f.entries],
-    }
+    meta = {"title": title, "tag": release["tag_name"], "url": release["html_url"]}
     out.mkdir(parents=True, exist_ok=True)
     (out / "prompt.md").write_text(PROMPT.format(brief=project_brief(), notes=f.text))
     (out / "meta.json").write_text(json.dumps(meta, indent=2))
-    print(f"Wrote {out / 'prompt.md'} for {title!r}.")
+    print(f"Wrote {out / 'prompt.md'} for {title!r}: {f.used} of {f.total} entries.")
     return 0
 
 
@@ -305,50 +285,17 @@ def sanitize(reply: str) -> str:
 
 def build_body(meta: dict, summary: str | None) -> str:
     """The issue body. ``summary`` is Copilot's reply, or None."""
-    published = f"published {meta['published']}" if meta["published"] else "date unknown"
-    used = len(meta["entries"])
-    lines = [
-        f"Release notes: {meta['url']} ({published}).",
-        "",
-        "This issue was opened by the `update-pytorch` workflow "
-        "(`scripts/pytorch_release_impact.py`). It lists what in the notes may matter "
-        "to PhilTorch; it changes nothing.",
-        "",
-        "How the notes were filtered: by section and keyword (see "
-        f"`scripts/pytorch_release_impact.py`). {used} entries were kept.",
-    ]
-    if meta["cut"]:
-        lines += [
-            "",
-            f"**The filtered notes were cut at {MAX_NOTES_CHARS:,} characters:** "
-            f"{used} of {meta['total']} entries were used, the "
-            "last ones, bug fixes among them, were left out.",
-        ]
-    lines += [""]
+    notes = f"[PyTorch {meta['tag'].removeprefix('v')} release notes]({meta['url']})"
     if summary:
-        lines += [
-            "## AI-generated summary (GitHub Copilot): verify before acting",
-            "",
-            "Written by a language model from the filtered notes. It can miss entries "
-            "or misread them: check each item against the linked pull request.",
-            "",
-            sanitize(summary),
-        ]
-    else:
-        e = os.environ
-        link = "workflow run"
-        if "GITHUB_RUN_ID" in e:
-            link = f"[workflow run]({e['GITHUB_SERVER_URL']}/{e['GITHUB_REPOSITORY']}"
-            link += f"/actions/runs/{e['GITHUB_RUN_ID']})"
-        lines += [f"No AI summary: Copilot isn't set up, or its step failed; see the {link}."]
-    lines += ["", "## Matched release-note entries", ""]
-    for e in meta["entries"]:
-        links = ", ".join(f"[#{n}]({url})" for n, url in e["links"])
-        lines.append(f"- {e['where']}: {e['summary']}" + (f" ({links})" if links else ""))
-    body = "\n".join(lines)
-    if len(body) > MAX_BODY_CHARS:
-        body = body[:MAX_BODY_CHARS].rsplit("\n", 1)[0] + "\n- ... (list cut: issue size limit)"
-    return body
+        return f"{notes}. Summary by GitHub Copilot: verify before acting.\n\n{sanitize(summary)}"
+    env = os.environ
+    run = "the workflow run"
+    if "GITHUB_RUN_ID" in env:
+        run = (
+            f"[the workflow run]({env['GITHUB_SERVER_URL']}/{env['GITHUB_REPOSITORY']}"
+            f"/actions/runs/{env['GITHUB_RUN_ID']})"
+        )
+    return f"{notes}. No summary: Copilot isn't set up, or its step failed; see {run}."
 
 
 def post(out: Path, summary_file: str | None, repo: str | None, token: str | None, dry_run: bool):

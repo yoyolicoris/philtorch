@@ -81,11 +81,11 @@ def test_prepare_skips_an_existing_issue(monkeypatch, tmp_path, exists):
         prompt = (out / "prompt.md").read_text()
         assert "Use only the text below" in prompt and "Use CUB for `cumsum`" in prompt
         assert "Native ops" in prompt  # the brief, from AGENTS.md
-        meta = json.loads((out / "meta.json").read_text())
-        assert meta["title"] == "PyTorch 2.99 release impact"
-        assert meta["entries"][0]["links"] == [
-            ["101", "https://github.com/pytorch/pytorch/pull/101"]
-        ]
+        assert json.loads((out / "meta.json").read_text()) == {
+            "title": "PyTorch 2.99 release impact",
+            "tag": "v2.99.0",
+            "url": "https://example.org/v2.99.0",
+        }
 
 
 def test_filter_keeps_relevant_entries_and_drops_distributed_ones():
@@ -97,52 +97,46 @@ def test_filter_keeps_relevant_entries_and_drops_distributed_ones():
     assert "[#204](https://github.com/pytorch/pytorch/pull/204)" in f.text  # a bare #204
     assert "Rename a private helper" not in f.text  # no keyword, not a kept section
     assert "FSDP2" not in f.text and "DTensor" not in f.text
-    assert [e.area for e in f.entries] == ["Python Frontend", "CUDA", "CUDA"]  # no highlight
-    assert f.total == 3 and not f.cut
+    assert f.used == f.total == 3  # highlights apart
 
 
 def test_filter_caps_the_text_and_closes_cut_code_fences(monkeypatch):
     monkeypatch.setattr(impact, "MAX_NOTES_CHARS", 300)
     f = impact.filter_notes(NOTES)
-    assert len(f.text) <= 300 and f.cut and len(f.entries) < f.total
+    assert len(f.text) <= 300 and f.used < f.total
     monkeypatch.setattr(impact, "MAX_ENTRY_CHARS", 100)
     monkeypatch.setattr(impact, "MAX_NOTES_CHARS", 30_000)
     long = "### Use `cuda`\n" + "text " * 18 + "\n```python\ncode\n```\n"
     cut = impact.filter_notes("# Deprecations\n\n## A\n\n" + long).text
     assert "```" not in cut and cut.endswith("[...]")
+    highlight = "word " * 40 + "last"  # highlights are never cut
+    assert "last" in impact.filter_notes("# Highlights\n\n" + highlight).text
 
 
-def test_issue_body_labels_the_ai_section_and_sanitizes_it(monkeypatch):
+def test_issue_body_links_the_notes_and_sanitizes_the_summary(monkeypatch):
     monkeypatch.delenv("GITHUB_RUN_ID", raising=False)
-    meta = {
-        "title": "PyTorch 2.99 release impact",
-        "url": "https://example.org/v2.99.0",
-        "published": "2026-01-02",
-        "total": 3,
-        "cut": True,
-        "entries": [{"where": "CUDA", "summary": "S", "links": [["201", "https://x/pull/201"]]}],
-    }
+    meta = {"title": "T", "tag": "v2.99.0", "url": "https://example.org/v2.99.0"}
     reply = "Ping @someone about #123, mail a@b.c.\n" + "x\n" * 20_000
     body = impact.build_body(meta, reply)
-    heading = "## AI-generated summary (GitHub Copilot): verify before acting"
-    assert body.index(heading) < body.index("## Matched")
-    assert "https://example.org/v2.99.0 (published 2026-01-02)" in body
-    assert "1 of 3 entries were used" in body
+    assert body.startswith(
+        "[PyTorch 2.99.0 release notes](https://example.org/v2.99.0). "
+        "Summary by GitHub Copilot: verify before acting."
+    )
     assert "@\u200bsomeone" in body and "a@b.c" in body
     assert "[#123](https://github.com/pytorch/pytorch/pull/123)" in body
-    assert "was cut at 20,000" in body and "- CUDA: S ([#201](https://x/pull/201))" in body
+    assert "was cut at 20,000" in body
 
     monkeypatch.setenv("GITHUB_RUN_ID", "9")
     monkeypatch.setenv("GITHUB_SERVER_URL", "https://github.com")
     monkeypatch.setenv("GITHUB_REPOSITORY", "o/r")
     plain = impact.build_body(meta, None)
-    assert "AI-generated" not in plain
-    assert "[workflow run](https://github.com/o/r/actions/runs/9)" in plain
+    assert "Copilot isn't set up" in plain
+    assert "[the workflow run](https://github.com/o/r/actions/runs/9)" in plain
 
 
 @pytest.mark.parametrize("reply", ["A reply.", "  \n", None])
 def test_post_dry_run_uses_a_non_empty_summary_file(tmp_path, capsys, reply):
-    meta = {"title": "T", "url": "u", "published": "", "total": 0, "cut": False, "entries": []}
+    meta = {"title": "T", "tag": "v2.99.0", "url": "u"}
     (tmp_path / "meta.json").write_text(json.dumps(meta))
     if reply is not None:
         (tmp_path / "summary.md").write_text(reply)
@@ -151,4 +145,4 @@ def test_post_dry_run_uses_a_non_empty_summary_file(tmp_path, capsys, reply):
     out = capsys.readouterr().out
     assert out.startswith("Title: T")
     assert ("A reply." in out) == (reply == "A reply.")
-    assert ("No AI summary" in out) == (reply != "A reply.")
+    assert ("No summary" in out) == (reply != "A reply.")
