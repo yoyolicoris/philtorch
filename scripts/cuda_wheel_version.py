@@ -27,8 +27,6 @@ import re
 import sys
 from pathlib import Path
 
-from packaging.version import InvalidVersion, Version
-
 REPO_ROOT = Path(__file__).parents[1]
 DEFAULT_MATRIX = REPO_ROOT / "cuda_wheel_matrix.json"
 SCHEMA_VERSION = 3
@@ -55,8 +53,12 @@ def _cuda_tag(cuda_version):
     return "cu" + cuda_version.replace(".", "")
 
 
-def _cuda_tuple(cuda_version):
-    return tuple(int(part) for part in cuda_version.split("."))
+def _version_tuple(version):
+    return tuple(int(part) for part in version.split("."))
+
+
+def torch_minor(torch_version):
+    return torch_version.rsplit(".", 1)[0]
 
 
 def _arch_support_error(cuda_version, arch_list):
@@ -65,7 +67,7 @@ def _arch_support_error(cuda_version, arch_list):
     CUDA 13 dropped everything older than Turing (7.5), which an arch list
     copied from a CUDA 12 build would still contain.
     """
-    if _cuda_tuple(cuda_version) < (13, 0):
+    if _version_tuple(cuda_version) < (13, 0):
         return None
     for arch in arch_list.split():
         major, minor = (int(part) for part in _ARCH_RE.fullmatch(arch).group(1, 2))
@@ -116,7 +118,7 @@ def validate_matrix(data, path="<matrix>"):
             raise RuntimeError(f"{where}: 'torch' must be an exact X.Y.Z version")
         if not isinstance(cuda_version, str) or not _CUDA_RE.fullmatch(cuda_version):
             raise RuntimeError(f"{where}: 'cuda' must be an X.Y version")
-        if _cuda_tuple(cuda_version) < _MIN_CUDA:
+        if _version_tuple(cuda_version) < _MIN_CUDA:
             raise RuntimeError(
                 f"{where}: CUDA {cuda_version} is older than "
                 f"{'.'.join(map(str, _MIN_CUDA))}, the oldest the CUDA sources build with"
@@ -152,7 +154,7 @@ def validate_matrix(data, path="<matrix>"):
         # Each torch minor/CUDA pair gets its own package index (see
         # scripts/generate_simple_index.py), which must hold one build per
         # PhilTorch version; two patches of one minor would add a second.
-        key = (torch_version.rsplit(".", 1)[0], cuda_version)
+        key = (torch_minor(torch_version), cuda_version)
         if key in seen:
             raise RuntimeError(f"{where}: duplicate torch minor/CUDA combination {key}")
         seen.add(key)
@@ -175,6 +177,9 @@ def find_build(data, torch_version, cuda_version):
 
 def base_version(root=REPO_ROOT, override=None):
     """Return the public base version, deterministically stripped of any local segment."""
+    # Imported here so that scripts importing this module need no packaging.
+    from packaging.version import InvalidVersion, Version
+
     if override is not None:
         raw = override
     else:
@@ -190,6 +195,8 @@ def base_version(root=REPO_ROOT, override=None):
 
 def cuda_wheel_version(base, torch_version, cuda_version):
     """Build ``{base}+torch{X.Y.Z}.cu{NNN}`` and prove it is valid, deterministic PEP 440."""
+    from packaging.version import Version
+
     label = f"torch{torch_version}.{_cuda_tag(cuda_version)}"
     version = f"{base}+{label}"
     parsed = Version(version)
