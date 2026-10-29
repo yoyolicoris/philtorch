@@ -66,11 +66,13 @@ To find the matching index for an installed PyTorch, run `python -c "import torc
 For example, `2.14.1+cu132 13.2` matches `whl/torch2.14-cu132/`.
 On Linux, `pip install torch` from PyPI installs the CUDA 13.0 build up to PyTorch 2.14, which matches `whl/torch2.14-cu130/`, and the CUDA 13.2 build from 2.15, which matches `whl/torch2.15-cu132/`.
 
+<!-- cuda-index-table:start -->
 | PyTorch | CUDA 12.9 | CUDA 13.0 | CUDA 13.2 | CUDA 13.4 |
 | --- | --- | --- | --- | --- |
 | 2.15 | — | — | [`whl/torch2.15-cu132/`](https://yoyolicoris.github.io/philtorch/whl/torch2.15-cu132/) | [`whl/torch2.15-cu134/`](https://yoyolicoris.github.io/philtorch/whl/torch2.15-cu134/) |
 | 2.14 | — | [`whl/torch2.14-cu130/`](https://yoyolicoris.github.io/philtorch/whl/torch2.14-cu130/) | [`whl/torch2.14-cu132/`](https://yoyolicoris.github.io/philtorch/whl/torch2.14-cu132/) | — |
 | 2.13 | [`whl/torch2.13-cu129/`](https://yoyolicoris.github.io/philtorch/whl/torch2.13-cu129/) | [`whl/torch2.13-cu130/`](https://yoyolicoris.github.io/philtorch/whl/torch2.13-cu130/) | [`whl/torch2.13-cu132/`](https://yoyolicoris.github.io/philtorch/whl/torch2.13-cu132/) | — |
+<!-- cuda-index-table:end -->
 
 The index URLs are relative to `https://yoyolicoris.github.io/philtorch/`, which lists every index, including those for earlier releases.
 

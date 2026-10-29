@@ -27,8 +27,6 @@ import re
 import sys
 from pathlib import Path
 
-from packaging.version import InvalidVersion, Version
-
 REPO_ROOT = Path(__file__).parents[1]
 DEFAULT_MATRIX = REPO_ROOT / "cuda_wheel_matrix.json"
 SCHEMA_VERSION = 3
@@ -175,6 +173,9 @@ def find_build(data, torch_version, cuda_version):
 
 def base_version(root=REPO_ROOT, override=None):
     """Return the public base version, deterministically stripped of any local segment."""
+    # Imported here so that scripts importing this module need no packaging.
+    from packaging.version import InvalidVersion, Version
+
     if override is not None:
         raw = override
     else:
@@ -190,6 +191,8 @@ def base_version(root=REPO_ROOT, override=None):
 
 def cuda_wheel_version(base, torch_version, cuda_version):
     """Build ``{base}+torch{X.Y.Z}.cu{NNN}`` and prove it is valid, deterministic PEP 440."""
+    from packaging.version import Version
+
     label = f"torch{torch_version}.{_cuda_tag(cuda_version)}"
     version = f"{base}+{label}"
     parsed = Version(version)
