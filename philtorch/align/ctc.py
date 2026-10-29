@@ -109,10 +109,12 @@ def ctc_loss(
     loss = -torch.logsumexp(-torch.where(none, 0.0, ends), dim=0)
     loss = torch.where(none, 0.0 if zero_infinity else float("inf"), loss)
     if reduction == "mean":
-        return (loss / labels.clamp(min=1)).mean()
-    if reduction == "sum":
-        return loss.sum()
-    return loss[0] if unbatched else loss
+        loss = (loss / labels.clamp(min=1)).mean()
+    elif reduction == "sum":
+        loss = loss.sum()
+    elif unbatched:
+        loss = loss[0]
+    return loss.to(log_probs.dtype)
 
 
 def forced_align(
@@ -278,12 +280,13 @@ def _grid(log_probs, states, skip, frames, labels, viterbi):
     sequence's final blank and in its last label, rows 2S + 1 and 2S, (2, B):
     of all paths, or with ``viterbi`` the best one."""
     # Imported here so that philtorch.align imports without Triton.
-    from ._dtw_kernels import ctc_viterbi, dtw_dp
+    from ._dtw_kernels import _acc, ctc_viterbi, dtw_dp
 
     # (N, 2S + 1, T), in bits, as the kernels' soft-min is in base 2: one
     # multiply both negates and converts.
     states = states[:, None].expand(-1, log_probs.size(1), -1)
-    cost = log_probs.gather(2, states).mT * (-1 / math.log(2))
+    # Half and bfloat16 log-probabilities accumulate in float32.
+    cost = log_probs.gather(2, states).mT.to(_acc(log_probs)) * (-1 / math.log(2))
     # A virtual first state and frame, at no cost where they meet, from which
     # both the first blank and the first label begin.
     cost = F.pad(cost, (1, 0, 1, 0), value=float("inf"))

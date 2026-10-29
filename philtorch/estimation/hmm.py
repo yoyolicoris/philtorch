@@ -159,7 +159,8 @@ def _trans_grad(log_trans: Tensor, alpha: Tensor, beta: Tensor, fi: Tensor, fj: 
         for t, value in zip(terms, (float("-inf"), float("-inf"), 0.0, 0.0))
     )
     # W[i, m, j] = exp(alpha[m, i] + beta[m, j] + log_trans[i, j]).
-    c = log_trans.reshape(P, 1, K, K).expand(P, blocks, K, K).reshape(P * blocks, K, K)
+    c = log_trans.to(alpha.dtype).reshape(P, 1, K, K).expand(P, blocks, K, K)
+    c = c.reshape(P * blocks, K, K)
     ones = torch.ones_like(c)
     out = weighted_contract(alpha.mT, beta, c, fi.mT, ones, fj, "j")
     return out.reshape(P, blocks, K, K).sum(1).reshape(*groups, K, K)
@@ -184,6 +185,8 @@ def _run_chain(
     from ._hmm_kernels import chain
 
     B, T, K = log_emit.shape
+    # Half and bfloat16 inputs accumulate in float32: their messages are float32.
+    y0 = y0.to(torch.promote_types(log_emit.dtype, torch.float32))
     out = y0.new_empty(B, T + 1, K)
     start, _, _, steps = _positions(adjoint)
     out[:, start] = y0
@@ -300,7 +303,8 @@ def _viterbi_chain(log_emit: Tensor, log_trans: Tensor, log_init: Tensor) -> tup
 @_viterbi_chain.register_fake
 def _(log_emit, log_trans, log_init):
     B, N, K = log_emit.shape
-    return log_init.new_empty(B, N, K), log_emit.new_empty(B, N, K, dtype=torch.int32)
+    acc = torch.promote_types(log_emit.dtype, torch.float32)
+    return log_init.new_empty(B, N, K, dtype=acc), log_emit.new_empty(B, N, K, dtype=torch.int32)
 
 
 class _Viterbi(torch.autograd.Function):
@@ -314,7 +318,7 @@ class _Viterbi(torch.autograd.Function):
         score, last = (predicted[:, -1] + log_emit[:, -1]).max(dim=-1)
         # Follow the pointers back from the best last state.
         path = trace(last.int(), pointers[:, 1:], reverse=True)
-        return score, torch.cat([path, last.int().unsqueeze(1)], dim=1).long()
+        return score.to(log_emit.dtype), torch.cat([path, last.int().unsqueeze(1)], dim=1).long()
 
     @staticmethod
     def setup_context(ctx, inputs, output):
@@ -450,7 +454,8 @@ def hmm_filter(log_emit: Tensor, log_trans: Tensor, log_init: Tensor) -> tuple[T
         return _empty(log_emit, log_trans, log_init)
     # alpha[n][j] = log p(y[0..n], z[n] = j), from the predicted messages.
     alpha = _LogChain.apply(log_init, log_trans, log_emit[:, :-1]) + log_emit
-    return _logsumexp(alpha[:, -1], dim=-1), _log_softmax(alpha)
+    dtype = log_emit.dtype
+    return _logsumexp(alpha[:, -1], dim=-1).to(dtype), _log_softmax(alpha).to(dtype)
 
 
 def hmm_smoother(log_emit: Tensor, log_trans: Tensor, log_init: Tensor) -> tuple[Tensor, Tensor]:
@@ -521,7 +526,7 @@ def hmm_smoother(log_emit: Tensor, log_trans: Tensor, log_init: Tensor) -> tuple
     # messages grow to thousands over long inputs, and most of their rounding
     # error is shared by all states at a step, so this cancels it.
     joint = predicted + log_emit + beta
-    return log_likelihood, _log_softmax(joint)
+    return log_likelihood.to(log_emit.dtype), _log_softmax(joint).to(log_emit.dtype)
 
 
 def hmm_viterbi(log_emit: Tensor, log_trans: Tensor, log_init: Tensor) -> tuple[Tensor, Tensor]:
@@ -685,4 +690,4 @@ def hmm_em_step(
     rows = counts.sum(-1, keepdim=True)
     new_trans = torch.where(rows > 0, _log(counts) - _log(rows), log_trans)
     new_init = _log(starts) - _log(starts.sum(-1, keepdim=True))
-    return log_likelihood, (new_trans, new_init), posteriors
+    return log_likelihood.to(log_emit.dtype), (new_trans, new_init), posteriors

@@ -253,7 +253,8 @@ def dtw(
     if checkpoint is not None and (type(checkpoint) is not int or checkpoint < 1 or x is None):
         raise ValueError(f"checkpoint must be a positive integer, with x and y, got {checkpoint!r}")
     _validate("dtw", cost, x, y, step_pattern, diagonal_weight, lengths, band)
-    return _dtw(cost, x, y, gamma, step_pattern, diagonal_weight, lengths, band, checkpoint)[0]
+    distance = _dtw(cost, x, y, gamma, step_pattern, diagonal_weight, lengths, band, checkpoint)[0]
+    return _in_input_dtype(distance, cost, x)
 
 
 def _validate(
@@ -336,16 +337,17 @@ def _grid(cost, x, y, gamma, step_pattern, diagonal_weight, lengths, band) -> _G
     # The kernels' soft-min is in base 2: costs in units of gamma / log2(e).
     scale = 1.0 / (gamma * math.log(2)) if gamma > 0 else 1.0
     # A large finite cost outside the band, not inf, keeps soft-min's
-    # arithmetic finite; a path sums at most w (N + M) of them, in the dtype of
-    # cost * scale.
+    # arithmetic finite; a path sums at most w (N + M) of them, in the dtype the
+    # kernels accumulate in (float32 for half and bfloat16).
     dtype = ref.dtype if ref.is_floating_point() else torch.get_default_dtype()
+    dtype = torch.promote_types(dtype, torch.float32)
     big = torch.finfo(dtype).max / (8 * max(diagonal_weight, 1.0) * (N + M))
     window = None
     if features:
         if band is not None:
             window = _band_windows(N, M, n_len, m_len, band, step_pattern == "orthogonal")
     elif gamma > 0 or not cost.is_floating_point():
-        cost = cost * scale  # in units of gamma; integers become floats
+        cost = cost.to(dtype) * scale  # in units of gamma; integers become floats
 
     no_path = torch.zeros(B, dtype=torch.bool, device=ref.device)
     sheared = step_pattern == "asymmetric"
@@ -511,6 +513,13 @@ def _dtw(
     if band is not None:
         no_path = no_path | (distance >= g.big / 2)
     return torch.where(no_path, float("inf"), distance) / g.scale, g, D, walk
+
+
+def _in_input_dtype(distance: Tensor, cost: Tensor | None, x: Tensor | None) -> Tensor:
+    """The distances, which half and bfloat16 inputs accumulate in float32, in
+    the input's dtype; integer costs' stay floats."""
+    ref = x if cost is None else cost
+    return distance.to(ref.dtype) if ref.is_floating_point() else distance
 
 
 # The linear-memory path: items of at most this many cells, or this many rows,
@@ -796,7 +805,7 @@ def dtw_path(
     )
     path = torch.full((B, N + M - 1, 2), -1, dtype=torch.long, device=distance.device)
     if g is None:
-        return distance, path
+        return _in_input_dtype(distance, cost, x), path
     with torch.no_grad():
         if cost is None:
             cells = walk
@@ -812,7 +821,7 @@ def dtw_path(
             cells = torch.stack([cells[..., 0] + cells[..., 1], cells[..., 0]], -1)
         valid = (cells[..., :1] >= 0) & distance.isfinite()[:, None, None]
         path[:, : cells.size(1)] = torch.where(valid, cells, -1)
-    return distance, path
+    return _in_input_dtype(distance, cost, x), path
 
 
 def soft_dtw_divergence(

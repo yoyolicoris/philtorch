@@ -913,3 +913,77 @@ def test_dtw_asymmetric_gradient_stays_linear_in_the_block():
     torch.cuda.reset_peak_memory_stats()
     run()
     assert torch.cuda.max_memory_allocated() - base - workspace < (M + checkpoint) * M * 4 / 4
+
+
+# Half and bfloat16 inputs accumulate in float32: the distances and gradients
+# are within a few roundings of their dtype of the float64 run on the same
+# inputs, as in test_recur.py.
+_LOW_PRECISION = [(torch.float16, 3e-3), (torch.bfloat16, 2e-2)]
+
+
+def _low_precision_inputs(features, dtype):
+    if features:
+        return {name: t.detach().to(dtype) for name, t in zip("xy", _features(3, 26, 20, 3))}
+    return dict(cost=_cost(3, 26, 20).to(dtype))
+
+
+@pytest.mark.cuda
+@pytest.mark.parametrize("dtype, tolerance", _LOW_PRECISION)
+@pytest.mark.parametrize(
+    "features, options, tile",
+    [
+        (False, dict(), None),
+        (False, dict(gamma=0.5), None),
+        (True, dict(), None),
+        (True, dict(gamma=0.5), None),
+        (True, dict(gamma=0.5, checkpoint=8), None),  # blocks of rows
+        (True, dict(gamma=0.5, checkpoint=3), (3, 16)),  # strips
+        (True, dict(band=1.0), None),  # pair 0 has no path: its distance stays inf
+    ],
+)
+def test_dtw_low_precision(monkeypatch, dtype, tolerance, features, options, tile):
+    from philtorch.align import _dtw_kernels
+
+    if tile is not None:
+        monkeypatch.setattr(_dtw_kernels, "_tile", lambda *args: tile)
+    inputs = _low_precision_inputs(features, dtype)
+    if "band" in options:
+        inputs["x"][0, 2] = inputs["x"][0, 0] = torch.inf
+    run = partial(dtw, **options)
+    actual = _derivatives(run, inputs, False)
+    expected = _derivatives(run, {k: t.double() for k, t in inputs.items()}, False)
+    assert all(a.dtype == dtype for a in actual)
+    torch.testing.assert_close(actual[0].double(), expected[0], rtol=tolerance, atol=0)
+    for grad, want in zip(actual[1:], expected[1:]):
+        atol = tolerance * want.abs().max().item()
+        torch.testing.assert_close(grad.double(), want, rtol=tolerance, atol=atol)
+
+
+@pytest.mark.cuda
+@pytest.mark.parametrize("dtype, tolerance", _LOW_PRECISION)
+@pytest.mark.parametrize("features", [False, True])
+def test_dtw_path_low_precision(dtype, tolerance, features):
+    inputs = _low_precision_inputs(features, dtype)
+    distance, path = dtw_path(**inputs)
+    expected_distance, expected_path = dtw_path(**{k: t.double() for k, t in inputs.items()})
+    assert distance.dtype == dtype
+    torch.testing.assert_close(distance.double(), expected_distance, rtol=tolerance, atol=0)
+    assert path.equal(expected_path)
+
+
+@pytest.mark.cuda
+def test_dtw_half_sums_past_its_range():
+    # Sums past float16's largest value, 65504, stay finite in float32: the path
+    # is kept, and the second derivatives pick the predecessors the distance
+    # did, with the diagonal's cost doubled.
+    cost = torch.tensor([[[40000.0, 1e4], [1e4, 40000.0]]], device="cuda")
+    distance, path = dtw_path(cost.half())
+    assert distance.isinf().all() and path.equal(dtw_path(cost)[1])
+    cost = torch.tensor([[[-40000.0, 49984.0], [49984.0, 40000.0]]], device="cuda").half()
+    grad_out = torch.ones(1, device="cuda", dtype=cost.dtype, requires_grad=True)
+    grad = torch.autograd.grad(
+        dtw(cost.requires_grad_(), diagonal_weight=2.0), cost, grad_out, create_graph=True
+    )[0]
+    weights = torch.arange(1.0, 5.0, device="cuda").reshape(1, 2, 2)
+    # The diagonal path: gradients 1 and 2 at (0, 0) and (1, 1).
+    assert torch.autograd.grad((grad * weights).sum(), grad_out)[0].item() == 1 + 2 * 4

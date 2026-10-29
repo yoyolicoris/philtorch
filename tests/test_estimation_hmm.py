@@ -170,6 +170,53 @@ def test_hmm_gradients_match_sequential(trans, N, K):
 
 
 @pytest.mark.cuda
+@pytest.mark.parametrize(
+    "dtype, tolerance",
+    # float32's own rounding reaches about 1e-4 here, TF32's about 3e-3.
+    [(torch.float32, 1e-3), (torch.float16, 3e-3), (torch.bfloat16, 2e-2)],
+)
+@pytest.mark.parametrize(
+    ("N", "K", "trans"),
+    [(130, 3, "time"), (130, 32, "shared"), (130, 33, "time")],
+)
+def test_hmm_low_precision_matches_float64(dtype, tolerance, N, K, trans):
+    """Float32, half and bfloat16 inputs accumulate in float32: outputs,
+    gradients and paths match a float64 run on the same inputs, to the
+    output's roundings.
+
+    K = 32 tiles the log chains and runs the linear chains' totals in
+    registers, which Triton would compute in TF32; K = 33 tiles the linear
+    chains. 130 steps are three chunks.
+    """
+    log_emit, log_trans, log_init = _model(2, N, K)
+    log_trans = _transitions(log_trans, trans)
+    low = tuple(t.to(dtype).requires_grad_() for t in (log_emit, log_trans, log_init))
+    high = tuple(t.detach().double().requires_grad_() for t in low)
+    gen = torch.Generator().manual_seed(2)
+    weights = [
+        torch.randn(log_emit.shape, generator=gen).to(log_emit.device, dtype) for _ in range(2)
+    ]
+
+    def run(inputs):
+        ll, filtered = hmm_filter(*inputs)
+        _, posteriors = hmm_smoother(*inputs)
+        score, path = hmm_viterbi(*inputs)
+        loss = sum(w.to(ll.dtype) * x for w, x in zip(weights, (filtered, posteriors)))
+        outputs = (ll, filtered, posteriors, score)
+        grads = torch.autograd.grad(loss.sum() + ll.sum() + score.sum(), inputs)
+        return outputs, grads, path
+
+    outputs, grads, path = run(low)
+    expected_outputs, expected_grads, expected_path = run(high)
+    assert torch.equal(path, expected_path)
+    if trans == "shared":  # hmm_em_step takes no (N - 1, K, K) transitions
+        assert hmm_em_step(*low)[0].dtype == dtype
+    for actual, expected in (*zip(outputs, expected_outputs), *zip(grads, expected_grads)):
+        assert actual.dtype == dtype
+        assert (actual.double() - expected).abs().max() / expected.abs().max() < tolerance
+
+
+@pytest.mark.cuda
 @pytest.mark.parametrize("trans", ["shared", "time"])
 def test_hmm_second_order_matches_sequential(trans):
     """A Hessian-vector product against the sequential recursions, with K = 33

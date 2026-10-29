@@ -118,6 +118,11 @@ strip's first cell. The costs and their gradients are the blocks of the
 tile columns, each a grid of its own (:func:`_strip_gradients`), and second
 derivatives are those of :func:`shares`, :func:`_strip_cost` and
 :func:`accumulate` (with ``strip``) in the same skew.
+
+Half and bfloat16 inputs accumulate in float32, as in
+:mod:`philtorch._recur_kernels`: the kernels convert the costs and frames as
+they load them, and the buffers they keep (D, the cost scratch, the
+frontier's rows, the gradients) are float32 (see :func:`_acc`).
 """
 
 
@@ -382,7 +387,7 @@ def _cost_kernel(
             s = r if TRANSPOSE else cols
             n = tl.maximum(tl.minimum(a + s if SHEAR else a, N - 1), 0)
             m = tl.maximum(tl.minimum(a if SHEAR else s, M - 1), 0)
-            dtype = fx_ptr.dtype.element_ty
+            dtype = scr_ptr.dtype.element_ty
             c = tl.zeros([_KERNEL_BR, _KERNEL_BC], dtype)
             work = valid
             if win_ptr is not None:
@@ -394,7 +399,7 @@ def _cost_kernel(
                 f_y = fy_ptr + b * M * F + m[:, :, None].to(tl.int64) * F
                 for f0 in range(0, F, BF):
                     f = (f0 + tl.arange(0, BF))[None, None, :]
-                    diff = tl.load(f_x + f, mask=f < F, other=0.0)
+                    diff = tl.load(f_x + f, mask=f < F, other=0.0).to(dtype)
                     diff -= tl.load(f_y + f, mask=f < F, other=0.0)
                     c += tl.sum(diff * diff, axis=2)
             c *= _unbits(scale_bits, dtype)
@@ -674,7 +679,7 @@ def _dag_kernel(
             if FEAT:
                 c = _tile_cost(tile, k, lanes, mask, TL, HALO)
             else:
-                c = tl.load(cost_ptr + row, mask=mask, other=0.0)
+                c = tl.load(cost_ptr + row, mask=mask, other=0.0).to(y_ptr.dtype.element_ty)
         else:
             base = tl.load(x_ptr + row, mask=mask, other=0.0)
         if STEPS != _CTC:
@@ -1194,7 +1199,7 @@ def _diagonals(
     P = S * min(n_rows, n_cols)  # the most tiles of an anti-diagonal
     tile = (TR + halo) * (TL + halo)
     K = max(1, min(stop - first, _CHUNK, _SCRATCH_CELLS // (P * tile)))
-    scratch = fx.new_empty(K * P * tile)
+    scratch = fx.new_empty(K * P * tile, dtype=_acc(fx))
     hit = None if win is None else torch.empty(K * P, dtype=torch.int8, device=fx.device)
     blocks = triton.cdiv(TR + halo, _BR) * triton.cdiv(TL + halo, _BC)
     for d0 in range(first, stop, K):
@@ -1262,8 +1267,8 @@ def _wavefront(feat, items, soft, steps, diag_weight, reverse, h_max, w_max, bac
     n_cols = triton.cdiv(w_max, TL)
     W = n_cols * TL
     x = feat[0]
-    rows = x.new_empty(S, 3, W)
-    cols = x.new_empty(S, h_max)
+    rows = x.new_empty(S, 3, W, dtype=_acc(x))
+    cols = x.new_empty(S, h_max, dtype=_acc(x))
     codes = None
     if back:
         codes = torch.zeros(S, triton.cdiv(h_max, 16), W, dtype=torch.int32, device=x.device)
@@ -1337,7 +1342,12 @@ def _(
     x, y, window, big, scale, items, soft, steps, diag_weight, shear, transpose, reverse, h_max,
     w_max,
 ):  # fmt: skip
-    return x.new_empty(items.size(0), w_max)
+    return x.new_empty(items.size(0), w_max, dtype=_acc(x))
+
+
+def _acc(t: Tensor) -> torch.dtype:
+    """The dtype ``t``'s values accumulate in: float32 for half and bfloat16."""
+    return torch.promote_types(t.dtype, torch.float32)
 
 
 def _empty(t: Tensor, *_, **__) -> Tensor:
@@ -1458,6 +1468,7 @@ def shares(
     shares of the seed's rows, and of cells off the grid, are zero.
     """
     present = (steps != "ctc", True, steps != "orthogonal", steps == "ctc")
+    cost = cost.to(D.dtype)  # half and bfloat16 costs: D is float32
     skew = None
     if strip is not None:
         R, d0 = strip
@@ -1501,7 +1512,9 @@ def dtw_dp(cost: Tensor, skip: Tensor | None, soft: bool, steps: str, diag_weigh
     return _forward(cost, skip, soft, steps, diag_weight)
 
 
-dtw_dp.register_fake(_empty)
+@dtw_dp.register_fake
+def _(cost, skip, soft, steps, diag_weight):
+    return cost.new_empty(cost.shape, dtype=_acc(cost))
 
 
 def _check_cells(B: int, R: int, L: int) -> None:
@@ -1513,7 +1526,8 @@ def _check_cells(B: int, R: int, L: int) -> None:
 def _forward(cost, skip, soft, steps, diag_weight, feat=None, grid=None, seed=None, row0=0):
     B, R, L = cost.shape if grid is None else grid
     _check_cells(B, R, L)
-    D = (cost if feat is None else feat[0]).new_empty(B, R, L)
+    ref = cost if feat is None else feat[0]
+    D = ref.new_empty(B, R, L, dtype=_acc(ref))
     _launch(
         D, steps, False, cost=None if cost is None else cost.contiguous(), skip=skip,
         x=None if seed is None else seed.contiguous(), diag_weight=diag_weight, soft=soft,
@@ -1543,7 +1557,7 @@ def ctc_viterbi(cost: Tensor, skip: Tensor) -> tuple[Tensor, Tensor]:
 
 @ctc_viterbi.register_fake
 def _(cost, skip):
-    return _empty(cost), torch.empty_like(
+    return cost.new_empty(cost.shape, dtype=_acc(cost)), torch.empty_like(
         cost, dtype=torch.int8, memory_format=torch.contiguous_format
     )
 
@@ -1632,7 +1646,7 @@ def _cell_costs(x, y, window, big, scale, shear, transpose, p, r, col, valid=Non
     a, s = (col, r) if transpose else (r, col)
     n = (a + s if shear else a).clamp(max=x.size(1) - 1)
     m = (a if shear else s).clamp(max=y.size(1) - 1)
-    d = x[p, n] - y[p, m]
+    d = x[p, n].to(_acc(x)) - y[p, m]
     if valid is not None:
         d = torch.where(valid[..., None], d, 0.0)
     c = (d * d).sum(-1) * scale
@@ -1663,7 +1677,7 @@ def dtw_dp_features(
 def _(
     x, y, window, big, scale, soft, steps, diag_weight, shear, transpose, R, L, seed=None, row0=0
 ):
-    return x.new_empty(x.size(0), R, L)
+    return x.new_empty(x.size(0), R, L, dtype=_acc(x))
 
 
 def _dtw_dp_features_setup(ctx, inputs, output):
@@ -1736,6 +1750,7 @@ def _cost_gradients(x, y, window, scale, shear, transpose, row0, E):
     # E, the cost's gradient on the grid, back to the (n, m) cells it covers:
     # rows n0 to n1 of x, rows m0 on of y.
     N, M = x.size(1), y.size(1)
+    x, y = x.to(E.dtype), y.to(E.dtype)
     if transpose:
         E = E.mT
     B, A, S = E.shape
@@ -1799,6 +1814,7 @@ def grid_cost(
         return t.unfold(1, L, 1)[:, rows]
 
     at_m = a if shear else s
+    x = x.to(_acc(x))
     cost = x.new_zeros(B, R, L)
     for f in range(x.size(2)):
         d = at_n(x[..., f]) - at_m(y[..., f])
@@ -1813,7 +1829,7 @@ def grid_cost(
 
 @grid_cost.register_fake
 def _(x, y, window, big, scale, shear, transpose, R, L, row0):
-    return x.new_empty(x.size(0), R, L)
+    return x.new_empty(x.size(0), R, L, dtype=_acc(x))
 
 
 def _grid_cost_setup(ctx, inputs, output):
@@ -1915,7 +1931,7 @@ def dtw_dp_strip(
     _check_cells(B, RB, L)
     # The next seed gathers cells that no tile writes: zeros keep the outputs
     # deterministic, for opcheck.
-    D = x.new_zeros(B, RB, L)
+    D = x.new_zeros(B, RB, L, dtype=_acc(x))
     if seed is not None:
         D.view(B, RB * L).scatter_(1, _seed_cells(L, TR, TL, x.device).expand(B, -1), seed)
     feat = (x, y, window, big, scale, shear, transpose)
@@ -1928,7 +1944,7 @@ def dtw_dp_strip(
 @dtw_dp_strip.register_fake
 def _(x, y, window, big, scale, soft, steps, diag_weight, shear, transpose, R, L, seed, step, d0):
     TR, _, n_diag = strip_tile(x.size(0), R, L)
-    return x.new_empty(x.size(0), TR + 1 + min(step, n_diag - d0) * TR, L)
+    return x.new_empty(x.size(0), TR + 1 + min(step, n_diag - d0) * TR, L, dtype=_acc(x))
 
 
 def _dtw_dp_strip_backward(ctx, grad_D):

@@ -99,7 +99,8 @@ def test_recurrence_ignores_memory_past_the_states(dtype):
     ],
 )
 @pytest.mark.parametrize("sharing", SHARING)
-@pytest.mark.parametrize("M", [1, 2, 3, 6])
+# 12 states take the products of 16 x 16 blocks as dots (a complex one as four).
+@pytest.mark.parametrize("M", [1, 2, 3, 6, 12])
 def test_recurrence_low_precision(dtype, tolerance, sharing, M):
     A, zi, x = _problem(4, 300, M, sharing, dtype, "cuda")
     expected = _sequential(*(t.to(torch.complex128 if dtype.is_complex else torch.float64)
@@ -108,6 +109,18 @@ def test_recurrence_low_precision(dtype, tolerance, sharing, M):
     assert actual.dtype == dtype
     error = (actual.to(expected.dtype) - expected).abs().max() / expected.abs().max()
     assert error < tolerance
+
+
+@pytest.mark.cuda
+@pytest.mark.parametrize("sharing", SHARING)
+def test_recurrence_float32_chunk_maps(sharing):
+    # Near rotations, whose chunk maps keep their size: at 16 states, Triton
+    # would compute the maps' products in TF32, of 10-bit mantissas.
+    A, zi, x = _problem(4, 300, 16, sharing, device="cuda")
+    A = torch.linalg.qr(A)[0] * 0.999
+    expected = _sequential(A, zi, x)
+    actual = recurrence(*(t.float() for t in (A, zi, x)))
+    assert (actual.double() - expected).abs().max() / expected.abs().max() < 1e-5
 
 
 @pytest.mark.parametrize("device", DEVICES)
