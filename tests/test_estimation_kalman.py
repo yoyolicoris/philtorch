@@ -1,4 +1,5 @@
 import math
+from fractions import Fraction
 from functools import partial
 
 import pytest
@@ -454,6 +455,56 @@ def test_kalman_em_step_covariances_survive_large_means(per_signal):
     _, (_, _, Q, R, _, P0) = kalman_em_step(y, one, one, one, one, m0, one)
     actual = torch.cat([t.reshape(1) for t in (Q, R, P0)])
     torch.testing.assert_close(actual, actual.new_tensor([0.6, 0.5, 0.4]), rtol=0, atol=1e-6)
+
+
+@pytest.mark.parametrize("per_signal", [False, True])
+def test_kalman_em_step_regressions_survive_large_means(per_signal):
+    # States offset by 1e8 condition the normal equations of A and C about
+    # 1e16 at M = 2; A and C match those equations solved exactly, in
+    # rationals, from the same smoother outputs.
+    B, N, M = 4, 200, 2
+    dtype = torch.float64
+    gen = torch.Generator().manual_seed(0)
+    true_A = torch.tensor([[0.9, 0.2], [-0.2, 0.9]], dtype=dtype)
+    x, ys = torch.zeros(B, M, dtype=dtype), []
+    for _ in range(N):
+        x = x @ true_A.mT + 0.3 * torch.randn(B, M, generator=gen, dtype=dtype)
+        ys.append(x + 0.5 * torch.randn(B, M, generator=gen, dtype=dtype))
+    y = torch.stack(ys, 1) + 1e8
+    eye = torch.eye(M, dtype=dtype)
+    A, C, Q, R, m0, P0 = eye, eye, 0.1 * eye, 0.25 * eye, torch.full((M,), 1e8, dtype=dtype), eye
+    if per_signal:
+        A, C, Q, R = (t.expand(B, M, M) for t in (A, C, Q, R))
+    _, (A_new, C_new, *_) = kalman_em_step(y, A, C, Q, R, m0, P0)
+    if per_signal:
+        A, Q = (t[:, None].expand(-1, N - 1, -1, -1) for t in (A, Q))
+        C, R = (t[:, None].expand(-1, N, -1, -1) for t in (C, R))
+    m, V, V10, _ = kalman_smoother(y, A, C, Q, R, m0, P0)
+
+    def exact(cov, u, v):
+        """W (sum cov_uu + u u^T) = sum cov_vu + v u^T, over the signals' steps."""
+        moment = [[Fraction(0)] * M for _ in range(M)]
+        cross = [[Fraction(0)] * M for _ in range(M)]
+        for c, a, b in zip(cov.reshape(-1, 2 * M, 2 * M).tolist(), u.reshape(-1, M).tolist(),
+                           v.reshape(-1, M).tolist()):  # fmt: skip
+            for r in range(M):
+                for q in range(M):
+                    moment[r][q] += Fraction(c[r][q]) + Fraction(a[r]) * Fraction(a[q])
+                    cross[r][q] += Fraction(c[M + r][q]) + Fraction(b[r]) * Fraction(a[q])
+        (p, q), (r, s) = moment
+        inverse = [[s, -q], [-r, p]]
+        det = p * s - q * r
+        return [[float(sum(cross[i][k] * inverse[k][j] for k in range(M)) / det)
+                 for j in range(M)] for i in range(M)]  # fmt: skip
+
+    joint_A = torch.cat([torch.cat([V[:, :-1], V10.mT], -1), torch.cat([V10, V[:, 1:]], -1)], -2)
+    joint_C = torch.nn.functional.pad(V, (0, M, 0, M))
+    groups = range(B) if per_signal else [slice(None)]
+    expected_A = [exact(joint_A[g], m[g, :-1], m[g, 1:]) for g in groups]
+    expected_C = [exact(joint_C[g], m[g], y[g]) for g in groups]
+    shape = (B, M, M) if per_signal else (M, M)
+    torch.testing.assert_close(A_new, torch.tensor(expected_A, dtype=dtype).reshape(shape))
+    torch.testing.assert_close(C_new, torch.tensor(expected_C, dtype=dtype).reshape(shape))
 
 
 def test_kalman_known_initial_state_with_singular_noise():

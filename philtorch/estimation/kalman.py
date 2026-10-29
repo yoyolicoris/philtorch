@@ -12,6 +12,7 @@ import re
 from typing import NamedTuple
 
 import torch
+import torch.nn.functional as F
 from torch import Tensor
 
 try:
@@ -598,14 +599,30 @@ def kalman_em_step(
     def outer(u: Tensor, v: Tensor) -> Tensor:
         return u.unsqueeze(-1) @ v.unsqueeze(-2).conj()
 
+    def regress(joint: Tensor, u: Tensor, v: Tensor, per_signal: bool) -> Tensor:
+        """W solving W (avg(V_uu) + avg(u u^H)) = avg(V_vu) + avg(v u^H), joint
+        being the covariance of (u, v), as least squares on square roots:
+        normal equations would square the condition number, which large means
+        make about |m|^2 / lambda_min(V)."""
+        w, U = torch.linalg.eigh(avg(joint, per_signal))
+        root = w.clamp(min=0).sqrt().unsqueeze(-1) * U.mH  # root^H root = joint
+        if not per_signal:
+            u, v = u.flatten(0, 1), v.flatten(0, 1)
+        scale = u.size(-2) ** -0.5
+        K = u.size(-1)
+        lhs = torch.cat([root[..., :K], u.conj() * scale], -2)
+        rhs = torch.cat([root[..., K:], v.conj() * scale], -2)
+        return torch.linalg.lstsq(lhs, rhs).solution.mH
+
+    V0, V1 = V[:, :-1], V[:, 1:]
+    A = regress(torch.cat([torch.cat([V0, V10.mH], -1), torch.cat([V10, V1], -1)], -2),
+                m[:, :-1], m[:, 1:], per_A)  # fmt: skip
+    joint = F.pad(V, (0, y.size(-1), 0, y.size(-1)))  # y has no covariance
+    C = regress(joint, m, y, per_C)
     # Covariances from the residuals: differences of second moments round away.
-    Exx = V + outer(m, m)
-    E10 = avg(V10 + outer(m[:, 1:], m[:, :-1]), per_A)
-    A = torch.linalg.solve(avg(Exx[:, :-1], per_A), E10.mH).mH
-    C = torch.linalg.solve(avg(Exx, per_C), avg(outer(y, m), per_C).mH).mH
     a, c = (A[:, None] if per_A else A), (C[:, None] if per_C else C)
     r, e = m[:, 1:] - _mv(a, m[:, :-1]), y - _mv(c, m)
-    Q = avg(outer(r, r) + V[:, 1:] - a @ V10.mH - V10 @ a.mH + a @ V[:, :-1] @ a.mH, per_A)
+    Q = avg(outer(r, r) + V1 - a @ V10.mH - V10 @ a.mH + a @ V0 @ a.mH, per_A)
     R = avg(outer(e, e) + c @ V @ c.mH, per_C)
     m0 = m[:, 0] if per_m0 else m[:, 0].mean(0)
     P0 = V[:, 0] if per_m0 else (V[:, 0] + outer(m[:, 0] - m0, m[:, 0] - m0)).mean(0)
