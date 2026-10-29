@@ -186,7 +186,8 @@ def _run_chain(
 
     B, T, K = log_emit.shape
     # Half and bfloat16 inputs accumulate in float32: their messages are float32.
-    out = y0.new_empty(B, T + 1, K, dtype=torch.promote_types(log_emit.dtype, torch.float32))
+    y0 = y0.to(torch.promote_types(log_emit.dtype, torch.float32))
+    out = y0.new_empty(B, T + 1, K)
     start, _, _, steps = _positions(adjoint)
     out[:, start] = y0
     if log_trans.dim() == 5:

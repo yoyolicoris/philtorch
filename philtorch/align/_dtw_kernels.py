@@ -400,7 +400,7 @@ def _cost_kernel(
                 for f0 in range(0, F, BF):
                     f = (f0 + tl.arange(0, BF))[None, None, :]
                     diff = tl.load(f_x + f, mask=f < F, other=0.0).to(dtype)
-                    diff -= tl.load(f_y + f, mask=f < F, other=0.0).to(dtype)
+                    diff -= tl.load(f_y + f, mask=f < F, other=0.0)
                     c += tl.sum(diff * diff, axis=2)
             c *= _unbits(scale_bits, dtype)
             if win_ptr is not None:
@@ -443,7 +443,6 @@ def _shares(
     module docstring), the cell (r, c) at row ``sbase`` + r + TR times its tile
     column: the cells of the seed's rows, as of other strips, have no shares.
     """
-    c = c.to(D_ptr.dtype.element_ty)
     valid = (cols >= 0) & (cols < L) & (r >= 0) & (r < R)
     edge = 0  # the step across a tile's left edge, in the skewed buffer, is TR rows more
     if STRIP:
@@ -1647,7 +1646,7 @@ def _cell_costs(x, y, window, big, scale, shear, transpose, p, r, col, valid=Non
     a, s = (col, r) if transpose else (r, col)
     n = (a + s if shear else a).clamp(max=x.size(1) - 1)
     m = (a if shear else s).clamp(max=y.size(1) - 1)
-    d = x[p, n].to(_acc(x)) - y[p, m].to(_acc(y))
+    d = x[p, n].to(_acc(x)) - y[p, m]
     if valid is not None:
         d = torch.where(valid[..., None], d, 0.0)
     c = (d * d).sum(-1) * scale
@@ -1815,7 +1814,7 @@ def grid_cost(
         return t.unfold(1, L, 1)[:, rows]
 
     at_m = a if shear else s
-    x, y = x.to(_acc(x)), y.to(_acc(y))
+    x = x.to(_acc(x))
     cost = x.new_zeros(B, R, L)
     for f in range(x.size(2)):
         d = at_n(x[..., f]) - at_m(y[..., f])

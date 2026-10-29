@@ -280,14 +280,13 @@ def _grid(log_probs, states, skip, frames, labels, viterbi):
     sequence's final blank and in its last label, rows 2S + 1 and 2S, (2, B):
     of all paths, or with ``viterbi`` the best one."""
     # Imported here so that philtorch.align imports without Triton.
-    from ._dtw_kernels import ctc_viterbi, dtw_dp
+    from ._dtw_kernels import _acc, ctc_viterbi, dtw_dp
 
     # (N, 2S + 1, T), in bits, as the kernels' soft-min is in base 2: one
     # multiply both negates and converts.
     states = states[:, None].expand(-1, log_probs.size(1), -1)
     # Half and bfloat16 log-probabilities accumulate in float32.
-    acc = torch.promote_types(log_probs.dtype, torch.float32)
-    cost = log_probs.gather(2, states).mT.to(acc) * (-1 / math.log(2))
+    cost = log_probs.gather(2, states).mT.to(_acc(log_probs)) * (-1 / math.log(2))
     # A virtual first state and frame, at no cost where they meet, from which
     # both the first blank and the first label begin.
     cost = F.pad(cost, (1, 0, 1, 0), value=float("inf"))

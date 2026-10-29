@@ -115,18 +115,18 @@ def _step_matrix(
     i, j = (cols, rows) if ADJOINT else (rows, cols)
     offsets = trans + n * stride_tn + i * K + j
     if SEMIRING == _LINEAR and p is None:
-        return tl.load(offsets, mask=mask, other=0.0).to(ACC)
+        return tl.load(offsets, mask=mask, other=0.0)
     m = tl.load(offsets, mask=mask, other=float("-inf")).to(ACC)
     # The emissions of the states i leaves. On an adjoint chain's columns they
     # join q; on rows they take the tile's shape, as a broadcast row vector
     # would cost a layout conversion.
     if emit is not None and not ADJOINT:
-        m += tl.load(emit + n * K + i + 0 * j, mask=mask, other=0.0).to(ACC)
+        m += tl.load(emit + n * K + i + 0 * j, mask=mask, other=0.0)
     if p is not None:
         p_rows = tl.load(p + n * K + rows, mask=rows < K, other=float("-inf"))
         q_cols = tl.load(q + n * K + cols, mask=cols < K, other=float("-inf"))
         if emit is not None and ADJOINT:
-            q_cols += tl.load(emit + n * K + cols, mask=cols < K, other=0.0).to(ACC)
+            q_cols += tl.load(emit + n * K + cols, mask=cols < K, other=0.0)
         m = tl.exp(m + p_rows + q_cols)
     return m
 
@@ -349,8 +349,6 @@ def chain(
     halves = trans.dim() == 5
     B = trans.shape[0] * trans.shape[1] if halves else trans.shape[0]
     N, K = trans.shape[-3], trans.shape[-1]
-    # Half and bfloat16 inputs accumulate in float32, and ``out`` must be in that dtype.
-    y0 = y0.to(torch.promote_types(trans.dtype, torch.float32))
     if out is None:
         out = y0.new_empty(B, N, K)
     if B == 0 or N == 0 or K == 0:
