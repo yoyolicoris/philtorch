@@ -598,14 +598,29 @@ def kalman_em_step(
     def outer(u: Tensor, v: Tensor) -> Tensor:
         return u.unsqueeze(-1) @ v.unsqueeze(-2).conj()
 
+    def regress(u: Tensor, v: Tensor, V_uu: Tensor, V_vu: Tensor | None, per_signal: bool):
+        """W solving W avg(V_uu + u u^H) = avg(V_vu + v u^H). Large means would
+        swamp V_uu in those moments, so they are taken about the means mu_u and
+        mu_v, and with z = W mu_u - mu_v, [W, z] [[S_uu, mu_u], [mu_u^H, -1]] =
+        [S_vu, mu_v] is solved instead."""
+        dims = 1 if per_signal else (0, 1)
+        mu_u, mu_v = u.mean(dims, keepdim=True), v.mean(dims, keepdim=True)
+        du, dv = u - mu_u, v - mu_v
+        S_uu = avg(V_uu + outer(du, du), per_signal)
+        S_vu = avg(outer(dv, du) if V_vu is None else V_vu + outer(dv, du), per_signal)
+        mu_u, mu_v = avg(mu_u, per_signal), avg(mu_v, per_signal)
+        border = torch.cat([mu_u.conj(), -torch.ones_like(mu_u[..., :1])], -1)
+        lhs = torch.cat([torch.cat([S_uu, mu_u.unsqueeze(-1)], -1), border.unsqueeze(-2)], -2)
+        rhs = torch.cat([S_vu, mu_v.unsqueeze(-1)], -1)
+        return torch.linalg.solve(lhs, rhs, left=False)[..., :-1]
+
+    V0, V1 = V[:, :-1], V[:, 1:]
+    A = regress(m[:, :-1], m[:, 1:], V0, V10, per_A)
+    C = regress(m, y, V, None, per_C)  # y has no covariance
     # Covariances from the residuals: differences of second moments round away.
-    Exx = V + outer(m, m)
-    E10 = avg(V10 + outer(m[:, 1:], m[:, :-1]), per_A)
-    A = torch.linalg.solve(avg(Exx[:, :-1], per_A), E10.mH).mH
-    C = torch.linalg.solve(avg(Exx, per_C), avg(outer(y, m), per_C).mH).mH
     a, c = (A[:, None] if per_A else A), (C[:, None] if per_C else C)
     r, e = m[:, 1:] - _mv(a, m[:, :-1]), y - _mv(c, m)
-    Q = avg(outer(r, r) + V[:, 1:] - a @ V10.mH - V10 @ a.mH + a @ V[:, :-1] @ a.mH, per_A)
+    Q = avg(outer(r, r) + V1 - a @ V10.mH - V10 @ a.mH + a @ V0 @ a.mH, per_A)
     R = avg(outer(e, e) + c @ V @ c.mH, per_C)
     m0 = m[:, 0] if per_m0 else m[:, 0].mean(0)
     P0 = V[:, 0] if per_m0 else (V[:, 0] + outer(m[:, 0] - m0, m[:, 0] - m0)).mean(0)
