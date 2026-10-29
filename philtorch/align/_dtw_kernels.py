@@ -1469,6 +1469,7 @@ def shares(
     shares of the seed's rows, and of cells off the grid, are zero.
     """
     present = (steps != "ctc", True, steps != "orthogonal", steps == "ctc")
+    cost = cost.to(D.dtype)  # half and bfloat16 costs: D is float32
     skew = None
     if strip is not None:
         R, d0 = strip

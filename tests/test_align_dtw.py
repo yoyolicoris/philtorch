@@ -969,3 +969,21 @@ def test_dtw_path_low_precision(dtype, tolerance, features):
     assert distance.dtype == dtype
     torch.testing.assert_close(distance.double(), expected_distance, rtol=tolerance, atol=0)
     assert path.equal(expected_path)
+
+
+@pytest.mark.cuda
+def test_dtw_half_sums_past_its_range():
+    # Sums past float16's largest value, 65504, stay finite in float32: the path
+    # is kept, and the second derivatives pick the predecessors the distance
+    # did, with the diagonal's cost doubled.
+    cost = torch.tensor([[[40000.0, 1e4], [1e4, 40000.0]]], device="cuda")
+    distance, path = dtw_path(cost.half())
+    assert distance.isinf().all() and path.equal(dtw_path(cost)[1])
+    cost = torch.tensor([[[-40000.0, 49984.0], [49984.0, 40000.0]]], device="cuda").half()
+    grad_out = torch.ones(1, device="cuda", dtype=cost.dtype, requires_grad=True)
+    grad = torch.autograd.grad(
+        dtw(cost.requires_grad_(), diagonal_weight=2.0), cost, grad_out, create_graph=True
+    )[0]
+    weights = torch.arange(1.0, 5.0, device="cuda").reshape(1, 2, 2)
+    # The diagonal path: gradients 1 and 2 at (0, 0) and (1, 1).
+    assert torch.autograd.grad((grad * weights).sum(), grad_out)[0].item() == 1 + 2 * 4

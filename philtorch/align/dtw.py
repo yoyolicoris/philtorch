@@ -253,7 +253,8 @@ def dtw(
     if checkpoint is not None and (type(checkpoint) is not int or checkpoint < 1 or x is None):
         raise ValueError(f"checkpoint must be a positive integer, with x and y, got {checkpoint!r}")
     _validate("dtw", cost, x, y, step_pattern, diagonal_weight, lengths, band)
-    return _dtw(cost, x, y, gamma, step_pattern, diagonal_weight, lengths, band, checkpoint)[0]
+    distance = _dtw(cost, x, y, gamma, step_pattern, diagonal_weight, lengths, band, checkpoint)[0]
+    return _in_input_dtype(distance, cost, x)
 
 
 def _validate(
@@ -511,9 +512,14 @@ def _dtw(
     no_path = g.no_path
     if band is not None:
         no_path = no_path | (distance >= g.big / 2)
-    distance = torch.where(no_path, float("inf"), distance) / g.scale
-    ref = x if features else cost
-    return (distance.to(ref.dtype) if ref.is_floating_point() else distance), g, D, walk
+    return torch.where(no_path, float("inf"), distance) / g.scale, g, D, walk
+
+
+def _in_input_dtype(distance: Tensor, cost: Tensor | None, x: Tensor | None) -> Tensor:
+    """The distances, which half and bfloat16 inputs accumulate in float32, in
+    the input's dtype; integer costs' stay floats."""
+    ref = x if cost is None else cost
+    return distance.to(ref.dtype) if ref.is_floating_point() else distance
 
 
 # The linear-memory path: items of at most this many cells, or this many rows,
@@ -799,7 +805,7 @@ def dtw_path(
     )
     path = torch.full((B, N + M - 1, 2), -1, dtype=torch.long, device=distance.device)
     if g is None:
-        return distance, path
+        return _in_input_dtype(distance, cost, x), path
     with torch.no_grad():
         if cost is None:
             cells = walk
@@ -815,7 +821,7 @@ def dtw_path(
             cells = torch.stack([cells[..., 0] + cells[..., 1], cells[..., 0]], -1)
         valid = (cells[..., :1] >= 0) & distance.isfinite()[:, None, None]
         path[:, : cells.size(1)] = torch.where(valid, cells, -1)
-    return distance, path
+    return _in_input_dtype(distance, cost, x), path
 
 
 def soft_dtw_divergence(
