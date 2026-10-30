@@ -1,9 +1,9 @@
 # third_party
 
-Third-party CUDA kernels compiled into `philtorch._C`. They used to be git
-submodules. Since neither upstream takes changes any more, the files PhilTorch
-compiles are now kept here, and PhilTorch maintains them. Each keeps its
-upstream license, which `LICENSES/` mirrors so that wheels carry it too.
+Third-party CUDA kernels compiled into `philtorch._C`. They used to be a git
+submodule. Since upstream no longer takes changes, the files PhilTorch compiles
+are now kept here, and PhilTorch maintains them. They keep their upstream
+license, which `LICENSES/` mirrors so that wheels carry it too.
 
 ## torchlpc
 

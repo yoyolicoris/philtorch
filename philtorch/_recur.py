@@ -18,13 +18,13 @@ The forward pass runs the first kernel of ``_KERNELS`` that takes the input:
 
 * CPU: the C++ kernels, ``lti_recur`` (M = 1) and ``lti_recurN`` for
   time-invariant A, ``recurN`` otherwise;
-* CUDA: CUB scans for M <= 3 (``lti_recur``, ``lti_recur2``, ``scan``, and
-  ``recur2`` for real time-varying M = 2; for M = 3, ``recur3`` when
-  time-varying in float32, float16, bfloat16 and complex64, and
-  ``lti_recur3`` when time-invariant in float32), as long as B * (T + 1)
-  fits in an int; and the Triton kernels of :mod:`philtorch._recur_kernels`
-  for the rest, M = 3 in float64 and inputs past that size included, which
-  they beat;
+* CUDA: CUB scans for M <= 3: ``lti_recur`` and ``scan`` for M = 1;
+  ``lti_recur2``, and ``recur2`` for real time-varying A, for M = 2; for
+  M = 3, ``recur3`` when time-varying in float32, float16, bfloat16 and
+  complex64, and ``lti_recur3`` when time-invariant in float32. Those of
+  M = 2 and 3 apply only while B * (T + 1) fits in an int. The Triton
+  kernels of :mod:`philtorch._recur_kernels` take the rest, where they are
+  faster, and the inputs past that size;
 * MPS: the Metal ``lti_recur`` for time-invariant M = 1 in float32.
 
 Every kernel but ``scan``, ``recur3``, ``lti_recur3`` and the Metal
@@ -116,7 +116,7 @@ def _lti_recur2_applies(A: Tensor, x: Tensor) -> bool:
 
 
 def _lti_recur2(A: Tensor, zi: Tensor, x: Tensor) -> Tensor:
-    return torch.ops.philtorch.lti_recur2(to_lti(A).contiguous(), zi, x.contiguous())
+    return torch.ops.philtorch.lti_recur2(to_lti(A), zi, x)
 
 
 # The dtypes ``scan`` takes, the vendored torchlpc's.
@@ -147,7 +147,7 @@ def _recur2_applies(A: Tensor, x: Tensor) -> bool:
 
 
 def _recur2(A: Tensor, zi: Tensor, x: Tensor) -> Tensor:
-    return torch.ops.philtorch.recur2(to_lpv(A).contiguous(), zi, x.contiguous())
+    return torch.ops.philtorch.recur2(to_lpv(A), zi, x)
 
 
 # The dtypes recur3 runs faster than the Triton kernels.

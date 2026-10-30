@@ -149,15 +149,14 @@ void check_recur_inputs(const at::Tensor &A, const at::Tensor &zi, const at::Ten
                 "A must have the same scalar type as input");
     TORCH_CHECK(A.device() == x.device() && zi.device() == x.device(),
                 "A and zi must be on the same device as input");
-    TORCH_CHECK(x.dim() == 3 && x.size(2) == M,
-                "Input x must have a last dimension of size ", M);
+    TORCH_CHECK(x.dim() == 3 && x.size(2) == M, "x must be of shape (B, T, ", M, ")");
     TORCH_CHECK(A.size(-1) == M && A.size(-2) == M,
                 "Last two dimensions of A must be of size ", M);
     TORCH_CHECK(zi.dim() == 2 && zi.size(0) == x.size(0) && zi.size(1) == M,
                 "zi must be of shape (B, ", M, ")");
 }
 
-// The recurrence of M states, A read with these strides; inputs checked.
+// The recurrence of M states, A read with these strides; the caller checks the inputs.
 // dispatch(type, f) calls f(scalar_t{}) for a scalar type of the dtypes the op
 // supports: a macro needs its name as a literal, so the caller dispatches.
 template <int M, typename Dispatch>

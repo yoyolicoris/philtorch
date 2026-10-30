@@ -122,19 +122,6 @@ def get_extensions():
             f"CUDA compilation was selected, but no .cu sources were found in {extensions_dir}."
         )
 
-    if use_cuda:
-        extra_compile_args.setdefault("nvcc", []).extend(
-            [
-                "-U__CUDA_NO_HALF_OPERATORS__",
-                "-U__CUDA_NO_HALF_CONVERSIONS__",
-                "-U__CUDA_NO_BFLOAT16_CONVERSIONS__",
-                "-D__CUDA_INCLUDE_HALF_OPERATORS__",
-                "-D__CUDA_INCLUDE_BFLOAT16_OPERATORS__",
-                "-Xcudafe",
-                "--diag_suppress=1886",
-            ]
-        )
-
     if sys.platform == "darwin":
         sources += list(glob.glob(os.path.join(extensions_dir, "*.mm")))
         extra_link_args.extend(["-framework", "Foundation", "-framework", "Metal"])
