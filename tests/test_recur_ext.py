@@ -320,11 +320,18 @@ def _cuda_scan_case(name: str):
             "lti_recur2-shared": (torch.ops.philtorch.lti_recur2, (2, 2)),
             "recur2-batched": (torch.ops.philtorch.recur2, (B, T, 2, 2)),
             "recur2-shared": (torch.ops.philtorch.recur2, (T, 2, 2)),
+            "recur3-batched": (torch.ops.philtorch.recur3, (B, T, 3, 3)),
+            "recur3-shared": (torch.ops.philtorch.recur3, (T, 3, 3)),
+            "lti_recur3-batched": (torch.ops.philtorch.lti_recur3, (B, 3, 3)),
+            "lti_recur3-shared": (torch.ops.philtorch.lti_recur3, (3, 3)),
         }[name]
         if op is torch.ops.philtorch.lti_recur:
             args = (stable(randn(*a_shape)), randn(B), randn(B, T))
         else:
-            args = (stable(randn(*a_shape)), randn(B, 2), randn(B, T, 2))
+            M = a_shape[-1]
+            args = (stable(randn(*a_shape)), randn(B, M), randn(B, T, M))
+        if op in (torch.ops.philtorch.recur3, torch.ops.philtorch.lti_recur3):
+            args = tuple(arg.float() for arg in args)  # their CUDA kernel's dtype
     return op, args, op(*args)
 
 
@@ -338,6 +345,10 @@ def _cuda_scan_case(name: str):
         "lti_recur2-shared",
         "recur2-batched",
         "recur2-shared",
+        "recur3-batched",
+        "recur3-shared",
+        "lti_recur3-batched",
+        "lti_recur3-shared",
         "lpc",
         "scan",
         "pararnn-2",
@@ -369,7 +380,7 @@ def test_cuda_scan_runs_on_the_current_stream(case: str):
         assert not stream.query(), "the call waited for the stream to finish"
     stream.synchronize()
 
-    assert torch.allclose(actual.cpu(), expected), torch.max(torch.abs(actual.cpu() - expected))
+    torch.testing.assert_close(actual.cpu(), expected)
 
 
 @pytest.mark.cuda
@@ -379,6 +390,8 @@ def test_cuda_scan_runs_on_the_current_stream(case: str):
         ("lti_recur-shared", 0),
         ("lti_recur2-batched", 0),
         ("recur2-batched", 0),
+        ("recur3-shared", 1),
+        ("lti_recur3-batched", 0),
         ("lpc", 1),
         ("scan", 1),
         ("lti_recur-shared", 1),

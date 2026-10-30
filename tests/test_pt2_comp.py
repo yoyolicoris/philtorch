@@ -26,15 +26,25 @@ def _op_inputs(op, shared, dtype):
     M = 2 if op.endswith("2") else 3
     lead = {
         "recur2": (T,) if shared else (B, T),
+        "recur3": (T,) if shared else (B, T),
         "recurN": (T,) if shared else (B, T),
         "lti_recur2": () if shared else (B,),
+        "lti_recur3": () if shared else (B,),
         "lti_recurN": () if shared else (B,),
     }[op]
     return randn(*lead, M, M, scale=0.3 / M), randn(B, M), randn(B, T, M)
 
 
 # The recurrence ops, with A shared over the batch or one per signal.
-_RECURRENCE_OPS = ["recur2", "recurN", "lti_recur2", "lti_recurN", "lti_recur"]
+_RECURRENCE_OPS = [
+    "recur2",
+    "recur3",
+    "recurN",
+    "lti_recur2",
+    "lti_recur3",
+    "lti_recurN",
+    "lti_recur",
+]
 # Each op with the layouts it takes: scan and lpc have per-signal
 # coefficients only.
 _LAYOUTS = [(op, shared) for op in _RECURRENCE_OPS for shared in (True, False)]
@@ -532,6 +542,17 @@ def test_opcheck(op, device, shared, dtype, grads):
     for i in wanted:
         inputs[i].requires_grad_()
     torch.library.opcheck(getattr(torch.ops.philtorch, op), tuple(inputs))
+
+
+@pytest.mark.cuda
+@pytest.mark.parametrize("op", ["recur3", "lti_recur3"])
+@pytest.mark.parametrize("shared", [True, False])
+@pytest.mark.parametrize("dtype", [torch.float32, torch.complex64])
+def test_opcheck_recur3_cuda(op, shared, dtype):
+    # recur3's and lti_recur3's CUDA kernel takes float32, float16, bfloat16
+    # and complex64 only.
+    inputs = tuple(t.cuda().requires_grad_() for t in _op_inputs(op, shared, dtype))
+    torch.library.opcheck(getattr(torch.ops.philtorch, op), inputs)
 
 
 @pytest.mark.parametrize("op, shared", _LAYOUTS)

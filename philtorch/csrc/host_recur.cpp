@@ -320,6 +320,8 @@ TORCH_LIBRARY_IMPL(philtorch, CPU, m)
     m.impl("lti_recur", &lti_recur_cpu);
     m.impl("lti_recurN", &lti_recurN_cpu);
     m.impl("lti_recur2", &lti_recurN_cpu);
+    m.impl("lti_recur3", &lti_recurN_cpu);
     m.impl("recurN", &recurN_cpu);
     m.impl("recur2", &recurN_cpu);
+    m.impl("recur3", &recurN_cpu);
 }

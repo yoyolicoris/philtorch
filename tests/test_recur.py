@@ -280,15 +280,19 @@ DISPATCH = [
         for case in [
             (True, 1, torch.float16, "cuda", 1, "_lti_recur"),
             (True, 2, torch.complex64, "cuda", 1, "_lti_recur2"),
-            (True, 3, torch.float32, "cuda", 1, "recur_triton"),
+            (True, 3, torch.float32, "cuda", 1, "_lti_recur3"),
+            (True, 3, torch.float16, "cuda", 1, "recur_triton"),
             (False, 1, torch.complex64, "cuda", 1, "_scan"),
             (False, 1, torch.float16, "cuda", 1, "recur_triton"),
             (False, 2, torch.float32, "cuda", 1, "_pararnn"),
+            (False, 3, torch.float32, "cuda", 1, "_recur3"),
             (False, 3, torch.float64, "cuda", 1, "_pararnn"),
             (False, 2, torch.float32, "cuda", 65536, "_recur2"),
             (False, 2, torch.float16, "cuda", 1, "_recur2"),
             (False, 2, torch.complex64, "cuda", 1, "recur_triton"),
-            (False, 3, torch.float16, "cuda", 1, "recur_triton"),
+            (False, 3, torch.float16, "cuda", 1, "_recur3"),
+            (False, 3, torch.complex64, "cuda", 1, "_recur3"),
+            (False, 3, torch.complex128, "cuda", 1, "recur_triton"),
         ]
     ),
 ]
@@ -319,14 +323,18 @@ def test_dispatch(time_invariant, M, dtype, device, B, kernel):
 
 @pytest.mark.cuda
 @pytest.mark.parametrize(
-    "M, B, T, kernel",
-    [(3, 65536, 2, "recur_triton"), (2, 1, 2**21, "_recur2"), (3, 1, 2**21, "recur_triton")],
+    "M, dtype, B, T, kernel",
+    [
+        (3, torch.float64, 65536, 2, "recur_triton"),
+        (2, torch.float32, 1, 2**21, "_recur2"),
+        (3, torch.float64, 1, 2**20, "recur_triton"),
+    ],
     ids=["batch-3x3", "length-2x2", "length-3x3"],
 )
-def test_dispatch_past_pararnn_limits(M, B, T, kernel):
-    # ParaRNN takes at most 65535 batch items and 2^21 - 1 steps in float32;
-    # past them, the next kernel that takes the input runs.
-    assert _kernel(False, M, torch.float32, "cuda", B, T) is getattr(_recur, kernel)
+def test_dispatch_past_pararnn_limits(M, dtype, B, T, kernel):
+    # ParaRNN takes at most 65535 batch items and 2^21 - 1 steps (2^20 - 1 for
+    # 3 x 3 float64); past them, the next kernel that takes the input runs.
+    assert _kernel(False, M, dtype, "cuda", B, T) is getattr(_recur, kernel)
 
 
 @pytest.mark.cuda
@@ -541,14 +549,19 @@ def test_recurrence_raises_past_the_largest_triton_state():
 
 
 def _near_unit_problem(B, T, M, sharing, dtype, device):
-    """Poles at radius ~0.99 (M = 2: rotated by small angles) and x ~ 0.01 N(0, 1)."""
+    """Poles at radius ~0.99 (M = 2: rotated by small angles; M = 3: those and a
+    real one) and x ~ 0.01 N(0, 1)."""
     gen = torch.Generator().manual_seed(0)
     Ba = B if sharing in ("per_item", "both") else 1
     Ta = T if sharing in ("per_step", "both") else 1
     radius = 0.985 + 0.01 * torch.rand(Ba, Ta, 1, 1, dtype=torch.float64, generator=gen)
     angle = 0.3 * torch.rand(Ba, Ta, 1, 1, dtype=torch.float64, generator=gen)
     rotation = torch.cat([angle.cos(), -angle.sin(), angle.sin(), angle.cos()], -1)
-    A = radius * (rotation.view(Ba, Ta, 2, 2) if M == 2 else torch.ones(Ba, Ta, 1, 1))
+    block = rotation.view(Ba, Ta, 2, 2) if M >= 2 else torch.ones(Ba, Ta, 1, 1)
+    if M == 3:
+        block = torch.nn.functional.pad(block, (0, 1, 0, 1))
+        block[..., 2, 2] = 1
+    A = radius * block
     x = 0.01 * torch.randn(B, T, M, dtype=torch.float64, generator=gen)
     zi = 0.01 * torch.randn(B, M, dtype=torch.float64, generator=gen)
     return (t.to(device, dtype) for t in (A, zi, x))
@@ -566,6 +579,7 @@ LOW_PRECISION_OPERATORS = [
             (True, 1, "cuda", "_lti_recur"),
             (True, 2, "cuda", "_lti_recur2"),
             (False, 2, "cuda", "_recur2"),
+            (False, 3, "cuda", "_recur3"),
         ]
     ),
 ]

@@ -19,14 +19,16 @@ The forward pass runs the first kernel of ``_KERNELS`` that takes the input:
 * CPU: the C++ kernels, ``lti_recur`` (M = 1) and ``lti_recurN`` for
   time-invariant A, ``recurN`` otherwise;
 * CUDA: CUB scans for M <= 2 (``lti_recur``, ``lti_recur2``, ``scan``, and
-  ``recur2`` for real time-varying M = 2), the ParaRNN kernels for real
-  time-varying M = 2 and 3 within their limits, and the Triton kernels of
+  ``recur2`` for real time-varying M = 2), and for M = 3, ``recur3`` when
+  time-varying in float32, float16, bfloat16 and complex64 and ``lti_recur3``
+  when time-invariant in float32; the ParaRNN kernels for real time-varying
+  M = 2, and M = 3 in float64, within their limits; and the Triton kernels of
   :mod:`philtorch._recur_kernels` for the rest, which they beat;
 * MPS: the Metal ``lti_recur`` for time-invariant M = 1 in float32.
 
-Every kernel but ``scan``, ParaRNN and the Metal ``lti_recur`` takes int64
-too, so integer recurrences such as the Fibonacci numbers run exactly. Anything else
-raises: there is no fallback to PyTorch ops.
+Every kernel but ``scan``, ``recur3``, ``lti_recur3``, ParaRNN and the Metal
+``lti_recur`` takes int64 too, so integer recurrences such as the Fibonacci
+numbers run exactly. Anything else raises: there is no fallback to PyTorch ops.
 """
 
 import torch
@@ -176,6 +178,27 @@ def _recur2(A: Tensor, zi: Tensor, x: Tensor) -> Tensor:
     return torch.ops.philtorch.recur2(to_lpv(A).contiguous(), zi, x.contiguous())
 
 
+# The dtypes recur3 runs faster than the Triton kernels and ParaRNN.
+_RECUR3_DTYPES = (torch.float32, torch.float16, torch.bfloat16, torch.complex64)
+
+
+def _recur3_applies(A: Tensor, x: Tensor) -> bool:
+    return x.is_cuda and not _time_invariant(A) and x.size(-1) == 3 and x.dtype in _RECUR3_DTYPES
+
+
+def _recur3(A: Tensor, zi: Tensor, x: Tensor) -> Tensor:
+    return torch.ops.philtorch.recur3(to_lpv(A), zi, x)
+
+
+def _lti_recur3_applies(A: Tensor, x: Tensor) -> bool:
+    # Triton's power kernel is faster in the other dtypes.
+    return x.is_cuda and _time_invariant(A) and x.size(-1) == 3 and x.dtype == torch.float32
+
+
+def _lti_recur3(A: Tensor, zi: Tensor, x: Tensor) -> Tensor:
+    return torch.ops.philtorch.lti_recur3(to_lti(A), zi, x)
+
+
 def _triton_applies(A: Tensor, x: Tensor) -> bool:
     return _recur_kernels is not None and x.is_cuda and _recur_kernels.fits(x, x.size(-1))
 
@@ -186,6 +209,8 @@ _KERNELS = (
     (_scan_applies, _scan),
     (_recurN_applies, _recurN),
     (_lti_recur2_applies, _lti_recur2),
+    (_recur3_applies, _recur3),
+    (_lti_recur3_applies, _lti_recur3),
     (_pararnn_applies, _pararnn),
     (_recur2_applies, _recur2),
     (_triton_applies, recur_triton),
