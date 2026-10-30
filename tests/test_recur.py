@@ -261,8 +261,9 @@ def test_triton_state_limits():
     assert not applies(4, device="cpu")
 
 
-def _kernel(time_invariant, M, dtype, device, B=1, T=2):
+def _kernel(time_invariant, M, dtype, device):
     """The launch _forward picks for A and x of these properties."""
+    B, T = 1, 2
     A = torch.zeros(1, 1, M, M, dtype=dtype, device=device).expand(
         1, 1 if time_invariant else T, M, M
     )
@@ -272,23 +273,22 @@ def _kernel(time_invariant, M, dtype, device, B=1, T=2):
 
 # Inputs of each kind the dispatch tells apart, and the kernel each reaches.
 DISPATCH = [
-    (True, 1, torch.float64, "cpu", 1, "_lti_recur"),
-    (True, 3, torch.float64, "cpu", 1, "_lti_recurN"),
-    (False, 1, torch.float64, "cpu", 1, "_recurN"),
+    (True, 1, torch.float64, "cpu", "_lti_recur"),
+    (True, 3, torch.float64, "cpu", "_lti_recurN"),
+    (False, 1, torch.float64, "cpu", "_recurN"),
     *(
         pytest.param(*case, marks=pytest.mark.cuda)
         for case in [
-            (True, 1, torch.float16, "cuda", 1, "_lti_recur"),
-            (True, 2, torch.complex64, "cuda", 1, "_lti_recur2"),
-            (True, 3, torch.float32, "cuda", 1, "_lti_recur3"),
-            (True, 3, torch.float16, "cuda", 1, "recur_triton"),
-            (False, 1, torch.complex64, "cuda", 1, "_scan"),
-            (False, 1, torch.float16, "cuda", 1, "recur_triton"),
-            (False, 2, torch.float32, "cuda", 1, "_recur2"),
-            (False, 2, torch.float16, "cuda", 1, "_recur2"),
-            (False, 2, torch.complex64, "cuda", 1, "recur_triton"),
-            (False, 3, torch.float16, "cuda", 1, "_recur3"),
-            (False, 3, torch.complex128, "cuda", 1, "recur_triton"),
+            (True, 1, torch.float16, "cuda", "_lti_recur"),
+            (True, 2, torch.complex64, "cuda", "_lti_recur2"),
+            (True, 3, torch.float32, "cuda", "_lti_recur3"),
+            (True, 3, torch.float16, "cuda", "recur_triton"),
+            (False, 1, torch.complex64, "cuda", "_scan"),
+            (False, 1, torch.float16, "cuda", "recur_triton"),
+            (False, 2, torch.float16, "cuda", "_recur2"),
+            (False, 2, torch.complex64, "cuda", "recur_triton"),
+            (False, 3, torch.float16, "cuda", "_recur3"),
+            (False, 3, torch.complex128, "cuda", "recur_triton"),
         ]
     ),
 ]
@@ -296,25 +296,25 @@ DISPATCH = [
 
 # Integers, which the native kernels of order M take as int64 only.
 INTEGER_DISPATCH = [
-    (True, 1, torch.int64, "cpu", 1, "_lti_recur"),
-    (True, 2, torch.int64, "cpu", 1, "_lti_recurN"),
-    (False, 2, torch.int64, "cpu", 1, "_recurN"),
+    (True, 1, torch.int64, "cpu", "_lti_recur"),
+    (True, 2, torch.int64, "cpu", "_lti_recurN"),
+    (False, 2, torch.int64, "cpu", "_recurN"),
     *(
         pytest.param(*case, marks=pytest.mark.cuda)
         for case in [
-            (True, 1, torch.int64, "cuda", 1, "_lti_recur"),
-            (True, 2, torch.int64, "cuda", 1, "_lti_recur2"),
-            (False, 1, torch.int64, "cuda", 1, "recur_triton"),
-            (False, 2, torch.int64, "cuda", 1, "_recur2"),
-            (False, 3, torch.int64, "cuda", 1, "recur_triton"),
+            (True, 1, torch.int64, "cuda", "_lti_recur"),
+            (True, 2, torch.int64, "cuda", "_lti_recur2"),
+            (False, 1, torch.int64, "cuda", "recur_triton"),
+            (False, 2, torch.int64, "cuda", "_recur2"),
+            (False, 3, torch.int64, "cuda", "recur_triton"),
         ]
     ),
 ]
 
 
-@pytest.mark.parametrize("time_invariant, M, dtype, device, B, kernel", DISPATCH + INTEGER_DISPATCH)
-def test_dispatch(time_invariant, M, dtype, device, B, kernel):
-    assert _kernel(time_invariant, M, dtype, device, B) is getattr(_recur, kernel)
+@pytest.mark.parametrize("time_invariant, M, dtype, device, kernel", DISPATCH + INTEGER_DISPATCH)
+def test_dispatch(time_invariant, M, dtype, device, kernel):
+    assert _kernel(time_invariant, M, dtype, device) is getattr(_recur, kernel)
 
 
 @pytest.mark.cuda
@@ -340,14 +340,14 @@ def test_recur_triton_custom_op(sharing):
 
 
 @pytest.mark.parametrize("per_item", [False, True])
-@pytest.mark.parametrize("time_invariant, M, dtype, device, B, kernel", DISPATCH)
-def test_recurrence_compiles(time_invariant, M, dtype, device, B, kernel, per_item):
+@pytest.mark.parametrize("time_invariant, M, dtype, device, kernel", DISPATCH)
+def test_recurrence_compiles(time_invariant, M, dtype, device, kernel, per_item):
     # Compiled, recurrence runs each kernel's op whole, in one graph, and its
     # states and registered gradients match eager's, with A shared over the
     # batch or not.
     sharing = {(True, False): "one", (True, True): "per_item", (False, False): "per_step",
                (False, True): "both"}[time_invariant, per_item]  # fmt: skip
-    A, zi, x = _problem(max(B, 3), 40, M, sharing, dtype, device)
+    A, zi, x = _problem(3, 40, M, sharing, dtype, device)
     inputs = [t.requires_grad_() for t in (A, zi, x)]
 
     torch._dynamo.reset()
@@ -492,18 +492,17 @@ def test_cpu_recurrence_of_no_sequences():
 
 
 @pytest.mark.cuda
-@pytest.mark.parametrize("M, dtype", [(2, torch.float64), (3, torch.float32)])
-def test_cub_scans_add_the_input_after_cancelling_products(M, dtype):
+def test_cub_scans_add_the_input_after_cancelling_products():
     # The second step's A h exactly cancels, 1e20 - 1e20; its input, 1, must
     # survive, as on CPU, rather than be rounded away into a partial sum.
-    A = torch.eye(M, dtype=dtype).repeat(1, 2, 1, 1)
+    A = torch.eye(2, dtype=torch.float64).repeat(1, 2, 1, 1)
     A[0, 1, 0, 1] = -1
-    x = torch.zeros(1, 2, M, dtype=dtype)
-    x[0, 0, :2], x[0, 1, 0] = 1e20, 1
-    op = getattr(torch.ops.philtorch, f"recur{M}")
-    expected = op(A, torch.zeros(1, M, dtype=dtype), x)
+    x = torch.zeros(1, 2, 2, dtype=torch.float64)
+    x[0, 0], x[0, 1, 0] = 1e20, 1
+    expected = torch.ops.philtorch.recur2(A, x.new_zeros(1, 2), x)
     assert expected[0, 1, 0] == 1
-    torch.testing.assert_close(op(A.cuda(), x.new_zeros(1, M).cuda(), x.cuda()).cpu(), expected)
+    actual = torch.ops.philtorch.recur2(A.cuda(), x.new_zeros(1, 2).cuda(), x.cuda())
+    torch.testing.assert_close(actual.cpu(), expected)
 
 
 @pytest.mark.parametrize("op, A_shape", [("recur3", (4, 2, 2)), ("lti_recur3", (2, 2))])

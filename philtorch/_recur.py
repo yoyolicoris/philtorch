@@ -105,6 +105,11 @@ def _recurN(A: Tensor, zi: Tensor, x: Tensor) -> Tensor:
     return torch.ops.philtorch.recurN(to_lpv(A), zi, x)
 
 
+def _fits_cub_scan(x: Tensor) -> bool:
+    # The CUB scans index the steps of all signals, initial states included, as int.
+    return (x.size(0) * (x.size(1) + 1)) >> 31 == 0
+
+
 def _lti_recur2_applies(A: Tensor, x: Tensor) -> bool:
     return (
         x.is_cuda
@@ -152,11 +157,6 @@ def _recur2(A: Tensor, zi: Tensor, x: Tensor) -> Tensor:
 
 # The dtypes recur3 runs faster than the Triton kernels.
 _RECUR3_DTYPES = (torch.float32, torch.float16, torch.bfloat16, torch.complex64)
-
-
-def _fits_cub_scan(x: Tensor) -> bool:
-    # The CUB scans index the steps of all signals, initial states included, as int.
-    return (x.size(0) * (x.size(1) + 1)) >> 31 == 0
 
 
 def _recur3_applies(A: Tensor, x: Tensor) -> bool:

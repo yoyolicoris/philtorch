@@ -133,8 +133,8 @@ def test_torchlpc_lfilter_compile_forward_and_backward(device: str) -> None:
 
 
 def _state_space_cases() -> list[object]:
-    # M == 1 routes to the vendored LPC op; M == 2 and 3 exercise the compiled
-    # matrix-recurrence route, on CUDA through recur2 and recur3.
+    # The compiled recurrence route for M = 1 to 3: on CUDA, through the scan,
+    # recur2 and recur3 kernels.
     cases = [pytest.param("cpu", M, marks=_SKIP_WITHOUT_CPU_INDUCTOR) for M in (1, 2, 3)]
     if torch.cuda.is_available() and all(
         _has_dispatch_kernel(op, "CUDA") for op in _TORCHLPC_CUDA_OPS
