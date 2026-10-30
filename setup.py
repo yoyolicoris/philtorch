@@ -122,15 +122,7 @@ def get_extensions():
             f"CUDA compilation was selected, but no .cu sources were found in {extensions_dir}."
         )
 
-    # The vendored torchlpc kernels are compiled through csrc/torchlpc_cuda.cu.
-    pararnn_sources = [
-        os.path.join(this_dir, "third_party", "pararnn", "csrc", "parallel_reduce.cu")
-    ]
-
     if use_cuda:
-        extra_compile_args.setdefault("cxx", []).extend(
-            ["-DFLOAT64_CHUNK_SIZE_DIAG=4", "-DFLOAT64_CHUNK_SIZE_BLOCK_DIAG_2x2=1"]
-        )
         extra_compile_args.setdefault("nvcc", []).extend(
             [
                 "-U__CUDA_NO_HALF_OPERATORS__",
@@ -140,8 +132,6 @@ def get_extensions():
                 "-D__CUDA_INCLUDE_BFLOAT16_OPERATORS__",
                 "-Xcudafe",
                 "--diag_suppress=1886",
-                "-DFLOAT64_CHUNK_SIZE_DIAG=4",
-                "-DFLOAT64_CHUNK_SIZE_BLOCK_DIAG_2x2=1",
             ]
         )
 
@@ -149,12 +139,8 @@ def get_extensions():
         sources += list(glob.glob(os.path.join(extensions_dir, "*.mm")))
         extra_link_args.extend(["-framework", "Foundation", "-framework", "Metal"])
 
-    if not use_cuda:
-        sources = [s for s in sources if "pararnn_shim" not in os.path.basename(s)]
-
     if use_cuda:
         sources += cuda_sources
-        sources += pararnn_sources
         extra_compile_args.setdefault("nvcc", []).append("--extended-lambda")
         # Store the GPU code (one copy per target architecture) compressed in
         # the binary, as PyTorch does for its own wheels. It is otherwise most

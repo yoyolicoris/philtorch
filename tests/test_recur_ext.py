@@ -1,6 +1,5 @@
 import pytest
 import torch
-import torch.nn.functional as F
 
 from philtorch.lpv import state_space_recursion as lpv_state_space
 from philtorch.mat import companion
@@ -271,12 +270,6 @@ def test_recur2_extension_matches_unrolled(device):
     torch_output = lpv_state_space(A, zi, x, unroll_factor=2)
 
     assert torch.allclose(ext_output, torch_output), torch.max(torch.abs(ext_output - torch_output))
-    if device == "cuda":
-        # CUDA uses the ParaRNN route here rather than the direct recur2 op.
-        native_output = lpv_state_space(A, zi, x)
-        assert torch.allclose(native_output, torch_output), torch.max(
-            torch.abs(native_output - torch_output)
-        )
 
 
 def _cuda_scan_case(name: str):
@@ -293,21 +286,6 @@ def _cuda_scan_case(name: str):
             return a * 0.9 / torch.linalg.matrix_norm(a, ord=2)[..., None, None]
         return torch.tanh(a) * 0.9
 
-    if name.startswith("pararnn"):
-        # ParaRNN solves h[t] = A[t] h[t - 1] + x[t] with jac = -A and the
-        # initial state as the first right-hand side; it has no CPU kernel.
-        # Past 8 blocks of steps it switches to three dependent kernels.
-        K = int(name.split("-")[1])
-        if name.endswith("long"):
-            T = 40_000
-        A, zi, x = stable(randn(B, T, K, K)), randn(B, K), randn(B, T, K)
-        reduce = getattr(torch.ops.parallel_reduce_cuda, f"parallel_reduce_block_diag_{K}x{K}_cuda")
-        expected = (torch.ops.philtorch.recur2 if K == 2 else torch.ops.philtorch.recurN)(A, zi, x)
-        return (
-            lambda jac, rhs: reduce(jac, rhs)[:, 1:],
-            (F.pad(-A, (0, 0, 0, 0, 1, 0)), torch.cat([zi.unsqueeze(1), x], dim=1)),
-            expected,
-        )
     if name == "lpc":
         op, args = torch.ops.philtorch.lpc, (randn(B, T), randn(B, T, 2) * 0.2, randn(B, 2))
     elif name == "scan":
@@ -351,10 +329,6 @@ def _cuda_scan_case(name: str):
         "lti_recur3-shared",
         "lpc",
         "scan",
-        "pararnn-2",
-        "pararnn-3",
-        "pararnn-2-long",
-        "pararnn-3-long",
     ],
 )
 def test_cuda_scan_runs_on_the_current_stream(case: str):
@@ -404,22 +378,3 @@ def test_cuda_ops_reject_coefficients_on_another_device(case: str, on_cpu: int):
     cuda_args = [arg if i == on_cpu else arg.cuda() for i, arg in enumerate(args)]
     with pytest.raises(RuntimeError, match="same device"):
         op(*cuda_args)
-
-
-@pytest.mark.cuda
-@pytest.mark.parametrize(("B", "steps"), [(65536, 4), (1, 2**21 + 1)], ids=["batch", "length"])
-def test_pararnn_op_rejects_inputs_past_its_launch_limits(B, steps):
-    """Called directly, the ParaRNN op names the limit instead of failing to launch."""
-    jac = torch.zeros(B, steps, 2, 2, device="cuda")
-    rhs = torch.zeros(B, steps, 2, device="cuda")
-    with pytest.raises(RuntimeError, match="ParaRNN supports at most"):
-        torch.ops.parallel_reduce_cuda.parallel_reduce_block_diag_2x2_cuda(jac, rhs)
-
-
-@pytest.mark.cuda
-@pytest.mark.skipif(torch.cuda.device_count() < 2, reason="needs two CUDA devices")
-def test_pararnn_op_rejects_inputs_on_different_cuda_devices():
-    jac = torch.zeros(1, 4, 2, 2, device="cuda:0")
-    rhs = torch.zeros(1, 4, 2, device="cuda:1")
-    with pytest.raises(RuntimeError, match="same CUDA device"):
-        torch.ops.parallel_reduce_cuda.parallel_reduce_block_diag_2x2_cuda(jac, rhs)

@@ -1,13 +1,11 @@
 import shutil
 import sys
 from collections.abc import Callable
-from types import SimpleNamespace
 
 import pytest
 import torch
 from torch import Tensor
 
-from philtorch._ops import _pararnn_backward, _pararnn_fake
 from philtorch._torchlpc import lpc as vendored_lpc
 from philtorch.lpv import allpole, lfilter, linear_recurrence, state_space_recursion
 
@@ -17,10 +15,6 @@ _SKIP_WITHOUT_CPU_INDUCTOR = pytest.mark.skipif(
     reason="PyTorch Inductor requires cl, which is unavailable on Windows CI",
 )
 _TORCHLPC_CUDA_OPS = ("philtorch::scan", "philtorch::lpc")
-_PARARNN_OPS = (
-    "parallel_reduce_cuda::parallel_reduce_block_diag_2x2_cuda",
-    "parallel_reduce_cuda::parallel_reduce_block_diag_3x3_cuda",
-)
 
 
 @pytest.fixture(autouse=True)
@@ -48,12 +42,6 @@ def _torchlpc_devices() -> list[object]:
     ):
         devices.append(pytest.param("cuda", marks=pytest.mark.cuda))
     return devices
-
-
-def _pararnn_available() -> bool:
-    if not torch.cuda.is_available():
-        return False
-    return all(_has_dispatch_kernel(op, "CUDA") for op in _PARARNN_OPS)
 
 
 @pytest.fixture
@@ -146,7 +134,7 @@ def test_torchlpc_lfilter_compile_forward_and_backward(device: str) -> None:
 
 def _state_space_cases() -> list[object]:
     # M == 1 routes to the vendored LPC op; M == 2 and 3 exercise the compiled
-    # matrix-recurrence route on CPU (CUDA M == 2 and 3 use ParaRNN, tested below).
+    # matrix-recurrence route on CPU.
     cases = [pytest.param("cpu", M, marks=_SKIP_WITHOUT_CPU_INDUCTOR) for M in (1, 2, 3)]
     if torch.cuda.is_available() and all(
         _has_dispatch_kernel(op, "CUDA") for op in _TORCHLPC_CUDA_OPS
@@ -167,74 +155,6 @@ def test_state_space_recursion_compile_forward_and_backward(
     x = torch.randn(2, 16, state_size, device=device)
 
     _assert_compiled_forward_and_backward(state_space_recursion, (A, zi, x))
-
-
-@pytest.mark.cuda
-@pytest.mark.skipif(not _pararnn_available(), reason="CUDA ParaRNN kernels unavailable")
-@pytest.mark.parametrize("state_size", [2, 3])
-@pytest.mark.parametrize("share_A", [True, False])
-def test_pararnn_compile_forward_and_backward(state_size: int, share_A: bool) -> None:
-    A_shape = (16, state_size, state_size) if share_A else (2, 16, state_size, state_size)
-    A = torch.randn(*A_shape, device="cuda") * 0.03
-    zi = torch.randn(2, state_size, device="cuda")
-    x = torch.randn(2, 16, state_size, device="cuda")
-
-    _assert_compiled_forward_and_backward(state_space_recursion, (A, zi, x))
-
-
-def _serial_pararnn(jac: Tensor, rhs: Tensor) -> Tensor:
-    output = [rhs[:, 0]]
-    for step in range(1, rhs.size(1)):
-        output.append(rhs[:, step] - (jac[:, step] @ output[-1].unsqueeze(-1)).squeeze(-1))
-    return torch.stack(output, dim=1)
-
-
-@pytest.mark.parametrize("state_size", [2, 3])
-def test_pararnn_registered_backward_formula_on_cpu(state_size: int) -> None:
-    jac = torch.linspace(-0.03, 0.03, 2 * 9 * state_size * state_size, dtype=torch.double).reshape(
-        2, 9, state_size, state_size
-    )
-    jac[:, 0] = 0
-    rhs = torch.linspace(-0.8, 0.9, 2 * 9 * state_size, dtype=torch.double).reshape(
-        2, 9, state_size
-    )
-    jac.requires_grad_()
-    rhs.requires_grad_()
-
-    output = _serial_pararnn(jac, rhs)
-    grad_output = torch.linspace(0.9, -0.7, output.numel(), dtype=output.dtype).reshape_as(output)
-    expected = torch.autograd.grad(output, (jac, rhs), grad_output)
-
-    ctx = SimpleNamespace(
-        saved_tensors=(jac.detach(), rhs.detach(), output.detach()),
-        needs_input_grad=(True, True),
-    )
-    actual = _pararnn_backward(ctx, grad_output)
-    torch.testing.assert_close(actual, expected)
-
-    for needs_input_grad in ((True, False), (False, True), (False, False)):
-        ctx.needs_input_grad = needs_input_grad
-        actual = _pararnn_backward(ctx, grad_output)
-        for needed, grad, reference in zip(needs_input_grad, actual, expected):
-            if needed:
-                torch.testing.assert_close(grad, reference)
-            else:
-                assert grad is None
-
-
-@pytest.mark.parametrize("block_size", [2, 3])
-def test_pararnn_fake_checks_shapes_on_cpu(block_size: int) -> None:
-    fake = _pararnn_fake(block_size)
-    jac = torch.zeros(2, 9, block_size, block_size)
-    rhs = torch.zeros(2, 9, block_size)
-
-    output = fake(jac, rhs)
-    assert output.shape == rhs.shape and output.is_contiguous()
-
-    with pytest.raises(RuntimeError, match="same batch and time"):
-        fake(jac[:, 1:], rhs)
-    with pytest.raises(RuntimeError, match="last dimension"):
-        fake(jac, torch.zeros(2, 9, block_size + 1))
 
 
 def test_compiled_lpc_calls_the_raw_operator(monkeypatch) -> None:

@@ -284,8 +284,7 @@ DISPATCH = [
             (True, 3, torch.float16, "cuda", 1, "recur_triton"),
             (False, 1, torch.complex64, "cuda", 1, "_scan"),
             (False, 1, torch.float16, "cuda", 1, "recur_triton"),
-            (False, 2, torch.float32, "cuda", 1, "_pararnn"),
-            (False, 3, torch.float64, "cuda", 1, "_pararnn"),
+            (False, 2, torch.float32, "cuda", 1, "_recur2"),
             (False, 2, torch.float32, "cuda", 65536, "_recur2"),
             (False, 2, torch.float16, "cuda", 1, "_recur2"),
             (False, 2, torch.complex64, "cuda", 1, "recur_triton"),
@@ -320,29 +319,15 @@ def test_dispatch(time_invariant, M, dtype, device, B, kernel):
 
 
 @pytest.mark.cuda
-@pytest.mark.parametrize(
-    "M, dtype, B, T, kernel",
-    [
-        (3, torch.float64, 65536, 2, "recur_triton"),
-        (2, torch.float32, 1, 2**21, "_recur2"),
-        (3, torch.float64, 1, 2**20, "recur_triton"),
-    ],
-    ids=["batch-3x3", "length-2x2", "length-3x3"],
-)
-def test_dispatch_past_pararnn_limits(M, dtype, B, T, kernel):
-    # ParaRNN takes at most 65535 batch items and 2^21 - 1 steps (2^20 - 1 for
-    # 3 x 3 float64); past them, the next kernel that takes the input runs.
-    assert _kernel(False, M, dtype, "cuda", B, T) is getattr(_recur, kernel)
-
-
-@pytest.mark.cuda
+@pytest.mark.parametrize("M", [2, 3])
 @pytest.mark.parametrize("time_invariant", [False, True])
-def test_cub_scans_fall_through_past_int_steps(time_invariant):
-    # recur3's and lti_recur3's scans index B (T + 1) steps as int: past that,
-    # the Triton kernels take the input. Expanded, so nothing is allocated.
+def test_cub_scans_fall_through_past_int_steps(time_invariant, M):
+    # The CUB scans (recur2, lti_recur2, recur3, lti_recur3) index B (T + 1)
+    # steps as int: past that, the Triton kernels take the input. Expanded, so
+    # nothing is allocated.
     B, T = 1024, 2**21
-    A = torch.zeros(1, 1, 3, 3, device="cuda").expand(1, 1 if time_invariant else T, 3, 3)
-    x = torch.zeros(1, 1, 3, device="cuda").expand(B, T, 3)
+    A = torch.zeros(1, 1, M, M, device="cuda").expand(1, 1 if time_invariant else T, M, M)
+    x = torch.zeros(1, 1, M, device="cuda").expand(B, T, M)
     assert next(run for applies, run in _recur._KERNELS if applies(A, x)) is recur_triton
 
 

@@ -63,27 +63,6 @@ def test_registered_gradients(op, shared, dtype):
     assert torch.autograd.gradgradcheck(fn, inputs)
 
 
-def _pararnn_inputs(M, dtype=torch.float64):
-    gen = torch.Generator().manual_seed(0)
-    A = torch.randn(2, 7, M, M, generator=gen, dtype=dtype) * 0.3 / M
-    zi, x = (
-        torch.randn(2, M, generator=gen, dtype=dtype),
-        torch.randn(2, 7, M, generator=gen, dtype=dtype),
-    )
-    jac = torch.nn.functional.pad(-A, (0, 0, 0, 0, 1, 0))
-    return [t.cuda().requires_grad_() for t in (jac, torch.cat([zi[:, None], x], 1))]
-
-
-@pytest.mark.cuda
-@pytest.mark.parametrize("M", [2, 3])
-def test_pararnn_opcheck_and_registered_gradients(M):
-    op = getattr(torch.ops.parallel_reduce_cuda, f"parallel_reduce_block_diag_{M}x{M}_cuda")
-    inputs = tuple(_pararnn_inputs(M))
-    torch.library.opcheck(op, inputs)
-    assert torch.autograd.gradcheck(op, inputs)
-    assert torch.autograd.gradgradcheck(op, inputs)
-
-
 @pytest.mark.cuda
 @pytest.mark.parametrize("time_invariant", [True, False])
 def test_recur_triton_registered_gradients(time_invariant):

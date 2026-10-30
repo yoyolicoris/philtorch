@@ -1,111 +1,28 @@
-#include <assert.h>
-#include <c10/cuda/CUDAException.h>
-#include <c10/cuda/CUDAGuard.h>
-#include <stdio.h>
-#include <thrust/iterator/counting_iterator.h>
-#include <thrust/iterator/transform_iterator.h>
-#include <thrust/iterator/transform_output_iterator.h>
-#include <thrust/iterator/zip_iterator.h>
-#include <thrust/zip_function.h>
-#include <ATen/OpMathType.h>
-#include <torch/script.h>
+#include <ATen/Dispatch.h>
 #include <torch/torch.h>
 
 #include "recur2.cuh"
 
-template <typename scalar_t>
-void batch_mat_recur_second_order(const scalar_t *A, const scalar_t *x,
-                                  scalar_t *out, int n_steps,
-                                  int64_t total_steps)
+struct recur2_dispatch
 {
-    using acc_t = at::opmath_type<scalar_t>; // the state stays in the accumulation type
-    thrust::counting_iterator<int> iter(0);
-    index2key key_op{n_steps};
-
-    scan_by_key_on_current_stream(
-        thrust::make_transform_iterator(iter, key_op),
-        thrust::make_zip_iterator(
-            A, A + total_steps, A + total_steps * 2, A + total_steps * 3,
-            x, x + total_steps),
-        thrust::make_transform_output_iterator(
-            thrust::make_zip_iterator(out, out + total_steps),
-            output_unary_op<scalar_t, acc_t>()),
-        recur2_binary_op<acc_t>(), total_steps);
-}
-
-template <typename scalar_t>
-void share_mat_recur_second_order(const scalar_t *A,
-                                  const scalar_t *x,
-                                  scalar_t *out, int n_steps,
-                                  int64_t total_steps)
-{
-    using acc_t = at::opmath_type<scalar_t>;
-    thrust::counting_iterator<int> iter(0);
-    index2key key_op{n_steps};
-    auto share_input_op =
-        thrust::make_zip_function(share_A_input_op<scalar_t, acc_t>{A, n_steps});
-
-    scan_by_key_on_current_stream(
-        thrust::make_transform_iterator(iter, key_op),
-        thrust::make_transform_iterator(
-            thrust::make_zip_iterator(iter, x, x + total_steps),
-            share_input_op),
-        thrust::make_transform_output_iterator(
-            thrust::make_zip_iterator(out, out + total_steps),
-            output_unary_op<scalar_t, acc_t>()),
-        recur2_binary_op<acc_t>(), total_steps);
-}
+    template <typename Fn>
+    void operator()(at::ScalarType type, Fn f) const
+    {
+        AT_DISPATCH_FLOATING_AND_COMPLEX_TYPES_AND3(
+            at::kLong, at::kHalf, at::kBFloat16, type, "recur2", [&] { f(scalar_t{}); });
+    }
+};
 
 at::Tensor mat_recur_second_order_cuda_impl(const at::Tensor &A,
                                             const at::Tensor &zi,
                                             const at::Tensor &x)
 {
-    TORCH_CHECK(zi.scalar_type() == x.scalar_type(),
-                "zi must have the same scalar type as input");
-    TORCH_CHECK(A.scalar_type() == x.scalar_type(),
-                "A must have the same scalar type as input");
-    TORCH_CHECK(A.device() == x.device(),
-                "A must be on the same device as input");
     TORCH_CHECK(A.dim() == 3 || A.dim() == 4, "A must be a 3D or 4D tensor");
-    TORCH_CHECK(x.size(2) == 2, "Input x must have a last dimension of size 2");
-    TORCH_CHECK(A.size(-1) == 2 && A.size(-2) == 2,
-                "Last two dimensions of A must be of size 2");
-
-    auto n_steps = x.size(1) + 1; // +1 for the initial state
-    auto n_batches = x.size(0);
-
-    auto A_contiguous =
-        at::pad(A, {0, 0, 0, 0, 1, 0}).view({-1, 4}).t().contiguous();
-    auto x_contiguous =
-        at::cat({zi.unsqueeze(1), x}, 1).view({-1, 2}).t().contiguous();
-    auto out = at::empty_like(x_contiguous);
-
-    const at::cuda::OptionalCUDAGuard device_guard(device_of(x));
-
-    if (A.dim() == 4)
-    {
-        // Batch
-        AT_DISPATCH_FLOATING_AND_COMPLEX_TYPES_AND3(
-            at::kLong, at::kHalf, at::kBFloat16, x.scalar_type(), "batch_mat_recur_second_order", [&]
-            { batch_mat_recur_second_order<scalar_t>(
-                  A_contiguous.const_data_ptr<scalar_t>(),
-                  x_contiguous.const_data_ptr<scalar_t>(),
-                  out.mutable_data_ptr<scalar_t>(), n_steps, n_batches * n_steps); });
-    }
-    else
-    {
-        // Shared
-        AT_DISPATCH_FLOATING_AND_COMPLEX_TYPES_AND3(
-            at::kLong, at::kHalf, at::kBFloat16, x.scalar_type(), "share_mat_recur_second_order", [&]
-            { share_mat_recur_second_order<scalar_t>(
-                  A_contiguous.const_data_ptr<scalar_t>(),
-                  x_contiguous.const_data_ptr<scalar_t>(),
-                  out.mutable_data_ptr<scalar_t>(), n_steps, n_batches * n_steps); });
-    }
-    return out.t()
-        .reshape({n_batches, n_steps, 2})
-        .slice(1, 1, n_steps)
-        .contiguous(); // Remove the initial state from the output
+    check_recur_inputs<2>(A, zi, x);
+    TORCH_CHECK(A.size(-3) == x.size(1), "A must have one matrix per step of x");
+    TORCH_CHECK(A.dim() == 3 || A.size(0) == x.size(0), "A must have x's batch size");
+    return recur_small_launch<2>(A, zi, x, A.dim() == 4 ? x.size(1) * 4 : 0, 4,
+                                 recur2_dispatch{});
 }
 
 TORCH_LIBRARY_IMPL(philtorch, CUDA, m)

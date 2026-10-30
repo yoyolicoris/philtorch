@@ -44,8 +44,6 @@ CUDA_OPS = (
     "philtorch::recur3",
     "philtorch::scan",
     "philtorch::lpc",
-    "parallel_reduce_cuda::parallel_reduce_block_diag_2x2_cuda",
-    "parallel_reduce_cuda::parallel_reduce_block_diag_3x3_cuda",
 )
 
 # Fail before the tests if they could only be skipped or would test the wrong
