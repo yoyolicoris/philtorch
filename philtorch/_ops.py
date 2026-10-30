@@ -30,7 +30,7 @@ def _setup_context(ctx: Any, inputs: list[Any], output: Any) -> Any:
 
 
 def _recurN_backward(ctx: Any, grad: torch.Tensor):
-    """recur2's and recurN's: A of shape (T, M, M), shared, or (B, T, M, M)."""
+    """recur2's, recur3's and recurN's: A (T, M, M), shared, or (B, T, M, M)."""
     A, zi, y = ctx.saved_tensors
     grad_A, grad_zi, grad_x = _recurrence_gradients(
         _ssm.from_lpv(A), zi, y, grad, *ctx.needs_input_grad[:2]
@@ -41,7 +41,8 @@ def _recurN_backward(ctx: Any, grad: torch.Tensor):
 
 
 def _lti_recurN_backward(ctx: Any, grad: torch.Tensor):
-    """lti_recur2's and lti_recurN's: A of shape (M, M), shared, or (B, M, M)."""
+    """lti_recur2's, lti_recur3's and lti_recurN's: A (M, M), shared, or
+    (B, M, M)."""
     A, zi, y = ctx.saved_tensors
     grad_A, grad_zi, grad_x = _recurrence_gradients(
         _ssm.from_lti(A), zi, y, grad, *ctx.needs_input_grad[:2]
@@ -299,8 +300,10 @@ def _resample_gradient(run, ctx, grad):
 
 for name, order, time_invariant in [
     ("recur2", 2, False),
+    ("recur3", 3, False),
     ("recurN", None, False),
     ("lti_recur2", 2, True),
+    ("lti_recur3", 3, True),
     ("lti_recurN", None, True),
 ]:
     torch.library.register_fake(f"philtorch::{name}", _recurrence_fake(order, time_invariant))

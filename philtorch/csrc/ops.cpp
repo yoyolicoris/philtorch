@@ -22,9 +22,11 @@ PyMODINIT_FUNC PyInit__C(void)
 TORCH_LIBRARY(philtorch, m)
 {
     m.def("philtorch::recur2(Tensor A, Tensor zi, Tensor x) -> Tensor", {at::Tag::pt2_compliant_tag});
+    m.def("philtorch::recur3(Tensor A, Tensor zi, Tensor x) -> Tensor", {at::Tag::pt2_compliant_tag});
     m.def("philtorch::recurN(Tensor A, Tensor zi, Tensor x) -> Tensor", {at::Tag::pt2_compliant_tag});
 
     m.def("philtorch::lti_recur2(Tensor A, Tensor zi, Tensor x) -> Tensor", {at::Tag::pt2_compliant_tag});
+    m.def("philtorch::lti_recur3(Tensor A, Tensor zi, Tensor x) -> Tensor", {at::Tag::pt2_compliant_tag});
     m.def("philtorch::lti_recurN(Tensor A, Tensor zi, Tensor x) -> Tensor", {at::Tag::pt2_compliant_tag});
 
     m.def("philtorch::lti_recur(Tensor A, Tensor zi, Tensor x) -> Tensor", {at::Tag::pt2_compliant_tag});

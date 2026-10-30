@@ -39,7 +39,9 @@ CUDA_MARK = re.compile(r"(@|marks=)pytest\.mark\.cuda\b")
 CUDA_OPS = (
     "philtorch::lti_recur",
     "philtorch::lti_recur2",
+    "philtorch::lti_recur3",
     "philtorch::recur2",
+    "philtorch::recur3",
     "philtorch::scan",
     "philtorch::lpc",
     "parallel_reduce_cuda::parallel_reduce_block_diag_2x2_cuda",
