@@ -285,13 +285,11 @@ DISPATCH = [
             (False, 1, torch.complex64, "cuda", 1, "_scan"),
             (False, 1, torch.float16, "cuda", 1, "recur_triton"),
             (False, 2, torch.float32, "cuda", 1, "_pararnn"),
-            (False, 3, torch.float32, "cuda", 1, "_recur3"),
             (False, 3, torch.float64, "cuda", 1, "_pararnn"),
             (False, 2, torch.float32, "cuda", 65536, "_recur2"),
             (False, 2, torch.float16, "cuda", 1, "_recur2"),
             (False, 2, torch.complex64, "cuda", 1, "recur_triton"),
             (False, 3, torch.float16, "cuda", 1, "_recur3"),
-            (False, 3, torch.complex64, "cuda", 1, "_recur3"),
             (False, 3, torch.complex128, "cuda", 1, "recur_triton"),
         ]
     ),

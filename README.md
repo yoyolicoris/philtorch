@@ -252,7 +252,7 @@ With the default `unroll_factor=None`, the state-space paths (`lfilter`, `state_
 | MPS | ✓² | ✗ | ✗ | ✗ | ✗ | ✗ | ✗ |
 
 ✓ native or Triton kernel · ✗ raises `NotImplementedError`, since no kernel takes the input; pass `unroll_factor=1` for the sequential loop, or 2 up to one less than the sequence length for a block-unrolled recursion, or use CPU.
-¹ Triton, up to M = 128 (64 for complex dtypes); larger M raises. A native kernel takes M = 3 in float32, and time-varying M = 3 in float16, bfloat16 and complex64 too. ² float32 only.
+¹ Triton, up to M = 128 (64 for complex dtypes); larger M raises. A native kernel takes M = 3 in float32. ² float32 only.
 
 The kernels take floating-point and complex dtypes, and int64, exactly; other dtypes raise.
 

@@ -41,7 +41,8 @@ def _recurN_backward(ctx: Any, grad: torch.Tensor):
 
 
 def _lti_recurN_backward(ctx: Any, grad: torch.Tensor):
-    """lti_recur2's, lti_recur3's and lti_recurN's: A (M, M), shared, or (B, M, M)."""
+    """lti_recur2's, lti_recur3's and lti_recurN's: A (M, M), shared, or
+    (B, M, M)."""
     A, zi, y = ctx.saved_tensors
     grad_A, grad_zi, grad_x = _recurrence_gradients(
         _ssm.from_lti(A), zi, y, grad, *ctx.needs_input_grad[:2]
