@@ -50,7 +50,7 @@ Locally, run only the tests that exercise the change, selected by name: node IDs
 
 Benchmarks live in `benchmarks/` and run as `pixi run python benchmarks/<name>.py`.
 
-Keep the measurements behind an issue, its benchmark or error tables and the scripts that produced them, on the issue as a `generic` artifact, or an `embedded_html` one for charts. Update it when they are run again, so that earlier versions stay comparable.
+Keep the measurements behind an issue, its benchmark or error tables and the scripts that produced them, on the issue as a `generic` artifact, or an `embedded_html` one for charts. Update it when they are run again, so that earlier versions stay comparable. Where a chart says more than a table, such as a speed-up or an error against a size, attach it to the pull request or comment as a PNG: `gh pr create`, `pr edit`, `issue comment` and the like take `--attach <file>#<alt text>` (gh 2.103 or later), and rewrite a body's `![alt](./plot.png)` to the upload.
 
 ## Architecture
 
