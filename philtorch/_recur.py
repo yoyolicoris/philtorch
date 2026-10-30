@@ -184,7 +184,7 @@ _RECUR3_DTYPES = (torch.float32, torch.float16, torch.bfloat16, torch.complex64)
 
 def _fits_cub_scan(x: Tensor) -> bool:
     # The CUB scans index the steps of all signals, initial states included, as int.
-    return x.size(0) * (x.size(1) + 1) <= 2**31 - 1
+    return (x.size(0) * (x.size(1) + 1)) >> 31 == 0
 
 
 def _recur3_applies(A: Tensor, x: Tensor) -> bool:

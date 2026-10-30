@@ -509,6 +509,15 @@ def test_cpu_recurrence_of_no_sequences():
     assert torch.ops.philtorch.lti_recurN(A, zi, x).shape == (0, 5000, 2)
 
 
+@pytest.mark.parametrize("op, A_shape", [("recur3", (4, 2, 2)), ("lti_recur3", (2, 2))])
+def test_cpu_order_3_ops_reject_other_orders(op, A_shape):
+    # As their fakes and CUDA kernels do, though the CPU kernel takes any order.
+    A = torch.zeros(A_shape, dtype=torch.float64)
+    zi, x = torch.zeros(1, 2, dtype=torch.float64), torch.zeros(1, 4, 2, dtype=torch.float64)
+    with pytest.raises(RuntimeError, match=r"\(B, T, 3\)"):
+        getattr(torch.ops.philtorch, op)(A, zi, x)
+
+
 def test_cpu_recurrence_rejects_an_initial_state_of_another_batch():
     A, zi, x = _problem(4, 8, 2, "per_step")
     with pytest.raises(RuntimeError, match="zi"):

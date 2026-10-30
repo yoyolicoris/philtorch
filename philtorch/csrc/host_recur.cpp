@@ -314,14 +314,28 @@ at::Tensor scan_cpu(const at::Tensor &impulse, const at::Tensor &decay,
     return recur_cpu_launch(decay, init, impulse, 1, impulse.size(1), 1);
 }
 
+// recur3's and lti_recur3's CPU kernels: those of any order, taking 3 states
+// only, as their fakes and CUDA kernels do.
+at::Tensor recur3_cpu(const at::Tensor &A, const at::Tensor &zi, const at::Tensor &x)
+{
+    TORCH_CHECK(x.dim() == 3 && x.size(2) == 3, "x must be of shape (B, T, 3)");
+    return recurN_cpu(A, zi, x);
+}
+
+at::Tensor lti_recur3_cpu(const at::Tensor &A, const at::Tensor &zi, const at::Tensor &x)
+{
+    TORCH_CHECK(x.dim() == 3 && x.size(2) == 3, "x must be of shape (B, T, 3)");
+    return lti_recurN_cpu(A, zi, x);
+}
+
 TORCH_LIBRARY_IMPL(philtorch, CPU, m)
 {
     m.impl("scan", &scan_cpu);
     m.impl("lti_recur", &lti_recur_cpu);
     m.impl("lti_recurN", &lti_recurN_cpu);
     m.impl("lti_recur2", &lti_recurN_cpu);
-    m.impl("lti_recur3", &lti_recurN_cpu);
+    m.impl("lti_recur3", &lti_recur3_cpu);
     m.impl("recurN", &recurN_cpu);
     m.impl("recur2", &recurN_cpu);
-    m.impl("recur3", &recurN_cpu);
+    m.impl("recur3", &recur3_cpu);
 }
