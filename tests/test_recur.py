@@ -491,6 +491,21 @@ def test_cpu_recurrence_of_no_sequences():
     assert torch.ops.philtorch.lti_recurN(A, zi, x).shape == (0, 5000, 2)
 
 
+@pytest.mark.cuda
+@pytest.mark.parametrize("M, dtype", [(2, torch.float64), (3, torch.float32)])
+def test_cub_scans_add_the_input_after_cancelling_products(M, dtype):
+    # The second step's A h exactly cancels, 1e20 - 1e20; its input, 1, must
+    # survive, as on CPU, rather than be rounded away into a partial sum.
+    A = torch.eye(M, dtype=dtype).repeat(1, 2, 1, 1)
+    A[0, 1, 0, 1] = -1
+    x = torch.zeros(1, 2, M, dtype=dtype)
+    x[0, 0, :2], x[0, 1, 0] = 1e20, 1
+    op = getattr(torch.ops.philtorch, f"recur{M}")
+    expected = op(A, torch.zeros(1, M, dtype=dtype), x)
+    assert expected[0, 1, 0] == 1
+    torch.testing.assert_close(op(A.cuda(), x.new_zeros(1, M).cuda(), x.cuda()).cpu(), expected)
+
+
 @pytest.mark.parametrize("op, A_shape", [("recur3", (4, 2, 2)), ("lti_recur3", (2, 2))])
 def test_cpu_order_3_ops_reject_other_orders(op, A_shape):
     # As their fakes and CUDA kernels do, though the CPU kernel takes any order.

@@ -43,11 +43,13 @@ struct affine_binary_op
                     s += q.a[i * M + k] * p.a[k * M + j];
                 r.a[i * M + j] = s;
             }
-            T s = q.x[i];
+            // The products first, then q's input: added to a partial sum, the
+            // input could be rounded away before cancelling products meet.
+            T s(0);
 #pragma unroll
             for (int k = 0; k < M; ++k)
                 s += q.a[i * M + k] * p.x[k];
-            r.x[i] = s;
+            r.x[i] = s + q.x[i];
         }
         return r;
     }
