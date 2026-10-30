@@ -104,28 +104,6 @@ def _lpc_backward(ctx, grad_y):
     return _lpc_gradients(torch.ops.philtorch.lpc, *ctx.saved_tensors, grad_y, ctx.needs_input_grad)
 
 
-def _pararnn_setup_context(ctx, inputs, output):
-    jac, rhs = inputs
-    ctx.save_for_backward(jac, rhs, output)
-
-
-def _pararnn_backward(ctx: Any, grad: torch.Tensor):
-    """ParaRNN's, whose solution h[t] = -jac[t] h[t - 1] + rhs[t] starts from
-    h[0] = rhs[0]: A is -jac[1:], zi rhs[0] and x rhs[1:]; jac[0] is unused."""
-    jac, rhs, output = ctx.saved_tensors
-    needs_jac, needs_rhs = ctx.needs_input_grad
-    grad_A, grad_zi, grad_x = _recurrence_gradients(
-        -jac[:, 1:], rhs[:, 0], output[:, 1:], grad[:, 1:], needs_jac, needs_rhs
-    )
-    grad_jac = grad_rhs = None
-    if needs_jac:
-        grad_jac = torch.cat([torch.zeros_like(jac[:, :1]), -grad_A], 1)
-    if needs_rhs:
-        # h[0] is rhs[0] itself, and zi of the steps after.
-        grad_rhs = torch.cat([(grad[:, 0] + grad_zi).unsqueeze(1), grad_x], 1)
-    return grad_jac, grad_rhs
-
-
 # The native kernels always return contiguous outputs, so the fakes must too;
 # `empty_like` would copy a permuted input's strides.
 
@@ -199,27 +177,6 @@ def _lpc_fake(x, A, zi):
     torch._check(A.shape[2] == zi.shape[1], lambda: "A and zi must have the same order.")
     torch._check(x.shape[0] == zi.shape[0], lambda: "x and zi must have the same batch size.")
     return x.new_empty(x.shape)
-
-
-def _pararnn_fake(block_size):
-    def fake(jac, rhs):
-        torch._check(rhs.ndim == 3, lambda: "rhs must be 3D.")
-        torch._check(jac.ndim == 4, lambda: "jac must be 4D.")
-        torch._check(
-            rhs.shape[2] == block_size,
-            lambda: f"rhs's last dimension must be {block_size}.",
-        )
-        torch._check(
-            jac.shape[2:] == (block_size, block_size),
-            lambda: f"jac's blocks must be {block_size}x{block_size}.",
-        )
-        torch._check(
-            jac.shape[:2] == rhs.shape[:2],
-            lambda: "jac and rhs must have the same batch and time dimensions.",
-        )
-        return rhs.new_empty(rhs.shape)
-
-    return fake
 
 
 def _resample_fake(x, table, q, out_len):
@@ -320,14 +277,6 @@ torch.library.register_autograd(
 )
 torch.library.register_autograd("philtorch::lpc", _lpc_backward, setup_context=_lpc_setup_context)
 
-
-for block_size in (2, 3):
-    op = f"parallel_reduce_block_diag_{block_size}x{block_size}_cuda"
-    if hasattr(torch.ops.parallel_reduce_cuda, op):  # pragma: no cover - CUDA-only schema
-        torch.library.register_fake(f"parallel_reduce_cuda::{op}", _pararnn_fake(block_size))
-        torch.library.register_autograd(
-            f"parallel_reduce_cuda::{op}", _pararnn_backward, setup_context=_pararnn_setup_context
-        )
 
 if hasattr(torch.ops.philtorch, "resample"):  # pragma: no cover - CUDA-only op
     torch.library.register_fake("philtorch::resample", _resample_fake)

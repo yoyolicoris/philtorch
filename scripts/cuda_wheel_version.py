@@ -43,9 +43,9 @@ _ARCH_RE = re.compile(r"(\d+)\.(\d+)a?(\+PTX)?")
 
 _BUILD_FIELDS = frozenset({"torch", "cuda", "torch_index_url", "cuda_arch_list", "python_versions"})
 
-# Oldest CUDA the CUDA sources build with unchanged. recur2.cuh treats
-# thrust::tuple and cuda::std::tuple as one type; CUDA 12.6 keeps them
-# separate, so it fails to compile there. 12.9 is the oldest verified to work.
+# Oldest CUDA the CUDA sources build with unchanged. recur_scan.cuh uses
+# thrust::tabulate_output_iterator, which CUDA 12.6's CCCL (2.5) lacks. 12.9 is
+# the oldest verified to work.
 _MIN_CUDA = (12, 9)
 
 

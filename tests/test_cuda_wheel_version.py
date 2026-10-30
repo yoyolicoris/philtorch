@@ -186,7 +186,7 @@ def test_validate_matrix_accepts_minimal_matrix():
             "'cuda_arch_list' must be",
             id="semicolon-arch",
         ),
-        # PyTorch still publishes cu126, but recur2.cuh does not build with it.
+        # PyTorch still publishes cu126, but the CUDA sources don't build with it.
         pytest.param(
             _matrix(
                 builds=[

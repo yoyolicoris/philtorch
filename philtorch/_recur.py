@@ -18,15 +18,16 @@ The forward pass runs the first kernel of ``_KERNELS`` that takes the input:
 
 * CPU: the C++ kernels, ``lti_recur`` (M = 1) and ``lti_recurN`` for
   time-invariant A, ``recurN`` otherwise;
-* CUDA: CUB scans for M <= 2 (``lti_recur``, ``lti_recur2``, ``scan``, and
-  ``recur2`` for real time-varying M = 2), and for M = 3, ``recur3`` when
-  time-varying in float32, float16, bfloat16 and complex64 and ``lti_recur3``
-  when time-invariant in float32; the ParaRNN kernels for real time-varying
-  M = 2, and M = 3 in float64, within their limits; and the Triton kernels of
-  :mod:`philtorch._recur_kernels` for the rest, which they beat;
+* CUDA: CUB scans for M <= 3: ``lti_recur`` and ``scan`` for M = 1;
+  ``lti_recur2``, and ``recur2`` for real time-varying A, for M = 2; for
+  M = 3, ``recur3`` when time-varying in float32, float16, bfloat16 and
+  complex64, and ``lti_recur3`` when time-invariant in float32. Those of
+  M = 2 and 3 apply only while B * (T + 1) fits in an int. The Triton
+  kernels of :mod:`philtorch._recur_kernels` take the rest, where they are
+  faster, and the inputs past that size;
 * MPS: the Metal ``lti_recur`` for time-invariant M = 1 in float32.
 
-Every kernel but ``scan``, ``recur3``, ``lti_recur3``, ParaRNN and the Metal
+Every kernel but ``scan``, ``recur3``, ``lti_recur3`` and the Metal
 ``lti_recur`` takes int64 too, so integer recurrences such as the Fibonacci
 numbers run exactly. Anything else raises: there is no fallback to PyTorch ops.
 """
@@ -104,12 +105,23 @@ def _recurN(A: Tensor, zi: Tensor, x: Tensor) -> Tensor:
     return torch.ops.philtorch.recurN(to_lpv(A), zi, x)
 
 
+def _fits_cub_scan(x: Tensor) -> bool:
+    # The CUB scans index the steps of all signals, initial states included, as int.
+    return (x.size(0) * (x.size(1) + 1)) >> 31 == 0
+
+
 def _lti_recur2_applies(A: Tensor, x: Tensor) -> bool:
-    return x.is_cuda and _time_invariant(A) and x.size(-1) == 2 and _floating_or_int64(x)
+    return (
+        x.is_cuda
+        and _time_invariant(A)
+        and x.size(-1) == 2
+        and _floating_or_int64(x)
+        and _fits_cub_scan(x)
+    )
 
 
 def _lti_recur2(A: Tensor, zi: Tensor, x: Tensor) -> Tensor:
-    return torch.ops.philtorch.lti_recur2(to_lti(A).contiguous(), zi, x.contiguous())
+    return torch.ops.philtorch.lti_recur2(to_lti(A), zi, x)
 
 
 # The dtypes ``scan`` takes, the vendored torchlpc's.
@@ -127,42 +139,6 @@ def _scan(A: Tensor, zi: Tensor, x: Tensor) -> Tensor:
     return torch.ops.philtorch.scan(x[..., 0].contiguous(), decay, zi[:, 0]).unsqueeze(-1)
 
 
-# Launch limits of the vendored ParaRNN kernels (third_party/pararnn/csrc):
-# the batch runs along grid dimension y, which CUDA caps at 65535, and a
-# sequence is split into blocks of 1024 threads that each take `chunk`
-# steps, combined by one block of at most 1024 threads. The chunk sizes are
-# dtype2chunkSizeBlockDiag in helpers.h: 1 for 3 x 3 float64, 2 otherwise.
-_PARARNN_MAX_BATCH = 65535
-
-
-def _pararnn_applies(A: Tensor, x: Tensor) -> bool:
-    # ParaRNN takes half and bfloat16 too, but accumulates in them; the
-    # Triton kernels accumulate those in float32.
-    M = x.size(-1)
-    chunk = 1 if M == 3 and x.dtype == torch.float64 else 2
-    return (
-        x.is_cuda
-        and not _time_invariant(A)
-        and x.dtype in (torch.float32, torch.float64)
-        and M in (2, 3)
-        and x.size(0) <= _PARARNN_MAX_BATCH
-        and x.size(1) + 1 <= 1024 * 1024 * chunk
-    )
-
-
-def _pararnn(A: Tensor, zi: Tensor, x: Tensor) -> Tensor:
-    B, T, M = x.shape
-    jac = F.pad(-A.expand(B, T, M, M), (0, 0, 0, 0, 1, 0)).contiguous()
-    rhs = torch.cat([zi.unsqueeze(1), x], 1)
-    ops = torch.ops.parallel_reduce_cuda
-    reduce = (
-        ops.parallel_reduce_block_diag_3x3_cuda
-        if M == 3
-        else ops.parallel_reduce_block_diag_2x2_cuda
-    )
-    return reduce(jac, rhs)[:, 1:]
-
-
 def _recur2_applies(A: Tensor, x: Tensor) -> bool:
     # Complex inputs run faster in the Triton kernels.
     return (
@@ -171,20 +147,16 @@ def _recur2_applies(A: Tensor, x: Tensor) -> bool:
         and x.size(-1) == 2
         and not x.is_complex()
         and _floating_or_int64(x)
+        and _fits_cub_scan(x)
     )
 
 
 def _recur2(A: Tensor, zi: Tensor, x: Tensor) -> Tensor:
-    return torch.ops.philtorch.recur2(to_lpv(A).contiguous(), zi, x.contiguous())
+    return torch.ops.philtorch.recur2(to_lpv(A), zi, x)
 
 
-# The dtypes recur3 runs faster than the Triton kernels and ParaRNN.
+# The dtypes recur3 runs faster than the Triton kernels.
 _RECUR3_DTYPES = (torch.float32, torch.float16, torch.bfloat16, torch.complex64)
-
-
-def _fits_cub_scan(x: Tensor) -> bool:
-    # The CUB scans index the steps of all signals, initial states included, as int.
-    return (x.size(0) * (x.size(1) + 1)) >> 31 == 0
 
 
 def _recur3_applies(A: Tensor, x: Tensor) -> bool:
@@ -228,7 +200,6 @@ _KERNELS = (
     (_lti_recur2_applies, _lti_recur2),
     (_recur3_applies, _recur3),
     (_lti_recur3_applies, _lti_recur3),
-    (_pararnn_applies, _pararnn),
     (_recur2_applies, _recur2),
     (_triton_applies, recur_triton),
 )
