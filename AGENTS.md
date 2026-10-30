@@ -11,6 +11,8 @@ Agree on the task with the maintainer before carrying it out. Where the request 
 - renaming, moving or deleting files or public names;
 - choosing between designs with real trade-offs: give the options and a recommendation, and let the maintainer decide.
 
+For a task from an issue, put the plan on the issue as a `plan` artifact: briefly, what changes, what stays, the trade-offs and the tests. Point the maintainer to it and wait for agreement. Revise that artifact rather than adding another, so that its history shows the revisions. Issue artifacts are in public preview; agents write them with GitHub's MCP server, `gh issue artifact` (gh 2.103 or later) or the REST API (`/repos/{owner}/{repo}/issues/{number}/artifacts`).
+
 ## Delegating work
 
 Once a task is agreed, the main agent (the one talking with the maintainer) delegates the parts big enough to be worth running in parallel. A small task it does itself.
@@ -47,6 +49,8 @@ pixi run docs                    # Sphinx with -W: warnings, unresolved referenc
 Locally, run only the tests that exercise the change, selected by name: node IDs or `-k` expressions, not whole files. Find them by searching the tests for the changed function, op or kernel, and state which tests you ran and why they cover the change. The full suite runs on CI; run it locally only when the maintainer asks.
 
 Benchmarks live in `benchmarks/` and run as `pixi run python benchmarks/<name>.py`.
+
+Keep the measurements behind an issue, its benchmark or error tables and the scripts that produced them, on the issue as a `generic` artifact, or an `embedded_html` one for charts. Update it when they are run again, so that earlier versions stay comparable.
 
 ## Architecture
 
