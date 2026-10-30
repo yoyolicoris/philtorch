@@ -1,7 +1,7 @@
 #include <ATen/Dispatch.h>
 #include <torch/torch.h>
 
-#include "recur2.cuh"
+#include "recur_scan.cuh"
 
 struct lti_recur2_dispatch
 {

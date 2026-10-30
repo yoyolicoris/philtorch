@@ -8,7 +8,7 @@
 #include <ATen/OpMathType.h>
 #include <torch/torch.h>
 
-#include "recur2.cuh"
+#include "recur_scan.cuh"
 
 template <typename T>
 struct recur_binary_op
