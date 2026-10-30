@@ -518,7 +518,8 @@ def test_dtw_path_search_reduce_overhead():
         torch.testing.assert_close(actual, expected)
 
 
-# The ops with a CUDA kernel too; recurN and lti_recurN run on CPU only.
+# The ops with a CUDA kernel in float64 and complex128 too; recurN and lti_recurN
+# run on CPU only, and recur3 and lti_recur3 have their own CUDA test.
 _CUDA_OPS = {"recur2", "lti_recur2", "lti_recur", "scan", "lpc"}
 
 

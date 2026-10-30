@@ -143,8 +143,8 @@ void check_recur3_inputs(const at::Tensor &A, const at::Tensor &zi, const at::Te
 at::Tensor mat_recur_third_order_cuda_impl(const at::Tensor &A, const at::Tensor &zi,
                                            const at::Tensor &x)
 {
-    check_recur3_inputs(A, zi, x);
     TORCH_CHECK(A.dim() == 3 || A.dim() == 4, "A must be a 3D or 4D tensor");
+    check_recur3_inputs(A, zi, x);
     TORCH_CHECK(A.size(-3) == x.size(1), "A must have one matrix per step of x");
     TORCH_CHECK(A.dim() == 3 || A.size(0) == x.size(0), "A must have x's batch size");
     return recur3_launch(A, zi, x, A.dim() == 4 ? x.size(1) * 9 : 0, 9);
@@ -153,8 +153,8 @@ at::Tensor mat_recur_third_order_cuda_impl(const at::Tensor &A, const at::Tensor
 at::Tensor lti_mat_recur_third_order_cuda_impl(const at::Tensor &A, const at::Tensor &zi,
                                                const at::Tensor &x)
 {
-    check_recur3_inputs(A, zi, x);
     TORCH_CHECK(A.dim() == 2 || A.dim() == 3, "A must be a 2D or 3D tensor");
+    check_recur3_inputs(A, zi, x);
     TORCH_CHECK(A.dim() == 2 || A.size(0) == x.size(0), "A must have x's batch size");
     return recur3_launch(A, zi, x, A.dim() == 3 ? 9 : 0, 0);
 }

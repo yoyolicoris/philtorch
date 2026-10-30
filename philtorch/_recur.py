@@ -182,8 +182,19 @@ def _recur2(A: Tensor, zi: Tensor, x: Tensor) -> Tensor:
 _RECUR3_DTYPES = (torch.float32, torch.float16, torch.bfloat16, torch.complex64)
 
 
+def _fits_cub_scan(x: Tensor) -> bool:
+    # The CUB scans index the steps of all signals, initial states included, as int.
+    return x.size(0) * (x.size(1) + 1) <= 2**31 - 1
+
+
 def _recur3_applies(A: Tensor, x: Tensor) -> bool:
-    return x.is_cuda and not _time_invariant(A) and x.size(-1) == 3 and x.dtype in _RECUR3_DTYPES
+    return (
+        x.is_cuda
+        and not _time_invariant(A)
+        and x.size(-1) == 3
+        and x.dtype in _RECUR3_DTYPES
+        and _fits_cub_scan(x)
+    )
 
 
 def _recur3(A: Tensor, zi: Tensor, x: Tensor) -> Tensor:
@@ -192,7 +203,13 @@ def _recur3(A: Tensor, zi: Tensor, x: Tensor) -> Tensor:
 
 def _lti_recur3_applies(A: Tensor, x: Tensor) -> bool:
     # Triton's power kernel is faster in the other dtypes.
-    return x.is_cuda and _time_invariant(A) and x.size(-1) == 3 and x.dtype == torch.float32
+    return (
+        x.is_cuda
+        and _time_invariant(A)
+        and x.size(-1) == 3
+        and x.dtype == torch.float32
+        and _fits_cub_scan(x)
+    )
 
 
 def _lti_recur3(A: Tensor, zi: Tensor, x: Tensor) -> Tensor:

@@ -338,6 +338,17 @@ def test_dispatch_past_pararnn_limits(M, dtype, B, T, kernel):
 
 
 @pytest.mark.cuda
+@pytest.mark.parametrize("time_invariant", [False, True])
+def test_cub_scans_fall_through_past_int_steps(time_invariant):
+    # recur3's and lti_recur3's scans index B (T + 1) steps as int: past that,
+    # the Triton kernels take the input. Expanded, so nothing is allocated.
+    B, T = 1024, 2**21
+    A = torch.zeros(1, 1, 3, 3, device="cuda").expand(1, 1 if time_invariant else T, 3, 3)
+    x = torch.zeros(1, 1, 3, device="cuda").expand(B, T, 3)
+    assert next(run for applies, run in _recur._KERNELS if applies(A, x)) is recur_triton
+
+
+@pytest.mark.cuda
 @pytest.mark.parametrize("sharing", SHARING)
 def test_recur_triton_custom_op(sharing):
     # The fake implementation and the op's gradients, for torch.compile.
