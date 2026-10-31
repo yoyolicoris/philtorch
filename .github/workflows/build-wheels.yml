@@ -70,10 +70,10 @@ jobs:
           # requires-python on: a new torch minor can drop the oldest (torch
           # 2.15 has no 3.10 wheels) and add the newest. PyPI lists
           # free-threaded wheels under the same python_version (cp315), so
-          # they need no filtering here. PRs build and test the oldest and
-          # newest, which catches most version-specific breakage (e.g. NumPy
-          # 2.2 being the last release for 3.10, see #56); other events the
-          # full range.
+          # they need no filtering here. The wheel builds on the oldest; PRs
+          # test it on the oldest and newest, which catches most
+          # version-specific breakage (e.g. NumPy 2.2 being the last release
+          # for 3.10, see #56); other events the full range.
           with open("pyproject.toml", "rb") as f:
               requires = SpecifierSet(tomllib.load(f)["project"]["requires-python"])
           pythons = {}
@@ -171,7 +171,7 @@ jobs:
     uses: ./.github/workflows/_test-wheel.yml
     with:
       os: ubuntu-latest
-      # The Pythons the wheels were built for (see resolve-torch-versions).
+      # The Pythons to test the wheel on (see resolve-torch-versions).
       python_versions: ${{ toJson(fromJson(needs.resolve-torch-versions.outputs.pythons)[matrix.torch-version]) }}
       torch_version: ${{ matrix.torch-version }}
       # Only the leg for the latest resolved Torch minor (matrix[0]) uploads

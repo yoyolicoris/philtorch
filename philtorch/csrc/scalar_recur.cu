@@ -7,7 +7,6 @@
 #include <thrust/tuple.h>
 #include <thrust/zip_function.h>
 #include <ATen/OpMathType.h>
-#include <torch/torch.h>
 
 #include "recur_scan.cuh"
 

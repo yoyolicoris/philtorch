@@ -17,8 +17,9 @@ on:
         required: true
         type: string
       python_versions:
-        # JSON array string of the Pythons to build for, e.g. '["3.11", "3.13"]'
-        # (see resolve-torch-versions in build-wheels.yml).
+        # JSON array string of the Pythons torch ships, oldest first, e.g.
+        # '["3.11", "3.13"]' (see resolve-torch-versions in build-wheels.yml).
+        # The wheel builds on the first.
         required: true
         type: string
 
@@ -63,23 +64,24 @@ jobs:
         # are on by default too, but CIBW_BUILD below names only regular ones.
         run: pip install cibuildwheel==4.3.5
 
-      - name: Select the Pythons to build for
+      - name: Select the Python to build on
+        # The oldest: its abi3 wheel serves every later Python too.
         shell: bash
         env:
           PYTHON_VERSIONS: ${{ inputs.python_versions }}
-        run: echo "CIBW_BUILD=$(jq -r 'map("cp" + sub("[.]"; "") + "-*") | join(" ")' <<< "$PYTHON_VERSIONS")" >> "$GITHUB_ENV"
+        run: echo "CIBW_BUILD=$(jq -r '"cp" + (.[0] | sub("[.]"; "")) + "-*"' <<< "$PYTHON_VERSIONS")" >> "$GITHUB_ENV"
 
       - name: Build wheels
         run: cibuildwheel --output-dir wheelhouse
         env:
           # The wheel only loads with the torch minor it is compiled against,
           # so it requires that minor: torch == X.Y.* (see setup.py). The sdist
-          # is built without this and keeps torch >= 2.4.0.
+          # is built without this and keeps torch >= 2.6.0.
           PHILTORCH_TORCH_PIN: ${{ inputs.torch_version }}
           # Linux builds run in a container, which doesn't inherit the runner's
           # environment; macOS and Windows build on the runner itself.
           CIBW_ENVIRONMENT_PASS_LINUX: PHILTORCH_TORCH_PIN
-          # CIBW_BUILD, the Pythons to build for, is set by the step above.
+          # CIBW_BUILD, the Python to build on, is set by the step above.
           CIBW_SKIP: "*-musllinux_*"
           CIBW_ARCHS_LINUX: x86_64
           CIBW_ARCHS_MACOS: arm64

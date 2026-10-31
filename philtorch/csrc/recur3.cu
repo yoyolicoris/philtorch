@@ -1,5 +1,4 @@
 #include <ATen/Dispatch_v2.h>
-#include <torch/torch.h>
 
 #include "recur_scan.cuh"
 

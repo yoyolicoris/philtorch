@@ -8,8 +8,8 @@ torch_requirement = run_path(str(ROOT / "build_support.py"))["torch_requirement"
 
 
 def test_unpinned_builds_keep_the_supported_range():
-    assert torch_requirement("") == "torch >= 2.4.0"
-    assert torch_requirement() == "torch >= 2.4.0"
+    assert torch_requirement("") == "torch >= 2.6.0"
+    assert torch_requirement() == "torch >= 2.6.0"
 
 
 def test_pinned_builds_require_the_build_minor():

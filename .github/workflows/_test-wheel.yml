@@ -61,10 +61,9 @@ jobs:
         shell: bash
         run: |
           shopt -s nullglob
-          PYTAG="cp$(echo "${{ matrix.python-version }}" | tr -d '.')"
-          WHEELS=(wheelhouse/philtorch-*-"$PYTAG"-*.whl)
+          WHEELS=(wheelhouse/philtorch-*-abi3-*.whl)
           if [ "${#WHEELS[@]}" -ne 1 ]; then
-            echo "Expected exactly one wheel matching $PYTAG in wheelhouse/, found ${#WHEELS[@]}: ${WHEELS[*]}" >&2
+            echo "Expected exactly one abi3 wheel in wheelhouse/, found ${#WHEELS[@]}: ${WHEELS[*]}" >&2
             exit 1
           fi
 

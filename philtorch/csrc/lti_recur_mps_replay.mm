@@ -1,4 +1,6 @@
-#include <torch/extension.h>
+#include <ATen/ATen.h>
+#include <torch/library.h>
+#include <torch/mps.h>
 
 #import <Foundation/Foundation.h>
 #import <Metal/Metal.h>
