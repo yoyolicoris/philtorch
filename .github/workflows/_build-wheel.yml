@@ -17,8 +17,9 @@ on:
         required: true
         type: string
       python_versions:
-        # JSON array string of the Pythons to build for, e.g. '["3.11", "3.13"]'
-        # (see resolve-torch-versions in build-wheels.yml).
+        # JSON array string of the Pythons torch ships, oldest first, e.g.
+        # '["3.11", "3.13"]' (see resolve-torch-versions in build-wheels.yml).
+        # The wheel builds on the first.
         required: true
         type: string
 
@@ -80,7 +81,7 @@ jobs:
           # Linux builds run in a container, which doesn't inherit the runner's
           # environment; macOS and Windows build on the runner itself.
           CIBW_ENVIRONMENT_PASS_LINUX: PHILTORCH_TORCH_PIN
-          # CIBW_BUILD, the Pythons to build for, is set by the step above.
+          # CIBW_BUILD, the Python to build on, is set by the step above.
           CIBW_SKIP: "*-musllinux_*"
           CIBW_ARCHS_LINUX: x86_64
           CIBW_ARCHS_MACOS: arm64

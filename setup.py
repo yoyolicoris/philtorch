@@ -193,7 +193,7 @@ else:
         install_requires=install_requires,
         ext_modules=ext_modules,
         cmdclass={"build_ext": BuildExtension},
-        options={"bdist_wheel": {"py_limited_api": f"cp{sys.version_info[0]}{sys.version_info[1]}"}}
+        options={"bdist_wheel": {"py_limited_api": f"cp3{sys.version_info.minor}"}}
         if py_limited_api
         else {},
     )

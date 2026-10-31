@@ -1,6 +1,4 @@
 #include <ATen/Dispatch.h>
-#include <ATen/ATen.h>
-#include <torch/library.h>
 
 #include "recur_scan.cuh"
 

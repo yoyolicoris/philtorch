@@ -1,6 +1,6 @@
 name: Build CUDA wheels
 
-# Builds Linux CUDA wheels for every (PyTorch, CUDA, Python) combination in
+# Builds one Linux CUDA wheel, abi3, for every (PyTorch, CUDA) build in
 # cuda_wheel_matrix.json and uploads them as CI artifacts. For a published
 # release, it then attaches them to the release as assets, and
 # deploy-cuda-index.yml rebuilds the PEP 503 index that links to them.
@@ -17,13 +17,13 @@ name: Build CUDA wheels
 # - `auditwheel repair --plat <platform>` is a fail-loud conformance gate, and
 #   a check step then rejects bundled CUDA or torch libraries, leftover debug
 #   info, and a missing torch pin.
-# - A GPU job then installs one wheel per torch/CUDA build, with --no-deps,
+# - Each wheel builds on its build's oldest Python. A GPU job then installs it,
+#   on the build's newest Python, with --no-deps,
 #   next to the matching official torch on a Modal GPU, and runs the CUDA
 #   tests against it (scripts/modal_smoke_test.py).
-# - PRs and dev pushes build one smoke leg (newest Python x newest torch x
-#   newest CUDA), and only when the build inputs change. Releases and manual
-#   dispatches build the full matrix (currently 30 legs) and GPU-test each of
-#   its 7 torch/CUDA builds.
+# - PRs and dev pushes build and GPU-test the newest torch/CUDA build, and
+#   only when the build inputs change. Releases and manual dispatches build
+#   and GPU-test all of them (currently 7).
 # - A release's wheels are published only once every leg has built and every
 #   GPU test has passed. Assets already on the release are never replaced:
 #   a wheel already there with the same contents is skipped, so failed jobs

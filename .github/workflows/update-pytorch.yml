@@ -74,7 +74,6 @@ jobs:
 
           - the diff of \`cuda_wheel_matrix.json\`, \`pyproject.toml\` and the README table;
           - the places that name the oldest Python, when \`requires-python\` rises;
-          - that the new \`build_image\`, if it changed, has the new CPython (the CUDA build fails otherwise).
 
           CI doesn't start on pull requests opened by a workflow: close and reopen this pull request to run it.
           EOF
