@@ -35,8 +35,10 @@ results.
 - `torchlpc/cuda/lpc.cu`: use only torch's stable C++ API (`torch/csrc/stable`,
   `torch/headeronly`), as the other native sources do: `STD_TORCH_CHECK`,
   `STD_CUDA_KERNEL_LAUNCH_CHECK`, the stable device guard, `THO_DISPATCH_V2`
-  and `STABLE_TORCH_LIBRARY_IMPL`. The launches moved into two helper
-  templates, because the launches did not compile inside the dispatch macro;
-  `cat`, `flip`, `real`, `imag`, `stack` and `view_as_complex`,
-  which have no stable wrapper, go through `philtorch::call_aten`
-  (`philtorch/csrc/stable_support.h`), which includes it first.
+  and `STABLE_TORCH_LIBRARY_IMPL`. The stable API has no `cat`, `flip`,
+  `real`, `imag`, `stack` or `view_as_complex`, so the kernel reads `zi`
+  and `x` and writes the output directly instead of filtering a padded
+  copy, one kernel templated on `c10::complex` replaces the one on split
+  real and imaginary parts, and `zi` must have one state per coefficient,
+  as on the CPU. The launch is a helper template, because it did not
+  compile inside the dispatch macro.
