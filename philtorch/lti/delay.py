@@ -338,18 +338,13 @@ def delay_state_space(
             return signal * gain, state
         length = signal.size(1)
         flat = signal.permute(0, 2, 1).reshape(batch_size * M, length)
-        # unroll_factor=1 would make state_space warn that its meaning changed
-        # in 0.8, but this argument is new. A factor of at least the block
-        # length runs the same sequential loop.
-        # TODO(#85): pass unroll_factor through once that warning is removed.
-        factor = length + 1 if unroll_factor == 1 else unroll_factor
         flat, state = state_space(
             filter_A,
             flat,
             B=filter_B,
             D=filter_D,
             zi=state,
-            unroll_factor=factor,
+            unroll_factor=unroll_factor,
             out_idx=0,
         )
         return flat.reshape(batch_size, M, length).permute(0, 2, 1), state
