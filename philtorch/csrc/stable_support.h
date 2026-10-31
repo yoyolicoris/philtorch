@@ -79,19 +79,6 @@ namespace philtorch
                t == S::ComplexHalf;
     }
 
-    // Calls an ATen op through the dispatcher, as the stable ops in
-    // torch/csrc/stable/ops.h do, for those that have no wrapper there.
-    template <typename... Args>
-    inline torch::stable::Tensor call_aten(const char *op, const char *overload,
-                                           const Args &...args)
-    {
-        std::array<StableIValue, sizeof...(Args)> stack{
-            torch::stable::detail::from(args)...};
-        STABLE_TORCH_ERROR_CODE_CHECK(torch_call_dispatcher(
-            op, overload, stack.data(), TORCH_ABI_VERSION));
-        return torch::stable::detail::to<torch::stable::Tensor>(stack[0]);
-    }
-
 #ifdef __CUDACC__
     // The current CUDA stream of the device.
     inline cudaStream_t current_cuda_stream(torch::stable::DeviceIndex device)
