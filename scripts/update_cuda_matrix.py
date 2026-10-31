@@ -25,6 +25,9 @@ from pathlib import Path
 sys.path.insert(0, str(Path(__file__).parent))
 import cuda_wheel_version as cwv  # noqa: E402
 
+sys.path.insert(0, str(cwv.REPO_ROOT))
+from build_support import MIN_TORCH  # noqa: E402
+
 PYPI_URL = "https://pypi.org/pypi/torch/json"
 INDEX_ROOT_URL = "https://download.pytorch.org/whl/"
 RELEASE_CYCLE_URL = "https://peps.python.org/api/release-cycle.json"
@@ -39,7 +42,6 @@ QUAY_TAGS_URL = (
 )
 BUILD_IMAGE_REPOSITORY = "quay.io/pypa/manylinux_2_28_x86_64"
 PAGES_URL = "https://yoyolicoris.github.io/philtorch/"
-NEWEST_MINORS = 3
 TABLE_START = "<!-- cuda-index-table:start -->"
 TABLE_END = "<!-- cuda-index-table:end -->"
 FILES = ("cuda_wheel_matrix.json", "pyproject.toml", "README.md")
@@ -123,13 +125,15 @@ def newest_dated_tag(data):
 
 
 def compute_builds(old, oldest_python):
-    """One build per CUDA version, for the latest patch of the newest torch minors."""
+    """One build per CUDA version, for the latest patch of each torch minor from MIN_TORCH."""
     pypi = parse_pypi_torch(json.loads(fetch(PYPI_URL)))
     latest = {}
     for version in pypi:
         if _minor(version) not in latest or _key(version) > _key(latest[_minor(version)]):
             latest[_minor(version)] = version
-    versions = [latest[minor] for minor in sorted(latest, key=_key)[-NEWEST_MINORS:]]
+    versions = [
+        latest[minor] for minor in sorted(latest, key=_key) if _key(minor) >= _key(MIN_TORCH)
+    ]
     tags = {
         tag: cuda
         for tag in sorted(set(re.findall(r'href="(cu\d{3})/"', fetch(INDEX_ROOT_URL))))
@@ -203,20 +207,12 @@ def update_pyproject(text, oldest, pythons):
 
 
 def render_index_table(builds):
-    """The README's CUDA index table: a row per torch minor, newest first."""
-    cudas = sorted({b["cuda"] for b in builds}, key=_key)
-    minors = sorted({_minor(b["torch"]) for b in builds}, key=_key, reverse=True)
-    present = {(_minor(b["torch"]), b["cuda"]) for b in builds}
-    lines = [
-        "| PyTorch | " + " | ".join(f"CUDA {cuda}" for cuda in cudas) + " |",
-        "| --- |" + " --- |" * len(cudas),
-    ]
-    for minor in minors:
-        cells = []
-        for cuda in cudas:
-            path = f"whl/torch{minor}-{cwv._cuda_tag(cuda)}/"
-            cells.append(f"[`{path}`]({PAGES_URL}{path})" if (minor, cuda) in present else "—")
-        lines.append(f"| {minor} | " + " | ".join(cells) + " |")
+    """The README's CUDA index table: a row per CUDA major, newest first."""
+    majors = sorted({int(cwv.cuda_major(b["cuda"])) for b in builds}, reverse=True)
+    lines = ["| CUDA | Index |", "| --- | --- |"]
+    for major in majors:
+        path = f"whl/cu{major}/"
+        lines.append(f"| {major} | [`{path}`]({PAGES_URL}{path}) |")
     return "\n".join(lines)
 
 

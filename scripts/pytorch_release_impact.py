@@ -42,7 +42,7 @@ PhilTorch: a PyTorch library of differentiable filters and recurrences, HMM \
 and Kalman estimation and DTW/CTC alignment. Its native C++/CUDA ops are \
 torch.library custom ops with registered autograd and torch.compile support; \
 it has Triton kernels on CUDA and Metal kernels on MPS, and ships CPU wheels \
-on PyPI and CUDA wheels for each PyTorch minor and CUDA version.
+on PyPI and CUDA wheels for each CUDA major version.
 
 Reply with Markdown only, in exactly these three sections, each a short list \
 of one-line items:

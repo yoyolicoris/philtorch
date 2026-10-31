@@ -1,22 +1,23 @@
 """Compute the PEP 440 version for a PhilTorch CUDA wheel build.
 
-The version is the setuptools_scm base version plus a local label identifying
-the exact PyTorch/CUDA build, e.g. ``0.6.0+torch2.14.1.cu130``. The selected
-PyTorch/CUDA combination must come from ``cuda_wheel_matrix.json``, so the
-wheel workflow matrix is derived from one checked-in file instead of guessing
-versions in several places.
+The version is the setuptools_scm base version plus a local label naming the
+CUDA major the wheel is built for, e.g. ``0.9.0+cu13``. The wheel loads on every
+PyTorch the matrix lists for that major. The CUDA version must come from
+``cuda_wheel_matrix.json``, so the wheel workflow matrix is derived from one
+checked-in file instead of guessing versions in several places.
 
 Intended use in the CUDA wheel workflow::
 
-    VERSION="$(python scripts/cuda_wheel_version.py --torch 2.14.1 --cuda 13.0)"
+    VERSION="$(python scripts/cuda_wheel_version.py --cuda 13.0)"
     SETUPTOOLS_SCM_PRETEND_VERSION_FOR_PHILTORCH="$VERSION" python -m build ...
 
 The ``_FOR_PHILTORCH`` form scopes the override to this project, so packages
 built from source in the same environment keep their own versions.
 
-``--list`` prints the expanded build matrix, one leg per PyTorch/CUDA build and
-Python it lists, as JSON on a single line, so it can be written straight to
-``$GITHUB_OUTPUT``.
+``--list`` prints the legs of the workflow as JSON on a single line, so it can
+be written straight to ``$GITHUB_OUTPUT``: ``build`` has one leg per CUDA major,
+and ``test`` one per PyTorch/CUDA build the matrix lists. See
+``expand_matrix``.
 """
 
 from __future__ import annotations
@@ -55,6 +56,10 @@ def _cuda_tag(cuda_version):
 
 def _version_tuple(version):
     return tuple(int(part) for part in version.split("."))
+
+
+def cuda_major(cuda_version):
+    return cuda_version.split(".")[0]
 
 
 def torch_minor(torch_version):
@@ -151,9 +156,8 @@ def validate_matrix(data, path="<matrix>"):
             raise RuntimeError(f"{where}: 'python_versions' must be a non-empty list like ['3.11']")
         if len(set(python_versions)) != len(python_versions):
             raise RuntimeError(f"{where}: 'python_versions' contains a duplicate")
-        # Each torch minor/CUDA pair gets its own package index (see
-        # scripts/generate_simple_index.py), which must hold one build per
-        # PhilTorch version; two patches of one minor would add a second.
+        # Each torch minor/CUDA pair is tested once; two patches of one minor
+        # would test it twice.
         key = (torch_minor(torch_version), cuda_version)
         if key in seen:
             raise RuntimeError(f"{where}: duplicate torch minor/CUDA combination {key}")
@@ -161,18 +165,14 @@ def validate_matrix(data, path="<matrix>"):
     return data
 
 
-def find_build(data, torch_version, cuda_version):
-    """Return the matrix build entry for an exact PyTorch/CUDA pair."""
-    for build in data["builds"]:
-        if build["torch"] == torch_version and build["cuda"] == cuda_version:
-            return build
-    supported = ", ".join(
-        f"{build['torch']}+{_cuda_tag(build['cuda'])}" for build in data["builds"]
-    )
-    raise RuntimeError(
-        f"torch {torch_version} with CUDA {cuda_version} is not in the CUDA wheel "
-        f"matrix (supported: {supported})"
-    )
+def check_cuda(data, cuda_version):
+    """Raise unless a matrix build uses ``cuda_version``."""
+    supported = sorted({build["cuda"] for build in data["builds"]}, key=_version_tuple)
+    if cuda_version not in supported:
+        raise RuntimeError(
+            f"CUDA {cuda_version} is not in the CUDA wheel matrix "
+            f"(supported: {', '.join(supported)})"
+        )
 
 
 def base_version(root=REPO_ROOT, override=None):
@@ -193,12 +193,11 @@ def base_version(root=REPO_ROOT, override=None):
     return public
 
 
-def cuda_wheel_version(base, torch_version, cuda_version):
-    """Build ``{base}+torch{X.Y.Z}.cu{NNN}`` and prove it is valid, deterministic PEP 440."""
+def cuda_wheel_version(base, cuda_version):
+    """Build ``{base}+cu{major}`` and prove it is valid, deterministic PEP 440."""
     from packaging.version import Version
 
-    label = f"torch{torch_version}.{_cuda_tag(cuda_version)}"
-    version = f"{base}+{label}"
+    version = f"{base}+{_cuda_tag(cuda_major(cuda_version))}"
     parsed = Version(version)
     # A version holds at most one "+", so a round trip also proves that the
     # local segment is exactly the label.
@@ -208,16 +207,35 @@ def cuda_wheel_version(base, torch_version, cuda_version):
 
 
 def expand_matrix(data):
-    """One leg per torch/CUDA build and each Python version it lists, in file order."""
+    """The legs of the CUDA wheel workflow, as ``{"build": [...], "test": [...]}``.
+
+    A test leg per torch/CUDA build, on its newest Python, in file order. A
+    build leg per CUDA major: the build with the oldest torch, then the oldest
+    CUDA of that major, on its oldest Python. ``label`` is the wheel's CUDA tag.
+    """
     shared = {"platform": data["platform"], "build_image": data["build_image"]}
-    legs = []
-    for build in data["builds"]:
+
+    def leg(build, python_version):
         fields = {key: value for key, value in build.items() if key != "python_versions"}
-        legs += [
-            {"python": python_version, **shared, **fields}
-            for python_version in build["python_versions"]
-        ]
-    return legs
+        label = _cuda_tag(cuda_major(build["cuda"]))
+        return {"python": python_version, **shared, **fields, "label": label}
+
+    oldest = {}
+    for build in data["builds"]:
+        major = cuda_major(build["cuda"])
+        key = (_version_tuple(build["torch"]), _version_tuple(build["cuda"]))
+        if major not in oldest or key < oldest[major][0]:
+            oldest[major] = (key, build)
+    return {
+        "build": [
+            leg(build, min(build["python_versions"], key=_version_tuple))
+            for _, build in (oldest[major] for major in sorted(oldest, key=int))
+        ],
+        "test": [
+            leg(build, max(build["python_versions"], key=_version_tuple))
+            for build in data["builds"]
+        ],
+    }
 
 
 def main(argv=None):
@@ -231,15 +249,8 @@ def main(argv=None):
         help="override the setuptools_scm base version (for testing)",
     )
     group = parser.add_mutually_exclusive_group(required=True)
-    group.add_argument("--torch", help="exact PyTorch version from the matrix, e.g. 2.14.1")
-    group.add_argument(
-        "--list", action="store_true", help="print the expanded build matrix as JSON"
-    )
-    parser.add_argument(
-        "--cuda",
-        default=None,
-        help="CUDA version for --torch, e.g. 13.0 (required with --torch)",
-    )
+    group.add_argument("--cuda", help="CUDA version from the matrix, e.g. 13.0")
+    group.add_argument("--list", action="store_true", help="print the workflow's legs as JSON")
     args = parser.parse_args(argv)
 
     data = validate_matrix(load_matrix(args.matrix), args.matrix)
@@ -247,12 +258,8 @@ def main(argv=None):
         print(json.dumps(expand_matrix(data), separators=(",", ":")))
         return 0
 
-    if args.cuda is None:
-        parser.error("--cuda is required with --torch")
-    build = find_build(data, args.torch, args.cuda)
-    print(
-        cuda_wheel_version(base_version(override=args.base_version), build["torch"], build["cuda"])
-    )
+    check_cuda(data, args.cuda)
+    print(cuda_wheel_version(base_version(override=args.base_version), args.cuda))
     return 0
 
 

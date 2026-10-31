@@ -1,11 +1,12 @@
 """Run PhilTorch's CUDA tests against a built CUDA wheel on a Modal GPU.
 
 Used by .github/workflows/build-cuda-wheels.yml. The wheel is installed with
---no-deps next to the official PyTorch build it was compiled against, so the
-exact CI artifact is what gets tested, and then the tests from tests/ marked
-``cuda`` run against the installed package, with coverage: pytest collects only
-the modules that have them. Their coverage is written to coverage.xml and
-their results to junit.xml, for the workflow to upload::
+--no-deps next to the official PyTorch build under test, which need not be the
+one it was compiled against, so the exact CI artifact is what gets tested, and
+then the tests from tests/ marked ``cuda`` run against the installed package,
+with coverage: pytest collects only the modules that have them. Their coverage
+is written to coverage.xml and their results to junit.xml, for the workflow to
+upload::
 
     SMOKE_PYTHON=3.13 SMOKE_TORCH=2.14.1 \\
     SMOKE_TORCH_INDEX_URL=https://download.pytorch.org/whl/cu132 SMOKE_GPU=T4 \\
