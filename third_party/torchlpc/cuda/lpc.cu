@@ -3,8 +3,8 @@
 #include <c10/cuda/CUDAGuard.h>
 #include <c10/cuda/CUDAStream.h>
 #include <stdio.h>
-#include <torch/script.h>
-#include <torch/torch.h>
+#include <ATen/ATen.h>
+#include <torch/library.h>
 
 // CUDA kernel for LPC computation
 template <typename scalar_t>

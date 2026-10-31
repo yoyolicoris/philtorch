@@ -142,9 +142,14 @@ jobs:
                   tuple(int(p) for p in leg[k].split(".")) for k in ("python", "torch", "cuda")
               ])
 
+          def oldest(group):
+              return min(group, key=lambda leg: tuple(int(p) for p in leg["python"].split(".")))
+
           if os.environ["GITHUB_EVENT_NAME"] not in ("release", "workflow_dispatch"):
-              legs = [newest(legs)]
-          # One GPU test per torch/CUDA build, on its newest Python.
+              top = newest(legs)
+              legs = [leg for leg in legs if (leg["torch"], leg["cuda"]) == (top["torch"], top["cuda"])]
+          # One abi3 wheel per torch/CUDA build, built on its oldest Python and
+          # tested on a GPU on its newest.
           groups = {}
           for leg in legs:
               groups.setdefault((leg["torch"], leg["cuda"]), []).append(leg)
@@ -161,7 +166,7 @@ jobs:
               }
               for leg in legs
           }
-          print("matrix=" + json.dumps([entry(leg) for leg in legs]))
+          print("matrix=" + json.dumps([entry(oldest(group)) for group in groups.values()]))
           print("smoke=" + json.dumps([entry(newest(group)) for group in groups.values()]))
           print("builds=" + json.dumps(builds))
           # The same for every leg.
@@ -290,7 +295,7 @@ jobs:
       - name: Upload wheel artifact
         uses: actions/upload-artifact@v7
         with:
-          name: cuda-wheels-torch${{ matrix.leg.torch }}-cu${{ matrix.leg.cuda }}-py${{ matrix.leg.python }}
+          name: cuda-wheels-torch${{ matrix.leg.torch }}-cu${{ matrix.leg.cuda }}
           path: repaired/*.whl
 
   gpu-test:
@@ -315,7 +320,7 @@ jobs:
 
       - uses: actions/download-artifact@v8
         with:
-          name: cuda-wheels-torch${{ matrix.leg.torch }}-cu${{ matrix.leg.cuda }}-py${{ matrix.leg.python }}
+          name: cuda-wheels-torch${{ matrix.leg.torch }}-cu${{ matrix.leg.cuda }}
           path: wheel/
 
       - name: Run CUDA tests on a Modal GPU

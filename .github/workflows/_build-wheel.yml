@@ -63,11 +63,12 @@ jobs:
         # are on by default too, but CIBW_BUILD below names only regular ones.
         run: pip install cibuildwheel==4.3.5
 
-      - name: Select the Pythons to build for
+      - name: Select the Python to build on
+        # The oldest: its abi3 wheel serves every later Python too.
         shell: bash
         env:
           PYTHON_VERSIONS: ${{ inputs.python_versions }}
-        run: echo "CIBW_BUILD=$(jq -r 'map("cp" + sub("[.]"; "") + "-*") | join(" ")' <<< "$PYTHON_VERSIONS")" >> "$GITHUB_ENV"
+        run: echo "CIBW_BUILD=$(jq -r '"cp" + (.[0] | sub("[.]"; "")) + "-*"' <<< "$PYTHON_VERSIONS")" >> "$GITHUB_ENV"
 
       - name: Build wheels
         run: cibuildwheel --output-dir wheelhouse

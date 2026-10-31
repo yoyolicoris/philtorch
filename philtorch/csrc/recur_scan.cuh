@@ -10,7 +10,8 @@
 #include <thrust/iterator/tabulate_output_iterator.h>
 #include <thrust/iterator/transform_iterator.h>
 #include <ATen/OpMathType.h>
-#include <torch/torch.h>
+#include <ATen/ATen.h>
+#include <torch/library.h>
 
 #include <cstdint>
 #include <limits>

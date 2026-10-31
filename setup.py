@@ -2,6 +2,7 @@ import glob
 import os
 import subprocess
 import sys
+import sysconfig
 
 from setuptools import setup
 
@@ -10,6 +11,10 @@ from setuptools import setup
 from build_support import resolve_cuda_build, torch_requirement
 
 library_name = "philtorch"
+# The extension uses only CPython's limited API, so one abi3 wheel, tagged with
+# the Python that builds it, serves that Python and every later one. abi3
+# doesn't cover free-threaded CPython, which gets a regular wheel.
+py_limited_api = not sysconfig.get_config_var("Py_GIL_DISABLED")
 
 
 def get_homebrew_prefix(formula):
@@ -143,6 +148,7 @@ def get_extensions():
             [os.path.relpath(s, this_dir) for s in sources],
             extra_compile_args=extra_compile_args,
             extra_link_args=extra_link_args,
+            py_limited_api=py_limited_api,
         )
     ]
 
@@ -187,4 +193,7 @@ else:
         install_requires=install_requires,
         ext_modules=ext_modules,
         cmdclass={"build_ext": BuildExtension},
+        options={"bdist_wheel": {"py_limited_api": f"cp{sys.version_info[0]}{sys.version_info[1]}"}}
+        if py_limited_api
+        else {},
     )

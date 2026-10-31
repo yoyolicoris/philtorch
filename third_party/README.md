@@ -29,5 +29,6 @@ stream they could read inputs before they were written and return wrong
 results.
 
 - `torchlpc/cuda/lpc.cu`: launch on the current stream, check each launch,
-  check the order limit with `TORCH_CHECK` instead of `assert`, and require
-  the coefficients on the input's device.
+  check the order limit with `TORCH_CHECK` instead of `assert`, require
+  the coefficients on the input's device, and include ATen in place of
+  `torch/script.h` and `torch/torch.h`, which pull in Python's full API.
