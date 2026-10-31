@@ -40,7 +40,8 @@ def torch_requirement(pinned_torch_version=""):
     # built against. Source builds and the CPU wheels keep the broad range;
     # CUDA wheels set PHILTORCH_TORCH_PIN to the torch they were built with.
     if not pinned_torch_version:
-        return "torch >= 2.4.0"
+        # 2.6 is the first whose BuildExtension builds with py_limited_api.
+        return "torch >= 2.6.0"
     parts = pinned_torch_version.split(".")
     if len(parts) != 3 or not all(part.isdigit() for part in parts):
         raise RuntimeError(

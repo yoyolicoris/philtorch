@@ -76,7 +76,7 @@ jobs:
         env:
           # The wheel only loads with the torch minor it is compiled against,
           # so it requires that minor: torch == X.Y.* (see setup.py). The sdist
-          # is built without this and keeps torch >= 2.4.0.
+          # is built without this and keeps torch >= 2.6.0.
           PHILTORCH_TORCH_PIN: ${{ inputs.torch_version }}
           # Linux builds run in a container, which doesn't inherit the runner's
           # environment; macOS and Windows build on the runner itself.
