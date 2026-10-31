@@ -17,6 +17,7 @@ MPS dispatch uses one three-stage hierarchical SIMD implementation that replays 
 | --- | --- |
 | [`ops.cpp`](ops.cpp) | Creates the `philtorch._C` module and defines the dispatcher schemas of the recurrence ops, `philtorch::lti_recur` among them. |
 | [`host_recur.cpp`](host_recur.cpp) | CPU kernels of the recurrence ops, `philtorch::scan` included, split over time when a batch has fewer sequences than threads, long enough for the split to pay. |
+| [`stable_support.h`](stable_support.h) | What the CPU and CUDA sources need beyond torch's stable C++ API, which they use alone (`torch/csrc/stable`, `torch/headeronly`): the target version, `opmath_type`, `ceil_div`, dtype predicates, and `call_aten` for ATen ops without a stable wrapper. `lti_recur_mps_replay.mm` still uses the non-stable API, so the header isn't included there and the target version doesn't apply to it. |
 | [`host_dot.h`](host_dot.h) | The dot product of the CPU kernels of the recurrence ops and of `lpc`, vectorized for float and double from size 8. |
 | [`torchlpc_shim.cpp`](torchlpc_shim.cpp) | Defines the schemas of `philtorch::scan` and `philtorch::lpc`, and the CPU kernel of `lpc`, one sequence per thread. |
 | [`lti_recur_mps_replay.mm`](lti_recur_mps_replay.mm) | Objective-C++ host code and the embedded Metal Shading Language source. |

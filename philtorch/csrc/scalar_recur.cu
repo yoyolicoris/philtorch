@@ -1,12 +1,9 @@
-#include <c10/cuda/CUDAException.h>
-#include <c10/cuda/CUDAGuard.h>
 #include <thrust/iterator/counting_iterator.h>
 #include <thrust/iterator/transform_iterator.h>
 #include <thrust/iterator/transform_output_iterator.h>
 #include <thrust/iterator/zip_iterator.h>
 #include <thrust/tuple.h>
 #include <thrust/zip_function.h>
-#include <ATen/OpMathType.h>
 
 #include "recur_scan.cuh"
 
@@ -62,9 +59,9 @@ template <typename scalar_t>
 void scalar_recurrence(const scalar_t *decays, int64_t stride_b,
                        int64_t stride_t, const scalar_t *zi,
                        const scalar_t *impulses, scalar_t *out,
-                       int n_steps, int64_t total_steps)
+                       int n_steps, int64_t total_steps, const Tensor &like)
 {
-    using acc_t = at::opmath_type<scalar_t>; // the state stays in the accumulation type
+    using acc_t = philtorch::opmath_type<scalar_t>; // the state stays in the accumulation type
     thrust::counting_iterator<int> it(0);
     auto input_op = thrust::make_zip_function(
         scalar_recur_input_op<scalar_t, acc_t>{decays, zi, n_steps, stride_b, stride_t});
@@ -75,72 +72,76 @@ void scalar_recurrence(const scalar_t *decays, int64_t stride_b,
         thrust::make_transform_iterator(
             thrust::make_zip_iterator(it, impulses), input_op),
         thrust::make_transform_output_iterator(out, take_second<scalar_t, acc_t>()),
-        recur_binary_op<acc_t>(), total_steps);
+        recur_binary_op<acc_t>(), total_steps, like);
 }
 
 // h[t] = decays[b * stride_b + t * stride_t] h[t - 1] + x[b, t], h[-1] = zi[b]
-at::Tensor scalar_recur_cuda_launch(const at::Tensor &decays, int64_t stride_b,
-                                    int64_t stride_t, const at::Tensor &zi,
-                                    const at::Tensor &x)
+Tensor scalar_recur_cuda_launch(const Tensor &decays, int64_t stride_b,
+                                int64_t stride_t, const Tensor &zi,
+                                const Tensor &x)
 {
-    TORCH_CHECK(zi.scalar_type() == x.scalar_type(),
-                "zi must have the same scalar type as input");
-    TORCH_CHECK(decays.scalar_type() == x.scalar_type(),
-                "A must have the same scalar type as input");
-    TORCH_CHECK(decays.device() == x.device() && zi.device() == x.device(),
-                "A and zi must be on the same device as input");
-    const at::cuda::OptionalCUDAGuard device_guard(device_of(x));
+    STD_TORCH_CHECK(zi.scalar_type() == x.scalar_type(),
+                    "zi must have the same scalar type as input");
+    STD_TORCH_CHECK(decays.scalar_type() == x.scalar_type(),
+                    "A must have the same scalar type as input");
+    STD_TORCH_CHECK(decays.device() == x.device() && zi.device() == x.device(),
+                    "A and zi must be on the same device as input");
+    const torch::stable::accelerator::DeviceGuard device_guard(
+        x.get_device_index());
 
-    auto decays_contiguous = decays.contiguous();
-    auto zi_contiguous = zi.contiguous();
-    auto x_contiguous = x.contiguous();
-    auto output = at::empty_like(x_contiguous);
+    auto decays_contiguous = torch::stable::contiguous(decays);
+    auto zi_contiguous = torch::stable::contiguous(zi);
+    auto x_contiguous = torch::stable::contiguous(x);
+    auto output = torch::stable::empty_like(x_contiguous);
     auto n_steps = x.size(1);
     auto n_batches = x.size(0);
 
-    AT_DISPATCH_FLOATING_AND_COMPLEX_TYPES_AND3(
-        at::kLong, at::kHalf, at::kBFloat16,
-        x.scalar_type(), "scalar_recurrence", [&]
-        { scalar_recurrence<scalar_t>(
-              decays_contiguous.const_data_ptr<scalar_t>(), stride_b, stride_t,
-              zi_contiguous.const_data_ptr<scalar_t>(),
-              x_contiguous.const_data_ptr<scalar_t>(),
-              output.mutable_data_ptr<scalar_t>(),
-              static_cast<int>(n_steps), n_batches * n_steps); });
+    using S = torch::headeronly::ScalarType;
+    THO_DISPATCH_V2(
+        x.scalar_type(), "scalar_recurrence",
+        AT_WRAP([&]
+                { scalar_recurrence<scalar_t>(
+                      decays_contiguous.const_data_ptr<scalar_t>(), stride_b,
+                      stride_t, zi_contiguous.const_data_ptr<scalar_t>(),
+                      x_contiguous.const_data_ptr<scalar_t>(),
+                      output.mutable_data_ptr<scalar_t>(),
+                      static_cast<int>(n_steps), n_batches * n_steps, x); }),
+        AT_FLOATING_TYPES, AT_COMPLEX_TYPES, S::Long, S::Half, S::BFloat16);
 
     return output;
 }
 
-at::Tensor lti_recur_cuda_impl(const at::Tensor &a,
-                               const at::Tensor &zi, const at::Tensor &x)
+Tensor lti_recur_cuda_impl(const Tensor &a,
+                           const Tensor &zi, const Tensor &x)
 {
-    TORCH_CHECK(a.dim() <= 1, "A must be a vector or a scalar");
-    TORCH_CHECK(x.dim() == 2 && zi.dim() == 1 && zi.size(0) == x.size(0),
-                "x must be (B, T) and zi (B,)");
-    TORCH_CHECK(x.size(1) > 0, "x must contain at least one time step");
+    STD_TORCH_CHECK(a.dim() <= 1, "A must be a vector or a scalar");
+    STD_TORCH_CHECK(x.dim() == 2 && zi.dim() == 1 && zi.size(0) == x.size(0),
+                    "x must be (B, T) and zi (B,)");
+    STD_TORCH_CHECK(x.size(1) > 0, "x must contain at least one time step");
     bool per_item = a.dim() == 1 && a.numel() == x.size(0);
-    TORCH_CHECK(per_item || a.numel() == 1, "A must be a scalar or (B,)");
+    STD_TORCH_CHECK(per_item || a.numel() == 1, "A must be a scalar or (B,)");
     return scalar_recur_cuda_launch(a, per_item ? 1 : 0, 0, zi, x);
 }
 
 // h[t] = decay[t] h[t - 1] + impulse[t]: the scalar recurrence with a
 // (B, T) A, one coefficient per step.
-at::Tensor scan_cuda(const at::Tensor &impulse, const at::Tensor &decay,
-                     const at::Tensor &init)
+Tensor scan_cuda(const Tensor &impulse, const Tensor &decay,
+                 const Tensor &init)
 {
-    TORCH_CHECK(impulse.dim() == 2 && decay.sizes() == impulse.sizes() &&
-                    init.dim() == 1 && init.size(0) == impulse.size(0),
-                "impulse and decay must be (B, T) and init (B,)");
-    TORCH_CHECK(impulse.scalar_type() == at::kFloat ||
-                    impulse.scalar_type() == at::kDouble ||
-                    impulse.scalar_type() == at::kComplexFloat ||
-                    impulse.scalar_type() == at::kComplexDouble,
-                "Input must be float32, float64, complex64 or complex128");
+    STD_TORCH_CHECK(impulse.dim() == 2 && decay.sizes() == impulse.sizes() &&
+                        init.dim() == 1 && init.size(0) == impulse.size(0),
+                    "impulse and decay must be (B, T) and init (B,)");
+    using S = torch::headeronly::ScalarType;
+    STD_TORCH_CHECK(impulse.scalar_type() == S::Float ||
+                        impulse.scalar_type() == S::Double ||
+                        impulse.scalar_type() == S::ComplexFloat ||
+                        impulse.scalar_type() == S::ComplexDouble,
+                    "Input must be float32, float64, complex64 or complex128");
     return scalar_recur_cuda_launch(decay, impulse.size(1), 1, init, impulse);
 }
 
-TORCH_LIBRARY_IMPL(philtorch, CUDA, m)
+STABLE_TORCH_LIBRARY_IMPL(philtorch, CUDA, m)
 {
-    m.impl("lti_recur", &lti_recur_cuda_impl);
-    m.impl("scan", &scan_cuda);
+    m.impl("lti_recur", TORCH_BOX(&lti_recur_cuda_impl));
+    m.impl("scan", TORCH_BOX(&scan_cuda));
 }

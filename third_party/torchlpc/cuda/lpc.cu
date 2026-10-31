@@ -1,10 +1,15 @@
 #include <assert.h>
-#include <c10/cuda/CUDAException.h>
-#include <c10/cuda/CUDAGuard.h>
-#include <c10/cuda/CUDAStream.h>
 #include <stdio.h>
-#include <ATen/ATen.h>
-#include <torch/library.h>
+
+// The includer, philtorch/csrc/torchlpc_cuda.cu, includes stable_support.h
+// first: it sets the stable ABI version before any torch header is read.
+#include <torch/csrc/stable/accelerator.h>
+#include <torch/csrc/stable/library.h>
+#include <torch/csrc/stable/ops.h>
+#include <torch/csrc/stable/tensor.h>
+#include <torch/headeronly/core/Dispatch_v2.h>
+
+using torch::stable::Tensor;
 
 // CUDA kernel for LPC computation
 template <typename scalar_t>
@@ -113,71 +118,97 @@ __global__ void lpc_cuda_kernel_complex(
     }
 }
 
-at::Tensor lpc_cuda_wrapper(const at::Tensor& x, const at::Tensor& a,
-                            const at::Tensor& zi) {
-    TORCH_CHECK(x.is_floating_point() || x.is_complex(),
-                "Input must be floating point or complex");
-    TORCH_CHECK(a.scalar_type() == x.scalar_type(),
-                "Coefficients must have the same scalar type as input");
-    TORCH_CHECK(a.device() == x.device(),
-                "Coefficients must be on the same device as input");
-    TORCH_CHECK(zi.scalar_type() == x.scalar_type(),
-                "Initial conditions must have the same scalar type as input");
-
-    TORCH_CHECK(x.dim() == 2, "Input must be 2D");
-    TORCH_CHECK(zi.dim() == 2, "Initial conditions must be 2D");
-    TORCH_CHECK(x.size(0) == zi.size(0),
-                "Batch size of input and initial conditions must match");
-
-    const at::cuda::OptionalCUDAGuard device_guard(device_of(x));
-
-    auto a_contiguous = a.contiguous();
-
-    at::Tensor out;
-    auto order = a_contiguous.size(2);
-    TORCH_CHECK(order <= 1024, "LPC order must be less than or equal to 1024");
-    auto threads_per_block = order;
-    auto stream = c10::cuda::getCurrentCUDAStream();
-
-    if (x.is_floating_point()) {
-        out = at::cat({zi.flip(1), x}, 1).contiguous();
-        AT_DISPATCH_FLOATING_TYPES(x.scalar_type(), "lpc_cuda", [&] {
-            auto padded_y = out.mutable_data_ptr<scalar_t>();
-            auto A = a_contiguous.const_data_ptr<scalar_t>();
-            auto B = x.size(0);
-            auto T = x.size(1);
-
-            lpc_cuda_kernel<scalar_t><<<B, threads_per_block,
-                                        threads_per_block * sizeof(scalar_t),
-                                        stream>>>(padded_y, A, B, T, order);
-            C10_CUDA_KERNEL_LAUNCH_CHECK();
-        });
-    } else {
-        auto out_real =
-            at::cat({at::real(zi).flip(1), at::real(x)}, 1).contiguous();
-        auto out_imag =
-            at::cat({at::imag(zi).flip(1), at::imag(x)}, 1).contiguous();
-        auto a_real = at::real(a_contiguous).contiguous();
-        auto a_imag = at::imag(a_contiguous).contiguous();
-        AT_DISPATCH_FLOATING_TYPES(
-            out_real.scalar_type(), "lpc_cuda_complex", [&] {
-                auto padded_y_real = out_real.mutable_data_ptr<scalar_t>();
-                auto padded_y_imag = out_imag.mutable_data_ptr<scalar_t>();
-                auto A_real = a_real.const_data_ptr<scalar_t>();
-                auto A_imag = a_imag.const_data_ptr<scalar_t>();
-                auto B = x.size(0);
-                auto T = x.size(1);
-
-                lpc_cuda_kernel_complex<scalar_t>
-                    <<<B, threads_per_block,
-                       2 * threads_per_block * sizeof(scalar_t), stream>>>(
-                        padded_y_real, padded_y_imag, A_real, A_imag, B, T,
-                        order);
-                C10_CUDA_KERNEL_LAUNCH_CHECK();
-            });
-        out = at::view_as_complex(at::stack({out_real, out_imag}, -1));
-    }
-    return out.slice(1, order, out.size(1)).contiguous();
+// The launches are outside the dispatch macro, inside which they did not compile.
+template <typename scalar_t>
+void lpc_launch(Tensor& padded_y, const Tensor& a, int64_t B, int64_t T,
+                int64_t order, cudaStream_t stream) {
+    lpc_cuda_kernel<scalar_t><<<B, order, order * sizeof(scalar_t), stream>>>(
+        padded_y.mutable_data_ptr<scalar_t>(), a.const_data_ptr<scalar_t>(), B,
+        T, order);
+    STD_CUDA_KERNEL_LAUNCH_CHECK();
 }
 
-TORCH_LIBRARY_IMPL(torchlpc, CUDA, m) { m.impl("lpc", &lpc_cuda_wrapper); }
+template <typename scalar_t>
+void lpc_launch_complex(Tensor& padded_y_real, Tensor& padded_y_imag,
+                        const Tensor& a_real, const Tensor& a_imag, int64_t B,
+                        int64_t T, int64_t order, cudaStream_t stream) {
+    lpc_cuda_kernel_complex<scalar_t>
+        <<<B, order, 2 * order * sizeof(scalar_t), stream>>>(
+            padded_y_real.mutable_data_ptr<scalar_t>(),
+            padded_y_imag.mutable_data_ptr<scalar_t>(),
+            a_real.const_data_ptr<scalar_t>(),
+            a_imag.const_data_ptr<scalar_t>(), B, T, order);
+    STD_CUDA_KERNEL_LAUNCH_CHECK();
+}
+
+Tensor lpc_cuda_wrapper(const Tensor& x, const Tensor& a, const Tensor& zi) {
+    namespace ph = philtorch;
+    STD_TORCH_CHECK(
+        ph::is_floating(x.scalar_type()) || ph::is_complex(x.scalar_type()),
+        "Input must be floating point or complex");
+    STD_TORCH_CHECK(a.scalar_type() == x.scalar_type(),
+                    "Coefficients must have the same scalar type as input");
+    STD_TORCH_CHECK(a.device() == x.device(),
+                    "Coefficients must be on the same device as input");
+    STD_TORCH_CHECK(zi.scalar_type() == x.scalar_type(),
+                    "Initial conditions must have the same scalar type as input");
+
+    STD_TORCH_CHECK(x.dim() == 2, "Input must be 2D");
+    STD_TORCH_CHECK(zi.dim() == 2, "Initial conditions must be 2D");
+    STD_TORCH_CHECK(x.size(0) == zi.size(0),
+                    "Batch size of input and initial conditions must match");
+
+    const torch::stable::accelerator::DeviceGuard device_guard(
+        x.get_device_index());
+
+    auto a_contiguous = torch::stable::contiguous(a);
+
+    auto order = a_contiguous.size(2);
+    STD_TORCH_CHECK(order <= 1024, "LPC order must be less than or equal to 1024");
+    auto stream = ph::current_cuda_stream(x.get_device_index());
+    // cat, flip, real, imag, stack and view_as_complex have no stable wrapper.
+    const std::vector<int64_t> flip_dims{1};
+    auto flip = [&](const Tensor& t) {
+        return ph::call_aten("aten::flip", "", t, flip_dims);
+    };
+    auto cat = [&](const Tensor& first, const Tensor& second) {
+        return ph::call_aten("aten::cat", "",
+                             std::vector<Tensor>{first, second}, int64_t(1));
+    };
+
+    if (ph::is_floating(x.scalar_type())) {
+        Tensor out = torch::stable::contiguous(cat(flip(zi), x));
+        THO_DISPATCH_V2(
+            x.scalar_type(), "lpc_cuda",
+            AT_WRAP([&] {
+                lpc_launch<scalar_t>(out, a_contiguous, x.size(0), x.size(1),
+                                     order, stream);
+            }),
+            AT_FLOATING_TYPES);
+        return torch::stable::contiguous(
+            torch::stable::narrow(out, 1, order, out.size(1) - order));
+    }
+    auto real = [&](const Tensor& t) { return ph::call_aten("aten::real", "", t); };
+    auto imag = [&](const Tensor& t) { return ph::call_aten("aten::imag", "", t); };
+    auto out_real = torch::stable::contiguous(cat(flip(real(zi)), real(x)));
+    auto out_imag = torch::stable::contiguous(cat(flip(imag(zi)), imag(x)));
+    auto a_real = torch::stable::contiguous(real(a_contiguous));
+    auto a_imag = torch::stable::contiguous(imag(a_contiguous));
+    THO_DISPATCH_V2(
+        out_real.scalar_type(), "lpc_cuda_complex",
+        AT_WRAP([&] {
+            lpc_launch_complex<scalar_t>(out_real, out_imag, a_real, a_imag,
+                                         x.size(0), x.size(1), order, stream);
+        }),
+        AT_FLOATING_TYPES);
+    auto out = ph::call_aten(
+        "aten::view_as_complex", "",
+        ph::call_aten("aten::stack", "",
+                      std::vector<Tensor>{out_real, out_imag}, int64_t(-1)));
+    return torch::stable::contiguous(
+        torch::stable::narrow(out, 1, order, out.size(1) - order));
+}
+
+STABLE_TORCH_LIBRARY_IMPL(torchlpc, CUDA, m) {
+    m.impl("lpc", TORCH_BOX(&lpc_cuda_wrapper));
+}

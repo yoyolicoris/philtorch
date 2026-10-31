@@ -32,3 +32,11 @@ results.
   check the order limit with `TORCH_CHECK` instead of `assert`, require
   the coefficients on the input's device, and include ATen in place of
   `torch/script.h` and `torch/torch.h`, which pull in Python's full API.
+- `torchlpc/cuda/lpc.cu`: use only torch's stable C++ API (`torch/csrc/stable`,
+  `torch/headeronly`), as the other native sources do: `STD_TORCH_CHECK`,
+  `STD_CUDA_KERNEL_LAUNCH_CHECK`, the stable device guard, `THO_DISPATCH_V2`
+  and `STABLE_TORCH_LIBRARY_IMPL`. The launches moved into two helper
+  templates, because the launches did not compile inside the dispatch macro;
+  `cat`, `flip`, `real`, `imag`, `stack` and `view_as_complex`,
+  which have no stable wrapper, go through `philtorch::call_aten`
+  (`philtorch/csrc/stable_support.h`), which includes it first.
