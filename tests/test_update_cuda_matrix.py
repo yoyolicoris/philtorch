@@ -199,17 +199,16 @@ def test_current_upstream_reproduces_the_repository_files(tmp_path, monkeypatch)
 @pytest.mark.parametrize(
     "builds, older, image",
     [
+        # Every minor from the floor on stays, and the older 2.12 is left out.
         pytest.param(
-            [b for b in BASE if not b["torch"].startswith("2.13")]
-            + [build("2.16.0", c, NEW) for c in ("13.2", "13.4", "13.6")],
-            ("2.13.0",),
+            BASE + [build("2.16.0", c, NEW) for c in ("13.2", "13.4", "13.6")],
+            ("2.12.1",),
             IMAGE,
-            id="new-minor-drops-oldest",
+            id="new-minor-keeps-older",
         ),
         pytest.param(
-            [b for b in BASE if not b["torch"].startswith("2.13")]
-            + [build("2.16.0", c, [*NEW, "3.16"]) for c in ("13.2", "13.4")],
-            ("2.13.0",),
+            BASE + [build("2.16.0", c, [*NEW, "3.16"]) for c in ("13.2", "13.4")],
+            ("2.12.1",),
             NEW_IMAGE,
             id="new-python-moves-image",
         ),
@@ -301,8 +300,18 @@ ARCH_2_16 = UPDATE.ARCH_TABLE_URL.format(minor="2.16")
 def test_failure_raises_and_writes_nothing(tmp_path, monkeypatch, url, response, error, message):
     write_repo(tmp_path, BASE)
     # A new minor and a new Python, so that every source is read.
-    builds = BASE[2:] + [build("2.16.0", c, [*NEW, "3.16"]) for c in ("13.2", "13.4")]
+    builds = BASE + [build("2.16.0", c, [*NEW, "3.16"]) for c in ("13.2", "13.4")]
     before = read(tmp_path)
     with pytest.raises(error, match=message):
-        run(tmp_path, upstream(builds, older=("2.13.0",)), monkeypatch, overrides={url: response})
+        run(tmp_path, upstream(builds), monkeypatch, overrides={url: response})
     assert read(tmp_path) == before
+
+
+def test_index_table_has_a_row_per_cuda_major():
+    pages = UPDATE.PAGES_URL
+    assert UPDATE.render_index_table(BASE) == (
+        "| CUDA | Index |\n"
+        "| --- | --- |\n"
+        f"| 13 | [`whl/cu13/`]({pages}whl/cu13/) |\n"
+        f"| 12 | [`whl/cu12/`]({pages}whl/cu12/) |"
+    )

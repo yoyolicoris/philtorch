@@ -1,3 +1,8 @@
+# The oldest PyTorch the wheels support. The compiled ops target its stable
+# ABI: TORCH_TARGET_VERSION in philtorch/csrc/stable_support.h must match.
+MIN_TORCH = "2.13"
+
+
 def resolve_cuda_build(
     force_cuda_value,
     cuda_home,
@@ -36,12 +41,12 @@ def resolve_cuda_build(
 
 
 def torch_requirement(pinned_torch_version=""):
-    # A wheel's compiled extension only works with the PyTorch minor it was
-    # built against. Source builds and the CPU wheels keep the broad range;
-    # CUDA wheels set PHILTORCH_TORCH_PIN to the torch they were built with.
+    # The compiled ops target MIN_TORCH's stable ABI, so one binary loads on it
+    # and every later minor. Only the macOS wheel, whose Metal source uses the
+    # non-stable API, sets PHILTORCH_TORCH_PIN to the torch it was built with.
     if not pinned_torch_version:
-        # 2.6 is the first whose BuildExtension builds with py_limited_api.
-        return "torch >= 2.6.0"
+        # The floor of every build except the pinned one.
+        return f"torch >= {MIN_TORCH}.0"
     parts = pinned_torch_version.split(".")
     if len(parts) != 3 or not all(part.isdigit() for part in parts):
         raise RuntimeError(
