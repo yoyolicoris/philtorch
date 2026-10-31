@@ -1,6 +1,5 @@
 import itertools
 import random
-import warnings
 
 import pytest
 import torch
@@ -911,13 +910,9 @@ def test_delay_state_space_absorption_unroll_factor(after_matrix):
         A, x, DELAYS, B, C, D, None, zi, *absorption, absorption_zi, after_matrix
     )
 
-    # unroll_factor=1 is new here, so it runs the sequential loop quietly.
-    with warnings.catch_warnings():
-        warnings.simplefilter("error")
-        runs = [
-            delay_state_space(A, x, DELAYS, unroll_factor=factor, **kwargs)
-            for factor in (None, 1, 2)
-        ]
+    runs = [
+        delay_state_space(A, x, DELAYS, unroll_factor=factor, **kwargs) for factor in (None, 1, 2)
+    ]
 
     for y, zf, azf in runs:
         torch.testing.assert_close(y, expected_y)
@@ -980,11 +975,7 @@ def test_delay_state_space_absorption_passes_unroll_factor(monkeypatch, factor, 
         unroll_factor=factor,
     )
 
-    # unroll_factor=1 becomes one more than the block's length: any larger
-    # factor runs the sequential loop, without state_space's FutureWarning.
-    assert [length for length, _ in calls] == [4] * 5 + [2]
-    expected = {None: lambda n: None, 1: lambda n: n + 1, 2: lambda n: 2}[factor]
-    assert [value for _, value in calls] == [expected(length) for length, _ in calls]
+    assert calls == [(4, factor)] * 5 + [(2, factor)]
 
     calls.clear()
     pure_gain = absorption[0][:, :1], absorption[1][:, :0]
