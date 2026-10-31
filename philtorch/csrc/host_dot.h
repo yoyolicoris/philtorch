@@ -1,6 +1,6 @@
 #pragma once
 
-#include <ATen/OpMathType.h>
+#include "stable_support.h"
 
 #include <type_traits>
 
@@ -8,10 +8,10 @@
 // double from size 8 on are vectorized: in benchmarks, vectorizing smaller
 // sizes or complex types made the recurrence and lpc kernels slower.
 template <int stride = 1, typename left_t, typename right_t>
-inline at::opmath_type<right_t> host_dot(const left_t *left,
+inline philtorch::opmath_type<right_t> host_dot(const left_t *left,
                                          const right_t *right, int size)
 {
-    using acc_t = at::opmath_type<right_t>;
+    using acc_t = philtorch::opmath_type<right_t>;
     constexpr int minimum_simd_size = 8;
     acc_t sum = 0;
     if constexpr (std::is_same_v<acc_t, float> ||

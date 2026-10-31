@@ -1,22 +1,17 @@
-#include <ATen/ATen.h>
-#include <ATen/OpMathType.h>
-#include <ATen/ceil_div.h>
-#include <ATen/cuda/DeviceUtils.cuh>
-#include <c10/cuda/CUDAException.h>
-#include <c10/cuda/CUDAGuard.h>
-#include <c10/cuda/CUDAStream.h>
-#include <torch/library.h>
+#include "stable_support.h"
 
 #include <algorithm>
 #include <cstdint>
 #include <limits>
+
+using torch::stable::Tensor;
 
 // philtorch::resample(x, table, q, out_len): resampling with a polyphase table
 // of p = table.size(0) phases and taps = table.size(1) = 2 K + 2,
 //
 //   out[b, f p + i] = sum_k table[i, k] x[b, q f + (i q) / p - K + k],
 //
-// with x zero outside [0, T), accumulated in at::opmath_type.  CUDA only.
+// with x zero outside [0, T), accumulated in philtorch::opmath_type.  CUDA only.
 //
 // tile_kernel: a group of kGroupLanes lanes computes R outputs for BB rows,
 // loading each x value once for the R outputs and each weight once for the BB
@@ -45,7 +40,7 @@ constexpr int kMaxTileOutputs = 8;
 
 template <typename scalar_t>
 struct TileArgs {
-    using acc_t = at::opmath_type<scalar_t>;
+    using acc_t = philtorch::opmath_type<scalar_t>;
     const scalar_t *x;         // (B, T), contiguous
     scalar_t *out;             // (B, out_len)
     int64_t B, T, out_len;
@@ -66,7 +61,7 @@ __device__ __forceinline__ void scatter_levels(AccT (&a)[A], int lg, int &idx) {
         for (int i = 0; i < H; ++i) {
             const AccT send = up ? a[i] : a[i + H];
             const AccT keep = up ? a[i + H] : a[i];
-            a[i] = keep + WARP_SHFL_XOR(send, OFF, kWarp);
+            a[i] = keep + __shfl_xor_sync(0xffffffff, send, OFF, kWarp);
         }
         idx += up ? H : 0;
         scatter_levels<H / 2, OFF / 2, LV - 1>(a, lg, idx);
@@ -79,7 +74,7 @@ __device__ __forceinline__ void scatter_levels(AccT (&a)[A], int lg, int &idx) {
 template <typename scalar_t, int R, int BB>
 __global__ void __launch_bounds__(kBlock)
     tile_kernel(const TileArgs<scalar_t> a, unsigned int out_blocks) {
-    using acc_t = at::opmath_type<scalar_t>;
+    using acc_t = philtorch::opmath_type<scalar_t>;
     constexpr int G = kGroupLanes;
     constexpr int A = R * BB;
     constexpr int TPW = kWarp / G;  // tiles per warp
@@ -181,11 +176,11 @@ __global__ void __launch_bounds__(kBlock)
 
 // Launches tile_kernel on a 1-D grid of output blocks by row blocks, whose x
 // extent holds 2^31 - 1 blocks; a block covers BB rows and R outputs per tile.
-// table: (p, taps), in at::opmath_type<scalar_t>.
+// table: (p, taps), in philtorch::opmath_type<scalar_t>.
 template <typename scalar_t, int BB>
-void launch_tile(const at::Tensor &x, const at::Tensor &table, at::Tensor &out,
+void launch_tile(const Tensor &x, const Tensor &table, Tensor &out,
                  int64_t q, cudaStream_t stream) {
-    using acc_t = at::opmath_type<scalar_t>;
+    using acc_t = philtorch::opmath_type<scalar_t>;
     // The outputs that make kTileAcc accumulators, at most kMaxTileOutputs.
     constexpr int R = std::min(kTileAcc / BB, kMaxTileOutputs);
     constexpr int tiles_per_block = kWarpsPerBlock * (kWarp / kGroupLanes);
@@ -193,30 +188,33 @@ void launch_tile(const at::Tensor &x, const at::Tensor &table, at::Tensor &out,
     const int64_t p = table.size(0), taps = table.size(1);
     // The zero padding of a table row on either side: the first inputs of two
     // outputs of a tile are at most ceil((R - 1) q / p) apart.
-    const int64_t pad = at::ceil_div<int64_t>((R - 1) * q, p);
-    const at::Tensor padded = at::constant_pad_nd(table, {pad, pad}).contiguous();
+    const int64_t pad = philtorch::ceil_div<int64_t>((R - 1) * q, p);
+    const std::array<int64_t, 2> pad_sizes{pad, pad};
+    const Tensor padded =
+        torch::stable::contiguous(torch::stable::pad(table, pad_sizes));
     const TileArgs<scalar_t> a{x.const_data_ptr<scalar_t>(),
                                out.mutable_data_ptr<scalar_t>(),
                                B, T, out_len, p, q, taps, taps + 2 * pad, pad,
                                padded.const_data_ptr<acc_t>()};
 
-    const int64_t out_blocks = at::ceil_div<int64_t>(out_len, int64_t{tiles_per_block} * R);
-    const int64_t blocks = out_blocks * at::ceil_div<int64_t>(B, BB);
-    TORCH_CHECK(blocks <= std::numeric_limits<int>::max(),
-                "resample: the output exceeds the CUDA grid limit");
+    const int64_t out_blocks = philtorch::ceil_div<int64_t>(out_len, int64_t{tiles_per_block} * R);
+    const int64_t blocks = out_blocks * philtorch::ceil_div<int64_t>(B, BB);
+    STD_TORCH_CHECK(blocks <= std::numeric_limits<int>::max(),
+                    "resample: the output exceeds the CUDA grid limit");
     tile_kernel<scalar_t, R, BB>
         <<<static_cast<unsigned int>(blocks), kBlock, 0, stream>>>(
             a, static_cast<unsigned int>(out_blocks));
-    C10_CUDA_KERNEL_LAUNCH_CHECK();
+    STD_CUDA_KERNEL_LAUNCH_CHECK();
 }
 
-// table: (p, taps), in at::opmath_type<scalar_t>.
+// table: (p, taps), in philtorch::opmath_type<scalar_t>.
 template <typename scalar_t>
-at::Tensor resample_run(const at::Tensor &x, const at::Tensor &table,
-                        int64_t q, int64_t out_len) {
-    const auto stream = c10::cuda::getCurrentCUDAStream().stream();
-    const at::Tensor xc = x.contiguous();
-    at::Tensor out = at::empty({x.size(0), out_len}, x.options());
+Tensor resample_run(const Tensor &x, const Tensor &table,
+                    int64_t q, int64_t out_len) {
+    const auto stream = philtorch::current_cuda_stream(x.get_device_index());
+    const Tensor xc = torch::stable::contiguous(x);
+    Tensor out = torch::stable::empty({x.size(0), out_len}, x.scalar_type(),
+                                      std::nullopt, x.device());
     // The tiles' batch rows: the largest power of two up to B and kMaxTileRows.
     int BB = 1;
     while (BB < kMaxTileRows && 2 * BB <= x.size(0)) {
@@ -233,44 +231,49 @@ at::Tensor resample_run(const at::Tensor &x, const at::Tensor &table,
 
 }  // namespace
 
-at::Tensor sinc_resample_cuda_impl(const at::Tensor &x, const at::Tensor &table,
-                                   int64_t q, int64_t out_len) {
-    TORCH_CHECK(x.dim() == 2 && x.is_floating_point(),
-                "resample: x must be a 2-D floating tensor");
-    TORCH_CHECK(table.dim() == 2 && table.is_floating_point(),
-                "resample: table must be a 2-D floating tensor");
+Tensor sinc_resample_cuda_impl(const Tensor &x, const Tensor &table,
+                               int64_t q, int64_t out_len) {
+    STD_TORCH_CHECK(x.dim() == 2 && philtorch::is_floating(x.scalar_type()),
+                    "resample: x must be a 2-D floating tensor");
+    STD_TORCH_CHECK(table.dim() == 2 && philtorch::is_floating(table.scalar_type()),
+                    "resample: table must be a 2-D floating tensor");
     const int64_t p = table.size(0), taps = table.size(1);
-    TORCH_CHECK(taps >= 2 && taps % 2 == 0,
-                "resample: the number of taps must be even and at least 2, got ",
-                taps);
-    TORCH_CHECK(x.is_cuda() && table.device() == x.device(),
-                "resample: x and table must be on the same CUDA device");
-    TORCH_CHECK(q >= 1 && out_len >= 0,
-                "resample: q must be at least 1 and out_len at least 0");
-    TORCH_CHECK(p >= 1 && p <= kMaxTable && q <= kMaxTable &&
-                    taps <= kMaxTable,
-                "resample: the number of phases (", p, "), taps (", taps,
-                ") and q (", q, ") must be at most ", kMaxTable);
-    const at::cuda::OptionalCUDAGuard device_guard(device_of(x));
+    STD_TORCH_CHECK(taps >= 2 && taps % 2 == 0,
+                    "resample: the number of taps must be even and at least 2, got ",
+                    taps);
+    STD_TORCH_CHECK(x.is_cuda() && table.device() == x.device(),
+                    "resample: x and table must be on the same CUDA device");
+    STD_TORCH_CHECK(q >= 1 && out_len >= 0,
+                    "resample: q must be at least 1 and out_len at least 0");
+    STD_TORCH_CHECK(p >= 1 && p <= kMaxTable && q <= kMaxTable &&
+                        taps <= kMaxTable,
+                    "resample: the number of phases (", p, "), taps (", taps,
+                    ") and q (", q, ") must be at most ", kMaxTable);
+    const torch::stable::accelerator::DeviceGuard device_guard(
+        x.get_device_index());
     if (x.numel() == 0 || out_len == 0) {
-        return at::zeros({x.size(0), out_len}, x.options());
+        return torch::stable::new_zeros(x, {x.size(0), out_len});
     }
-    at::Tensor out;
-    AT_DISPATCH_FLOATING_TYPES_AND2(
-        at::kHalf, at::kBFloat16, x.scalar_type(), "resample_cuda", [&] {
-            const at::Tensor tab =
-                table.to(at::toOpMathType(x.scalar_type()));
+    Tensor out;
+    using S = torch::headeronly::ScalarType;
+    THO_DISPATCH_V2(
+        x.scalar_type(), "resample_cuda",
+        AT_WRAP([&] {
+            using acc_t = philtorch::opmath_type<scalar_t>;
+            const Tensor tab = torch::stable::to(
+                table, torch::headeronly::CppTypeToScalarType<acc_t>::value);
             out = resample_run<scalar_t>(x, tab, q, out_len);
-        });
+        }),
+        AT_FLOATING_TYPES, S::Half, S::BFloat16);
     return out;
 }
 
-TORCH_LIBRARY_FRAGMENT(philtorch, m) {
+STABLE_TORCH_LIBRARY_FRAGMENT(philtorch, m) {
     m.def(
         "resample(Tensor x, Tensor table, int q, int out_len) -> Tensor",
-        {at::Tag::pt2_compliant_tag});
+        {torch::headeronly::Tag::pt2_compliant_tag});
 }
 
-TORCH_LIBRARY_IMPL(philtorch, CUDA, m) {
-    m.impl("resample", &sinc_resample_cuda_impl);
+STABLE_TORCH_LIBRARY_IMPL(philtorch, CUDA, m) {
+    m.impl("resample", TORCH_BOX(&sinc_resample_cuda_impl));
 }
