@@ -1,15 +1,37 @@
 #include <assert.h>
-#include <c10/cuda/CUDAException.h>
-#include <c10/cuda/CUDAGuard.h>
-#include <c10/cuda/CUDAStream.h>
 #include <stdio.h>
-#include <ATen/ATen.h>
-#include <torch/library.h>
 
-// CUDA kernel for LPC computation
+// The includer, philtorch/csrc/torchlpc_cuda.cu, includes stable_support.h
+// first: it sets the stable ABI version before any torch header is read.
+#include <torch/csrc/stable/accelerator.h>
+#include <torch/csrc/stable/library.h>
+#include <torch/csrc/stable/ops.h>
+#include <torch/csrc/stable/tensor.h>
+#include <torch/headeronly/core/Dispatch_v2.h>
+
+using torch::stable::Tensor;
+
+// atomicAdd for real types; a complex one adds its parts, which are laid out
+// as two scalars.
 template <typename scalar_t>
-__global__ void lpc_cuda_kernel(scalar_t* padded_y,  // [B, T + order]
-                                const scalar_t* A,   // [B, T, order]
+__device__ void atomic_add(scalar_t* address, scalar_t val) {
+    atomicAdd(address, val);
+}
+
+template <typename scalar_t>
+__device__ void atomic_add(c10::complex<scalar_t>* address,
+                           c10::complex<scalar_t> val) {
+    auto parts = reinterpret_cast<scalar_t*>(address);
+    atomicAdd(parts, val.real());
+    atomicAdd(parts + 1, val.imag());
+}
+
+// CUDA kernel for LPC computation, real or complex
+template <typename scalar_t>
+__global__ void lpc_cuda_kernel(scalar_t* y,           // [B, T]
+                                const scalar_t* x,     // [B, T]
+                                const scalar_t* zi,    // [B, order]
+                                const scalar_t* A,     // [B, T, order]
                                 int64_t B, int64_t T, int64_t order) {
     extern __shared__ char smem[];
     scalar_t* sm = reinterpret_cast<scalar_t*>(smem);
@@ -19,8 +41,8 @@ __global__ void lpc_cuda_kernel(scalar_t* padded_y,  // [B, T + order]
 
     if (b >= B || i >= order) return;
 
-    // Initialize shared memory with the first 'order' elements
-    sm[i] = padded_y[b * (T + order) + i];
+    // Initialize shared memory with the initial conditions, reversed
+    sm[i] = zi[b * order + order - 1 - i];
     __syncthreads();
 
     int circular_idx = 0;
@@ -39,145 +61,74 @@ __global__ void lpc_cuda_kernel(scalar_t* padded_y,  // [B, T + order]
 
         if (i == order - 1) {
             sm[circular_idx] = v;
-            v = padded_y[b * (T + order) + t + order];
+            v = x[b * T + t];
         }
         __syncthreads();
 
         // Atomic add to shared memory
-        atomicAdd(&sm[circular_idx], v);
+        atomic_add(&sm[circular_idx], v);
         __syncthreads();
 
         if (i == order - 1) {
-            padded_y[b * (T + order) + t + order] = sm[circular_idx];
+            y[b * T + t] = sm[circular_idx];
         }
         __syncthreads();
     }
 }
-// CUDA kernel for complex LPC computation
+
+// The launch is outside the dispatch macro, inside which it did not compile.
 template <typename scalar_t>
-__global__ void lpc_cuda_kernel_complex(
-    scalar_t* padded_y_real,  // [B, T + order]
-    scalar_t* padded_y_imag,  // [B, T + order]
-    const scalar_t* A_real,   // [B, T, order]
-    const scalar_t* A_imag,   // [B, T, order]
-    int64_t B, int64_t T, int64_t order) {
-    extern __shared__ char smem[];
-    scalar_t* sm_real = reinterpret_cast<scalar_t*>(smem);
-    scalar_t* sm_imag = sm_real + order;
-
-    int b = blockIdx.x;
-    int i = threadIdx.x;
-
-    if (b >= B || i >= order) return;
-
-    // Initialize shared memory with the first 'order' elements
-    sm_real[i] = padded_y_real[b * (T + order) + i];
-    sm_imag[i] = padded_y_imag[b * (T + order) + i];
-    __syncthreads();
-
-    int circular_idx = 0;
-    for (int t = 0; t < T; ++t) {
-        circular_idx = t % order;
-        scalar_t a_real = -A_real[((b * T + t) * order) + i];
-        scalar_t a_imag = -A_imag[((b * T + t) * order) + i];
-
-        int idx_offset = circular_idx - i - 1;
-        if (i > circular_idx - 1) {
-            idx_offset += order;
-        }
-        int s_idx = (idx_offset + order) % order;
-        scalar_t s_real = sm_real[s_idx];
-        scalar_t s_imag = sm_imag[s_idx];
-
-        // Complex multiply: v = a * s
-        scalar_t v_real = a_real * s_real - a_imag * s_imag;
-        scalar_t v_imag = a_real * s_imag + a_imag * s_real;
-
-        if (i == order - 1) {
-            sm_real[circular_idx] = v_real;
-            sm_imag[circular_idx] = v_imag;
-            v_real = padded_y_real[b * (T + order) + t + order];
-            v_imag = padded_y_imag[b * (T + order) + t + order];
-        }
-        __syncthreads();
-
-        atomicAdd(&sm_real[circular_idx], v_real);
-        atomicAdd(&sm_imag[circular_idx], v_imag);
-        __syncthreads();
-
-        if (i == order - 1) {
-            padded_y_real[b * (T + order) + t + order] = sm_real[circular_idx];
-            padded_y_imag[b * (T + order) + t + order] = sm_imag[circular_idx];
-        }
-        __syncthreads();
-    }
+void lpc_launch(Tensor& y, const Tensor& x, const Tensor& zi, const Tensor& a,
+                int64_t order, cudaStream_t stream) {
+    lpc_cuda_kernel<scalar_t>
+        <<<x.size(0), order, order * sizeof(scalar_t), stream>>>(
+            y.mutable_data_ptr<scalar_t>(), x.const_data_ptr<scalar_t>(),
+            zi.const_data_ptr<scalar_t>(), a.const_data_ptr<scalar_t>(),
+            x.size(0), x.size(1), order);
+    STD_CUDA_KERNEL_LAUNCH_CHECK();
 }
 
-at::Tensor lpc_cuda_wrapper(const at::Tensor& x, const at::Tensor& a,
-                            const at::Tensor& zi) {
-    TORCH_CHECK(x.is_floating_point() || x.is_complex(),
-                "Input must be floating point or complex");
-    TORCH_CHECK(a.scalar_type() == x.scalar_type(),
-                "Coefficients must have the same scalar type as input");
-    TORCH_CHECK(a.device() == x.device(),
-                "Coefficients must be on the same device as input");
-    TORCH_CHECK(zi.scalar_type() == x.scalar_type(),
-                "Initial conditions must have the same scalar type as input");
+Tensor lpc_cuda_wrapper(const Tensor& x, const Tensor& a, const Tensor& zi) {
+    namespace ph = philtorch;
+    STD_TORCH_CHECK(
+        ph::is_floating(x.scalar_type()) || ph::is_complex(x.scalar_type()),
+        "Input must be floating point or complex");
+    STD_TORCH_CHECK(a.scalar_type() == x.scalar_type(),
+                    "Coefficients must have the same scalar type as input");
+    STD_TORCH_CHECK(a.device() == x.device(),
+                    "Coefficients must be on the same device as input");
+    STD_TORCH_CHECK(zi.scalar_type() == x.scalar_type(),
+                    "Initial conditions must have the same scalar type as input");
 
-    TORCH_CHECK(x.dim() == 2, "Input must be 2D");
-    TORCH_CHECK(zi.dim() == 2, "Initial conditions must be 2D");
-    TORCH_CHECK(x.size(0) == zi.size(0),
-                "Batch size of input and initial conditions must match");
+    STD_TORCH_CHECK(x.dim() == 2, "Input must be 2D");
+    STD_TORCH_CHECK(zi.dim() == 2, "Initial conditions must be 2D");
+    STD_TORCH_CHECK(x.size(0) == zi.size(0),
+                    "Batch size of input and initial conditions must match");
 
-    const at::cuda::OptionalCUDAGuard device_guard(device_of(x));
+    const torch::stable::accelerator::DeviceGuard device_guard(
+        x.get_device_index());
 
-    auto a_contiguous = a.contiguous();
+    auto a_contiguous = torch::stable::contiguous(a);
+    auto x_contiguous = torch::stable::contiguous(x);
+    auto zi_contiguous = torch::stable::contiguous(zi);
 
-    at::Tensor out;
     auto order = a_contiguous.size(2);
-    TORCH_CHECK(order <= 1024, "LPC order must be less than or equal to 1024");
-    auto threads_per_block = order;
-    auto stream = c10::cuda::getCurrentCUDAStream();
+    STD_TORCH_CHECK(order <= 1024, "LPC order must be less than or equal to 1024");
+    STD_TORCH_CHECK(zi.size(1) == order,
+                    "Initial conditions must have one state per coefficient of a");
+    auto stream = ph::current_cuda_stream(x.get_device_index());
 
-    if (x.is_floating_point()) {
-        out = at::cat({zi.flip(1), x}, 1).contiguous();
-        AT_DISPATCH_FLOATING_TYPES(x.scalar_type(), "lpc_cuda", [&] {
-            auto padded_y = out.mutable_data_ptr<scalar_t>();
-            auto A = a_contiguous.const_data_ptr<scalar_t>();
-            auto B = x.size(0);
-            auto T = x.size(1);
-
-            lpc_cuda_kernel<scalar_t><<<B, threads_per_block,
-                                        threads_per_block * sizeof(scalar_t),
-                                        stream>>>(padded_y, A, B, T, order);
-            C10_CUDA_KERNEL_LAUNCH_CHECK();
-        });
-    } else {
-        auto out_real =
-            at::cat({at::real(zi).flip(1), at::real(x)}, 1).contiguous();
-        auto out_imag =
-            at::cat({at::imag(zi).flip(1), at::imag(x)}, 1).contiguous();
-        auto a_real = at::real(a_contiguous).contiguous();
-        auto a_imag = at::imag(a_contiguous).contiguous();
-        AT_DISPATCH_FLOATING_TYPES(
-            out_real.scalar_type(), "lpc_cuda_complex", [&] {
-                auto padded_y_real = out_real.mutable_data_ptr<scalar_t>();
-                auto padded_y_imag = out_imag.mutable_data_ptr<scalar_t>();
-                auto A_real = a_real.const_data_ptr<scalar_t>();
-                auto A_imag = a_imag.const_data_ptr<scalar_t>();
-                auto B = x.size(0);
-                auto T = x.size(1);
-
-                lpc_cuda_kernel_complex<scalar_t>
-                    <<<B, threads_per_block,
-                       2 * threads_per_block * sizeof(scalar_t), stream>>>(
-                        padded_y_real, padded_y_imag, A_real, A_imag, B, T,
-                        order);
-                C10_CUDA_KERNEL_LAUNCH_CHECK();
-            });
-        out = at::view_as_complex(at::stack({out_real, out_imag}, -1));
-    }
-    return out.slice(1, order, out.size(1)).contiguous();
+    auto out = torch::stable::empty_like(x_contiguous);
+    THO_DISPATCH_V2(
+        x.scalar_type(), "lpc_cuda",
+        AT_WRAP([&] {
+            lpc_launch<scalar_t>(out, x_contiguous, zi_contiguous, a_contiguous,
+                                 order, stream);
+        }),
+        AT_FLOATING_TYPES, AT_COMPLEX_TYPES);
+    return out;
 }
 
-TORCH_LIBRARY_IMPL(torchlpc, CUDA, m) { m.impl("lpc", &lpc_cuda_wrapper); }
+STABLE_TORCH_LIBRARY_IMPL(torchlpc, CUDA, m) {
+    m.impl("lpc", TORCH_BOX(&lpc_cuda_wrapper));
+}

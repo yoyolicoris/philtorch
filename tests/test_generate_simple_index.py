@@ -26,6 +26,8 @@ def _load(name):
 INDEX = _load("generate_simple_index")
 
 BASE_URL = "https://example.github.io/philtorch"
+CU13 = "philtorch-0.9.0+cu13-cp311-abi3-manylinux_2_28_x86_64.whl"
+# Earlier releases labelled the wheels by torch and CUDA version.
 CU130 = "philtorch-0.6.0+torch2.14.1.cu130-cp313-cp313-manylinux_2_28_x86_64.whl"
 
 
@@ -48,16 +50,43 @@ def link(entry):
     return f'<a href="{entry["browser_download_url"]}#sha256={sha256}">{entry["name"]}</a>'
 
 
-def test_writes_one_index_per_torch_minor_and_cuda(tmp_path):
+def test_writes_one_index_per_cuda_major(tmp_path):
+    cu12 = asset(CU13.replace("cu13", "cu12"), b"cu12")
+    cu13 = asset(CU13, b"cu13")
+    newer = asset(CU13.replace("0.9.0", "0.9.1"), b"newer", "v0.9.1")
+    releases = [release("v0.9.1", newer, cu12), release("v0.9.0", cu13)]
+
+    counts = INDEX.build_site(releases, tmp_path / "site", BASE_URL)
+
+    assert counts == {"cu13": 2, "cu12": 1}
+    page = (tmp_path / "site/whl/cu13/philtorch/index.html").read_text()
+    assert page.index(link(cu13)) < page.index(link(newer))
+    assert cu12["name"] not in page
+    root = (tmp_path / "site/whl/cu13/index.html").read_text()
+    assert '<a href="philtorch/">philtorch</a>' in root
+    assert '<meta name="pypi:repository-version" content="1.0">' in root
+    landing = (tmp_path / "site/index.html").read_text()
+    assert f"pip install philtorch --index-url {BASE_URL}/whl/cu12/" in landing
+    assert landing.index("whl/cu13/") < landing.index("whl/cu12/")
+    assert "Earlier releases" not in landing
+
+
+def test_writes_one_index_per_torch_minor_and_cuda_for_earlier_releases(tmp_path):
     cp312 = asset(CU130.replace("cp313", "cp312"), b"cp312")
     cp313 = asset(CU130, b"cp313")
     cu132 = asset(CU130.replace("cu130", "cu132"), b"cu132")
     older = asset("philtorch-0.6.0+torch2.13.0.cu129-cp313-cp313-manylinux_2_28_x86_64.whl")
-    releases = [release("v0.6.0", cp313, older, cu132, cp312)]
+    new = asset(CU13, tag="v0.9.0")
+    releases = [release("v0.6.0", cp313, older, cu132, cp312), release("v0.9.0", new)]
 
     counts = INDEX.build_site(releases, tmp_path / "site", BASE_URL)
 
-    assert counts == {"torch2.14-cu132": 1, "torch2.14-cu130": 2, "torch2.13-cu129": 1}
+    assert counts == {
+        "cu13": 1,
+        "torch2.14-cu132": 1,
+        "torch2.14-cu130": 2,
+        "torch2.13-cu129": 1,
+    }
     page = (tmp_path / "site/whl/torch2.14-cu130/philtorch/index.html").read_text()
     assert page.index(link(cp312)) < page.index(link(cp313))
     assert cu132["name"] not in page
@@ -66,6 +95,7 @@ def test_writes_one_index_per_torch_minor_and_cuda(tmp_path):
     assert '<meta name="pypi:repository-version" content="1.0">' in root
     landing = (tmp_path / "site/index.html").read_text()
     assert f"pip install philtorch --index-url {BASE_URL}/whl/torch2.13-cu129/" in landing
+    assert landing.index("whl/cu13/") < landing.index("whl/torch2.14-cu132/")
     assert landing.index("torch2.14-cu132") < landing.index("torch2.14-cu130")
 
     # The same releases always give the same site.
@@ -110,24 +140,24 @@ def test_skips_assets_that_do_not_belong_in_an_index(tmp_path, releases):
 
 
 def test_accepts_identical_duplicate_in_two_releases(tmp_path):
-    first = asset(CU130, tag="v0.6.0")
-    second = asset(CU130, tag="v0.6.0-copy")
+    first = asset(CU13, tag="v0.6.0")
+    second = asset(CU13, tag="v0.6.0-copy")
     releases = [release("v0.6.0", first), release("v0.6.0-copy", second)]
     kept = min(first, second, key=lambda entry: entry["browser_download_url"])
 
     # Whichever release the API lists first, the page links the same copy.
     for site, order in [(tmp_path / "a", releases), (tmp_path / "b", releases[::-1])]:
         INDEX.build_site(order, site, BASE_URL)
-        page = (site / "whl/torch2.14-cu130/philtorch/index.html").read_text()
-        assert page.count(f">{CU130}</a>") == 1
+        page = (site / "whl/cu13/philtorch/index.html").read_text()
+        assert page.count(f">{CU13}</a>") == 1
         assert link(kept) in page
 
 
 def test_rejects_conflicting_duplicate_filename(tmp_path):
-    releases = [release("v0.6.0", asset(CU130, b"one")), release("v0.6.1", asset(CU130, b"two"))]
+    releases = [release("v0.6.0", asset(CU13, b"one")), release("v0.6.1", asset(CU13, b"two"))]
 
     with pytest.raises(
-        ValueError, match=re.escape(f"conflicting duplicate wheel filename: {CU130}")
+        ValueError, match=re.escape(f"conflicting duplicate wheel filename: {CU13}")
     ):
         INDEX.build_site(releases, tmp_path / "site", BASE_URL)
 
@@ -136,14 +166,14 @@ def test_rejects_conflicting_duplicate_filename(tmp_path):
 
 @pytest.mark.parametrize("digest", [None, "", "md5:0123", "sha256:" + "A" * 64])
 def test_rejects_asset_without_sha256_digest(tmp_path, digest):
-    entry = {**asset(CU130), "digest": digest}
+    entry = {**asset(CU13), "digest": digest}
 
     with pytest.raises(ValueError, match="v0.6.0: asset .* has no SHA-256 digest"):
         INDEX.build_site([release("v0.6.0", entry)], tmp_path, BASE_URL)
 
 
 def test_rejects_asset_not_served_over_https(tmp_path):
-    entry = {**asset(CU130), "browser_download_url": "http://example.com/" + CU130}
+    entry = {**asset(CU13), "browser_download_url": "http://example.com/" + CU13}
 
     with pytest.raises(ValueError, match="not served over HTTPS"):
         INDEX.build_site([release("v0.6.0", entry)], tmp_path, BASE_URL)
@@ -163,18 +193,18 @@ def test_rejects_malformed_wheel_filename(tmp_path, filename):
 
 
 def test_accepts_wheel_with_build_tag(tmp_path):
-    entry = asset(CU130.replace("cu130-", "cu130-1-"))
+    entry = asset(CU13.replace("cu13-", "cu13-1-"))
 
     INDEX.build_site([release("v0.6.0", entry)], tmp_path, BASE_URL)
 
-    assert link(entry) in (tmp_path / "whl/torch2.14-cu130/philtorch/index.html").read_text()
+    assert link(entry) in (tmp_path / "whl/cu13/philtorch/index.html").read_text()
 
 
 def test_rejects_non_empty_output(tmp_path):
     (tmp_path / "stale.html").write_text("old site")
 
     with pytest.raises(ValueError, match="output directory is not empty"):
-        INDEX.build_site([release("v0.6.0", asset(CU130))], tmp_path, BASE_URL)
+        INDEX.build_site([release("v0.6.0", asset(CU13))], tmp_path, BASE_URL)
 
 
 @pytest.mark.parametrize("project", ["/tmp/example", "..", "philtorch\n", ""])
@@ -189,24 +219,34 @@ def test_index_names_match_the_cuda_wheel_labels():
     version_script = _load("cuda_wheel_version")
     data = version_script.load_matrix(version_script.DEFAULT_MATRIX)
     for build in data["builds"]:
-        version = version_script.cuda_wheel_version("0.6.0", build["torch"], build["cuda"])
-        filename = f"philtorch-{version}-cp313-cp313-manylinux_2_28_x86_64.whl"
-        minor = build["torch"].rsplit(".", 1)[0]
-        cuda = build["cuda"].replace(".", "")
-        assert INDEX.index_name(filename) == f"torch{minor}-cu{cuda}"
+        version = version_script.cuda_wheel_version("0.9.0", build["cuda"])
+        filename = f"philtorch-{version}-cp311-abi3-manylinux_2_28_x86_64.whl"
+        assert INDEX.index_name(filename) == "cu" + build["cuda"].split(".")[0]
+
+
+@pytest.mark.parametrize(
+    ("filename", "name"),
+    [
+        (CU13, "cu13"),
+        (CU130, "torch2.14-cu130"),
+        ("philtorch-0.6.0+cpu-cp313-cp313-manylinux_2_28_x86_64.whl", None),
+    ],
+)
+def test_index_name(filename, name):
+    assert INDEX.index_name(filename) == name
 
 
 def test_cli_reads_paginated_release_list(tmp_path, monkeypatch, capsys):
     # gh api --paginate --slurp wraps each page of releases in its own list.
-    pages = [[release("v0.6.1")], [release("v0.6.0", asset(CU130))]]
+    pages = [[release("v0.6.1")], [release("v0.6.0", asset(CU13))]]
     (tmp_path / "releases.json").write_text(json.dumps(pages))
     argv = ["prog", str(tmp_path / "releases.json"), "--output", str(tmp_path / "site")]
     monkeypatch.setattr("sys.argv", [*argv, "--base-url", BASE_URL])
 
     INDEX.main()
 
-    assert capsys.readouterr().out == "torch2.14-cu130: 1 wheels\n"
-    assert (tmp_path / "site/whl/torch2.14-cu130/philtorch/index.html").exists()
+    assert capsys.readouterr().out == "cu13: 1 wheels\n"
+    assert (tmp_path / "site/whl/cu13/philtorch/index.html").exists()
 
 
 @pytest.mark.parametrize(
@@ -214,7 +254,7 @@ def test_cli_reads_paginated_release_list(tmp_path, monkeypatch, capsys):
     [
         pytest.param({"message": "Not Found"}, "expected a JSON list of releases", id="not-list"),
         pytest.param(
-            [release("v0.6.0", asset(CU130, b"one"), asset(CU130, b"two"))],
+            [release("v0.6.0", asset(CU13, b"one"), asset(CU13, b"two"))],
             "conflicting duplicate wheel filename",
             id="conflict",
         ),
@@ -233,7 +273,7 @@ def test_cli_reports_errors(tmp_path, monkeypatch, capsys, releases, message):
 
 
 def test_script_runs_as_a_command(tmp_path):
-    (tmp_path / "releases.json").write_text(json.dumps([release("v0.6.0", asset(CU130))]))
+    (tmp_path / "releases.json").write_text(json.dumps([release("v0.6.0", asset(CU13))]))
 
     result = subprocess.run(
         [
@@ -250,4 +290,4 @@ def test_script_runs_as_a_command(tmp_path):
         text=True,
     )
 
-    assert result.stdout == "torch2.14-cu130: 1 wheels\n"
+    assert result.stdout == "cu13: 1 wheels\n"

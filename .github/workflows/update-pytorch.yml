@@ -74,6 +74,7 @@ jobs:
 
           - the diff of \`cuda_wheel_matrix.json\`, \`pyproject.toml\` and the README table;
           - the places that name the oldest Python, when \`requires-python\` rises;
+          - the number of torch minors at or above \`MIN_TORCH\` in the matrix: when it exceeds three, consider raising \`MIN_TORCH\` in \`build_support.py\` and \`TORCH_TARGET_VERSION\` in \`philtorch/csrc/stable_support.h\` together;
 
           CI doesn't start on pull requests opened by a workflow: close and reopen this pull request to run it.
           EOF

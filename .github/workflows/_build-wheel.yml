@@ -1,7 +1,8 @@
 name: Build wheel (reusable)
 
-# Called once per (OS, Torch version) leg from build-wheels.yml. Each OS has
-# its own job id there so downstream jobs can depend on a single OS's build.
+# Called once per OS from build-wheels.yml, which gives each OS its own job id
+# so downstream jobs can depend on a single OS's build. Each call builds one
+# abi3 wheel.
 on:
   workflow_call:
     inputs:
@@ -9,13 +10,17 @@ on:
         required: true
         type: string
       torch_version:
-        # Single version, e.g. '2.7.1', for the one matrix leg being built.
-        # Encoded into the artifact name (below) since wheel filenames don't
-        # record the Torch version, so per-Torch builds for one OS don't
-        # collide. Only the latest-minor wheel is published; the others exist
-        # to catch source-level breakage against older Torch. See PR #20.
+        # The torch to build against, e.g. '2.13.1'. The wheel targets torch's
+        # stable ABI from build_support.MIN_TORCH on, so it loads on this
+        # torch's minor and every later one, unless pin_torch is set.
         required: true
         type: string
+      pin_torch:
+        # Restrict the wheel to torch_version's minor (torch == X.Y.*). Needed
+        # where the sources use torch's non-stable API: the macOS Metal ops.
+        required: false
+        type: boolean
+        default: false
       python_versions:
         # JSON array string of the Pythons torch ships, oldest first, e.g.
         # '["3.11", "3.13"]' (see resolve-torch-versions in build-wheels.yml).
@@ -74,10 +79,10 @@ jobs:
       - name: Build wheels
         run: cibuildwheel --output-dir wheelhouse
         env:
-          # The wheel only loads with the torch minor it is compiled against,
-          # so it requires that minor: torch == X.Y.* (see setup.py). The sdist
-          # is built without this and keeps torch >= 2.6.0.
-          PHILTORCH_TORCH_PIN: ${{ inputs.torch_version }}
+          # Set only for a wheel that loads with just its build torch's minor,
+          # which then requires torch == X.Y.* (see build_support.py). Unset,
+          # the wheel requires torch >= the floor, as the sdist does.
+          PHILTORCH_TORCH_PIN: ${{ inputs.pin_torch && inputs.torch_version || '' }}
           # Linux builds run in a container, which doesn't inherit the runner's
           # environment; macOS and Windows build on the runner itself.
           CIBW_ENVIRONMENT_PASS_LINUX: PHILTORCH_TORCH_PIN
@@ -122,11 +127,17 @@ jobs:
         shell: bash
         env:
           TORCH_VERSION: ${{ inputs.torch_version }}
+          PIN_TORCH: ${{ inputs.pin_torch }}
         run: |
           python - <<'EOF'
           import glob, os, sys, zipfile
 
-          pin = "torch==" + os.environ["TORCH_VERSION"].rsplit(".", 1)[0] + ".*"
+          import build_support
+
+          if os.environ["PIN_TORCH"] == "true":
+              pin = "torch==" + os.environ["TORCH_VERSION"].rsplit(".", 1)[0] + ".*"
+          else:
+              pin = f"torch>={build_support.MIN_TORCH}.0"
           wheels = sorted(glob.glob("wheelhouse/*.whl"))
           wrong = []
           for path in wheels:
@@ -146,5 +157,5 @@ jobs:
 
       - uses: actions/upload-artifact@v7
         with:
-          name: wheels-${{ inputs.os }}-torch${{ inputs.torch_version }}
+          name: wheels-${{ inputs.os }}
           path: wheelhouse/*.whl

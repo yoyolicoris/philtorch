@@ -2,15 +2,16 @@
 """Generate PhilTorch's CUDA wheel package indexes from GitHub Release assets.
 
 The CUDA wheels are stored as release assets; this script writes the static
-PEP 503 pages that link to them, for GitHub Pages to serve. Each PyTorch
-minor/CUDA pair gets its own index, the way download.pytorch.org has one per
-CUDA version. Every index then holds one build per PhilTorch version, so
-``pip install philtorch --index-url <base-url>/whl/torch2.14-cu130/`` can
-only pick a build for that torch and CUDA::
+PEP 503 pages that link to them, for GitHub Pages to serve. Each CUDA major
+gets its own index, so ``pip install philtorch --index-url
+<base-url>/whl/cu13/`` can only pick a build for CUDA 13::
 
-    <output>/index.html                                landing page
-    <output>/whl/torch2.14-cu130/index.html            index root
-    <output>/whl/torch2.14-cu130/philtorch/index.html  links to the wheels
+    <output>/index.html                         landing page
+    <output>/whl/cu13/index.html                index root
+    <output>/whl/cu13/philtorch/index.html      links to the wheels
+
+Wheels of earlier releases, labelled by PyTorch minor and CUDA version, stay
+in their own indexes, e.g. ``whl/torch2.14-cu130/``.
 
 The input is the repository's release list from the GitHub API::
 
@@ -31,10 +32,12 @@ from pathlib import Path
 
 _NORMALIZE_PATTERN = re.compile(r"[-_.]+")
 _VALID_PROJECT_NAME = re.compile(r"^[a-z0-9]([a-z0-9-]*[a-z0-9])?$")
-# The local label scripts/cuda_wheel_version.py gives CUDA wheels, e.g.
-# "torch2.14.1.cu130". Indexes are per torch minor, which the wheels pin.
-_CUDA_LABEL = re.compile(r"torch(\d+)\.(\d+)\.\d+\.cu(\d+)")
-_INDEX_NAME = re.compile(r"torch(\d+)\.(\d+)-cu(\d+)")
+# The local label scripts/cuda_wheel_version.py gives CUDA wheels, e.g. "cu13".
+# Earlier releases used "torch2.14.1.cu130", whose index is per torch minor,
+# which those wheels pin.
+_CUDA_LABEL = re.compile(r"cu(\d+)")
+_OLD_CUDA_LABEL = re.compile(r"torch(\d+)\.(\d+)\.\d+\.cu(\d+)")
+_INDEX_NAME = re.compile(r"cu(\d+)|torch(\d+)\.(\d+)-cu(\d+)")
 # GitHub reports a digest for every release asset, so the pages can carry
 # hashes without downloading the wheels.
 _ASSET_DIGEST = re.compile(r"sha256:([0-9a-f]{64})")
@@ -61,13 +64,15 @@ def wheel_project_name(filename: str) -> str:
 
 
 def index_name(filename: str) -> str | None:
-    """Return the index a CUDA wheel belongs in, e.g. ``torch2.14-cu130``.
+    """Return the index a CUDA wheel belongs in, e.g. ``cu13`` or ``torch2.14-cu130``.
 
     Returns None for a wheel without a CUDA build label, such as a CPU wheel.
     """
     version = filename.removesuffix(".whl").split("-")[1]
     _, _, label = version.partition("+")
-    match = _CUDA_LABEL.fullmatch(label)
+    if _CUDA_LABEL.fullmatch(label):
+        return label
+    match = _OLD_CUDA_LABEL.fullmatch(label)
     if match is None:
         return None
     major, minor, cuda = match.groups()
@@ -110,7 +115,9 @@ def release_wheels(releases: Iterable[dict], project: str) -> dict[str, dict[str
 
 
 def _sort_key(name: str) -> tuple[int, ...]:
-    return tuple(int(part) for part in _INDEX_NAME.fullmatch(name).groups())
+    # The CUDA major indexes come before the per-torch-minor ones.
+    parts = _INDEX_NAME.fullmatch(name).groups()
+    return (1, int(parts[0])) if parts[0] else (0, *map(int, parts[1:]))
 
 
 def _simple_page(title: str, body: str) -> str:
@@ -141,18 +148,30 @@ def _root_page(project: str) -> str:
 
 
 def _landing_page(project: str, base_url: str, names: list[str]) -> str:
-    if names:
-        items = "".join(
+    def items(group: list[str]) -> str:
+        return "".join(
             f'      <li><a href="whl/{name}/">{name}</a>: '
             f"<code>pip install {project} --index-url {html.escape(base_url)}/whl/{name}/</code>"
             "</li>\n"
-            for name in names
+            for name in group
         )
-        body = (
-            "    <p>One package index per PyTorch minor and CUDA version. Install the\n"
-            "    matching PyTorch build first, then install from its index:</p>\n"
-            f"    <ul>\n{items}    </ul>\n"
-        )
+
+    current = [name for name in names if _sort_key(name)[0]]
+    earlier = [name for name in names if not _sort_key(name)[0]]
+    if names:
+        body = ""
+        if current:
+            body += (
+                "    <p>One package index per CUDA major version. Install a PyTorch build\n"
+                "    with that CUDA version first, then install from its index:</p>\n"
+                f"    <ul>\n{items(current)}    </ul>\n"
+            )
+        if earlier:
+            body += (
+                "    <p>Earlier releases have one index per PyTorch minor and CUDA version.\n"
+                "    Install the matching PyTorch build first:</p>\n"
+                f"    <ul>\n{items(earlier)}    </ul>\n"
+            )
     else:
         body = "    <p>No CUDA wheels have been published yet.</p>\n"
     return (

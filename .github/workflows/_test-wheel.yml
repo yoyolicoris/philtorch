@@ -1,9 +1,9 @@
 name: Test wheel (reusable)
 
-# Called once per (OS, Torch version) leg from build-wheels.yml, mirroring
-# _build-wheel.yml's fan-out. Each leg installs and tests the wheel that was
-# compiled against that same Torch version, so it's a real per-minor
-# compatibility check, not a mismatched cross-install.
+# Called once per (OS, Torch version) leg from build-wheels.yml. Each leg
+# installs the OS's one wheel with its own torch, which may be a later minor
+# than the one the wheel was built on: that is the check that the wheel,
+# built on the stable ABI, loads there.
 on:
   workflow_call:
     inputs:
@@ -16,13 +16,13 @@ on:
         required: true
         type: string
       torch_version:
-        # Torch version the wheel under test was built against; installed here
-        # so the artifact is tested against the exact Torch it was built with.
+        # The torch to test with, installed here. Not necessarily the one the
+        # wheel was built on (see the header).
         required: true
         type: string
       upload_coverage:
         # Set true only for the one leg that should upload Codecov coverage
-        # (latest Torch on ubuntu), to avoid duplicate reports per commit; it
+        # (newest Torch on ubuntu), to avoid duplicate reports per commit; it
         # uploads from the first, oldest Python of python_versions.
         required: false
         type: boolean
@@ -33,8 +33,8 @@ on:
 
 jobs:
   test:
-    # Reuses the wheel already built by build-wheels (same Torch version as
-    # this leg) rather than recompiling from source, to save CI time.
+    # Reuses the wheel already built by build-wheels rather than recompiling
+    # from source, to save CI time.
     runs-on: ${{ inputs.os }}
     permissions:
       contents: read
@@ -51,7 +51,7 @@ jobs:
 
       - uses: actions/download-artifact@v8
         with:
-          name: wheels-${{ inputs.os }}-torch${{ inputs.torch_version }}
+          name: wheels-${{ inputs.os }}
           path: wheelhouse
 
       - name: Install wheel and test dependencies
