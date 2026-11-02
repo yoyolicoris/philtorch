@@ -1,10 +1,10 @@
 name: Lint
 
-# Lints pushes to every branch but dev, for feedback before a pull request:
-# pull requests, dev and releases get the `lint` job of build-wheels.yml.
+# Every push, and every pull request, which covers those from forks: the dev
+# ruleset requires this `lint` check.
 on:
   push:
-    branches-ignore: ["dev"]
+  pull_request:
 
 jobs:
   lint:

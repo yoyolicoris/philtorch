@@ -111,7 +111,7 @@ Releases are cut from `dev`. The package version comes from the latest `v*` tag 
 
    `--target` needs the full 40-character SHA: GitHub rejects an abbreviated one with "Release.target_commitish is invalid".
 
-   Publishing the release runs `build-wheels.yml`, which builds and tests the CPU wheels and the sdist, lints, builds the docs and calls `build-cuda-wheels.yml`. It uploads to PyPI only after all of them have passed, for tags starting with `v0.` or `v1.`. The CUDA wheels take under an hour:
+   Publishing the release runs `build-wheels.yml`, which builds and tests the CPU wheels and the sdist, builds the docs and calls `build-cuda-wheels.yml`. It uploads to PyPI only after all of them have passed, for tags starting with `v0.` or `v1.`. The CUDA wheels take under an hour:
    - `build-cuda-wheels.yml` builds one CUDA wheel per CUDA major in `torch_matrix.json`, tests each on every torch/CUDA build of its major on a Modal GPU (a pull request tests only the newest), and attaches them to the release. It attaches none unless every build and test passes.
    - `deploy-cuda-index.yml` then rebuilds the CUDA wheel index on GitHub Pages from every release's assets, once `build-wheels.yml` has succeeded.
 

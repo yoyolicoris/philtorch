@@ -157,26 +157,6 @@ jobs:
         working-directory: ${{ runner.temp }}
         run: python -c "import philtorch"
 
-  # A job of its own, not ruff.yml called, so that its check is named exactly
-  # `lint`, as the dev ruleset requires; ruff.yml lints the other branches.
-  lint:
-    runs-on: ubuntu-latest
-    permissions:
-      contents: read
-    steps:
-      - uses: actions/checkout@v7
-      - uses: astral-sh/ruff-action@v4.1.0
-        with:
-          # Keep in sync with ruff in pixi.toml.
-          version: "0.16.9"
-          args: "--version"
-      - name: Lint
-        run: ruff check
-      - name: Check formatting
-        # Run even if linting failed, so both problems are reported at once.
-        if: ${{ !cancelled() }}
-        run: ruff format --check
-
   docs:
     permissions:
       contents: read
@@ -299,7 +279,6 @@ jobs:
       - build
       - build-newest-torch
       - build-sdist
-      - lint
       - docs
       - test
       - cuda-wheels
@@ -312,7 +291,6 @@ jobs:
       needs.build.result == 'success' &&
       needs.build-newest-torch.result == 'success' &&
       needs.build-sdist.result == 'success' &&
-      needs.lint.result == 'success' &&
       needs.docs.result == 'success' &&
       needs.test.result == 'success' &&
       (
