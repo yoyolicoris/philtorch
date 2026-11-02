@@ -2,9 +2,9 @@
 // stable ABI: the stable C++ API and torch's Metal C shim (shim_mps.h), which
 // compiles the shader source, binds tensors and dispatches on PyTorch's MPS
 // stream. It is held to the API of TORCH_TARGET_VERSION, the oldest torch
-// that builds it (build_support.MIN_TORCH_MACOS), which setup.py generates in
-// the build directory; the other sources don't include it.
-#include "torch_target_version.h"
+// that builds it, build_support.MIN_TORCH_MACOS; the other sources don't
+// include it.
+#define TORCH_TARGET_VERSION (((0ULL + 2) << 56) | ((0ULL + 10) << 48))
 
 #include <torch/csrc/inductor/aoti_torch/c/shim_mps.h>
 #include <torch/csrc/stable/library.h>
@@ -19,6 +19,7 @@
 #include <initializer_list>
 #include <limits>
 #include <string>
+#include <utility>
 
 // SCALAR_RECUR_MPS_METAL, the text of scalar_recur_mps.metal, which setup.py
 // generates in the build directory.
@@ -34,20 +35,13 @@ using torch::stable::Tensor;
 constexpr uint64_t THREADS = 256;
 constexpr int64_t STEPS_PER_THREAD = 4;
 
-const char *kernel_suffix(ScalarType dtype)
-{
-    switch (dtype)
-    {
-    case ScalarType::Float:
-        return "float";
-    case ScalarType::Half:
-        return "half";
-    case ScalarType::BFloat16:
-        return "bfloat";
-    default:
-        return "cfloat";
-    }
-}
+// The dtypes the kernels take, with the suffix of their kernels' names.
+constexpr std::array<std::pair<ScalarType, const char *>, 4> DTYPES{{
+    {ScalarType::Float, "float"},
+    {ScalarType::Half, "half"},
+    {ScalarType::BFloat16, "bfloat"},
+    {ScalarType::ComplexFloat, "cfloat"},
+}};
 
 AOTIMetalShaderLibraryHandle library()
 {
@@ -77,9 +71,8 @@ AOTIMetalKernelFunctionHandle kernel_function(const std::string &name)
     return function;
 }
 
-Kernels make_kernels(ScalarType dtype)
+Kernels make_kernels(ScalarType dtype, const std::string &suffix)
 {
-    const std::string suffix = kernel_suffix(dtype);
     // The scan of tile totals exists per accumulation type alone.
     const char *accumulation =
         dtype == ScalarType::ComplexFloat ? "cfloat" : "float";
@@ -90,33 +83,26 @@ Kernels make_kernels(ScalarType dtype)
             kernel_function(std::string("scalar_recur_scan_") + accumulation)};
 }
 
-// Looked up on first use, so that a missing bfloat kernel (Metal < 3.1)
-// fails only bfloat16 inputs.
+// The index in DTYPES of dtype, or DTYPES.size() if the kernels don't take it.
+size_t dtype_index(ScalarType dtype)
+{
+    size_t i = 0;
+    while (i < DTYPES.size() && DTYPES[i].first != dtype)
+        ++i;
+    return i;
+}
+
+// The kernels of every dtype, looked up on first use.
 const Kernels &kernels(ScalarType dtype)
 {
-    switch (dtype)
+    static const std::array<Kernels, DTYPES.size()> all = []
     {
-    case ScalarType::Float:
-    {
-        static const Kernels k = make_kernels(dtype);
-        return k;
-    }
-    case ScalarType::Half:
-    {
-        static const Kernels k = make_kernels(dtype);
-        return k;
-    }
-    case ScalarType::BFloat16:
-    {
-        static const Kernels k = make_kernels(dtype);
-        return k;
-    }
-    default:
-    {
-        static const Kernels k = make_kernels(dtype);
-        return k;
-    }
-    }
+        std::array<Kernels, DTYPES.size()> made;
+        for (size_t i = 0; i < DTYPES.size(); ++i)
+            made[i] = make_kernels(DTYPES[i].first, DTYPES[i].second);
+        return made;
+    }();
+    return all[dtype_index(dtype)];
 }
 
 // One dispatch's arguments: its tensors, then its integers, bound in that
@@ -163,14 +149,9 @@ void launch(AOTIMetalKernelFunctionHandle function,
     TORCH_ERROR_CODE_CHECK(launch.error);
 }
 
-bool supported_dtype(ScalarType dtype)
-{
-    return dtype == ScalarType::Float || dtype == ScalarType::Half ||
-           dtype == ScalarType::BFloat16 || dtype == ScalarType::ComplexFloat;
-}
-
 // h[b, t] = a h[b, t - 1] + x[b, t], h[b, -1] = zi[b], with a = decays[b, t]
-// if varying, else decays[b * stride_b], shared (0) or one per sequence (1).
+// if varying, with stride_b = T, else decays[b * stride_b], shared (0) or one
+// per sequence (1).
 Tensor scalar_recur_mps(const Tensor &decays, bool varying, int64_t stride_b,
                         const Tensor &zi, const Tensor &x)
 {
@@ -181,7 +162,7 @@ Tensor scalar_recur_mps(const Tensor &decays, bool varying, int64_t stride_b,
     const ScalarType dtype = x.scalar_type();
     STD_TORCH_CHECK(decays.scalar_type() == dtype && zi.scalar_type() == dtype,
                     "A, zi and x must have the same dtype");
-    STD_TORCH_CHECK(supported_dtype(dtype),
+    STD_TORCH_CHECK(dtype_index(dtype) < DTYPES.size(),
                     "the MPS scalar recurrence takes float32, float16, "
                     "bfloat16 and complex64");
 
@@ -198,15 +179,11 @@ Tensor scalar_recur_mps(const Tensor &decays, bool varying, int64_t stride_b,
     const int64_t n_tiles = (steps - 1) / tile + 1;
     constexpr int64_t grid_limit = std::numeric_limits<uint32_t>::max();
     // The kernels index the steps of a sequence, the last tile's past its end
-    // included, in 32 bits.
-    STD_TORCH_CHECK(steps <= grid_limit - tile &&
-                        n_tiles <= grid_limit / static_cast<int64_t>(THREADS) &&
-                        n_batches <= grid_limit,
+    // included, in 32 bits, which bounds the grid's n_tiles * THREADS too.
+    STD_TORCH_CHECK(steps <= grid_limit - tile && n_batches <= grid_limit,
                     "the input is too large for the MPS scalar recurrence");
 
     const Kernels &k = kernels(dtype);
-    if (varying)
-        stride_b = steps;
     const std::array<uint64_t, 2> tile_grid{
         static_cast<uint64_t>(n_tiles) * THREADS,
         static_cast<uint64_t>(n_batches)};
@@ -255,7 +232,7 @@ Tensor scan_mps(Tensor impulse, Tensor decay, Tensor init)
                         decay.size(1) == impulse.size(1) && init.dim() == 1 &&
                         init.size(0) == impulse.size(0),
                     "impulse and decay must be (B, T) and init (B,)");
-    return scalar_recur_mps(decay, true, 0, init, impulse);
+    return scalar_recur_mps(decay, true, impulse.size(1), init, impulse);
 }
 
 } // namespace

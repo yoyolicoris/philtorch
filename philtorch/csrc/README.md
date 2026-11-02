@@ -166,12 +166,11 @@ Each kernel indexes the steps of a sequence in 32 bits, as 64-bit integer arithm
 ## PyTorch and Metal integration
 
 The host code uses only torch's stable ABI, `torch/csrc/stable` and `torch/headeronly`, and torch's Metal C shim, [`shim_mps.h`](https://github.com/pytorch/pytorch/blob/main/torch/csrc/inductor/aoti_torch/c/shim_mps.h), so the compiled code calls torch through C functions alone.
-It is held to the API of torch 2.10, the oldest torch that builds it, by `TORCH_TARGET_VERSION`, which `setup.py` generates from `build_support.MIN_TORCH_MACOS`, also the floor of macOS source builds.
+It defines `TORCH_TARGET_VERSION` as torch 2.10, the oldest torch that builds it, which holds it to that version's API; `build_support.MIN_TORCH_MACOS`, the floor of macOS source builds, is the same version.
 No Objective-C remains, and the extension links no Apple framework.
 
-1. `setup.py` turns `scalar_recur_mps.metal` into `scalar_recur_mps.metal.h`, a raw string, and writes `torch_target_version.h`, both in `build/metal` (`build_support.write_metal_headers`), which the host code includes.
-2. On first use, `aoti_torch_mps_create_shader_library` compiles that source, and `aoti_torch_mps_get_kernel_function` looks up a dtype's kernels, which stay cached for the process.
-   The bfloat kernels exist only from Metal 3.1 on, so only bfloat16 inputs would fail without them.
+1. `setup.py` turns `scalar_recur_mps.metal` into `scalar_recur_mps.metal.h`, a raw string in `build/metal` (`build_support.write_metal_headers`), which the host code includes.
+2. On first use, `aoti_torch_mps_create_shader_library` compiles that source, and `aoti_torch_mps_get_kernel_function` looks up the kernels, which stay cached for the process.
 3. Scratch tensors are ordinary MPS tensors from the stable `new_empty`, so PyTorch manages their memory.
 4. Inputs are made contiguous; `aoti_torch_mps_set_arg_tensor` binds a tensor's buffer at its storage offset.
 5. `aoti_torch_mps_run_command_block` encodes each dispatch on PyTorch's MPS stream.
@@ -208,72 +207,26 @@ Parallel reassociation can change floating-point rounding relative to a strict s
 
 ## CPU and MPS benchmark
 
-The following results were measured on an Apple M1 Pro (14-core GPU) with macOS 26.7.1, PyTorch 2.13.0 and six CPU threads, by
+Measured on an Apple M1 Pro (14-core GPU) with macOS 26.7.1, PyTorch 2.13.0 and six CPU threads, by
 
 ```bash
 pixi run python benchmarks/benchmark_mps_recur.py
 ```
 
-Input transfers are excluded.
-Runtime uses `torch.utils.benchmark.Timer.blocked_autorange` for at least 500 ms and reports median latency with interquartile range in parentheses; the MPS timer synchronizes PyTorch's MPS stream at each measurement boundary.
-CPU peak memory is reconstructed from allocation events captured by `torch.profiler.profile(profile_memory=True)`; MPS peak memory is sampled with `torch.mps.current_allocated_memory()` during repeated calls.
-Memory figures exclude inputs and allocator cache but include output and native temporary tensors.
+which reports the median latency of `torch.utils.benchmark.Timer.blocked_autorange` over at least 500 ms, interquartile range in parentheses, synchronizing PyTorch's MPS stream at each measurement boundary; input transfers are excluded.
 The CPU kernel of `scan` takes no float16 or bfloat16 (`n/a`).
+Every dtype and layout, with peak memory, is on [issue #39](https://github.com/yoyolicoris/philtorch/issues/39/artifacts/2).
 
-| dtype | B | T | Coefficients | CPU median ms (IQR) | MPS median ms (IQR) | Speedup | CPU peak MiB | MPS peak MiB | Memory ratio |
-| :--- | ---: | ---: | :--- | ---: | ---: | ---: | ---: | ---: | ---: |
-| float32 | 1 | 4096 | shared | 0.0677 (0.0068) | 0.0234 (0.0006) | 2.90x | 0.016 | 0.016 | 0.97x |
-| float32 | 1 | 262144 | shared | 0.2632 (0.0291) | 0.0375 (0.0038) | 7.02x | 1.000 | 1.003 | 1.00x |
-| float32 | 16 | 4096 | shared | 0.0725 (0.0052) | 0.0505 (0.0042) | 1.44x | 0.250 | 0.251 | 1.00x |
-| float32 | 64 | 65536 | shared | 1.6243 (0.2290) | 0.2427 (0.0123) | 6.69x | 16.000 | 16.047 | 1.00x |
-| float32 | 256 | 4096 | shared | 0.4801 (0.0573) | 0.0959 (0.0141) | 5.00x | 4.000 | 4.012 | 1.00x |
-| float32 | 16 | 4096 | batched | 0.0760 (0.0048) | 0.0461 (0.0164) | 1.65x | 0.250 | 0.251 | 1.00x |
-| float32 | 64 | 65536 | batched | 1.9368 (0.3711) | 0.2485 (0.0144) | 7.79x | 16.000 | 16.047 | 1.00x |
-| float32 | 256 | 4096 | batched | 0.4384 (0.0418) | 0.0968 (0.0473) | 4.53x | 4.000 | 4.012 | 1.00x |
-| float32 | 1 | 4096 | per_step | 0.0674 (0.0094) | 0.0232 (0.0007) | 2.90x | 0.016 | 0.016 | 0.97x |
-| float32 | 1 | 262144 | per_step | 0.2332 (0.0143) | 0.0432 (0.0109) | 5.40x | 1.000 | 1.003 | 1.00x |
-| float32 | 16 | 4096 | per_step | 0.0710 (0.0058) | 0.0269 (0.0012) | 2.64x | 0.250 | 0.251 | 1.00x |
-| float32 | 64 | 65536 | per_step | 1.6967 (0.1577) | 0.5039 (0.0120) | 3.37x | 16.000 | 16.047 | 1.00x |
-| float32 | 256 | 4096 | per_step | 0.4406 (0.0324) | 0.0853 (0.0015) | 5.16x | 4.000 | 4.012 | 1.00x |
-| float16 | 1 | 4096 | shared | 0.0681 (0.0180) | 0.0233 (0.0006) | 2.93x | 0.008 | 0.008 | 0.94x |
-| float16 | 1 | 262144 | shared | 0.2395 (0.0072) | 0.0358 (0.0014) | 6.69x | 0.500 | 0.503 | 0.99x |
-| float16 | 16 | 4096 | shared | 0.0732 (0.0048) | 0.0266 (0.0007) | 2.75x | 0.125 | 0.126 | 0.99x |
-| float16 | 64 | 65536 | shared | 1.3633 (0.0760) | 0.2243 (0.0177) | 6.08x | 8.000 | 8.047 | 0.99x |
-| float16 | 256 | 4096 | shared | 0.3940 (0.0540) | 0.1385 (0.0590) | 2.85x | 2.000 | 2.012 | 0.99x |
-| float16 | 16 | 4096 | batched | 0.0727 (0.0013) | 0.0264 (0.0008) | 2.76x | 0.125 | 0.126 | 0.99x |
-| float16 | 64 | 65536 | batched | 1.5489 (0.3382) | 0.2185 (0.0074) | 7.09x | 8.000 | 8.047 | 0.99x |
-| float16 | 256 | 4096 | batched | 0.3869 (0.0212) | 0.0729 (0.0010) | 5.31x | 2.000 | 2.012 | 0.99x |
-| float16 | 1 | 4096 | per_step | n/a | 0.0233 (0.0017) | n/a | n/a | 0.008 | n/a |
-| float16 | 1 | 262144 | per_step | n/a | 0.0413 (0.0135) | n/a | n/a | 0.503 | n/a |
-| float16 | 16 | 4096 | per_step | n/a | 0.0261 (0.0009) | n/a | n/a | 0.126 | n/a |
-| float16 | 64 | 65536 | per_step | n/a | 0.2291 (0.0124) | n/a | n/a | 8.047 | n/a |
-| float16 | 256 | 4096 | per_step | n/a | 0.0831 (0.0129) | n/a | n/a | 2.012 | n/a |
-| bfloat16 | 1 | 4096 | shared | 0.0714 (0.0113) | 0.0239 (0.0013) | 2.99x | 0.008 | 0.008 | 0.94x |
-| bfloat16 | 1 | 262144 | shared | 0.2416 (0.0186) | 0.0574 (0.0189) | 4.21x | 0.500 | 0.503 | 0.99x |
-| bfloat16 | 16 | 4096 | shared | 0.0725 (0.0044) | 0.0463 (0.0209) | 1.57x | 0.125 | 0.126 | 0.99x |
-| bfloat16 | 64 | 65536 | shared | 1.3421 (0.2254) | 0.2366 (0.0031) | 5.67x | 8.000 | 8.047 | 0.99x |
-| bfloat16 | 256 | 4096 | shared | 0.3770 (0.0269) | 0.0786 (0.0026) | 4.80x | 2.000 | 2.012 | 0.99x |
-| bfloat16 | 16 | 4096 | batched | 0.0720 (0.0034) | 0.0271 (0.0007) | 2.66x | 0.125 | 0.126 | 0.99x |
-| bfloat16 | 64 | 65536 | batched | 1.3255 (0.1143) | 0.2438 (0.0113) | 5.44x | 8.000 | 8.047 | 0.99x |
-| bfloat16 | 256 | 4096 | batched | 0.4648 (0.1461) | 0.1009 (0.0203) | 4.61x | 2.000 | 2.012 | 0.99x |
-| bfloat16 | 1 | 4096 | per_step | n/a | 0.0561 (0.0049) | n/a | n/a | 0.008 | n/a |
-| bfloat16 | 1 | 262144 | per_step | n/a | 0.0373 (0.0014) | n/a | n/a | 0.503 | n/a |
-| bfloat16 | 16 | 4096 | per_step | n/a | 0.0467 (0.0033) | n/a | n/a | 0.126 | n/a |
-| bfloat16 | 64 | 65536 | per_step | n/a | 0.2409 (0.0071) | n/a | n/a | 8.047 | n/a |
-| bfloat16 | 256 | 4096 | per_step | n/a | 0.1040 (0.0646) | n/a | n/a | 2.012 | n/a |
-| complex64 | 1 | 4096 | shared | 0.0885 (0.0128) | 0.0264 (0.0014) | 3.36x | 0.031 | 0.032 | 0.98x |
-| complex64 | 1 | 262144 | shared | 0.6272 (0.0284) | 0.0543 (0.0173) | 11.55x | 2.000 | 2.006 | 1.00x |
-| complex64 | 16 | 4096 | shared | 0.1260 (0.0127) | 0.0339 (0.0016) | 3.71x | 0.500 | 0.501 | 1.00x |
-| complex64 | 64 | 65536 | shared | 5.8414 (1.8812) | 0.6170 (0.0150) | 9.47x | 32.000 | 32.094 | 1.00x |
-| complex64 | 256 | 4096 | shared | 1.2396 (0.0650) | 0.1834 (0.0182) | 6.76x | 8.000 | 8.023 | 1.00x |
-| complex64 | 16 | 4096 | batched | 0.1242 (0.0036) | 0.0335 (0.0010) | 3.71x | 0.500 | 0.501 | 1.00x |
-| complex64 | 64 | 65536 | batched | 5.3326 (0.8157) | 0.6030 (0.0114) | 8.84x | 32.000 | 32.094 | 1.00x |
-| complex64 | 256 | 4096 | batched | 1.5673 (0.2158) | 0.1517 (0.0215) | 10.33x | 8.000 | 8.023 | 1.00x |
-| complex64 | 1 | 4096 | per_step | 0.0844 (0.0074) | 0.0443 (0.0165) | 1.91x | 0.031 | 0.032 | 0.98x |
-| complex64 | 1 | 262144 | per_step | 0.6468 (0.0235) | 0.0585 (0.0014) | 11.07x | 2.000 | 2.006 | 1.00x |
-| complex64 | 16 | 4096 | per_step | 0.1234 (0.0030) | 0.0340 (0.0012) | 3.63x | 0.500 | 0.501 | 1.00x |
-| complex64 | 64 | 65536 | per_step | 4.9784 (0.1493) | 0.9920 (0.0146) | 5.02x | 32.000 | 32.094 | 1.00x |
-| complex64 | 256 | 4096 | per_step | 1.2541 (0.0686) | 0.1849 (0.0034) | 6.78x | 8.000 | 8.023 | 1.00x |
+| dtype | B | T | Coefficients | CPU median ms (IQR) | MPS median ms (IQR) | Speedup |
+| :--- | ---: | ---: | :--- | ---: | ---: | ---: |
+| float32 | 1 | 262144 | shared | 0.2632 (0.0291) | 0.0375 (0.0038) | 7.02x |
+| float32 | 64 | 65536 | batched | 1.9368 (0.3711) | 0.2485 (0.0144) | 7.79x |
+| float32 | 256 | 4096 | batched | 0.4384 (0.0418) | 0.0968 (0.0473) | 4.53x |
+| float32 | 1 | 262144 | per_step | 0.2332 (0.0143) | 0.0432 (0.0109) | 5.40x |
+| float32 | 64 | 65536 | per_step | 1.6967 (0.1577) | 0.5039 (0.0120) | 3.37x |
+| float16 | 64 | 65536 | per_step | n/a | 0.2291 (0.0124) | n/a |
+| bfloat16 | 64 | 65536 | per_step | n/a | 0.2409 (0.0071) | n/a |
+| complex64 | 64 | 65536 | per_step | 4.9784 (0.1493) | 0.9920 (0.0146) | 5.02x |
 
 ## Build and verification
 

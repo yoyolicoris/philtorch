@@ -52,13 +52,6 @@ DTYPES = {
     "complex64": torch.complex64,
 }
 LAYOUTS = ("shared", "batched", "per_step")
-# The reference is the CPU op in float32 (complex64) on the same inputs.
-REFERENCE_DTYPES = {
-    torch.float32: torch.float32,
-    torch.float16: torch.float32,
-    torch.bfloat16: torch.float32,
-    torch.complex64: torch.complex64,
-}
 TOLERANCES = {
     torch.float32: (1e-5, 1e-6),
     torch.float16: (2e-2, 2e-2),
@@ -184,11 +177,7 @@ def parse_args():
         nargs="+",
         choices=LAYOUTS,
         default=list(LAYOUTS),
-        help=(
-            "coefficient layouts to run (default: all): shared, lti_recur with a of "
-            "shape (1,); batched, lti_recur with a of shape (B,); per_step, scan "
-            "with decay of shape (B, T)"
-        ),
+        help="coefficient layouts to run, as in the module docstring (default: all)",
     )
     return parser.parse_args()
 
@@ -215,7 +204,7 @@ def main():
         for layout in args.layout:
             for batch, steps in CASES:
                 if layout == "batched" and batch == 1:
-                    continue  # a of shape (1,) is the shared layout
+                    continue
                 if layout == "shared":
                     a_shape = (1,)
                 elif layout == "batched":
@@ -229,7 +218,8 @@ def main():
                 mps_inputs = tuple(value.to("mps") for value in cpu_inputs)
                 mps_function = make_function(layout, *mps_inputs)
 
-                reference_dtype = REFERENCE_DTYPES[dtype]
+                # The CPU op in float32 (complex64) on the same inputs.
+                reference_dtype = torch.promote_types(dtype, torch.float32)
                 expected = make_function(
                     layout, *(value.to(reference_dtype) for value in cpu_inputs)
                 )()

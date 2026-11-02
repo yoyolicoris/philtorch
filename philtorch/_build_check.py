@@ -9,7 +9,7 @@ import warnings
 _LABEL_RE = re.compile(r"\+torch(\d+)\.(\d+)\.\d+\.cu(\d+)(\d)$")
 _TORCH_RE = re.compile(r"(\d+)\.(\d+)")
 # PyPI rejects local labels, so CPU wheels record their torch minor only in
-# their requirement (see build_support.torch_requirements).
+# their requirement (see build_support.torch_requirement).
 _PIN_RE = re.compile(r"torch\s*==\s*(\d+)\.(\d+)\.\*")
 
 

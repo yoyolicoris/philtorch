@@ -128,7 +128,6 @@ inline void store4(device float2 *p, thread const float2 *v)
     ((device packed_float4 *)p)[0] = packed_float4(v[0].x, v[0].y, v[1].x, v[1].y);
     ((device packed_float4 *)p)[1] = packed_float4(v[2].x, v[2].y, v[3].x, v[3].y);
 }
-#if __METAL_VERSION__ >= 310
 inline void load4(const device bfloat *p, thread bfloat *v)
 {
     const packed_bfloat4 q = *(const device packed_bfloat4 *)p;
@@ -138,7 +137,6 @@ inline void store4(device bfloat *p, thread const bfloat *v)
 {
     *(device packed_bfloat4 *)p = packed_bfloat4(v[0], v[1], v[2], v[3]);
 }
-#endif
 
 template <typename T, bool VARYING, typename A = typename Acc<T>::type>
 inline void load_steps(Sequence<T> s, uint first, uint lid,
@@ -351,9 +349,7 @@ inline void replay_tiles(Sequence<T> s, const device A *states, device T *out,
 
 DEFINE_KERNELS(float, float)
 DEFINE_KERNELS(half, half)
-DEFINE_KERNELS(float2, cfloat)
-#if __METAL_VERSION__ >= 310
 DEFINE_KERNELS(bfloat, bfloat)
-#endif
+DEFINE_KERNELS(float2, cfloat)
 DEFINE_SCAN(float, float)
 DEFINE_SCAN(float2, cfloat)

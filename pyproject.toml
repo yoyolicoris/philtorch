@@ -28,7 +28,7 @@ include-package-data = false
 
 [project]
 # Dependencies come from setup.py, so CUDA wheels can pin the torch minor
-# they were built against (see build_support.torch_requirements).
+# they were built against (see build_support.torch_requirement).
 dynamic = ["version", "dependencies"]
 name = "philtorch"
 # The CPython versions not yet at end of life (https://devguide.python.org/versions/):

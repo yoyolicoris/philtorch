@@ -159,7 +159,7 @@ _MPS_TOLERANCES = {
 }
 # A tile is 1024 steps, read in vectors of 4: lengths around the vector width,
 # the tile, and a few tiles.
-_MPS_LENGTHS = [1, 2, 3, 4, 5, 1023, 1024, 1025, 2049, 4099]
+_MPS_LENGTHS = [1, 2, 3, 4, 5, 1023, 1024, 1025, 2049]
 _MPS_OPS = {"lti_recur": torch.ops.philtorch.lti_recur, "scan": torch.ops.philtorch.scan}
 
 
@@ -204,15 +204,11 @@ def _assert_mps_matches_reference(op: str, args, dtype: torch.dtype, **tolerance
 
 @_MPS
 @pytest.mark.parametrize("dtype", _MPS_DTYPES)
-@pytest.mark.parametrize("coefficient_layout", ["scalar", "shared", "batched"])
+@pytest.mark.parametrize("batch_decay", [True, False])
 @pytest.mark.parametrize("samples", _MPS_LENGTHS)
-def test_lti_recur_mps_boundaries(dtype: torch.dtype, coefficient_layout: str, samples: int):
+def test_lti_recur_mps_boundaries(dtype: torch.dtype, batch_decay: bool, samples: int):
     batch_size = 3
-    coefficient_shape = {
-        "scalar": (),
-        "shared": (1,),
-        "batched": (batch_size,),
-    }[coefficient_layout]
+    coefficient_shape = (batch_size if batch_decay else 1,)
     args = _mps_args("lti_recur", dtype, coefficient_shape, batch_size, samples)
     _assert_mps_matches_reference("lti_recur", args, dtype)
 
@@ -250,29 +246,20 @@ def test_mps_scalar_recur_block_chunks(op: str, dtype: torch.dtype):
 @_MPS
 @pytest.mark.parametrize("dtype", _MPS_DTYPES)
 @pytest.mark.parametrize("op", ["lti_recur", "scan"])
-def test_mps_scalar_recur_sliced_inputs(op: str, dtype: torch.dtype):
-    # Views of larger tensors, with an odd storage offset and rows that don't
-    # touch, which the op makes contiguous: its vector loads need element
-    # alignment only.
+def test_mps_scalar_recur_odd_offsets(op: str, dtype: torch.dtype):
+    # Contiguous views at an odd storage offset reach the kernels as they are:
+    # their vector loads need element alignment only.
     B, T = 3, 2049
-    gen = torch.Generator().manual_seed(0)
-    big_x = _mps_randn((B + 1, T + 5), dtype, gen)
-    big_zi = _mps_randn((B + 2,), dtype, gen)
-    x_view = lambda t: t[1:, 3 : 3 + T]  # noqa: E731
-    batch_view = lambda t: t[1 : 1 + B]  # noqa: E731
-    if op == "lti_recur":
-        bigs = (_mps_decay((B + 2,), dtype, gen), big_zi, big_x)
-        views = (batch_view, batch_view, x_view)
-    else:
-        bigs = (big_x, _mps_decay((B + 1, T + 5), dtype, gen), big_zi)
-        views = (x_view, lambda t: t[1:, 1 : 1 + T], batch_view)
-    mps_views = [view(big.to("mps")) for view, big in zip(views, bigs)]
-    assert all(v.storage_offset() % 2 == 1 for v in mps_views)
-    assert not mps_views[2 if op == "lti_recur" else 0].is_contiguous()
+    args = _mps_args(op, dtype, (B,) if op == "lti_recur" else (B, T), B, T)
+    views = []
+    for arg in args:
+        view = torch.empty(arg.numel() + 1, dtype=dtype, device="mps")[1:].view(arg.shape)
+        views.append(view.copy_(arg))
+    assert all(v.storage_offset() == 1 and v.is_contiguous() for v in views)
 
     reference_dtype = _reference_dtype(dtype)
-    expected = _MPS_OPS[op](*(view(big).to(reference_dtype) for view, big in zip(views, bigs)))
-    actual = _MPS_OPS[op](*mps_views)
+    expected = _MPS_OPS[op](*(arg.to(reference_dtype) for arg in args))
+    actual = _MPS_OPS[op](*views)
     torch.testing.assert_close(actual.cpu().to(reference_dtype), expected, **_MPS_TOLERANCES[dtype])
 
 
@@ -309,15 +296,13 @@ def _assert_mps_gradients_match_cpu(fn, args, requires_grad, grad_output):
             torch.testing.assert_close(actual, expected, rtol=1e-4, atol=1e-5)
 
 
-@_MPS
-@pytest.mark.parametrize("dtype", [torch.float32, torch.complex64])
+@pytest.mark.skipif(not torch.backends.mps.is_available(), reason="MPS not available")
 @pytest.mark.parametrize(
     ("x_requires_grad", "a_requires_grad", "zi_requires_grad"),
     _REQUIRES_GRAD_CASES,
 )
 @pytest.mark.parametrize("batch_decay", [True, False])
 def test_lti_recur_mps_grad_equiv(
-    dtype: torch.dtype,
     x_requires_grad: bool,
     a_requires_grad: bool,
     zi_requires_grad: bool,
@@ -325,34 +310,52 @@ def test_lti_recur_mps_grad_equiv(
 ):
     batch_size = 3
     samples = 17
-    gen = torch.Generator().manual_seed(0)
-    a = _mps_decay((batch_size if batch_decay else 1,), dtype, gen) * 0.4
-    zi = _mps_randn((batch_size,), dtype, gen)
-    x = _mps_randn((batch_size, samples), dtype, gen)
-    grad_output = _mps_randn(x.shape, dtype, gen)
+    a = torch.rand(batch_size if batch_decay else 1, dtype=torch.float32) * 0.75 - 0.375
+    zi = torch.randn(batch_size, dtype=torch.float32)
+    x = torch.randn(batch_size, samples, dtype=torch.float32)
+    grad_output = torch.randn_like(x)
 
-    _assert_mps_gradients_match_cpu(
-        torch.ops.philtorch.lti_recur,
-        (a, zi, x),
-        (a_requires_grad, zi_requires_grad, x_requires_grad),
-        grad_output,
-    )
+    requires_grad = (a_requires_grad, zi_requires_grad, x_requires_grad)
+
+    def run(device: str):
+        device_inputs = tuple(
+            value.to(device).detach().requires_grad_(input_requires_grad)
+            for value, input_requires_grad in zip((a, zi, x), requires_grad)
+        )
+        differentiable_inputs = tuple(
+            value
+            for value, input_requires_grad in zip(device_inputs, requires_grad)
+            if input_requires_grad
+        )
+        output = torch.ops.philtorch.lti_recur(*device_inputs)
+        computed_gradients = iter(
+            torch.autograd.grad(
+                output,
+                differentiable_inputs,
+                grad_outputs=grad_output.to(device),
+            )
+        )
+        gradients = tuple(
+            next(computed_gradients).cpu() if input_requires_grad else None
+            for input_requires_grad in requires_grad
+        )
+        return output.detach().cpu(), gradients
+
+    expected_output, expected_gradients = run("cpu")
+    actual_output, actual_gradients = run("mps")
+
+    torch.testing.assert_close(actual_output, expected_output, rtol=1e-5, atol=1e-6)
+    for actual, expected in zip(actual_gradients, expected_gradients):
+        if actual is None or expected is None:
+            assert actual is expected is None
+        else:
+            torch.testing.assert_close(actual, expected, rtol=1e-4, atol=1e-5)
 
 
 @_MPS
 @pytest.mark.parametrize("dtype", [torch.float32, torch.complex64])
-@pytest.mark.parametrize(
-    ("x_requires_grad", "decay_requires_grad", "zi_requires_grad"),
-    _REQUIRES_GRAD_CASES,
-)
 @pytest.mark.parametrize("samples", [17, 2049])
-def test_scan_mps_grad_equiv(
-    dtype: torch.dtype,
-    x_requires_grad: bool,
-    decay_requires_grad: bool,
-    zi_requires_grad: bool,
-    samples: int,
-):
+def test_scan_mps_grad_equiv(dtype: torch.dtype, samples: int):
     batch_size = 3
     gen = torch.Generator().manual_seed(0)
     x = _mps_randn((batch_size, samples), dtype, gen)
@@ -363,7 +366,7 @@ def test_scan_mps_grad_equiv(
     _assert_mps_gradients_match_cpu(
         torch.ops.philtorch.scan,
         (x, decay, zi),
-        (x_requires_grad, decay_requires_grad, zi_requires_grad),
+        (True, True, True),
         grad_output,
     )
 

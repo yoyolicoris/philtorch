@@ -11,7 +11,7 @@ from setuptools import setup
 from build_support import (
     MIN_TORCH_MACOS,
     resolve_cuda_build,
-    torch_requirements,
+    torch_requirement,
     write_metal_headers,
 )
 
@@ -140,8 +140,7 @@ def get_extensions():
                 f"found {torch.__version__}."
             )
         # The Metal source reaches Metal through torch's C shim alone, and
-        # includes its shaders and target version as headers generated in the
-        # build directory.
+        # includes its shaders as headers generated in the build directory.
         sources += list(glob.glob(os.path.join(extensions_dir, "*.mm")))
         include_dirs.append(os.path.join(this_dir, "build", "metal"))
         write_metal_headers(extensions_dir, include_dirs[-1])
@@ -198,7 +197,7 @@ except ImportError:
             "sees it."
         )
 
-install_requires = torch_requirements(os.environ.get("PHILTORCH_TORCH_PIN", ""))
+install_requires = torch_requirement(os.environ.get("PHILTORCH_TORCH_PIN", ""))
 
 if not ext_modules:
     setup(install_requires=install_requires)
