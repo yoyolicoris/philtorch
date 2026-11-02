@@ -32,7 +32,7 @@ from pathlib import Path
 
 _NORMALIZE_PATTERN = re.compile(r"[-_.]+")
 _VALID_PROJECT_NAME = re.compile(r"^[a-z0-9]([a-z0-9-]*[a-z0-9])?$")
-# The local label scripts/cuda_wheel_version.py gives CUDA wheels, e.g. "cu13".
+# The local label scripts/torch_matrix.py gives CUDA wheels, e.g. "cu13".
 # Earlier releases used "torch2.14.1.cu130", whose index is per torch minor,
 # which those wheels pin.
 _CUDA_LABEL = re.compile(r"cu(\d+)")

@@ -14,7 +14,7 @@ concurrency:
 
 jobs:
   update:
-    # Regenerates the CUDA wheel matrix and what is derived from it, and
+    # Regenerates the torch matrix and what is derived from it, and
     # proposes the result in a pull request. It never merges anything.
     runs-on: ubuntu-latest
     permissions:
@@ -27,8 +27,8 @@ jobs:
         with:
           ref: dev
 
-      - name: Update the CUDA wheel matrix
-        run: python3 scripts/update_cuda_matrix.py
+      - name: Update the torch matrix
+        run: python3 scripts/update_torch_matrix.py
 
       - name: Commit and open or update the pull request
         env:
@@ -51,7 +51,7 @@ jobs:
           git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
           git switch -C "$BRANCH"
           git add -A
-          git commit -m "ci: update the CUDA wheel matrix for new PyTorch releases"
+          git commit -m "ci: update the torch matrix for new PyTorch releases"
 
           # The branch is regenerated from dev, but pushed only when its tree
           # differs: a new commit would detach the CI run started on the old one.
@@ -60,7 +60,7 @@ jobs:
             && [ "$(git rev-parse 'HEAD^{tree}')" = "$(git rev-parse 'FETCH_HEAD^{tree}')" ]; then
             same=true
           fi
-          title="ci: update the CUDA wheel matrix for new PyTorch releases"
+          title="ci: update the torch matrix for new PyTorch releases"
           if $same && [ -n "$number" ]; then
             echo "Branch and pull request are up to date."
             exit 0
@@ -72,7 +72,7 @@ jobs:
 
           Check before merging:
 
-          - the diff of \`cuda_wheel_matrix.json\`, \`pyproject.toml\` and the README table;
+          - the diff of \`torch_matrix.json\`, \`pyproject.toml\` and the README table;
           - the places that name the oldest Python, when \`requires-python\` rises;
           - whether \`MIN_TORCH\` in \`build_support.py\` must rise, by the criteria under "The floor" in CONTRIBUTING.md; it doesn't follow new minors;
 

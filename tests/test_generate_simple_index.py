@@ -216,12 +216,13 @@ def test_rejects_unsafe_project_name(tmp_path, project):
 
 
 def test_index_names_match_the_cuda_wheel_labels():
-    version_script = _load("cuda_wheel_version")
-    data = version_script.load_matrix(version_script.DEFAULT_MATRIX)
-    for build in data["builds"]:
-        version = version_script.cuda_wheel_version("0.9.0", build["cuda"])
-        filename = f"philtorch-{version}-cp311-abi3-manylinux_2_28_x86_64.whl"
-        assert INDEX.index_name(filename) == "cu" + build["cuda"].split(".")[0]
+    matrix = _load("torch_matrix")
+    data = matrix.load_matrix(matrix.REPO_ROOT / "torch_matrix.json")
+    for entry in data["torch"]:
+        for cuda in entry["cuda"]:
+            version = matrix.cuda_wheel_version("0.9.0", cuda)
+            filename = f"philtorch-{version}-cp311-abi3-manylinux_2_28_x86_64.whl"
+            assert INDEX.index_name(filename) == "cu" + cuda.split(".")[0]
 
 
 @pytest.mark.parametrize(

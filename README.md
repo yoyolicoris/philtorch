@@ -73,9 +73,9 @@ On Linux, `pip install torch` from PyPI installs PyTorch's default CUDA build; t
 
 The index URLs are relative to `https://yoyolicoris.github.io/philtorch/`, which lists every index, including the per-PyTorch indexes of earlier releases.
 
-- **Requirements:** a Python your PyTorch has wheels for, an NVIDIA GPU with compute capability 7.5, 8.x, 9.0, 10.x or 12.x, and a driver that supports your PyTorch's CUDA version.
+- **Requirements:** a Python your PyTorch has wheels for, an NVIDIA GPU with compute capability 7.5, 8.x, 9.0, 10.x or 12.x, and a PyTorch built for CUDA 12.9 or newer, with a driver that supports its CUDA version.
 - **PyTorch:** each wheel requires `torch >= 2.12.0`, so pip keeps the PyTorch you installed.
-- **Mismatches:** `import philtorch` raises an `ImportError` if the installed PyTorch has no CUDA support or uses a different CUDA major version.
+- **Mismatches:** `import philtorch` raises an `ImportError` if the installed PyTorch has no CUDA support, uses a different CUDA major version, or uses a CUDA older than 12.9, such as PyTorch's `cu126` builds.
 - **Use `--index-url`, not `--extra-index-url`:** with PyPI also searched, pip installs PyPI's CPU-only wheel whenever it is a newer release than the CUDA build in the index, without warning.
 
 ### Source builds

@@ -1,6 +1,6 @@
 name: Test wheel (reusable)
 
-# Called once per (OS, Torch version) leg from build-wheels.yml. Each leg
+# Called once per (OS, torch, Python) leg from build-wheels.yml. Each leg
 # installs the OS's one wheel with its own torch, which may be a later minor
 # than the one the wheel was built on: that is the check that the wheel,
 # built on the stable ABI, loads there.
@@ -10,20 +10,18 @@ on:
       os:
         required: true
         type: string
-      python_versions:
-        # JSON array string of the Pythons to test, e.g. '["3.11", "3.15"]'
-        # (see resolve-torch-versions in build-wheels.yml).
-        required: true
-        type: string
       torch_version:
         # The torch to test with, installed here. Not necessarily the one the
         # wheel was built on (see the header).
         required: true
         type: string
+      python_version:
+        # The Python to test on, e.g. '3.14'.
+        required: true
+        type: string
       upload_coverage:
         # Set true only for the one leg that should upload Codecov coverage
-        # (newest Torch on ubuntu), to avoid duplicate reports per commit; it
-        # uploads from the first, oldest Python of python_versions.
+        # (the newest torch on ubuntu), to avoid duplicate reports per commit.
         required: false
         type: boolean
         default: false
@@ -38,16 +36,12 @@ jobs:
     runs-on: ${{ inputs.os }}
     permissions:
       contents: read
-    strategy:
-      fail-fast: false
-      matrix:
-        python-version: ${{ fromJson(inputs.python_versions) }}
     steps:
       - uses: actions/checkout@v7
 
       - uses: actions/setup-python@v7
         with:
-          python-version: ${{ matrix.python-version }}
+          python-version: ${{ inputs.python_version }}
 
       - uses: actions/download-artifact@v8
         with:
@@ -78,7 +72,7 @@ jobs:
         run: pytest --cov-branch --cov-report=xml --junitxml=junit.xml -o junit_family=legacy
 
       - name: Upload coverage reports to Codecov
-        if: inputs.upload_coverage && matrix.python-version == fromJson(inputs.python_versions)[0]
+        if: inputs.upload_coverage
         uses: codecov/codecov-action@v5
         with:
           token: ${{ secrets.codecov_token }}
@@ -86,7 +80,7 @@ jobs:
       - name: Upload test results to Codecov
         # Per-test durations and failures, for Codecov's test analytics; also
         # when tests fail.
-        if: ${{ !cancelled() && inputs.upload_coverage && matrix.python-version == fromJson(inputs.python_versions)[0] }}
+        if: ${{ !cancelled() && inputs.upload_coverage }}
         uses: codecov/codecov-action@v5
         with:
           token: ${{ secrets.codecov_token }}
