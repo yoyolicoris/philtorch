@@ -44,12 +44,6 @@ inline float2 mul(float2 a, float2 b)
     return float2(a.x * b.x - a.y * b.y, a.x * b.y + a.y * b.x);
 }
 
-// A composed map's multiplier, kept finite: it can overflow to infinity where
-// the states don't, and a zero state, or a reset, times it must stay zero, not
-// 0 * inf = NaN. NaN and infinite states still propagate.
-inline float finite(float m) { return isinf(m) ? copysign(FLT_MAX, m) : m; }
-inline float2 finite(float2 m) { return select(m, copysign(float2(FLT_MAX), m), isinf(m)); }
-
 // The map f(h) = m h + v.
 template <typename A> struct Pair
 {
@@ -65,16 +59,16 @@ template <typename A> inline Pair<A> identity()
 // right(left(h)): composition isn't commutative.
 template <typename A> inline Pair<A> compose(Pair<A> left, Pair<A> right)
 {
-    return {finite(mul(left.m, right.m)), mul(left.v, right.m) + right.v};
+    return {mul(left.m, right.m), mul(left.v, right.m) + right.v};
 }
 
-// The map of a thread's K steps, composed with plain products.
+// The map of a thread's K steps.
 template <typename A> inline Pair<A> compose_steps(thread const Pair<A> *items)
 {
     Pair<A> total = items[0];
     for (uint k = 1; k < K; ++k)
-        total = {mul(total.m, items[k].m), mul(total.v, items[k].m) + items[k].v};
-    return {finite(total.m), total.v};
+        total = compose(total, items[k]);
+    return total;
 }
 
 template <typename A> inline Pair<A> shuffle_up(Pair<A> p, ushort delta)

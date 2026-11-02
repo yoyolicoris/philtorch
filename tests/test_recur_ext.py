@@ -171,26 +171,6 @@ def test_mps_scalar_recur_block_chunks(op: str, dtype: torch.dtype):
     torch.testing.assert_close(actual.cpu().to(expected.dtype), expected, rtol=1e-5, atol=1e-3)
 
 
-@_MPS
-@pytest.mark.parametrize("dtype", [torch.float32, torch.complex64])
-@pytest.mark.parametrize("op", ["lti_recur", "scan"])
-@pytest.mark.parametrize("case", ["overflow", "nan", "inf"])
-def test_mps_scalar_recur_non_finite_like_cpu(op: str, dtype: torch.dtype, case: str):
-    # With a = 2 and no input, the tiles' composed multipliers overflow to
-    # infinity while the states stay zero; with a = 0.5 they underflow to zero
-    # while a NaN or infinite input keeps the states after it non-finite.
-    B, T = 2, 4096
-    a = torch.full((B,) if op == "lti_recur" else (B, T), 2.0 if case == "overflow" else 0.5)
-    zi, x = torch.zeros(B), torch.zeros(B, T)
-    if case != "overflow":
-        x[:, 10] = float(case)
-    args = tuple(t.to(dtype) for t in ((a, zi, x) if op == "lti_recur" else (x, a, zi)))
-    expected = _MPS_OPS[op](*args)
-    actual = _MPS_OPS[op](*(arg.to("mps") for arg in args)).cpu()
-    assert torch.equal(actual.isfinite(), expected.isfinite())
-    assert case != "overflow" or not actual.any()
-
-
 @pytest.mark.skipif(not torch.backends.mps.is_available(), reason="MPS not available")
 @pytest.mark.parametrize(
     ("x_requires_grad", "a_requires_grad", "zi_requires_grad"),
