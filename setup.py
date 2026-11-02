@@ -8,7 +8,7 @@ from setuptools import setup
 
 # build_support.py sits next to setup.py; the setuptools.build_meta:__legacy__
 # backend puts this directory on sys.path, which this import relies on.
-from build_support import resolve_cuda_build, torch_requirement
+from build_support import MIN_TORCH_MACOS, resolve_cuda_build, torch_requirement
 
 library_name = "philtorch"
 # The extension uses only CPython's limited API, so one abi3 wheel, tagged with
@@ -66,6 +66,19 @@ def get_macos_openmp_config(extra_compile_args, extra_link_args, torch_lib):
         f"-Wl,-rpath,{torch_lib}",
     ]
     return compiler, configured_compile_args, configured_link_args
+
+
+def write_metal_header(source, header):
+    # torch's Metal shim compiles only from source text, so the extension
+    # carries the shader as a raw string, whose delimiter it can't contain.
+    with open(source, encoding="utf-8") as file:
+        text = file.read()
+    os.makedirs(os.path.dirname(header), exist_ok=True)
+    with open(header, "w", encoding="utf-8") as file:
+        file.write(
+            "#pragma once\n"
+            f'constexpr const char *METAL_SOURCE = R"PHILTORCH_METAL({text})PHILTORCH_METAL";\n'
+        )
 
 
 def get_extensions():
@@ -127,9 +140,23 @@ def get_extensions():
             f"CUDA compilation was selected, but no .cu sources were found in {extensions_dir}."
         )
 
+    include_dirs = []
     if sys.platform == "darwin":
+        # torch.__version__ is a TorchVersion, which compares as a version.
+        if torch.__version__ < MIN_TORCH_MACOS:
+            raise RuntimeError(
+                f"philtorch's MPS kernels need PyTorch {MIN_TORCH_MACOS} or newer on macOS; "
+                f"found {torch.__version__}."
+            )
+        # .mm marks the macOS-only source, which reaches Metal through torch's
+        # C shim and includes its shader, written below as a header.
         sources += list(glob.glob(os.path.join(extensions_dir, "*.mm")))
-        extra_link_args.extend(["-framework", "Foundation", "-framework", "Metal"])
+        metal_dir = os.path.join(this_dir, "build", "metal")
+        include_dirs.append(metal_dir)
+        write_metal_header(
+            os.path.join(extensions_dir, "scalar_recur_mps.metal"),
+            os.path.join(metal_dir, "scalar_recur_mps.metal.h"),
+        )
 
     if use_cuda:
         sources += cuda_sources
@@ -146,6 +173,7 @@ def get_extensions():
         extension(
             f"{library_name}._C",
             [os.path.relpath(s, this_dir) for s in sources],
+            include_dirs=include_dirs,
             extra_compile_args=extra_compile_args,
             extra_link_args=extra_link_args,
             py_limited_api=py_limited_api,
@@ -182,7 +210,7 @@ except ImportError:
             "sees it."
         )
 
-install_requires = [torch_requirement(os.environ.get("PHILTORCH_TORCH_PIN", ""))]
+install_requires = torch_requirement(os.environ.get("PHILTORCH_TORCH_PIN", ""))
 
 if not ext_modules:
     setup(install_requires=install_requires)

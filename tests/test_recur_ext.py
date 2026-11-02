@@ -1,6 +1,7 @@
 import pytest
 import torch
 
+from philtorch._recur import recurrence
 from philtorch.lpv import state_space_recursion as lpv_state_space
 from philtorch.mat import companion
 
@@ -141,35 +142,33 @@ def test_lti_recur_rejects_zero_length(device: str):
         torch.ops.philtorch.lti_recur(a, zi, x)
 
 
-@pytest.mark.skipif(not torch.backends.mps.is_available(), reason="MPS not available")
-@pytest.mark.parametrize("coefficient_layout", ["scalar", "shared", "batched"])
-@pytest.mark.parametrize("samples", [1, 2, 511, 512, 513, 1234])
-def test_lti_recur_mps_boundaries(coefficient_layout: str, samples: int):
-    batch_size = 3
-    coefficient_shape = {
-        "scalar": (),
-        "shared": (1,),
-        "batched": (batch_size,),
-    }[coefficient_layout]
-    a = torch.rand(coefficient_shape, dtype=torch.float32) * 1.5 - 0.75
-    zi = torch.randn(batch_size, dtype=torch.float32)
-    x = torch.randn(batch_size, samples, dtype=torch.float32)
+_MPS = pytest.mark.skipif(not torch.backends.mps.is_available(), reason="MPS not available")
 
-    expected = torch.ops.philtorch.lti_recur(a, zi, x)
-    actual = torch.ops.philtorch.lti_recur(a.to("mps"), zi.to("mps"), x.to("mps")).cpu()
-    torch.testing.assert_close(actual, expected, rtol=1e-5, atol=1e-6)
+_MPS_OPS = {"lti_recur": torch.ops.philtorch.lti_recur, "scan": torch.ops.philtorch.scan}
 
 
-@pytest.mark.skipif(not torch.backends.mps.is_available(), reason="MPS not available")
-def test_lti_recur_mps_block_chunks():
-    samples = 512 * 512 + 1
-    a = torch.tensor([0.25], dtype=torch.float32)
-    zi = torch.randn(1, dtype=torch.float32)
-    x = torch.randn(1, samples, dtype=torch.float32)
-
-    expected = torch.ops.philtorch.lti_recur(a, zi, x)
-    actual = torch.ops.philtorch.lti_recur(a.to("mps"), zi.to("mps"), x.to("mps")).cpu()
-    torch.testing.assert_close(actual, expected, rtol=1e-5, atol=1e-6)
+@_MPS
+@pytest.mark.parametrize("dtype", [torch.float32, torch.complex64])
+@pytest.mark.parametrize("op", ["lti_recur", "scan"])
+def test_mps_scalar_recur_block_chunks(op: str, dtype: torch.dtype):
+    # Past 1024 * 512 steps, the tiles' totals are scanned in several chunks of
+    # 512 and each chunk's carry reaches the next. The coefficients are close to
+    # 1, so that a tile's total still counts in the tiles after it (a ** 1024 is
+    # at least 6e-3): the states then reach 60 and float32's own error, CPU's
+    # included, is a few 1e-5, so atol is 1e-3, which a missing carry exceeds.
+    batch_size, samples = 2, 1024 * 512 + 5
+    gen = torch.Generator().manual_seed(0)
+    shape = (batch_size,) if op == "lti_recur" else (batch_size, samples)
+    a = 1 - 5e-3 * torch.rand(shape, generator=gen)
+    if dtype.is_complex:
+        a = torch.polar(a, 0.05 * torch.rand(shape, generator=gen))
+    wide = torch.complex64 if dtype.is_complex else torch.float32
+    zi = torch.randn(batch_size, generator=gen, dtype=wide)
+    x = torch.randn(batch_size, samples, generator=gen, dtype=wide)
+    args = (a, zi, x) if op == "lti_recur" else (x, a, zi)
+    expected = _MPS_OPS[op](*(arg.to(torch.promote_types(dtype, torch.float64)) for arg in args))
+    actual = _MPS_OPS[op](*(arg.to("mps", dtype) for arg in args))
+    torch.testing.assert_close(actual.cpu().to(expected.dtype), expected, rtol=1e-5, atol=1e-3)
 
 
 @pytest.mark.skipif(not torch.backends.mps.is_available(), reason="MPS not available")
@@ -226,6 +225,30 @@ def test_lti_recur_mps_grad_equiv(
             assert actual is expected is None
         else:
             torch.testing.assert_close(actual, expected, rtol=1e-4, atol=1e-5)
+
+
+@_MPS
+@pytest.mark.parametrize("time_invariant", [True, False])
+def test_mps_recurrence_rejects_m_above_1(time_invariant: bool):
+    B, T, M = 2, 5, 2
+    A = torch.zeros(1, 1 if time_invariant else T, M, M, device="mps")
+    zi = torch.zeros(B, M, device="mps")
+    x = torch.zeros(B, T, M, device="mps")
+    with pytest.raises(NotImplementedError, match="Metal kernels take M = 1"):
+        recurrence(A, zi, x)
+
+
+@_MPS
+@pytest.mark.parametrize("op", ["lti_recur", "scan"])
+def test_mps_scalar_recur_rejects_int64(op: str):
+    def ones(*shape):
+        return torch.ones(shape, dtype=torch.int64, device="mps")
+
+    args = (
+        (ones(2), ones(2), ones(2, 5)) if op == "lti_recur" else (ones(2, 5), ones(2, 5), ones(2))
+    )
+    with pytest.raises(RuntimeError, match="MPS scalar recurrence takes"):
+        _MPS_OPS[op](*args)
 
 
 @pytest.mark.parametrize("order", [2, 3])
