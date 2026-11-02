@@ -17,9 +17,7 @@ recurrences: ``|a| < 0.9``, with a random phase for complex64.
 
 Per case it reports the median runtime (and IQR) from
 ``torch.utils.benchmark.Timer.blocked_autorange``, synchronizing the MPS device
-at each measurement boundary, and the speedup of MPS over CPU. The MPS result
-is first checked against the CPU op run in float32 (complex64) on the same
-inputs.
+at each measurement boundary, and the speedup of MPS over CPU.
 
 Run it with no other GPU work going on::
 
@@ -50,12 +48,6 @@ DTYPES = {
     "complex64": torch.complex64,
 }
 LAYOUTS = ("shared", "batched", "per_step")
-TOLERANCES = {
-    torch.float32: (1e-5, 1e-6),
-    torch.float16: (2e-2, 2e-2),
-    torch.bfloat16: (5e-2, 5e-2),
-    torch.complex64: (1e-5, 1e-6),
-}
 # scan's CPU kernel takes no half precision; lti_recur's takes all four dtypes.
 SCAN_CPU_DTYPES = (torch.float32, torch.complex64)
 MAX_DECAY = 0.9
@@ -151,18 +143,6 @@ def main():
                 cpu_inputs = (a_cpu, zi_cpu, x_cpu)
                 mps_inputs = tuple(value.to("mps") for value in cpu_inputs)
                 mps_function = make_function(layout, *mps_inputs)
-
-                # The CPU op in float32 (complex64) on the same inputs.
-                reference_dtype = torch.promote_types(dtype, torch.float32)
-                expected = make_function(
-                    layout, *(value.to(reference_dtype) for value in cpu_inputs)
-                )()
-                actual = mps_function().cpu()
-                rtol, atol = TOLERANCES[dtype]
-                torch.testing.assert_close(
-                    actual.to(reference_dtype), expected, rtol=rtol, atol=atol
-                )
-                del actual, expected
 
                 mps_ms, mps_iqr_ms = measure_runtime(mps_function, timer=synchronized_mps_timer)
                 cpu_cell, speedup = "n/a", "n/a"

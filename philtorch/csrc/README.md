@@ -24,7 +24,8 @@ One three-pass design serves every input: reduce each tile, scan the tile totals
 | [`scalar_recur_mps.metal`](scalar_recur_mps.metal) | The Metal kernels, embedded in the extension at build time. |
 | [`../_ops.py`](../_ops.py) | Registers fake implementations and autograd for `philtorch::lti_recur` and `philtorch::scan`. |
 | [`../_recur.py`](../_recur.py) | Sends M = 1 recurrences on MPS to `lti_recur` or `scan`. |
-| [`../../tests/test_recur_ext.py`](../../tests/test_recur_ext.py) | Checks CPU/MPS parity, boundary lengths, long scans, and gradients. |
+| [`../../tests/test_recur.py`](../../tests/test_recur.py) | `test_recurrence_low_precision` checks MPS against a float64 reference in every dtype and coefficient layout. |
+| [`../../tests/test_recur_ext.py`](../../tests/test_recur_ext.py) | MPS tests of the carry across chunks of tiles, of overflowed multipliers, of gradients and of the inputs the kernels reject. |
 | [`../../benchmarks/benchmark_mps_recur.py`](../../benchmarks/benchmark_mps_recur.py) | Reproduces the CPU/MPS runtime results. |
 
 ## Turning a recurrence into a scan
@@ -191,19 +192,11 @@ philtorch::scan      -> scan_mps
 Both schemas have a custom autograd formula in `philtorch/_ops.py`.
 Their backward passes express the reverse recurrence with the same dispatcher operations, so the MPS forward and backward both run these kernels.
 
-## Supported inputs and edge cases
+## Edge cases
 
-The MPS kernels require:
-
-- `a`, `zi`, and `x` on an MPS device with the same dtype;
-- float32, float16, bfloat16 or complex64 values;
-- for `lti_recur`, a scalar `a`, or a vector of one value or one per sequence; for `scan`, a `(B, T)` decay;
-- one-dimensional `zi` with length `B`, and two-dimensional `x` with shape `(B, T)`;
-- `T` below 2^32 - 1024.
-
-`lti_recur` rejects a zero-length sequence, because its autograd formula needs a final output state; `scan` returns an empty result.
-An empty batch returns `empty_like(x)` without a Metal dispatch.
-Parallel reassociation can change floating-point rounding relative to a strict serial loop, so tests use explicit per-dtype tolerances.
+- `lti_recur` rejects a zero-length sequence, because its autograd formula needs a final output state; `scan` returns an empty result. An empty batch returns without a Metal dispatch.
+- A composed multiplier can overflow to infinity where the states don't. So in composed maps a zero state stays zero whatever the multiplier (`mul_state`), and a zero multiplier, a reset or a sequence's start, stays zero whatever it is composed with (`mul_multipliers`); NaN and infinite states propagate as on CPU.
+- The parallel order of operations rounds differently from a sequential loop, so the tests compare with per-dtype tolerances.
 
 ## CPU and MPS benchmark
 
@@ -246,24 +239,10 @@ Rebuild the editable extension after changing the host code or the Metal source:
 pixi reinstall philtorch
 ```
 
-Run focused native recurrence tests with:
+Run the MPS tests with:
 
 ```bash
-pixi run pytest tests/test_recur_ext.py -k mps -q
+pixi run pytest tests/test_recur.py tests/test_recur_ext.py -k "mps or low_precision" -q
 ```
 
-The MPS tests cover every dtype and coefficient layout at lengths around the vector width and the 1024-step tile, sliced inputs, gradients, and the public paths, against CPU.
-The long scan test uses `T = 1024 * 512 + 5`, so that stage 2 carries a map across more than one chunk of 512 tile totals.
-
-## Invariants to preserve
-
-When modifying this implementation, keep these details synchronized:
-
-- `compose(left, right)` means `right(left(h))`; do not reverse it.
-- The first step folds in `zi` with a zero multiplier, so maps from a sequence's start are constants and `states` holds plain states.
-- Steps past the end must be identities, `(1, 0)`.
-- Composing maps, and applying a composed map to a state, takes a product with an exact zero as zero (`mul_maps`): a composed multiplier can overflow to infinity where the states, zero, don't, and `0 * inf` would be NaN.
-- `states` holds each tile's end state; replay reads the previous tile's, and the first tile starts from zero.
-- The 1024-step tile assumes 256 threads, four steps per thread, and eight 32-lane SIMD groups; `THREADS` and `K` in the Metal source and `THREADS` and `STEPS_PER_THREAD` in the host code must agree.
-- The dispatches must stay ordered: tile reduction, tile-total scan, then tile replay.
-- The MPS registrations are the public `philtorch::lti_recur` and `philtorch::scan` schemas.
+They run 301 and 2049 steps, one tile and three, each ending mid-vector, and `T = 1024 * 512 + 5`, so that stage 2 carries a map across more than one chunk of 512 tile totals.

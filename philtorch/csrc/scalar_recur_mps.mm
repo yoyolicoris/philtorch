@@ -140,10 +140,10 @@ void launch(AOTIMetalKernelFunctionHandle function,
     // are shared, so calls on different MPS streams encode one at a time.
     static std::mutex mutex;
     const std::lock_guard<std::mutex> lock(mutex);
-    Launch launch{tensors, integers, grid};
+    Launch arguments{tensors, integers, grid};
     TORCH_ERROR_CODE_CHECK(
-        aoti_torch_mps_run_command_block(function, encode, &launch));
-    TORCH_ERROR_CODE_CHECK(launch.error);
+        aoti_torch_mps_run_command_block(function, encode, &arguments));
+    TORCH_ERROR_CODE_CHECK(arguments.error);
 }
 
 // h[b, t] = a h[b, t - 1] + x[b, t], h[b, -1] = zi[b], with a = decays[b, t]
@@ -155,10 +155,10 @@ Tensor scalar_recur_mps(const Tensor &decays, bool varying, int64_t stride_b,
     STD_TORCH_CHECK(decays.device().type() == torch::headeronly::DeviceType::MPS &&
                         zi.device().type() == torch::headeronly::DeviceType::MPS &&
                         x.device().type() == torch::headeronly::DeviceType::MPS,
-                    "A, zi and x must be MPS tensors");
+                    "the coefficients, initial states and inputs must be MPS tensors");
     const ScalarType dtype = x.scalar_type();
     STD_TORCH_CHECK(decays.scalar_type() == dtype && zi.scalar_type() == dtype,
-                    "A, zi and x must have the same dtype");
+                    "the coefficients, initial states and inputs must have the same dtype");
     const Kernels &k = kernels(dtype);
 
     const auto decays_contiguous = torch::stable::contiguous(decays);

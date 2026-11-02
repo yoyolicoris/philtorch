@@ -5,6 +5,7 @@ from philtorch import _recur
 from philtorch._recur import _forward, recur_triton, recurrence
 
 DEVICES = ["cpu", pytest.param("cuda", marks=pytest.mark.cuda)]
+MPS = pytest.mark.skipif(not torch.backends.mps.is_available(), reason="MPS not available")
 # How A is shared: (batch items, steps) it has, of B and T.
 SHARING = ["one", "per_item", "per_step", "both"]
 
@@ -92,12 +93,7 @@ def test_recurrence_ignores_memory_past_the_states(dtype):
     "device",
     [
         pytest.param("cuda", marks=pytest.mark.cuda),
-        pytest.param(
-            "mps",
-            marks=pytest.mark.skipif(
-                not torch.backends.mps.is_available(), reason="MPS not available"
-            ),
-        ),
+        pytest.param("mps", marks=MPS),
     ],
 )
 @pytest.mark.parametrize(
@@ -112,8 +108,9 @@ def test_recurrence_ignores_memory_past_the_states(dtype):
 @pytest.mark.parametrize("sharing", SHARING)
 # 12 states take the products of 16 x 16 blocks as dots (a complex one as four).
 @pytest.mark.parametrize("M", [1, 2, 3, 6, 12])
-# 2049 steps cross the Metal kernel's tiles of 1024 and end in a partial vector.
-@pytest.mark.parametrize("T", [300, 2049])
+# The Metal kernel's tiles are 1024 steps, read 4 at a time: one tile, and
+# three, each ending mid-vector.
+@pytest.mark.parametrize("T", [301, 2049])
 def test_recurrence_low_precision(device, dtype, tolerance, sharing, M, T):
     if device == "mps" and M > 1:
         pytest.skip("the Metal kernels take M = 1")
@@ -330,10 +327,7 @@ INTEGER_DISPATCH = [
 
 # The Metal kernels, which take M = 1 in these four dtypes.
 MPS_DISPATCH = [
-    pytest.param(
-        *case,
-        marks=pytest.mark.skipif(not torch.backends.mps.is_available(), reason="MPS not available"),
-    )
+    pytest.param(*case, marks=MPS)
     for case in [
         (time_invariant, 1, dtype, "mps", "_lti_recur" if time_invariant else "_scan")
         for time_invariant in (True, False)

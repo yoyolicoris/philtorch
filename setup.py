@@ -148,13 +148,14 @@ def get_extensions():
                 f"philtorch's MPS kernels need PyTorch {MIN_TORCH_MACOS} or newer on macOS; "
                 f"found {torch.__version__}."
             )
-        # The Metal source reaches Metal through torch's C shim alone, and
-        # includes its shader as a header generated in the build directory.
+        # .mm marks the macOS-only source, which reaches Metal through torch's
+        # C shim and includes its shader as a header generated here.
         sources += list(glob.glob(os.path.join(extensions_dir, "*.mm")))
-        include_dirs.append(os.path.join(this_dir, "build", "metal"))
+        metal_dir = os.path.join(this_dir, "build", "metal")
+        include_dirs.append(metal_dir)
         write_metal_header(
             os.path.join(extensions_dir, "scalar_recur_mps.metal"),
-            os.path.join(include_dirs[-1], "scalar_recur_mps.metal.h"),
+            os.path.join(metal_dir, "scalar_recur_mps.metal.h"),
         )
 
     if use_cuda:

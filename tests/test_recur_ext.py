@@ -174,14 +174,21 @@ def test_mps_scalar_recur_block_chunks(op: str, dtype: torch.dtype):
 @_MPS
 @pytest.mark.parametrize("dtype", [torch.float32, torch.complex64])
 @pytest.mark.parametrize("op", ["lti_recur", "scan"])
-def test_mps_scalar_recur_zero_states_past_overflow(op: str, dtype: torch.dtype):
-    # a = 2 with no input stays at zero, as on CPU, though the tiles' composed
-    # multipliers overflow to infinity: 0 * inf must not make NaN.
+@pytest.mark.parametrize("case", ["overflow", "nan", "inf"])
+def test_mps_scalar_recur_non_finite_like_cpu(op: str, dtype: torch.dtype, case: str):
+    # With a = 2 and no input, the tiles' composed multipliers overflow to
+    # infinity while the states stay zero; with a = 0.5 they underflow to zero
+    # while a NaN or infinite input keeps the states after it non-finite.
     B, T = 2, 4096
-    a = torch.full((B,) if op == "lti_recur" else (B, T), 2.0, dtype=dtype)
-    zi, x = torch.zeros(B, dtype=dtype), torch.zeros(B, T, dtype=dtype)
-    args = (a, zi, x) if op == "lti_recur" else (x, a, zi)
-    assert not _MPS_OPS[op](*(arg.to("mps") for arg in args)).any()
+    a = torch.full((B,) if op == "lti_recur" else (B, T), 2.0 if case == "overflow" else 0.5)
+    zi, x = torch.zeros(B), torch.zeros(B, T)
+    if case != "overflow":
+        x[:, 10] = float(case)
+    args = tuple(t.to(dtype) for t in ((a, zi, x) if op == "lti_recur" else (x, a, zi)))
+    expected = _MPS_OPS[op](*args)
+    actual = _MPS_OPS[op](*(arg.to("mps") for arg in args)).cpu()
+    assert torch.equal(actual.isfinite(), expected.isfinite())
+    assert case != "overflow" or not actual.any()
 
 
 @pytest.mark.skipif(not torch.backends.mps.is_available(), reason="MPS not available")
@@ -242,10 +249,9 @@ def test_lti_recur_mps_grad_equiv(
 
 @_MPS
 @pytest.mark.parametrize("time_invariant", [True, False])
-@pytest.mark.parametrize("dtype", [torch.float32, torch.int64])
-def test_mps_recurrence_rejects_what_the_kernels_do_not_take(time_invariant: bool, dtype):
-    # M = 2 in float32, and int64 with M = 1, which the CPU kernels take.
-    M = 2 if dtype == torch.float32 else 1
+# M = 2, and int64, which the CPU kernels take.
+@pytest.mark.parametrize("M, dtype", [(2, torch.float32), (1, torch.int64)])
+def test_mps_recurrence_rejects_what_the_kernels_do_not_take(time_invariant: bool, M, dtype):
     B, T = 2, 5
     A = torch.zeros(1, 1 if time_invariant else T, M, M, dtype=dtype, device="mps")
     zi = torch.zeros(B, M, dtype=dtype, device="mps")

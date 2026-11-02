@@ -135,10 +135,15 @@ _SCAN_DTYPES = (torch.float32, torch.float64, torch.complex64, torch.complex128)
 
 def _scan_applies(A: Tensor, x: Tensor) -> bool:
     # On CPU, time-varying M = 1 falls through to recurN, whose kernel scan runs.
-    if _time_invariant(A) or x.size(-1) != 1:
-        return False
-    return (x.is_cuda and x.dtype in _SCAN_DTYPES) or (
-        x.device.type == "mps" and x.dtype in _MPS_DTYPES
+    return (
+        not _time_invariant(A)
+        and x.size(-1) == 1
+        and (
+            x.is_cuda
+            and x.dtype in _SCAN_DTYPES
+            or x.device.type == "mps"
+            and x.dtype in _MPS_DTYPES
+        )
     )
 
 

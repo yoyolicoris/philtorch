@@ -44,14 +44,24 @@ inline float2 mul(float2 a, float2 b)
     return float2(a.x * b.x - a.y * b.y, a.x * b.y + a.y * b.x);
 }
 
-// mul, but zero with an exact zero: a composed map's multiplier can overflow
-// to infinity where the states don't, and a zero state, or a reset, composed
-// with it must stay zero, not 0 * inf = NaN. A thread's own four steps
-// compose with mul, which overflows only past coefficients of 1e9.
-inline float mul_maps(float a, float b) { return a == 0.0f || b == 0.0f ? 0.0f : a * b; }
-inline float2 mul_maps(float2 a, float2 b)
+// The products of composed maps, whose multipliers can overflow to infinity
+// where the states don't. A zero state stays zero, whatever the multiplier,
+// and so does a zero multiplier, a reset or a sequence's start, whatever it
+// is composed with; NaN and infinite states propagate as they do step by step.
+// A thread's own four steps compose with mul, which overflows only past
+// coefficients of 1e9.
+inline float mul_state(float h, float m) { return h == 0.0f ? 0.0f : h * m; }
+inline float2 mul_state(float2 h, float2 m) { return all(h == 0.0f) ? float2(0.0f) : mul(h, m); }
+
+inline float mul_multipliers(float a, float b)
 {
-    return all(a == 0.0f) || all(b == 0.0f) ? float2(0.0f) : mul(a, b);
+    const float product = a * b;
+    return isnan(product) && !isnan(a) && !isnan(b) ? 0.0f : product;
+}
+inline float2 mul_multipliers(float2 a, float2 b)
+{
+    return float2(mul_multipliers(a.x, b.x) - mul_multipliers(a.y, b.y),
+                  mul_multipliers(a.x, b.y) + mul_multipliers(a.y, b.x));
 }
 
 // The map f(h) = m h + v.
@@ -69,7 +79,7 @@ template <typename A> inline Pair<A> identity()
 // right(left(h)): composition isn't commutative.
 template <typename A> inline Pair<A> compose(Pair<A> left, Pair<A> right)
 {
-    return {mul_maps(left.m, right.m), mul_maps(left.v, right.m) + right.v};
+    return {mul_multipliers(left.m, right.m), mul_state(left.v, right.m) + right.v};
 }
 
 // The map of a thread's K steps.
@@ -194,11 +204,10 @@ inline void load_steps(Sequence<T> s, uint first, uint lid,
     }
 }
 
-// The inclusive scan of a threadgroup's thread totals: each thread's
-// inclusive total in the group, and, with exclusive, the total before it.
+// The map of a threadgroup's thread totals before each thread's.
 template <typename A>
 inline Pair<A> group_scan(Pair<A> total, uint lane, uint simd_group,
-                          threadgroup Pair<A> *sums, thread Pair<A> &exclusive)
+                          threadgroup Pair<A> *sums)
 {
     const Pair<A> inclusive = simd_inclusive(total, lane);
     if (lane == 31)
@@ -216,9 +225,7 @@ inline Pair<A> group_scan(Pair<A> total, uint lane, uint simd_group,
     }
     threadgroup_barrier(mem_flags::mem_threadgroup);
     const Pair<A> prior_thread = shuffle_up(inclusive, 1);
-    exclusive = compose(sums[simd_group],
-                        lane == 0 ? identity<A>() : prior_thread);
-    return compose(sums[simd_group], inclusive);
+    return compose(sums[simd_group], lane == 0 ? identity<A>() : prior_thread);
 }
 
 template <typename T, bool VARYING, typename A = typename Acc<T>::type>
@@ -229,13 +236,9 @@ inline void reduce_tiles(Sequence<T> s, device Pair<A> *totals, long n_tiles,
     Pair<A> items[K];
     load_steps<T, VARYING>(s, group.x * TILE, lid, items);
     const Pair<A> total = compose_steps(items);
-    // The tile's map, in the last thread. Composing just that one, rather
-    // than scanning, measured no faster.
-    Pair<A> exclusive;
-    const Pair<A> inclusive =
-        group_scan(total, lane, simd_group, sums, exclusive);
+    const Pair<A> exclusive = group_scan(total, lane, simd_group, sums);
     if (lid == THREADS - 1)
-        totals[group.y * n_tiles + group.x] = inclusive;
+        totals[group.y * n_tiles + group.x] = compose(exclusive, total);
 }
 
 // One threadgroup per sequence, over its tiles THREADS * TOTALS at a time,
@@ -262,11 +265,8 @@ inline void scan_tiles(const device Pair<A> *totals, device A *states,
             total = compose(total, items[k]);
         }
         threadgroup_barrier(mem_flags::mem_threadgroup);
-        Pair<A> prefix = *carry;
-        Pair<A> exclusive;
-        const Pair<A> inclusive =
-            group_scan(total, lane, simd_group, sums, exclusive);
-        prefix = compose(prefix, exclusive);
+        const Pair<A> exclusive = group_scan(total, lane, simd_group, sums);
+        Pair<A> prefix = compose(*carry, exclusive);
         for (uint k = 0; k < TOTALS; ++k)
         {
             prefix = compose(prefix, items[k]);
@@ -276,7 +276,7 @@ inline void scan_tiles(const device Pair<A> *totals, device A *states,
         }
         threadgroup_barrier(mem_flags::mem_threadgroup);
         if (lid == THREADS - 1)
-            *carry = compose(*carry, inclusive);
+            *carry = prefix;
     }
 }
 
@@ -289,10 +289,9 @@ inline void replay_tiles(Sequence<T> s, const device A *states, device T *out,
     Pair<A> items[K];
     load_steps<T, VARYING>(s, first, lid, items);
     const Pair<A> total = compose_steps(items);
-    Pair<A> exclusive;
-    group_scan(total, lane, simd_group, sums, exclusive);
+    const Pair<A> exclusive = group_scan(total, lane, simd_group, sums);
     A h = group.x == 0 ? A(0.0f) : states[group.y * n_tiles + group.x - 1];
-    h = mul_maps(h, exclusive.m) + exclusive.v;
+    h = mul_state(h, exclusive.m) + exclusive.v;
     const uint t0 = first + lid * K;
     T hv[K];
     for (uint k = 0; k < K; ++k)
