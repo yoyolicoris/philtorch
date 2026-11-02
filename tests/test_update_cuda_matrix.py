@@ -198,36 +198,41 @@ def test_current_upstream_reproduces_the_repository_files(tmp_path, monkeypatch)
 
 
 @pytest.mark.parametrize(
-    "builds, older, image",
+    "builds, older, dropped, image",
     [
-        # Every minor from the floor on stays, and the older 2.11 is left out.
+        # The floor (2.12) and the three newest stay: 2.13 drops, and the
+        # older 2.11 is left out.
         pytest.param(
             BASE + [build("2.16.0", c, NEW) for c in ("13.2", "13.4", "13.6")],
             ("2.11.0",),
+            "2.13.0",
             IMAGE,
-            id="new-minor-keeps-older",
+            id="new-minor-keeps-floor",
         ),
         pytest.param(
             BASE + [build("2.16.0", c, [*NEW, "3.16"]) for c in ("13.2", "13.4")],
             ("2.11.0",),
+            "2.13.0",
             NEW_IMAGE,
             id="new-python-moves-image",
         ),
         pytest.param(
             [dict(b, torch="2.15.1") if b["torch"] == "2.15.0" else b for b in BASE],
             (),
+            None,
             IMAGE,
             id="new-patch-keeps-image",
         ),
     ],
 )
-def test_new_release_updates_matrix(tmp_path, monkeypatch, builds, older, image):
+def test_new_release_updates_matrix(tmp_path, monkeypatch, builds, older, dropped, image):
     write_repo(tmp_path, BASE)
     urls = upstream(builds, older=older)
     run(tmp_path, urls, monkeypatch)
     files = read(tmp_path)
     matrix = CWV.validate_matrix(json.loads(files[FILES[0]]))
     assert matrix["build_image"] == image
+    builds = [b for b in builds if b["torch"] != dropped]
     assert matrix["builds"] == sorted(
         builds, key=lambda b: (UPDATE._key(b["torch"]), UPDATE._key(b["cuda"]))
     )

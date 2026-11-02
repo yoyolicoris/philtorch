@@ -125,15 +125,16 @@ def newest_dated_tag(data):
 
 
 def compute_builds(old, oldest_python):
-    """One build per CUDA version, for the latest patch of each torch minor from MIN_TORCH."""
+    """One build per CUDA version, for the latest patch of the floor minor (MIN_TORCH) and of
+    the three newest minors."""
     pypi = parse_pypi_torch(json.loads(fetch(PYPI_URL)))
     latest = {}
     for version in pypi:
         if _minor(version) not in latest or _key(version) > _key(latest[_minor(version)]):
             latest[_minor(version)] = version
-    versions = [
-        latest[minor] for minor in sorted(latest, key=_key) if _key(minor) >= _key(MIN_TORCH)
-    ]
+    minors = [minor for minor in sorted(latest, key=_key) if _key(minor) >= _key(MIN_TORCH)]
+    # The floor, which the wheels build on, and the three newest minors.
+    versions = [latest[minor] for minor in dict.fromkeys(minors[:1] + minors[-3:])]
     tags = {
         tag: cuda
         for tag in sorted(set(re.findall(r'href="(cu\d{3})/"', fetch(INDEX_ROOT_URL))))

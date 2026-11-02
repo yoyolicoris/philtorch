@@ -59,7 +59,7 @@ jobs:
 
           # The latest patch of each minor series from the floor on, newest
           # first. The wheels target the floor's stable ABI, so they load on
-          # every one of these minors.
+          # every one of these minors; CI tests the floor and the three newest.
           floor = Version(build_support.MIN_TORCH)
           seen_minor = {}
           for v in parsed:
@@ -70,9 +70,10 @@ jobs:
               raise RuntimeError(f"No stable torch release found for the floor {floor}")
           minors = [seen_minor[k] for k in sorted(seen_minor, reverse=True)]
           newest, floor_torch = minors[0], minors[-1]
+          minors = list(dict.fromkeys(minors[:3] + [floor_torch]))
 
-          # The wheels build on the floor torch. Testing every minor is
-          # expensive; PRs only need the newest and the floor.
+          # The wheels build on the floor torch. PRs test only the newest and
+          # the floor.
           pr = os.environ["GITHUB_EVENT_NAME"] == "pull_request"
           test_torches = list(dict.fromkeys([newest, floor_torch])) if pr else minors
 
@@ -114,8 +115,8 @@ jobs:
   # gets its own conclusion and a failure on one OS doesn't skip the others'
   # downstream test/publish jobs. The wheels are abi3 and target torch's
   # stable ABI from the floor (build_support.MIN_TORCH) on, so each OS builds
-  # one wheel on the floor torch and the test jobs run it against every torch
-  # minor from the floor to the newest.
+  # one wheel on the floor torch and the test jobs run it against the floor
+  # and the three newest torch minors.
   build-wheels-ubuntu:
     needs: resolve-torch-versions
     permissions:
@@ -161,10 +162,10 @@ jobs:
       contents: read
     uses: ./.github/workflows/ruff.yml
 
-  # One test job per OS (see build-wheels-ubuntu comment). Linux and Windows
-  # matrix over the resolved test torches (newest and floor on pull requests,
-  # every minor otherwise), each leg installing that torch and the one wheel
-  # of the OS.
+  # One test job per OS (see build-wheels-ubuntu comment), each a matrix over
+  # the resolved test torches (newest and floor on pull requests, the floor and
+  # the three newest otherwise), each leg installing that torch and the one
+  # wheel of the OS.
   test-ubuntu:
     needs: [resolve-torch-versions, build-wheels-ubuntu]
     permissions:
