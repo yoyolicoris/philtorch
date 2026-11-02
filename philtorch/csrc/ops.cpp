@@ -4,7 +4,8 @@
 
 /* Creates a dummy empty _C module that can be imported from Python.
    The import from Python will load the .so/.pyd associated with this extension
-   built from this file, so that all the TORCH_LIBRARY calls below are run.
+   built from this file, so that all the STABLE_TORCH_LIBRARY calls below are
+   run.
    PyMODINIT_FUNC (rather than a bare `extern "C" PyObject *`) is required so
    the symbol is exported from the DLL on Windows (adds __declspec(dllexport)). */
 PyMODINIT_FUNC PyInit__C(void)

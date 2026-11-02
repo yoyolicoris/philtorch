@@ -1,4 +1,4 @@
-"""Check that a philtorch CUDA wheel is loaded with a PyTorch it works with."""
+"""Check that philtorch is loaded with a PyTorch it works with."""
 
 import re
 

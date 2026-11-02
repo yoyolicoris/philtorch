@@ -5,8 +5,8 @@ from philtorch._build_check import check_torch_build
 CUDA_WHEEL = "0.9.0+cu13"
 
 
-def test_unlabelled_build_is_not_checked():
-    # Source builds and the CPU wheels are not checked.
+def test_unlabelled_build_gets_no_cuda_checks():
+    # Source builds and the CPU wheels get only the torch floor check.
     check_torch_build("0.5.1", "2.12.0+cpu", None)
 
 
