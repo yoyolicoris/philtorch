@@ -9,6 +9,12 @@ on:
     types: [published]
   workflow_dispatch:
 
+# A new push to a pull request cancels its older run; dev pushes and releases
+# always run to the end, as they publish.
+concurrency:
+  group: build-wheels-${{ github.ref }}
+  cancel-in-progress: ${{ github.event_name == 'pull_request' }}
+
 jobs:
   resolve-legs:
     # The torch, Python and OS of each build and test job, from
@@ -151,8 +157,8 @@ jobs:
         working-directory: ${{ runner.temp }}
         run: python -c "import philtorch"
 
-  # A job of its own, not a reusable workflow's, so that its check is named
-  # exactly `lint`, as the dev ruleset requires.
+  # A job of its own, not ruff.yml called, so that its check is named exactly
+  # `lint`, as the dev ruleset requires; ruff.yml lints the other branches.
   lint:
     runs-on: ubuntu-latest
     permissions:

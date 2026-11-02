@@ -1,0 +1,26 @@
+name: Lint
+
+# Lints pushes to every branch but dev, for feedback before a pull request:
+# pull requests, dev and releases get the `lint` job of build-wheels.yml.
+on:
+  push:
+    branches-ignore: ["dev"]
+
+jobs:
+  lint:
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+    steps:
+      - uses: actions/checkout@v7
+      - uses: astral-sh/ruff-action@v4.1.0
+        with:
+          # Keep in sync with ruff in pixi.toml.
+          version: "0.16.9"
+          args: "--version"
+      - name: Lint
+        run: ruff check
+      - name: Check formatting
+        # Run even if linting failed, so both problems are reported at once.
+        if: ${{ !cancelled() }}
+        run: ruff format --check
