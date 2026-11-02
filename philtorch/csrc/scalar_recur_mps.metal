@@ -44,25 +44,11 @@ inline float2 mul(float2 a, float2 b)
     return float2(a.x * b.x - a.y * b.y, a.x * b.y + a.y * b.x);
 }
 
-// The products of composed maps, whose multipliers can overflow to infinity
-// where the states don't. A zero state stays zero, whatever the multiplier,
-// and so does a zero multiplier, a reset or a sequence's start, whatever it
-// is composed with; NaN and infinite states propagate as they do step by step.
-// A thread's own four steps compose with mul, which overflows only past
-// coefficients of 1e9.
-inline float mul_state(float h, float m) { return h == 0.0f ? 0.0f : h * m; }
-inline float2 mul_state(float2 h, float2 m) { return all(h == 0.0f) ? float2(0.0f) : mul(h, m); }
-
-inline float mul_multipliers(float a, float b)
-{
-    const float product = a * b;
-    return isnan(product) && !isnan(a) && !isnan(b) ? 0.0f : product;
-}
-inline float2 mul_multipliers(float2 a, float2 b)
-{
-    return float2(mul_multipliers(a.x, b.x) - mul_multipliers(a.y, b.y),
-                  mul_multipliers(a.x, b.y) + mul_multipliers(a.y, b.x));
-}
+// A composed map's multiplier, kept finite: it can overflow to infinity where
+// the states don't, and a zero state, or a reset, times it must stay zero, not
+// 0 * inf = NaN. NaN and infinite states still propagate.
+inline float finite(float m) { return isinf(m) ? copysign(FLT_MAX, m) : m; }
+inline float2 finite(float2 m) { return select(m, copysign(float2(FLT_MAX), m), isinf(m)); }
 
 // The map f(h) = m h + v.
 template <typename A> struct Pair
@@ -79,16 +65,16 @@ template <typename A> inline Pair<A> identity()
 // right(left(h)): composition isn't commutative.
 template <typename A> inline Pair<A> compose(Pair<A> left, Pair<A> right)
 {
-    return {mul_multipliers(left.m, right.m), mul_state(left.v, right.m) + right.v};
+    return {finite(mul(left.m, right.m)), mul(left.v, right.m) + right.v};
 }
 
-// The map of a thread's K steps.
+// The map of a thread's K steps, composed with plain products.
 template <typename A> inline Pair<A> compose_steps(thread const Pair<A> *items)
 {
     Pair<A> total = items[0];
     for (uint k = 1; k < K; ++k)
         total = {mul(total.m, items[k].m), mul(total.v, items[k].m) + items[k].v};
-    return total;
+    return {finite(total.m), total.v};
 }
 
 template <typename A> inline Pair<A> shuffle_up(Pair<A> p, ushort delta)
@@ -291,7 +277,7 @@ inline void replay_tiles(Sequence<T> s, const device A *states, device T *out,
     const Pair<A> total = compose_steps(items);
     const Pair<A> exclusive = group_scan(total, lane, simd_group, sums);
     A h = group.x == 0 ? A(0.0f) : states[group.y * n_tiles + group.x - 1];
-    h = mul_state(h, exclusive.m) + exclusive.v;
+    h = mul(h, exclusive.m) + exclusive.v;
     const uint t0 = first + lid * K;
     T hv[K];
     for (uint k = 0; k < K; ++k)

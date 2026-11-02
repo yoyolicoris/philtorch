@@ -195,7 +195,7 @@ Their backward passes express the reverse recurrence with the same dispatcher op
 ## Edge cases
 
 - `lti_recur` rejects a zero-length sequence, because its autograd formula needs a final output state; `scan` returns an empty result. An empty batch returns without a Metal dispatch.
-- A composed multiplier can overflow to infinity where the states don't. So in composed maps a zero state stays zero whatever the multiplier (`mul_state`), and a zero multiplier, a reset or a sequence's start, stays zero whatever it is composed with (`mul_multipliers`); NaN and infinite states propagate as on CPU.
+- A composed multiplier can overflow to infinity where the states don't, and a zero state, or a reset, times it must stay zero, not `0 * inf = NaN`: composed multipliers are kept finite (`finite`), and NaN and infinite states propagate as on CPU.
 - The parallel order of operations rounds differently from a sequential loop, so the tests compare with per-dtype tolerances.
 
 ## CPU and MPS benchmark
@@ -212,14 +212,14 @@ Every dtype and layout is on [issue #39](https://github.com/yoyolicoris/philtorc
 
 | dtype | B | T | Coefficients | CPU median ms (IQR) | MPS median ms (IQR) | Speedup |
 | :--- | ---: | ---: | :--- | ---: | ---: | ---: |
-| float32 | 1 | 262144 | shared | 0.2632 (0.0291) | 0.0375 (0.0038) | 7.02x |
-| float32 | 64 | 65536 | batched | 1.9368 (0.3711) | 0.2485 (0.0144) | 7.79x |
-| float32 | 256 | 4096 | batched | 0.4384 (0.0418) | 0.0968 (0.0473) | 4.53x |
-| float32 | 1 | 262144 | per_step | 0.2332 (0.0143) | 0.0432 (0.0109) | 5.40x |
-| float32 | 64 | 65536 | per_step | 1.6967 (0.1577) | 0.5039 (0.0120) | 3.37x |
-| float16 | 64 | 65536 | per_step | n/a | 0.2291 (0.0124) | n/a |
-| bfloat16 | 64 | 65536 | per_step | n/a | 0.2409 (0.0071) | n/a |
-| complex64 | 64 | 65536 | per_step | 4.9784 (0.1493) | 0.9920 (0.0146) | 5.02x |
+| float32 | 1 | 262144 | shared | 0.2608 (0.0163) | 0.0388 (0.0021) | 6.72x |
+| float32 | 64 | 65536 | batched | 1.2664 (0.1540) | 0.2606 (0.0101) | 4.86x |
+| float32 | 256 | 4096 | batched | 0.5400 (0.0736) | 0.1015 (0.0043) | 5.32x |
+| float32 | 1 | 262144 | per_step | 0.2566 (0.0165) | 0.0390 (0.0020) | 6.57x |
+| float32 | 64 | 65536 | per_step | 1.2757 (0.1579) | 0.5096 (0.0200) | 2.50x |
+| float16 | 64 | 65536 | per_step | n/a | 0.2477 (0.0098) | n/a |
+| bfloat16 | 64 | 65536 | per_step | n/a | 0.2755 (0.0098) | n/a |
+| complex64 | 64 | 65536 | per_step | 5.6565 (0.4986) | 1.1108 (0.0219) | 5.09x |
 
 ## Build and verification
 
