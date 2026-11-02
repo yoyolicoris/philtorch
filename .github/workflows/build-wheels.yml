@@ -11,13 +11,17 @@ on:
 
 jobs:
   resolve-legs:
-    # The torch and Python of each build and test job, from torch_matrix.json.
+    # The torch, Python and OS of each build and test job, from
+    # torch_matrix.json.
     runs-on: ubuntu-latest
     permissions:
       contents: read
     outputs:
       floor: ${{ steps.legs.outputs.floor }}
+      newest: ${{ steps.legs.outputs.newest }}
       build_python: ${{ steps.legs.outputs.build_python }}
+      build_os: ${{ steps.legs.outputs.build_os }}
+      test_os: ${{ steps.legs.outputs.test_os }}
       cpu_tests: ${{ steps.legs.outputs.cpu_tests }}
     steps:
       - uses: actions/checkout@v7
@@ -26,44 +30,126 @@ jobs:
         id: legs
         run: python3 scripts/torch_matrix.py legs --event "$GITHUB_EVENT_NAME" >> "$GITHUB_OUTPUT"
 
-  # One build job per OS, each calling _build-wheel.yml, so that each OS has
-  # its own conclusion and one failing OS doesn't skip the others' test and
-  # publish jobs. Each OS builds one wheel, on the floor torch and the oldest
-  # Python. The test jobs run it on the cpu_tests legs.
-  build-wheels-ubuntu:
+  # One abi3 wheel per OS, built on the floor torch and the oldest Python (its
+  # wheel serves every later Python). The test jobs run it on the cpu_tests
+  # legs.
+  build:
     needs: resolve-legs
+    strategy:
+      fail-fast: false
+      matrix:
+        os: ${{ fromJson(needs.resolve-legs.outputs.build_os) }}
+    runs-on: ${{ matrix.os }}
     permissions:
       contents: read
-    uses: ./.github/workflows/_build-wheel.yml
-    with:
-      os: ubuntu-latest
-      torch_version: ${{ needs.resolve-legs.outputs.floor }}
-      python_version: ${{ needs.resolve-legs.outputs.build_python }}
+    steps:
+      - uses: actions/checkout@v7
+        with:
+          fetch-depth: 0
+          # fetch-depth: 0 required so setuptools_scm can read full
+          # git history and tags to derive the package version number.
 
-  # macOS runners are expensive: build and test only on pull requests and
-  # published releases.
-  build-wheels-macos:
-    if: >
-      github.event_name == 'pull_request' ||
-      github.event_name == 'release'
-    needs: resolve-legs
-    permissions:
-      contents: read
-    uses: ./.github/workflows/_build-wheel.yml
-    with:
-      os: macos-latest
-      torch_version: ${{ needs.resolve-legs.outputs.floor }}
-      python_version: ${{ needs.resolve-legs.outputs.build_python }}
+      - uses: actions/setup-python@v7
+        with:
+          # The interpreter cibuildwheel runs on, not the wheels' (CIBW_BUILD);
+          # cibuildwheel 4 needs Python 3.11 or newer.
+          python-version: "3.13"
 
-  build-wheels-windows:
+      - name: Configure native build environment (macOS)
+        # cibuildwheel builds macOS wheels on the runner (no container), so
+        # env vars set here reach the build subprocess.
+        if: runner.os == 'macOS'
+        run: |
+          # 14.0 floor: the MPS Metal kernels need a newer Metal/MPS runtime
+          # than the arm64 Big Sur (11.0) default. See README.
+          echo "MACOSX_DEPLOYMENT_TARGET=14.0" >> "$GITHUB_ENV"
+
+      - name: Install cibuildwheel
+        # 4.2.0 or later builds CPython 3.15 by default. Free-threaded builds
+        # are on by default too, but CIBW_BUILD below names only regular ones.
+        run: pip install cibuildwheel==4.3.5
+
+      - name: Select the Python to build on
+        # Expressions have no string replace: "3.11" becomes "cp311-*".
+        shell: bash
+        run: echo "CIBW_BUILD=cp${PYTHON_VERSION/./}-*" >> "$GITHUB_ENV"
+        env:
+          PYTHON_VERSION: ${{ needs.resolve-legs.outputs.build_python }}
+
+      - name: Build wheels
+        run: cibuildwheel --output-dir wheelhouse
+        env:
+          # CIBW_BUILD, the Python to build on, is set by the step above.
+          CIBW_SKIP: "*-musllinux_*"
+          CIBW_ARCHS_LINUX: x86_64
+          CIBW_ARCHS_MACOS: arm64
+          CIBW_ARCHS_WINDOWS: AMD64
+          CIBW_MANYLINUX_X86_64_IMAGE: manylinux_2_28
+          # CPython's default flags include -g, and on Linux the debug info
+          # lands in _C itself (about 36 of its 37 MB). Strip it at link time:
+          # LDFLAGS is appended to the link command, whereas a CXXFLAGS
+          # override would replace Python's flags, -O3 included.
+          CIBW_ENVIRONMENT_LINUX: LDFLAGS="$LDFLAGS -Wl,--strip-debug"
+          # torch (+ setuptools) are installed into the build env by
+          # CIBW_BEFORE_BUILD, so disable build isolation; otherwise setup.py
+          # can't `import torch` and silently builds an extension-less wheel.
+          CIBW_BUILD_FRONTEND: "pip; args: --no-build-isolation"
+          # macOS CPU wheels on the PyTorch index aren't `+cpu`-suffixed, so
+          # add the suffix only off-macOS (resolved via runner.os).
+          CIBW_BEFORE_BUILD: >-
+            pip install "setuptools>=77.0.3" "setuptools_scm>=8" wheel &&
+            pip install torch==${{ needs.resolve-legs.outputs.floor }}${{ runner.os != 'macOS' && '+cpu' || '' }} --index-url https://download.pytorch.org/whl/cpu
+          CIBW_TEST_SKIP: "*"
+          # torch's libs are excluded from repair: torch is a separate runtime
+          # dep (never vendored), and `import torch` loads them globally before
+          # philtorch._C, so the extension resolves them at runtime. Without
+          # -e, auditwheel/delocate abort not finding them on the build image.
+          CIBW_REPAIR_WHEEL_COMMAND_LINUX: >-
+            auditwheel repair --exclude 'libtorch*.so*' --exclude 'libc10*.so*' -w {dest_dir} {wheel}
+          # --ignore-missing-dependencies: the extension names torch's libs by
+          # @rpath with no rpath of its own, so delocate can't find their
+          # files; they resolve at runtime to the copies `import torch` loaded.
+          CIBW_REPAIR_WHEEL_COMMAND_MACOS: >-
+            delocate-wheel --require-archs {delocate_archs} -e libtorch -e libc10 --ignore-missing-dependencies -w {dest_dir} -v {wheel}
+          # cibuildwheel 4 repairs Windows wheels with delvewheel by default,
+          # which would bundle torch's DLLs; leave them to torch, as above.
+          CIBW_REPAIR_WHEEL_COMMAND_WINDOWS: ""
+
+      - uses: actions/upload-artifact@v7
+        with:
+          name: wheels-${{ matrix.os }}
+          path: wheelhouse/*.whl
+
+  # Every wheel is built against the floor torch, so this is the only job that
+  # compiles against the newest one. It checks that the extension builds and
+  # imports there; no tests, no artifact.
+  build-newest-torch:
     needs: resolve-legs
+    runs-on: ubuntu-latest
     permissions:
       contents: read
-    uses: ./.github/workflows/_build-wheel.yml
-    with:
-      os: windows-latest
-      torch_version: ${{ needs.resolve-legs.outputs.floor }}
-      python_version: ${{ needs.resolve-legs.outputs.build_python }}
+    steps:
+      - uses: actions/checkout@v7
+        with:
+          fetch-depth: 0
+          # fetch-depth: 0 so setuptools_scm sees the tags.
+
+      - uses: actions/setup-python@v7
+        with:
+          python-version: ${{ needs.resolve-legs.outputs.build_python }}
+
+      - name: Install the build requirements
+        run: |
+          pip install "setuptools>=77.0.3" "setuptools_scm>=8" wheel
+          pip install torch==${{ needs.resolve-legs.outputs.newest }}+cpu --index-url https://download.pytorch.org/whl/cpu
+
+      - name: Build and install
+        run: pip install --no-build-isolation .
+
+      - name: Import
+        # Outside the checkout, so that the installed package is imported.
+        working-directory: ${{ runner.temp }}
+        run: python -c "import philtorch"
 
   # Same Ruff lint and format checks as the standalone Lint workflow, so
   # publishing is gated on them.
@@ -72,64 +158,78 @@ jobs:
       contents: read
     uses: ./.github/workflows/ruff.yml
 
-  # One test job per OS, each a matrix over the cpu_tests legs: a torch and
-  # the Python to run it on. Every leg installs the OS's one wheel.
-  test-ubuntu:
-    needs: [resolve-legs, build-wheels-ubuntu]
-    permissions:
-      contents: read
+  # Each OS's wheel on every cpu_tests leg: a torch, maybe a later minor than
+  # the wheel's, and a Python. A missing wheel (its build failed) fails the
+  # leg at the download, without skipping the other OSes. The macOS runners
+  # have no usable MPS (#126), so the MPS tests skip there.
+  test:
+    name: test ${{ matrix.os }}, torch ${{ matrix.leg.torch }}, Python ${{ matrix.leg.python }}
+    needs: [resolve-legs, build]
+    if: ${{ !cancelled() && needs.resolve-legs.result == 'success' }}
     strategy:
       fail-fast: false
       matrix:
-        include: ${{ fromJson(needs.resolve-legs.outputs.cpu_tests) }}
-    uses: ./.github/workflows/_test-wheel.yml
-    with:
-      os: ubuntu-latest
-      torch_version: ${{ matrix.torch }}
-      python_version: ${{ matrix.python }}
-      # Only the first leg, the newest torch on its Python, uploads coverage,
-      # to avoid duplicate reports for the same commit.
-      upload_coverage: ${{ strategy.job-index == 0 }}
-    secrets:
-      codecov_token: ${{ secrets.CODECOV_TOKEN }}
+        os: ${{ fromJson(needs.resolve-legs.outputs.test_os) }}
+        leg: ${{ fromJson(needs.resolve-legs.outputs.cpu_tests) }}
+    runs-on: ${{ matrix.os }}
+    permissions:
+      contents: read
+    env:
+      # Only the first leg, the floor torch on the build Python, on Ubuntu
+      # uploads to Codecov, to avoid duplicate reports for the same commit.
+      UPLOAD_COVERAGE: >-
+        ${{ matrix.os == 'ubuntu-latest' &&
+        matrix.leg.torch == needs.resolve-legs.outputs.floor &&
+        matrix.leg.python == needs.resolve-legs.outputs.build_python }}
+    steps:
+      - uses: actions/checkout@v7
 
-  # Only pull requests and published releases test a macOS wheel. The runners
-  # have no usable MPS (#126), so the MPS tests skip.
-  test-macos:
-    if: >
-      github.event_name == 'pull_request' ||
-      github.event_name == 'release'
-    needs: [resolve-legs, build-wheels-macos]
-    permissions:
-      contents: read
-    strategy:
-      fail-fast: false
-      matrix:
-        include: ${{ fromJson(needs.resolve-legs.outputs.cpu_tests) }}
-    uses: ./.github/workflows/_test-wheel.yml
-    with:
-      os: macos-latest
-      torch_version: ${{ matrix.torch }}
-      python_version: ${{ matrix.python }}
+      - uses: actions/setup-python@v7
+        with:
+          python-version: ${{ matrix.leg.python }}
 
-  # Only pull requests and published releases test a Windows wheel, with the
-  # full test suite.
-  test-windows:
-    if: >
-      github.event_name == 'pull_request' ||
-      github.event_name == 'release'
-    needs: [resolve-legs, build-wheels-windows]
-    permissions:
-      contents: read
-    strategy:
-      fail-fast: false
-      matrix:
-        include: ${{ fromJson(needs.resolve-legs.outputs.cpu_tests) }}
-    uses: ./.github/workflows/_test-wheel.yml
-    with:
-      os: windows-latest
-      torch_version: ${{ matrix.torch }}
-      python_version: ${{ matrix.python }}
+      - uses: actions/download-artifact@v8
+        with:
+          name: wheels-${{ matrix.os }}
+          path: wheelhouse
+
+      - name: Install wheel and test dependencies
+        # Runs under bash on every OS (Windows uses bundled Git Bash). Torch is
+        # installed without the "+cpu" suffix on macOS, as in the build job.
+        shell: bash
+        run: |
+          shopt -s nullglob
+          WHEELS=(wheelhouse/philtorch-*-abi3-*.whl)
+          if [ "${#WHEELS[@]}" -ne 1 ]; then
+            echo "Expected exactly one abi3 wheel in wheelhouse/, found ${#WHEELS[@]}: ${WHEELS[*]}" >&2
+            exit 1
+          fi
+
+          pip install torch==${{ matrix.leg.torch }}${{ runner.os != 'macOS' && '+cpu' || '' }} --index-url https://download.pytorch.org/whl/cpu
+
+          # Vendored torchlpc is now bundled in philtorch._C; no separate pip install.
+          # Keep --no-deps since torch is already present.
+          pip install --no-deps "${WHEELS[0]}"
+          pip install numpy scipy pytest pytest-cov
+
+      - name: Test with pytest
+        run: pytest --cov-branch --cov-report=xml --junitxml=junit.xml -o junit_family=legacy
+
+      - name: Upload coverage reports to Codecov
+        if: env.UPLOAD_COVERAGE == 'true'
+        uses: codecov/codecov-action@v5
+        with:
+          token: ${{ secrets.CODECOV_TOKEN }}
+
+      - name: Upload test results to Codecov
+        # Per-test durations and failures, for Codecov's test analytics; also
+        # when tests fail.
+        if: ${{ !cancelled() && env.UPLOAD_COVERAGE == 'true' }}
+        uses: codecov/codecov-action@v5
+        with:
+          token: ${{ secrets.CODECOV_TOKEN }}
+          report_type: test_results
+          files: junit.xml
 
   build-sdist:
     runs-on: ubuntu-latest
@@ -159,38 +259,25 @@ jobs:
 
   publish:
     runs-on: ubuntu-latest
-    # TestPyPI publishes from dev after the Linux tests pass.
+    # TestPyPI publishes from dev after the Linux builds and tests pass.
     # Production publishes only from a supported published GitHub Release after
-    # every Linux, macOS, and Windows wheel test passes.
-    needs:
-      [
-        build-wheels-ubuntu,
-        build-wheels-macos,
-        build-wheels-windows,
-        build-sdist,
-        lint,
-        test-ubuntu,
-        test-macos,
-        test-windows,
-      ]
-    # `!cancelled()` allows the dev path to run while release-only macOS and
-    # Windows test jobs are skipped, so every required result is checked here.
+    # every Linux, macOS, and Windows wheel is built and tested.
+    needs: [build, build-sdist, lint, test]
+    # `!cancelled()` lets this job run after a failed dependency, so every
+    # required result is checked here. The build and test matrices hold only
+    # the OSes that ran for the event.
     if: >
       !cancelled() &&
-      needs.build-wheels-ubuntu.result == 'success' &&
-      needs.build-wheels-windows.result == 'success' &&
+      needs.build.result == 'success' &&
       needs.build-sdist.result == 'success' &&
       needs.lint.result == 'success' &&
-      needs.test-ubuntu.result == 'success' &&
+      needs.test.result == 'success' &&
       (
         (github.event_name == 'push' && github.ref == 'refs/heads/dev') ||
         (
           github.event_name == 'release' &&
           github.event.action == 'published' &&
-          (startsWith(github.event.release.tag_name, 'v0.') || startsWith(github.event.release.tag_name, 'v1.')) &&
-          needs.build-wheels-macos.result == 'success' &&
-          needs.test-macos.result == 'success' &&
-          needs.test-windows.result == 'success'
+          (startsWith(github.event.release.tag_name, 'v0.') || startsWith(github.event.release.tag_name, 'v1.'))
         )
       )
     permissions:
@@ -198,25 +285,11 @@ jobs:
     environment:
       name: ${{ github.event_name == 'release' && 'pypi' || 'testpypi' }}
     steps:
-      - name: Download Linux wheel
+      - name: Download the wheels
         uses: actions/download-artifact@v8
         with:
-          name: wheels-ubuntu-latest
-          path: dist/
-
-      - name: Download macOS wheel
-        if: >
-          github.event_name == 'release' &&
-          needs.build-wheels-macos.result == 'success'
-        uses: actions/download-artifact@v8
-        with:
-          name: wheels-macos-latest
-          path: dist/
-
-      - name: Download Windows wheel
-        uses: actions/download-artifact@v8
-        with:
-          name: wheels-windows-latest
+          pattern: wheels-*
+          merge-multiple: true
           path: dist/
 
       - uses: actions/download-artifact@v8

@@ -164,9 +164,11 @@ def test_validate_matrix_checks_python_against_requires_python():
 
 def test_legs_of_a_pull_request():
     legs = _legs("pull_request")
+    assert legs["newest"] == "2.15.0"
+    # The floor on the build Python comes first: that leg uploads coverage.
     assert legs["cpu_tests"] == [
-        {"torch": "2.15.0", "python": "3.15"},
         {"torch": "2.12.1", "python": "3.11"},
+        {"torch": "2.15.0", "python": "3.15"},
     ]
     assert _pairs(legs["cuda_builds"]) == [("2.12.1", "12.9", "3.11"), ("2.12.1", "13.0", "3.11")]
     assert _pairs(legs["cuda_tests"]) == [("2.15.0", "13.4", "3.15")]
@@ -177,12 +179,24 @@ def test_legs_of_a_push_are_those_of_a_pull_request_but_for_the_cpu_tests():
     assert push["cuda_builds"] == pull_request["cuda_builds"]
     assert push["cuda_tests"] == pull_request["cuda_tests"]
     assert [(leg["torch"], leg["python"]) for leg in push["cpu_tests"]] == [
+        ("2.12.1", "3.11"),
         ("2.15.0", "3.15"),
         ("2.14.1", "3.14"),
         ("2.13.0", "3.14"),
         ("2.12.1", "3.14"),
-        ("2.12.1", "3.11"),
     ]
+
+
+def test_legs_name_the_runners_of_each_event():
+    full = ["ubuntu-latest", "windows-latest", "macos-latest"]
+    for event in ("pull_request", "release"):
+        legs = _legs(event)
+        assert legs["build_os"] == full
+        assert legs["test_os"] == ["ubuntu-latest", "macos-latest", "windows-latest"]
+    for event in ("push", "workflow_dispatch"):
+        legs = _legs(event)
+        assert legs["build_os"] == ["ubuntu-latest", "windows-latest"]
+        assert legs["test_os"] == ["ubuntu-latest"]
 
 
 def test_legs_of_a_release_test_every_torch_and_cuda_pair():
@@ -273,9 +287,12 @@ def test_cli_prints_legs_for_github_output(tmp_path):
     lines = result.stdout.splitlines()
     assert [line.split("=", 1)[0] for line in lines] == [
         "floor",
+        "newest",
         "build_python",
         "build_image",
         "platform",
+        "build_os",
+        "test_os",
         "cpu_tests",
         "cuda_builds",
         "cuda_tests",

@@ -156,20 +156,29 @@ def legs(data, event, build_python):
             "index_url": f"{INDEX_URL}cu{cuda.replace('.', '')}",
         }
 
-    floor_leg = (floor["version"], build_python)
+    # The floor leg is first: the first leg uploads the coverage.
+    cpu = [(floor["version"], build_python)]
     if event == "pull_request":
-        cpu = [(newest["version"], newest["python"]), floor_leg]
+        cpu.append((newest["version"], newest["python"]))
     else:
-        cpu = [(entry["version"], entry["python"]) for entry in reversed(torch)] + [floor_leg]
+        cpu += [(entry["version"], entry["python"]) for entry in reversed(torch)]
     if event in ("release", "workflow_dispatch"):
         tests = [(entry, cuda) for entry in reversed(torch) for cuda in entry["cuda"]]
     else:  # one GPU test: the newest torch with its newest CUDA
         tests = [(newest, newest["cuda"][-1])]
+    # macOS runners are expensive: only pull requests and releases build a
+    # macOS wheel, and test the macOS and Windows ones.
+    full = event in ("pull_request", "release")
+    build_os = ["ubuntu-latest", "windows-latest"] + (["macos-latest"] if full else [])
+    test_os = ["ubuntu-latest"] + (["macos-latest", "windows-latest"] if full else [])
     return {
         "floor": floor["version"],
+        "newest": newest["version"],
         "build_python": build_python,
         "build_image": data["build_image"],
         "platform": data["platform"],
+        "build_os": build_os,
+        "test_os": test_os,
         "cpu_tests": [{"torch": t, "python": p} for t, p in dict.fromkeys(cpu)],
         "cuda_builds": [
             cuda_leg(entry, cuda, build_python)

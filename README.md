@@ -45,14 +45,14 @@ python -m pip install philtorch
 ```
 
 Wheels contain no CUDA kernels.
-The wheels use PyTorch's stable ABI, so they work with every later PyTorch.
+The wheels use PyTorch's stable ABI and are tested from PyTorch 2.12 to the newest release.
 For CUDA on Linux, use the [CUDA wheels](#cuda-wheels).
 
 ### CUDA wheels
 
 Linux wheels with CUDA kernels are published on a separate package index rather than PyPI.
 Wheel tags don't record which CUDA version a wheel is for, and PyPI rejects the local version labels that do (e.g. `+cu13`).
-There is one index per CUDA major version. Its wheel uses PyTorch's stable ABI, so it works with every later PyTorch built for that CUDA major.
+There is one index per CUDA major version. Its wheel uses PyTorch's stable ABI and is tested from PyTorch 2.12 to the newest release built for that CUDA major.
 Install PyTorch first, then install PhilTorch from the index of its CUDA major:
 
 ```bash
