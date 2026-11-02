@@ -44,6 +44,16 @@ inline float2 mul(float2 a, float2 b)
     return float2(a.x * b.x - a.y * b.y, a.x * b.y + a.y * b.x);
 }
 
+// mul, but zero with an exact zero: a composed map's multiplier can overflow
+// to infinity where the states don't, and a zero state, or a reset, composed
+// with it must stay zero, not 0 * inf = NaN. A thread's own four steps
+// compose with mul, which overflows only past coefficients of 1e9.
+inline float mul_maps(float a, float b) { return a == 0.0f || b == 0.0f ? 0.0f : a * b; }
+inline float2 mul_maps(float2 a, float2 b)
+{
+    return all(a == 0.0f) || all(b == 0.0f) ? float2(0.0f) : mul(a, b);
+}
+
 // The map f(h) = m h + v.
 template <typename A> struct Pair
 {
@@ -59,7 +69,16 @@ template <typename A> inline Pair<A> identity()
 // right(left(h)): composition isn't commutative.
 template <typename A> inline Pair<A> compose(Pair<A> left, Pair<A> right)
 {
-    return {mul(left.m, right.m), mul(left.v, right.m) + right.v};
+    return {mul_maps(left.m, right.m), mul_maps(left.v, right.m) + right.v};
+}
+
+// The map of a thread's K steps.
+template <typename A> inline Pair<A> compose_steps(thread const Pair<A> *items)
+{
+    Pair<A> total = items[0];
+    for (uint k = 1; k < K; ++k)
+        total = {mul(total.m, items[k].m), mul(total.v, items[k].m) + items[k].v};
+    return total;
 }
 
 template <typename A> inline Pair<A> shuffle_up(Pair<A> p, ushort delta)
@@ -209,9 +228,7 @@ inline void reduce_tiles(Sequence<T> s, device Pair<A> *totals, long n_tiles,
 {
     Pair<A> items[K];
     load_steps<T, VARYING>(s, group.x * TILE, lid, items);
-    Pair<A> total = items[0];
-    for (uint k = 1; k < K; ++k)
-        total = compose(total, items[k]);
+    const Pair<A> total = compose_steps(items);
     // The tile's map, in the last thread. Composing just that one, rather
     // than scanning, measured no faster.
     Pair<A> exclusive;
@@ -271,13 +288,11 @@ inline void replay_tiles(Sequence<T> s, const device A *states, device T *out,
     const uint first = group.x * TILE;
     Pair<A> items[K];
     load_steps<T, VARYING>(s, first, lid, items);
-    Pair<A> total = items[0];
-    for (uint k = 1; k < K; ++k)
-        total = compose(total, items[k]);
+    const Pair<A> total = compose_steps(items);
     Pair<A> exclusive;
     group_scan(total, lane, simd_group, sums, exclusive);
     A h = group.x == 0 ? A(0.0f) : states[group.y * n_tiles + group.x - 1];
-    h = mul(h, exclusive.m) + exclusive.v;
+    h = mul_maps(h, exclusive.m) + exclusive.v;
     const uint t0 = first + lid * K;
     T hv[K];
     for (uint k = 0; k < K; ++k)

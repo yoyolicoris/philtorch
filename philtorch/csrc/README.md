@@ -262,6 +262,7 @@ When modifying this implementation, keep these details synchronized:
 - `compose(left, right)` means `right(left(h))`; do not reverse it.
 - The first step folds in `zi` with a zero multiplier, so maps from a sequence's start are constants and `states` holds plain states.
 - Steps past the end must be identities, `(1, 0)`.
+- Composing maps, and applying a composed map to a state, takes a product with an exact zero as zero (`mul_maps`): a composed multiplier can overflow to infinity where the states, zero, don't, and `0 * inf` would be NaN.
 - `states` holds each tile's end state; replay reads the previous tile's, and the first tile starts from zero.
 - The 1024-step tile assumes 256 threads, four steps per thread, and eight 32-lane SIMD groups; `THREADS` and `K` in the Metal source and `THREADS` and `STEPS_PER_THREAD` in the host code must agree.
 - The dispatches must stay ordered: tile reduction, tile-total scan, then tile replay.

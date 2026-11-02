@@ -18,6 +18,7 @@
 #include <cstdint>
 #include <initializer_list>
 #include <limits>
+#include <mutex>
 #include <string>
 
 // METAL_SOURCE, the text of scalar_recur_mps.metal, which setup.py generates
@@ -75,7 +76,8 @@ Kernels make_kernels(const std::string &suffix)
             kernel_function("scalar_recur_scan_" + scan)};
 }
 
-// The kernels of dtype, all looked up on first use.
+// The kernels of dtype, all looked up on the first call, one at a time under
+// the statics' initialization, before any launch.
 const Kernels &kernels(ScalarType dtype)
 {
     static const Kernels f = make_kernels("float"), h = make_kernels("half"),
@@ -134,6 +136,10 @@ void launch(AOTIMetalKernelFunctionHandle function,
             std::initializer_list<int64_t> integers,
             std::array<uint64_t, 2> grid)
 {
+    // A kernel handle holds the encoder of its command block, and the handles
+    // are shared, so calls on different MPS streams encode one at a time.
+    static std::mutex mutex;
+    const std::lock_guard<std::mutex> lock(mutex);
     Launch launch{tensors, integers, grid};
     TORCH_ERROR_CODE_CHECK(
         aoti_torch_mps_run_command_block(function, encode, &launch));
