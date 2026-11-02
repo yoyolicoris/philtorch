@@ -23,4 +23,4 @@ python -m pip install -r docs/requirements.txt
 sphinx-build -W --keep-going -b html docs docs/_build/html
 ```
 
-The build treats warnings as errors, including references that do not resolve. CI runs the same command on pull requests that touch the docs or the package, and checks the external links once a week.
+The build treats warnings as errors, including references that do not resolve. CI runs the same command on every pull request and push to `dev`, and before a release publishes, and checks the external links once a week.

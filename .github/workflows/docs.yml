@@ -37,5 +37,7 @@ jobs:
         run: sphinx-build -W --keep-going -b html docs docs/_build/html
 
       - name: Check external links
-        if: github.event_name == 'schedule' || github.event_name == 'workflow_dispatch'
+        # On this workflow's own runs only (scheduled or manual): when
+        # build-wheels.yml calls it, github.workflow is the caller's name.
+        if: github.workflow == 'Docs'
         run: sphinx-build -b linkcheck docs docs/_build/linkcheck

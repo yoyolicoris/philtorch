@@ -9,11 +9,11 @@ on:
     types: [published]
   workflow_dispatch:
 
-# A new push to a pull request cancels its older run; dev pushes and releases
-# always run to the end, as they publish.
+# A new push to a pull request cancels its older run. Every other run has a
+# group of its own, so dev pushes and releases never wait or get cancelled.
 concurrency:
-  group: build-wheels-${{ github.ref }}
-  cancel-in-progress: ${{ github.event_name == 'pull_request' }}
+  group: ${{ github.event_name == 'pull_request' && format('build-wheels-{0}', github.ref) || github.run_id }}
+  cancel-in-progress: true
 
 jobs:
   resolve-legs:
@@ -162,10 +162,19 @@ jobs:
       contents: read
     uses: ./.github/workflows/docs.yml
 
-  # Releases only: the CUDA wheels, GPU-tested and attached to the release. The
+  # Releases only: the CUDA wheels, GPU-tested and attached to the release once
+  # every CPU check has passed, so that a release publishes all or nothing. The
   # called workflow's jobs can't exceed these permissions.
   cuda-wheels:
-    if: github.event_name == 'release'
+    needs: [build, build-newest-torch, build-sdist, docs, test]
+    if: >
+      github.event_name == 'release' &&
+      !cancelled() &&
+      needs.build.result == 'success' &&
+      needs.build-newest-torch.result == 'success' &&
+      needs.build-sdist.result == 'success' &&
+      needs.docs.result == 'success' &&
+      needs.test.result == 'success'
     permissions:
       contents: write
     uses: ./.github/workflows/build-cuda-wheels.yml
