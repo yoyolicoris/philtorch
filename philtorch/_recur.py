@@ -239,7 +239,7 @@ def _forward(A: Tensor, zi: Tensor, x: Tensor) -> Tensor:
         else:
             most = _recur_kernels.MAX_STATES
             reason = f"; the Triton kernels take M up to {most} ({most // 2} complex)"
-    elif x.device.type == "mps":
+    elif x.device.type == "mps":  # pragma: no cover - MPS-only
         reason = "; the Metal kernels take M = 1 in float32, float16, bfloat16 and complex64"
     raise NotImplementedError(
         f"no recurrence kernel for {kind} A with M = {x.size(-1)} in {x.dtype} "
