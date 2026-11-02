@@ -32,7 +32,6 @@ on:
       - ".github/workflows/build-cuda-wheels.yml"
       - "torch_matrix.json"
       - "scripts/torch_matrix.py"
-      - "philtorch/_build_check.py"
       - "scripts/modal_smoke_test.py"
       - "setup.py"
       - "build_support.py"

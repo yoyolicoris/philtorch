@@ -12,10 +12,18 @@ from typing import NamedTuple
 
 import torch
 from torch import Tensor
-from torch._higher_order_ops.associative_scan import associative_scan as _associative_scan
+
+try:
+    from torch._higher_order_ops.associative_scan import associative_scan as _associative_scan
+except ImportError:  # pragma: no cover - PyTorch without associative_scan
+    _associative_scan = None
 
 
 def _scan(combine_fn, xs: tuple[Tensor, ...], reverse: bool = False) -> tuple[Tensor, ...]:
+    if _associative_scan is None:  # pragma: no cover - PyTorch without associative_scan
+        raise RuntimeError(
+            "Kalman filtering needs PyTorch's associative_scan, which this PyTorch lacks"
+        )
     # With no signals, steps or states there is nothing to combine, and the
     # scan itself rejects an empty scan dimension and fails on an empty batch.
     if any(x.numel() == 0 for x in xs):

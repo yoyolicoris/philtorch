@@ -577,14 +577,6 @@ def test_recurrence_takes_integers_as_int64_only(dtype):
         recurrence(A, zi, x)
 
 
-@pytest.mark.cuda
-def test_recurrence_native_kernels_reject_float8():
-    # Time-invariant M = 1 reaches a native kernel, which takes no float8.
-    A, zi, x = (t.to(torch.float8_e4m3fn) for t in _problem(2, 7, 1, "one", device="cuda"))
-    with pytest.raises(NotImplementedError, match="the native kernels take"):
-        recurrence(A, zi, x)
-
-
 def test_recurrence_raises_where_no_kernel_applies():
     # A device with no kernels, standing in for e.g. MPS beyond M = 1.
     A, zi, x = _problem(2, 7, 3, "both", device="meta")

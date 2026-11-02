@@ -1,11 +1,11 @@
+#include "recur_scan.cuh"
+
 #include <thrust/iterator/counting_iterator.h>
 #include <thrust/iterator/transform_iterator.h>
 #include <thrust/iterator/transform_output_iterator.h>
 #include <thrust/iterator/zip_iterator.h>
 #include <thrust/tuple.h>
 #include <thrust/zip_function.h>
-
-#include "recur_scan.cuh"
 
 template <typename T>
 struct recur_binary_op

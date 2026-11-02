@@ -55,7 +55,6 @@ def get_extensions():
     )
     extension = CUDAExtension if use_cuda else CppExtension
 
-    extra_link_args = []
     extra_compile_args = {}
     # The CPU kernels run on torch's threads (torch::stable::parallel_for), so
     # the extension needs no OpenMP runtime: only host_dot.h's
@@ -112,7 +111,6 @@ def get_extensions():
             [os.path.relpath(s, this_dir) for s in sources],
             include_dirs=include_dirs,
             extra_compile_args=extra_compile_args,
-            extra_link_args=extra_link_args,
             py_limited_api=py_limited_api,
         )
     ]

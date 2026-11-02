@@ -16,8 +16,9 @@ try:
 except ImportError:
     __version__ = Path(__file__).parent.joinpath("VERSION.txt").read_text().strip()
 
-# Fail clearly on a CUDA wheel installed next to a torch of another CUDA major,
-# before loading the extension would fail with an undefined-symbol error.
+# Fail clearly on a torch older than the floor, a CUDA wheel on another CUDA
+# major, or a CUDA older than 12.9, before loading the extension would fail
+# obscurely.
 check_torch_build(__version__, torch.__version__, torch.version.cuda)
 
 # The compiled extension, then its ops' fake and autograd implementations.

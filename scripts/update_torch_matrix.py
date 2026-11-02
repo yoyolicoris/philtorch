@@ -245,7 +245,11 @@ def run(root, today):
 
 def main(argv=None, today=None):
     parser = argparse.ArgumentParser(description=__doc__.split("\n\n")[0])
-    parser.add_argument("--root", default=str(tm.REPO_ROOT), help="directory holding the files")
+    parser.add_argument(
+        "--root",
+        default=str(tm.REPO_ROOT),
+        help="directory holding the files; MIN_TORCH comes from this checkout, not here",
+    )
     args = parser.parse_args(argv)
     today = today or datetime.datetime.now(datetime.UTC).date()
     for name, text in run(args.root, today).items():

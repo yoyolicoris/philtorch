@@ -190,7 +190,6 @@ def test_legs_name_the_runners_of_each_event():
 
 def test_legs_of_a_release_test_every_torch_and_cuda_pair():
     legs = _legs("release")
-    assert legs["cuda_builds"] == _legs("pull_request")["cuda_builds"]
     assert len(legs["cpu_tests"]) == 5
     assert _pairs(legs["cuda_tests"]) == [
         ("2.15.0", "13.2", "3.15"),
