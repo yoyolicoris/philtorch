@@ -196,16 +196,23 @@ def test_recurrence_gradients_of_long_sequences(device, sharing, dtype, T):
         torch.testing.assert_close(a, e)
 
 
-@pytest.mark.cuda
-def test_recurrence_cuda_matches_cpu_gradients():
-    A, zi, x = _problem(3, 200, 4, "both")
+@pytest.mark.parametrize(
+    "device, M, dtype, tolerance",
+    # The float32 gradients reach 3000, where its spacing is 2.4e-4.
+    [
+        pytest.param("cuda", 4, torch.float64, {}, marks=pytest.mark.cuda),
+        pytest.param("mps", 1, torch.float32, {"rtol": 1e-4, "atol": 1e-4}, marks=MPS),
+    ],
+)
+def test_recurrence_matches_cpu_gradients(device, M, dtype, tolerance):
+    A, zi, x = _problem(3, 200, M, "both")
     grads = []
-    for device in ("cpu", "cuda"):
-        inputs = [t.to(device).requires_grad_() for t in (A, zi, x)]
+    for d in ("cpu", device):
+        inputs = [t.to(d, dtype).requires_grad_() for t in (A, zi, x)]
         h = recurrence(*inputs)
         grads.append(torch.autograd.grad((h * h).sum(), inputs))
-    for cpu, cuda in zip(*grads):
-        torch.testing.assert_close(cuda.cpu(), cpu)
+    for cpu, other in zip(*grads):
+        torch.testing.assert_close(other.cpu(), cpu, **tolerance)
 
 
 @pytest.mark.parametrize("device", DEVICES)
@@ -571,7 +578,7 @@ def test_recurrence_takes_integers_as_int64_only(dtype):
 
 
 def test_recurrence_raises_where_no_kernel_applies():
-    # A device with no kernels, standing in for e.g. MPS beyond its one kernel.
+    # A device with no kernels, standing in for e.g. MPS beyond M = 1.
     A, zi, x = _problem(2, 7, 3, "both", device="meta")
     with pytest.raises(NotImplementedError, match="time-varying A with M = 3 .* on meta"):
         _forward(A, zi, x)
