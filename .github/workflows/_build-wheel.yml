@@ -40,20 +40,11 @@ jobs:
           # cibuildwheel 4 needs Python 3.11 or newer.
           python-version: "3.13"
 
-      - name: Install Homebrew dependencies for OpenMP (macOS)
-        if: runner.os == 'macOS'
-        run: brew install llvm libomp
-
       - name: Configure native build environment (macOS)
         # cibuildwheel builds macOS wheels on the runner (no container), so
-        # env vars set here reach the build subprocess. Duplicates setup.py's
-        # get_macos_openmp_config() as a safety net.
+        # env vars set here reach the build subprocess.
         if: runner.os == 'macOS'
         run: |
-          LLVM_PREFIX="$(brew --prefix llvm)"
-          LIBOMP_PREFIX="$(brew --prefix libomp)"
-          echo "CXX=$LLVM_PREFIX/bin/clang++" >> "$GITHUB_ENV"
-          echo "CPPFLAGS=-I$LIBOMP_PREFIX/include" >> "$GITHUB_ENV"
           # 14.0 floor: the MPS Metal kernels need a newer Metal/MPS runtime
           # than the arm64 Big Sur (11.0) default. See README.
           echo "MACOSX_DEPLOYMENT_TARGET=14.0" >> "$GITHUB_ENV"
@@ -100,12 +91,8 @@ jobs:
           # -e, auditwheel/delocate abort not finding them on the build image.
           CIBW_REPAIR_WHEEL_COMMAND_LINUX: >-
             auditwheel repair --exclude 'libtorch*.so*' --exclude 'libc10*.so*' -w {dest_dir} {wheel}
-          # --ignore-missing-dependencies: torch's bundled libomp.dylib has an
-          # absolute install name that doesn't exist on the runner, so delocate
-          # can't find a file for it; it still resolves at runtime via torch's
-          # already-loaded copy.
           CIBW_REPAIR_WHEEL_COMMAND_MACOS: >-
-            delocate-wheel --require-archs {delocate_archs} -e libtorch -e libc10 --ignore-missing-dependencies -w {dest_dir} -v {wheel}
+            delocate-wheel --require-archs {delocate_archs} -e libtorch -e libc10 -w {dest_dir} -v {wheel}
           # cibuildwheel 4 repairs Windows wheels with delvewheel by default,
           # which would bundle torch's DLLs; leave them to torch, as above.
           CIBW_REPAIR_WHEEL_COMMAND_WINDOWS: ""

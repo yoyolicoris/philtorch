@@ -1,12 +1,9 @@
 #pragma once
 
-// What the CPU and CUDA ops need beyond torch's stable C++ API, which they use
-// alone: torch/csrc/stable/* and torch/headeronly/*. Every such source
-// includes this header first. It sets the version they target,
-// build_support.MIN_TORCH, before any torch header is read, rather than with a
-// compiler flag, which would also reach the Metal source
-// (scalar_recur_mps.mm), which sets its own; -DTORCH_TARGET_VERSION=...
-// overrides it.
+// What the compiled ops need beyond torch's stable C++ API, which they use
+// alone: torch/csrc/stable/* and torch/headeronly/*. Every source includes
+// this header first. It sets the version they target, build_support.MIN_TORCH,
+// before any torch header is read; -DTORCH_TARGET_VERSION=... overrides it.
 #ifndef TORCH_TARGET_VERSION
 #define TORCH_TARGET_VERSION (((0ULL + 2) << 56) | ((0ULL + 12) << 48))
 #endif

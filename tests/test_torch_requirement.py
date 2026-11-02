@@ -18,8 +18,5 @@ def target_version(source):
 
 
 def test_minimum_torch_matches_the_stable_abi_target():
-    # The CPU and CUDA sources target MIN_TORCH, which the wheels require.
-    floor = tuple(int(part) for part in MIN_TORCH.split("."))
-    assert target_version(CSRC / "stable_support.h") == floor
-    # The Metal source targets the oldest torch it needs, which can be older.
-    assert target_version(CSRC / "scalar_recur_mps.mm") <= floor
+    # Every source targets MIN_TORCH, which the wheels require.
+    assert target_version(CSRC / "stable_support.h") == tuple(map(int, MIN_TORCH.split(".")))
