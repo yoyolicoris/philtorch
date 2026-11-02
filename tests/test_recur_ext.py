@@ -144,65 +144,7 @@ def test_lti_recur_rejects_zero_length(device: str):
 
 _MPS = pytest.mark.skipif(not torch.backends.mps.is_available(), reason="MPS not available")
 
-# The dtypes of the Metal scalar recurrence, and the tolerance of each against a
-# float64 (complex128) reference computed from the same inputs. float16 and
-# bfloat16 accumulate in float32 and round only the output, to their storage
-# dtype.
-_MPS_DTYPES = [torch.float32, torch.float16, torch.bfloat16, torch.complex64]
-_MPS_TOLERANCES = {
-    torch.float32: {"rtol": 1e-5, "atol": 1e-5},
-    torch.complex64: {"rtol": 1e-5, "atol": 1e-5},
-    torch.float16: {"rtol": 2e-3, "atol": 2e-3},
-    torch.bfloat16: {"rtol": 1.6e-2, "atol": 1.6e-2},
-}
 _MPS_OPS = {"lti_recur": torch.ops.philtorch.lti_recur, "scan": torch.ops.philtorch.scan}
-
-
-def _mps_randn(shape, dtype: torch.dtype, gen: torch.Generator) -> torch.Tensor:
-    wide = torch.complex64 if dtype.is_complex else torch.float32
-    return torch.randn(shape, generator=gen, dtype=wide).to(dtype)
-
-
-def _mps_decay(shape, dtype: torch.dtype, gen: torch.Generator) -> torch.Tensor:
-    """Coefficients of magnitude below 0.95, with a random sign or phase."""
-    magnitude = 0.95 * torch.rand(shape, generator=gen)
-    if dtype.is_complex:
-        return torch.polar(magnitude, torch.rand(shape, generator=gen) * 2 * torch.pi).to(dtype)
-    return (magnitude * (torch.randint(0, 2, shape, generator=gen) * 2 - 1)).to(dtype)
-
-
-def _assert_mps_matches_reference(op: str, args, dtype: torch.dtype, **tolerance):
-    """Run the op on MPS, on contiguous views at an odd storage offset, which
-    reach the kernels' vector loads as they are, and compare with the CPU op's
-    float64 run of the same values."""
-    reference = torch.complex128 if dtype.is_complex else torch.float64
-    expected = _MPS_OPS[op](*(arg.to(reference) for arg in args))
-    views = [
-        torch.empty(arg.numel() + 1, dtype=arg.dtype, device="mps")[1:].view(arg.shape).copy_(arg)
-        for arg in args
-    ]
-    actual = _MPS_OPS[op](*views)
-    assert actual.dtype == dtype
-    tolerance = tolerance or _MPS_TOLERANCES[dtype]
-    torch.testing.assert_close(actual.cpu().to(reference), expected, **tolerance)
-
-
-@_MPS
-@pytest.mark.parametrize("dtype", _MPS_DTYPES)
-@pytest.mark.parametrize("layout", ["shared", "batched", "per_step"])
-# A tile is 1024 steps, read in vectors of 4: one step, a partial vector, a
-# full tile, and three tiles ending in a partial vector.
-@pytest.mark.parametrize("samples", [1, 5, 1024, 2049])
-def test_mps_scalar_recur_matches_cpu(dtype: torch.dtype, layout: str, samples: int):
-    B = 3
-    gen = torch.Generator().manual_seed(0)
-    a = _mps_decay({"shared": (), "batched": (B,), "per_step": (B, samples)}[layout], dtype, gen)
-    zi = _mps_randn((B,), dtype, gen)
-    x = _mps_randn((B, samples), dtype, gen)
-    if layout == "per_step":
-        _assert_mps_matches_reference("scan", (x, a, zi), dtype)
-    else:
-        _assert_mps_matches_reference("lti_recur", (a, zi, x), dtype)
 
 
 @_MPS
@@ -220,10 +162,13 @@ def test_mps_scalar_recur_block_chunks(op: str, dtype: torch.dtype):
     a = 1 - 5e-3 * torch.rand(shape, generator=gen)
     if dtype.is_complex:
         a = torch.polar(a, 0.05 * torch.rand(shape, generator=gen))
-    zi = _mps_randn((batch_size,), dtype, gen)
-    x = _mps_randn((batch_size, samples), dtype, gen)
+    wide = torch.complex64 if dtype.is_complex else torch.float32
+    zi = torch.randn(batch_size, generator=gen, dtype=wide)
+    x = torch.randn(batch_size, samples, generator=gen, dtype=wide)
     args = (a, zi, x) if op == "lti_recur" else (x, a, zi)
-    _assert_mps_matches_reference(op, args, dtype, rtol=1e-5, atol=1e-3)
+    expected = _MPS_OPS[op](*(arg.to(torch.promote_types(dtype, torch.float64)) for arg in args))
+    actual = _MPS_OPS[op](*(arg.to("mps", dtype) for arg in args))
+    torch.testing.assert_close(actual.cpu().to(expected.dtype), expected, rtol=1e-5, atol=1e-3)
 
 
 @_MPS

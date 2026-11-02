@@ -88,7 +88,18 @@ def test_recurrence_ignores_memory_past_the_states(dtype):
     assert not recurrence(A, zi, x).isnan().any()
 
 
-@pytest.mark.cuda
+@pytest.mark.parametrize(
+    "device",
+    [
+        pytest.param("cuda", marks=pytest.mark.cuda),
+        pytest.param(
+            "mps",
+            marks=pytest.mark.skipif(
+                not torch.backends.mps.is_available(), reason="MPS not available"
+            ),
+        ),
+    ],
+)
 @pytest.mark.parametrize(
     "dtype, tolerance",
     [
@@ -101,13 +112,18 @@ def test_recurrence_ignores_memory_past_the_states(dtype):
 @pytest.mark.parametrize("sharing", SHARING)
 # 12 states take the products of 16 x 16 blocks as dots (a complex one as four).
 @pytest.mark.parametrize("M", [1, 2, 3, 6, 12])
-def test_recurrence_low_precision(dtype, tolerance, sharing, M):
-    A, zi, x = _problem(4, 300, M, sharing, dtype, "cuda")
-    expected = _sequential(*(t.to(torch.complex128 if dtype.is_complex else torch.float64)
+# 2049 steps cross the Metal kernel's tiles of 1024 and end in a partial vector.
+@pytest.mark.parametrize("T", [300, 2049])
+def test_recurrence_low_precision(device, dtype, tolerance, sharing, M, T):
+    if device == "mps" and M > 1:
+        pytest.skip("the Metal kernels take M = 1")
+    A, zi, x = _problem(4, T, M, sharing, dtype, device)
+    # The reference on CPU, as MPS has no float64.
+    expected = _sequential(*(t.cpu().to(torch.complex128 if dtype.is_complex else torch.float64)
                              for t in (A, zi, x)))  # fmt: skip
     actual = recurrence(A, zi, x)
     assert actual.dtype == dtype
-    error = (actual.to(expected.dtype) - expected).abs().max() / expected.abs().max()
+    error = (actual.cpu().to(expected.dtype) - expected).abs().max() / expected.abs().max()
     assert error < tolerance
 
 
