@@ -14,10 +14,6 @@ import torch
 from torch import Tensor
 from torch._higher_order_ops.associative_scan import associative_scan as _associative_scan
 
-# The generic mode of associative_scan takes any combine function: it runs
-# eagerly, vmapping the combine function over the scan dimension and applying
-# it O(log N) times, so autograd follows it as usual.
-
 
 def _scan(combine_fn, xs: tuple[Tensor, ...], reverse: bool = False) -> tuple[Tensor, ...]:
     # With no signals, steps or states there is nothing to combine, and the

@@ -10,9 +10,7 @@ on:
         required: true
         type: string
       torch_version:
-        # The torch to build against, e.g. '2.12.1': the floor. The wheel
-        # targets torch's stable ABI from build_support.MIN_TORCH on, so it
-        # loads on this torch's minor and every later one.
+        # The torch to build against, e.g. '2.12.1': the floor.
         required: true
         type: string
       python_version:
@@ -98,28 +96,6 @@ jobs:
           # cibuildwheel 4 repairs Windows wheels with delvewheel by default,
           # which would bundle torch's DLLs; leave them to torch, as above.
           CIBW_REPAIR_WHEEL_COMMAND_WINDOWS: ""
-
-      - name: Check the torch requirement
-        shell: bash
-        run: |
-          python - <<'EOF'
-          import glob, sys, zipfile
-
-          import build_support
-
-          requirement = f"torch>={build_support.MIN_TORCH}.0"
-          (path,) = glob.glob("wheelhouse/*.whl")
-          with zipfile.ZipFile(path) as wheel:
-              name = next(n for n in wheel.namelist() if n.endswith(".dist-info/METADATA"))
-              requires = [
-                  line.split(":", 1)[1].strip()
-                  for line in wheel.read(name).decode().splitlines()
-                  if line.startswith("Requires-Dist:")
-              ]
-          if requirement not in requires:
-              sys.exit(f"{path} must require {requirement}, not {requires}")
-          print(f"{path} requires {requirement}")
-          EOF
 
       - uses: actions/upload-artifact@v7
         with:

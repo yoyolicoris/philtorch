@@ -168,7 +168,7 @@ Each kernel indexes the steps of a sequence in 32 bits, as 64-bit integer arithm
 ## PyTorch and Metal integration
 
 The host code uses only torch's stable ABI, `torch/csrc/stable` and `torch/headeronly`, and torch's Metal C shim, [`shim_mps.h`](https://github.com/pytorch/pytorch/blob/main/torch/csrc/inductor/aoti_torch/c/shim_mps.h), so the compiled code calls torch through C functions alone.
-It includes `stable_support.h`, whose `TORCH_TARGET_VERSION`, `build_support.MIN_TORCH`, holds it to that torch's API, as it does the other sources.
+Like the other sources, it includes `stable_support.h`, which holds it to `MIN_TORCH`'s API.
 No Objective-C remains, and the extension links no Apple framework.
 
 1. `setup.py` turns `scalar_recur_mps.metal` into `scalar_recur_mps.metal.h`, a raw string in `build/metal`, which the host code includes.

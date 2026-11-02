@@ -28,9 +28,8 @@ jobs:
 
   # One build job per OS, each calling _build-wheel.yml, so that each OS has
   # its own conclusion and one failing OS doesn't skip the others' test and
-  # publish jobs. A wheel is abi3 and targets torch's stable ABI from the floor
-  # (build_support.MIN_TORCH) on: each OS builds one, on the floor torch and the
-  # oldest Python. The test jobs run it on the cpu_tests legs.
+  # publish jobs. Each OS builds one wheel, on the floor torch and the oldest
+  # Python. The test jobs run it on the cpu_tests legs.
   build-wheels-ubuntu:
     needs: resolve-legs
     permissions:

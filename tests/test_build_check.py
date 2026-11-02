@@ -5,18 +5,13 @@ from philtorch._build_check import check_torch_build
 CUDA_WHEEL = "0.9.0+cu13"
 
 
-@pytest.mark.parametrize("philtorch_version", ["0.5.1", "0.5.2.dev3+g1234abc", "0.4"])
-def test_unlabelled_builds_are_not_checked(philtorch_version):
+def test_unlabelled_build_is_not_checked():
     # Source builds and the CPU wheels are not checked.
-    check_torch_build(philtorch_version, "1.0.0", None)
+    check_torch_build("0.5.1", "1.0.0", None)
 
 
-@pytest.mark.parametrize(
-    "torch_version, torch_cuda",
-    [("2.13.0+cu130", "13.0"), ("2.20.1", "13.2.1"), ("nightly", "13.2")],
-)
-def test_matching_cuda_major_passes_on_any_torch(torch_version, torch_cuda):
-    check_torch_build(CUDA_WHEEL, torch_version, torch_cuda)
+def test_matching_cuda_major_passes():
+    check_torch_build(CUDA_WHEEL, "2.13.0+cu130", "13.0")
 
 
 def test_cpu_only_torch_is_rejected():

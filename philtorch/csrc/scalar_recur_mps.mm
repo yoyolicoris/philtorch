@@ -5,15 +5,8 @@
 #include "stable_support.h"
 
 #include <torch/csrc/inductor/aoti_torch/c/shim_mps.h>
-#include <torch/csrc/stable/library.h>
-#include <torch/csrc/stable/ops.h>
-#include <torch/csrc/stable/tensor.h>
-#include <torch/headeronly/core/ScalarType.h>
-#include <torch/headeronly/util/Exception.h>
-#include <torch/headeronly/util/shim_utils.h>
 
 #include <array>
-#include <cstdint>
 #include <initializer_list>
 #include <limits>
 #include <mutex>

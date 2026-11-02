@@ -1,13 +1,5 @@
-#include <assert.h>
-#include <stdio.h>
-
 // The includer, philtorch/csrc/torchlpc_cuda.cu, includes stable_support.h
-// first: it sets the stable ABI version before any torch header is read.
-#include <torch/csrc/stable/accelerator.h>
-#include <torch/csrc/stable/library.h>
-#include <torch/csrc/stable/ops.h>
-#include <torch/csrc/stable/tensor.h>
-#include <torch/headeronly/core/Dispatch_v2.h>
+// first, which holds the torch headers this file uses.
 
 using torch::stable::Tensor;
 

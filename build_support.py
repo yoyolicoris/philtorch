@@ -1,5 +1,6 @@
 # The oldest PyTorch the wheels support. The compiled ops target its stable
-# ABI: TORCH_TARGET_VERSION in philtorch/csrc/stable_support.h must match.
+# ABI, so a build loads on it and every later torch: TORCH_TARGET_VERSION in
+# philtorch/csrc/stable_support.h must match.
 MIN_TORCH = "2.12"
 
 

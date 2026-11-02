@@ -1,11 +1,12 @@
 """Read ``torch_matrix.json``, the PyTorch versions the wheel workflows build and test.
 
-Each wheel is built once, on the floor PyTorch, and tested on several. The
-subcommands print what the workflows need, so that no workflow guesses a
-version: ``version`` the PEP 440 version of a CUDA wheel, and ``legs`` the
-legs of the jobs, as ``key=value`` lines for ``$GITHUB_OUTPUT``::
+Each wheel is built once and tested on several PyTorch versions; the file's
+``policy`` says which build each. The subcommands print what the workflows
+need, so that no workflow guesses a version: ``version`` the PEP 440 version of
+a CUDA wheel, and ``legs`` the legs of the jobs, as ``key=value`` lines for
+``$GITHUB_OUTPUT``::
 
-    VERSION="$(python scripts/torch_matrix.py version --cuda 13.0)"
+    VERSION="$(python scripts/torch_matrix.py version --label cu13)"
     python scripts/torch_matrix.py legs --event "$GITHUB_EVENT_NAME" >> "$GITHUB_OUTPUT"
 
 A CUDA wheel's version is the setuptools_scm base version plus a local label
@@ -20,17 +21,17 @@ from __future__ import annotations
 import argparse
 import json
 import re
+import runpy
 import sys
 import tomllib
 from pathlib import Path
 
 REPO_ROOT = Path(__file__).parents[1]
-SCHEMA_VERSION = 4
 INDEX_URL = "https://download.pytorch.org/whl/"
 
 # Patterns are matched with fullmatch, which unlike match plus "$" rejects a
 # trailing newline.
-_TORCH_RE = re.compile(r"\d+\.\d+\.\d+")
+TORCH_RE = re.compile(r"\d+\.\d+\.\d+")
 _MINOR_RE = re.compile(r"\d+\.\d+")  # a CUDA or a CPython version
 # One TORCH_CUDA_ARCH_LIST entry, e.g. "8.6", "9.0a" or "12.0+PTX". "native"
 # needs a visible GPU (see build_support.py), and named architectures such as
@@ -38,10 +39,8 @@ _MINOR_RE = re.compile(r"\d+\.\d+")  # a CUDA or a CPython version
 _ARCH_RE = re.compile(r"(\d+)\.(\d+)a?(\+PTX)?")
 _FIELDS = {"version", "cuda", "python"}
 
-# Oldest CUDA the CUDA sources build with unchanged. recur_scan.cuh uses
-# thrust::tabulate_output_iterator, which CUDA 12.6's CCCL (2.5) lacks. 12.9 is
-# the oldest verified to work.
-_MIN_CUDA = (12, 9)
+# Defined in the package, which can't import this file; it imports only re.
+MIN_CUDA = runpy.run_path(str(REPO_ROOT / "philtorch" / "_build_check.py"))["_MIN_CUDA"]
 
 
 def version_tuple(version):
@@ -65,27 +64,12 @@ def oldest_python(pyproject_text):
     return int(match[1])
 
 
-def load_matrix(path):
-    """Read the matrix file, raising RuntimeError with context on failure."""
-    try:
-        data = json.loads(Path(path).read_text(encoding="utf-8"))
-    except OSError as error:
-        raise RuntimeError(f"cannot read torch matrix {path}: {error}") from error
-    except json.JSONDecodeError as error:
-        raise RuntimeError(f"torch matrix {path} is not valid JSON: {error}") from error
-    if not isinstance(data, dict):
-        raise RuntimeError(f"torch matrix {path} must be a JSON object")
-    return data
-
-
 def validate_matrix(data, oldest, path="<matrix>"):
     """Check what a hand edit could get wrong; ``oldest`` is that of ``oldest_python``."""
 
     def fail(message):
         raise RuntimeError(f"{path}: {message}")
 
-    if data.get("schema_version") != SCHEMA_VERSION:
-        fail(f"schema_version must be {SCHEMA_VERSION}")
     platform = data.get("platform")
     if not isinstance(platform, str) or not platform:
         fail("'platform' must be a non-empty string")
@@ -101,7 +85,7 @@ def validate_matrix(data, oldest, path="<matrix>"):
         where = f"torch[{i}]"
         if not isinstance(entry, dict) or set(entry) != _FIELDS:
             fail(f"{where} must be an object with the fields {sorted(_FIELDS)}")
-        if not isinstance(entry["version"], str) or not _TORCH_RE.fullmatch(entry["version"]):
+        if not isinstance(entry["version"], str) or not TORCH_RE.fullmatch(entry["version"]):
             fail(f"{where}: 'version' must be an exact X.Y.Z version")
         cuda = entry["cuda"]
         if (
@@ -113,9 +97,9 @@ def validate_matrix(data, oldest, path="<matrix>"):
         keys = [version_tuple(c) for c in cuda]
         if keys != sorted(set(keys)):
             fail(f"{where}: 'cuda' must be ascending, without duplicates")
-        if keys[0] < _MIN_CUDA:
+        if keys[0] < MIN_CUDA:
             fail(
-                f"{where}: CUDA {cuda[0]} is older than {'.'.join(map(str, _MIN_CUDA))}, "
+                f"{where}: CUDA {cuda[0]} is older than {'.'.join(map(str, MIN_CUDA))}, "
                 "the oldest the CUDA sources build with"
             )
         python = entry["python"]
@@ -179,8 +163,8 @@ def legs(data, event, build_python):
         cpu = [(entry["version"], entry["python"]) for entry in reversed(torch)] + [floor_leg]
     if event in ("release", "workflow_dispatch"):
         tests = [(entry, cuda) for entry in reversed(torch) for cuda in entry["cuda"]]
-    else:
-        tests = [*pairs, (newest, newest["cuda"][-1])]
+    else:  # one GPU test: the newest torch with its newest CUDA
+        tests = [(newest, newest["cuda"][-1])]
     return {
         "floor": floor["version"],
         "build_python": build_python,
@@ -192,42 +176,17 @@ def legs(data, event, build_python):
             | {"arch_list": data["cuda_arch_lists"][cuda_major(cuda)]}
             for entry, cuda in pairs
         ],
-        "cuda_tests": [
-            cuda_leg(entry, cuda, entry["python"])
-            for entry, cuda in {(e["version"], c): (e, c) for e, c in tests}.values()
-        ],
+        "cuda_tests": [cuda_leg(entry, cuda, entry["python"]) for entry, cuda in tests],
     }
 
 
-def base_version(root=REPO_ROOT, override=None):
-    """Return the public base version, deterministically stripped of any local segment."""
-    # Imported here so that scripts importing this module need no packaging.
-    from packaging.version import InvalidVersion, Version
-
-    if override is not None:
-        raw = override
-    else:
-        from setuptools_scm import get_version
-
-        raw = get_version(root=str(root), fallback_version="0.4")
-    try:
-        public = Version(raw).public
-    except InvalidVersion as error:
-        raise RuntimeError(f"base version {raw!r} is not valid PEP 440: {error}") from error
-    return public
-
-
-def cuda_wheel_version(base, cuda_version):
-    """Build ``{base}+cu{major}`` and prove it is valid, deterministic PEP 440."""
+def base_version(root=REPO_ROOT):
+    """The setuptools_scm version without its local segment."""
+    # Imported here so that the other subcommands need no packaging.
     from packaging.version import Version
+    from setuptools_scm import get_version
 
-    version = f"{base}+cu{cuda_major(cuda_version)}"
-    parsed = Version(version)
-    # A version holds at most one "+", so a round trip also proves that the
-    # local segment is exactly the label.
-    if str(parsed) != version:
-        raise RuntimeError(f"version {version!r} does not normalize to itself (got {parsed})")
-    return version
+    return Version(get_version(root=str(root), fallback_version="0.4")).public
 
 
 def main(argv=None):
@@ -239,10 +198,7 @@ def main(argv=None):
     )
     commands = parser.add_subparsers(dest="command", required=True)
     version = commands.add_parser("version", help="print the version of a CUDA wheel")
-    version.add_argument("--cuda", required=True, help="CUDA version from the matrix, e.g. 13.0")
-    version.add_argument(
-        "--base-version", default=None, help="override the setuptools_scm base version"
-    )
+    version.add_argument("--label", required=True, help="the wheel's local label, e.g. cu13")
     legs_parser = commands.add_parser("legs", help="print the workflow's legs for an event")
     legs_parser.add_argument("--event", required=True, help="the GitHub event name")
     args = parser.parse_args(argv)
@@ -250,15 +206,10 @@ def main(argv=None):
     root = Path(args.root)
     oldest = oldest_python((root / "pyproject.toml").read_text(encoding="utf-8"))
     path = root / "torch_matrix.json"
-    data = validate_matrix(load_matrix(path), oldest, str(path))
+    data = validate_matrix(json.loads(path.read_text(encoding="utf-8")), oldest, str(path))
 
     if args.command == "version":
-        supported = sorted({c for entry in data["torch"] for c in entry["cuda"]}, key=version_tuple)
-        if args.cuda not in supported:
-            raise RuntimeError(
-                f"CUDA {args.cuda} is not in the torch matrix (supported: {', '.join(supported)})"
-            )
-        print(cuda_wheel_version(base_version(override=args.base_version), args.cuda))
+        print(f"{base_version()}+{args.label}")
         return 0
 
     for key, value in legs(data, args.event, f"3.{oldest}").items():

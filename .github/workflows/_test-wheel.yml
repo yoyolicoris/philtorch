@@ -2,8 +2,7 @@ name: Test wheel (reusable)
 
 # Called once per (OS, torch, Python) leg from build-wheels.yml. Each leg
 # installs the OS's one wheel with its own torch, which may be a later minor
-# than the one the wheel was built on: that is the check that the wheel,
-# built on the stable ABI, loads there.
+# than the one the wheel was built on.
 on:
   workflow_call:
     inputs:

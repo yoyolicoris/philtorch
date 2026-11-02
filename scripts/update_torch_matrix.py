@@ -29,7 +29,6 @@ sys.path.insert(0, str(tm.REPO_ROOT))
 from build_support import MIN_TORCH  # noqa: E402
 
 PYPI_URL = "https://pypi.org/pypi/torch/json"
-INDEX_ROOT_URL = tm.INDEX_URL
 RELEASE_CYCLE_URL = "https://peps.python.org/api/release-cycle.json"
 ARCH_TABLE_URL = (
     "https://raw.githubusercontent.com/pytorch/pytorch/release/{minor}"
@@ -38,17 +37,13 @@ ARCH_TABLE_URL = (
 PAGES_URL = "https://yoyolicoris.github.io/philtorch/"
 TABLE_START = "<!-- cuda-index-table:start -->"
 TABLE_END = "<!-- cuda-index-table:end -->"
-FILES = ("torch_matrix.json", "pyproject.toml", "README.md")
+MATRIX_FILE, PYPROJECT_FILE, README_FILE = "torch_matrix.json", "pyproject.toml", "README.md"
 
 
 def fetch(url):
     """Return the body of ``url`` as text."""
     with urllib.request.urlopen(url, timeout=60) as response:
         return response.read().decode("utf-8")
-
-
-_key = tm.version_tuple
-_minor = tm.torch_minor
 
 
 def parse_pypi_torch(data):
@@ -59,7 +54,7 @@ def parse_pypi_torch(data):
     """
     result = {}
     for version, files in data["releases"].items():
-        if tm._TORCH_RE.fullmatch(version):
+        if tm.TORCH_RE.fullmatch(version):
             pythons = {
                 f"3.{match[1]}"
                 for file in files
@@ -117,27 +112,35 @@ def compute_torch(oldest):
     pypi = parse_pypi_torch(json.loads(fetch(PYPI_URL)))
     latest = {}
     for version in pypi:
-        if _minor(version) not in latest or _key(version) > _key(latest[_minor(version)]):
-            latest[_minor(version)] = version
-    minors = [minor for minor in sorted(latest, key=_key) if _key(minor) >= _key(MIN_TORCH)]
+        if tm.torch_minor(version) not in latest or tm.version_tuple(version) > tm.version_tuple(
+            latest[tm.torch_minor(version)]
+        ):
+            latest[tm.torch_minor(version)] = version
+    minors = [
+        minor
+        for minor in sorted(latest, key=tm.version_tuple)
+        if tm.version_tuple(minor) >= tm.version_tuple(MIN_TORCH)
+    ]
     tags = {
         tag: cuda
-        for tag in sorted(set(re.findall(r'href="(cu\d{3})/"', fetch(INDEX_ROOT_URL))))
-        if _key(cuda := f"{tag[2:-1]}.{tag[-1]}") >= tm._MIN_CUDA
+        for tag in sorted(set(re.findall(r'href="(cu\d{3})/"', fetch(tm.INDEX_URL))))
+        if tm.version_tuple(cuda := f"{tag[2:-1]}.{tag[-1]}") >= tm.MIN_CUDA
     }
-    listed = {
-        tag: parse_index_versions(fetch(f"{INDEX_ROOT_URL}{tag}/torch/"), tag) for tag in tags
-    }
+    listed = {tag: parse_index_versions(fetch(f"{tm.INDEX_URL}{tag}/torch/"), tag) for tag in tags}
     entries = []
     for minor in dict.fromkeys(minors[:1] + minors[-3:]):
         version = latest[minor]
-        cuda = sorted((cuda for tag, cuda in tags.items() if version in listed[tag]), key=_key)
+        cuda = sorted(
+            (cuda for tag, cuda in tags.items() if version in listed[tag]), key=tm.version_tuple
+        )
         if not cuda:
-            raise RuntimeError(f"torch {version} is on no CUDA index of {INDEX_ROOT_URL}")
-        pythons = [p for p in pypi[version] if _key(p)[1] >= oldest]
+            raise RuntimeError(f"torch {version} is on no CUDA index of {tm.INDEX_URL}")
+        pythons = [p for p in pypi[version] if tm.version_tuple(p)[1] >= oldest]
         if not pythons:
             raise RuntimeError(f"torch {version} has no wheel for CPython 3.{oldest} or newer")
-        entries.append({"version": version, "cuda": cuda, "python": max(pythons, key=_key)})
+        entries.append(
+            {"version": version, "cuda": cuda, "python": max(pythons, key=tm.version_tuple)}
+        )
     return entries
 
 
@@ -145,7 +148,7 @@ def compute_arch_lists(torch, old):
     """The arch list of each CUDA major, from the release branch of the torch that builds it."""
     lists = {}
     for entry, cuda in tm.build_pairs(torch):
-        minor, major = _minor(entry["version"]), tm.cuda_major(cuda)
+        minor, major = tm.torch_minor(entry["version"]), tm.cuda_major(cuda)
         try:
             source = fetch(ARCH_TABLE_URL.format(minor=minor))
         except urllib.error.HTTPError as error:
@@ -221,20 +224,21 @@ def update_readme(text, torch):
 
 def run(root, today):
     """Compute the new text of the files under ``root`` that change."""
-    old_text = {name: (Path(root) / name).read_text(encoding="utf-8") for name in FILES}
-    oldest = tm.oldest_python(old_text[FILES[1]])
-    old = tm.validate_matrix(json.loads(old_text[FILES[0]]), oldest, FILES[0])
+    names = (MATRIX_FILE, PYPROJECT_FILE, README_FILE)
+    old_text = {name: (Path(root) / name).read_text(encoding="utf-8") for name in names}
+    oldest = tm.oldest_python(old_text[PYPROJECT_FILE])
+    old = tm.validate_matrix(json.loads(old_text[MATRIX_FILE]), oldest, MATRIX_FILE)
     cycle = json.loads(fetch(RELEASE_CYCLE_URL))
     while end_of_life(cycle[f"3.{oldest}"]) <= today:
         oldest += 1
     torch = compute_torch(oldest)
     new = dict(old, torch=torch, cuda_arch_lists=compute_arch_lists(torch, old))
     tm.validate_matrix(new, oldest, "the updated matrix")
-    newest = max(_key(entry["python"])[1] for entry in torch)
+    newest = max(tm.version_tuple(entry["python"])[1] for entry in torch)
     new_text = {
-        FILES[0]: render_matrix(new),
-        FILES[1]: update_pyproject(old_text[FILES[1]], oldest, newest),
-        FILES[2]: update_readme(old_text[FILES[2]], torch),
+        MATRIX_FILE: render_matrix(new),
+        PYPROJECT_FILE: update_pyproject(old_text[PYPROJECT_FILE], oldest, newest),
+        README_FILE: update_readme(old_text[README_FILE], torch),
     }
     return {name: text for name, text in new_text.items() if text != old_text[name]}
 

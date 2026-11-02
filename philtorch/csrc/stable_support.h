@@ -3,10 +3,8 @@
 // What the compiled ops need beyond torch's stable C++ API, which they use
 // alone: torch/csrc/stable/* and torch/headeronly/*. Every source includes
 // this header first. It sets the version they target, build_support.MIN_TORCH,
-// before any torch header is read; -DTORCH_TARGET_VERSION=... overrides it.
-#ifndef TORCH_TARGET_VERSION
+// before any torch header is read.
 #define TORCH_TARGET_VERSION (((0ULL + 2) << 56) | ((0ULL + 12) << 48))
-#endif
 
 #if defined(__CUDACC__) && !defined(USE_CUDA)
 // torch's shim.h declares aoti_torch_get_current_cuda_stream only under it.
@@ -27,10 +25,7 @@
 #include <torch/headeronly/util/complex.h>
 #include <torch/headeronly/util/shim_utils.h>
 
-#include <array>
 #include <cstdint>
-#include <type_traits>
-#include <vector>
 
 namespace philtorch
 {
@@ -50,11 +45,6 @@ namespace philtorch
     struct opmath<c10::BFloat16>
     {
         using type = float;
-    };
-    template <>
-    struct opmath<c10::complex<c10::Half>>
-    {
-        using type = c10::complex<float>;
     };
     template <typename T>
     using opmath_type = typename opmath<T>::type;

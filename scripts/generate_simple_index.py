@@ -156,8 +156,8 @@ def _landing_page(project: str, base_url: str, names: list[str]) -> str:
             for name in group
         )
 
-    current = [name for name in names if _sort_key(name)[0]]
-    earlier = [name for name in names if not _sort_key(name)[0]]
+    current = [name for name in names if _CUDA_LABEL.fullmatch(name)]
+    earlier = [name for name in names if not _CUDA_LABEL.fullmatch(name)]
     if names:
         body = ""
         if current:

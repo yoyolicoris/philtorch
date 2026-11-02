@@ -1,6 +1,7 @@
 #include "stable_support.h"
 
 #include <algorithm>
+#include <array>
 #include <cstdint>
 #include <limits>
 

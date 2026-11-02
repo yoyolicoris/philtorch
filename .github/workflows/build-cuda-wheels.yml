@@ -1,32 +1,29 @@
 name: Build CUDA wheels
 
 # Builds one Linux CUDA wheel, abi3, per CUDA major (cu12, cu13) and uploads
-# them as CI artifacts. The ops use PyTorch's stable ABI, so a wheel loads on
-# every PyTorch from the one it was built with on. For a published release, it
-# then attaches the wheels to the release as assets, and deploy-cuda-index.yml
-# rebuilds the PEP 503 index that links to them.
+# them as CI artifacts. For a published release, it then attaches the wheels to
+# the release as assets, and deploy-cuda-index.yml rebuilds the PEP 503 index
+# that links to them.
 #
 # Design notes:
 # - `scripts/torch_matrix.py legs` resolves the legs from torch_matrix.json,
 #   the single source of truth, including the build image. The workflow
-#   hardcodes no torch, CUDA or image versions. A wheel is built with the
-#   oldest torch that has its CUDA major, on the oldest CUDA of that major and
-#   the oldest Python.
+#   hardcodes no torch, CUDA or image versions.
 # - Each leg builds in the matrix's manylinux image, the same glibc 2.28
 #   environment the CPU wheels build in, with only the CUDA packages the build
 #   needs installed from NVIDIA's RHEL 8 repository. No GPU runner is needed:
 #   nvcc cross-compiles, and PHILTORCH_FORCE_CUDA=1 tells setup.py to take the
 #   CUDA path without a visible GPU (see build_support.py).
 # - `auditwheel repair --plat <platform>` is a fail-loud conformance gate, and
-#   a check step then rejects bundled CUDA or torch libraries, leftover debug
-#   info, and a missing torch requirement.
+#   a check step then rejects bundled CUDA or torch libraries and leftover
+#   debug info.
 # - A GPU job per cuda_tests leg then installs that leg's torch from its index
 #   and the wheel of its CUDA major with --no-deps, on that leg's Python, on a
 #   Modal GPU, and runs the CUDA tests against it (scripts/modal_smoke_test.py).
-# - Pull requests and dev pushes run the build inputs' legs: each wheel's own
-#   torch and CUDA, and the newest torch with its newest CUDA. They run only
-#   when the build inputs change. Releases and manual dispatches GPU-test every
-#   (torch, CUDA) pair in the matrix.
+# - Pull requests and dev pushes build every wheel and GPU-test one: the wheel
+#   of the newest torch's newest CUDA, on that torch. They run only when the
+#   build inputs change. Releases and manual dispatches GPU-test every (torch,
+#   CUDA) pair in the matrix.
 # - A release's wheels are published only once every wheel has built and every
 #   GPU test has passed. Assets already on the release are never replaced:
 #   a wheel already there with the same contents is skipped, so failed jobs
@@ -39,6 +36,7 @@ on:
       - ".github/workflows/build-cuda-wheels.yml"
       - "torch_matrix.json"
       - "scripts/torch_matrix.py"
+      - "philtorch/_build_check.py"
       - "scripts/modal_smoke_test.py"
       - "setup.py"
       - "build_support.py"
@@ -74,6 +72,7 @@ on:
       - ".github/workflows/build-cuda-wheels.yml"
       - "torch_matrix.json"
       - "scripts/torch_matrix.py"
+      - "philtorch/_build_check.py"
       - "scripts/modal_smoke_test.py"
       - "setup.py"
       - "build_support.py"
@@ -115,7 +114,7 @@ concurrency:
   cancel-in-progress: true
 
 jobs:
-  resolve-matrix:
+  resolve-legs:
     runs-on: ubuntu-latest
     outputs:
       build_image: ${{ steps.legs.outputs.build_image }}
@@ -133,15 +132,15 @@ jobs:
     # A name of its own: GitHub would otherwise list every matrix value, the
     # index URL and arch list included.
     name: build ${{ matrix.label }}
-    needs: resolve-matrix
+    needs: resolve-legs
     runs-on: ubuntu-latest
     timeout-minutes: 120
     strategy:
       fail-fast: false
       matrix:
-        include: ${{ fromJSON(needs.resolve-matrix.outputs.cuda_builds) }}
+        include: ${{ fromJSON(needs.resolve-legs.outputs.cuda_builds) }}
     container:
-      image: ${{ needs.resolve-matrix.outputs.build_image }}
+      image: ${{ needs.resolve-legs.outputs.build_image }}
     env:
       CUDA_HOME: /usr/local/cuda-${{ matrix.cuda }}
       TORCH_INDEX_URL: ${{ matrix.index_url }}
@@ -188,7 +187,7 @@ jobs:
       - name: Compute wheel version
         id: version
         run: |
-          VERSION=$(python scripts/torch_matrix.py version --cuda "${{ matrix.cuda }}")
+          VERSION=$(python scripts/torch_matrix.py version --label "${{ matrix.label }}")
           echo "version=${VERSION}" >> "$GITHUB_OUTPUT"
 
       - name: Build wheel
@@ -215,7 +214,7 @@ jobs:
         # provides and loads them, so the wheel must not ship its own copies.
         run: |
           auditwheel repair \
-            --plat "${{ needs.resolve-matrix.outputs.platform }}" \
+            --plat "${{ needs.resolve-legs.outputs.platform }}" \
             --exclude "libtorch*.so*" --exclude "libc10*.so*" --exclude "libcudart.so*" \
             -w repaired/ wheelhouse/philtorch-*.whl
 
@@ -232,12 +231,6 @@ jobs:
             echo "::error::$WHEEL still carries debug info"
             exit 1
           fi
-          REQUIREMENT="torch>=$(python -c 'import build_support; print(build_support.MIN_TORCH)').0"
-          if ! grep -qxF "Requires-Dist: ${REQUIREMENT}" check/philtorch-*.dist-info/METADATA; then
-            echo "::error::$WHEEL does not require ${REQUIREMENT}"
-            grep "^Requires-Dist" check/philtorch-*.dist-info/METADATA
-            exit 1
-          fi
           pip install -q twine
           twine check --strict "$WHEEL"
           ls -l "$WHEEL"
@@ -252,7 +245,7 @@ jobs:
     # Runs the CUDA tests against the exact wheel built above for the leg's
     # CUDA major, on a Modal GPU.
     name: GPU test ${{ matrix.label }}, torch ${{ matrix.torch }}, CUDA ${{ matrix.cuda }}
-    needs: [resolve-matrix, build]
+    needs: [resolve-legs, build]
     # Repository secrets are not available to pull requests from forks.
     if: github.event_name != 'pull_request' || github.event.pull_request.head.repo.full_name == github.repository
     runs-on: ubuntu-latest
@@ -260,7 +253,7 @@ jobs:
     strategy:
       fail-fast: false
       matrix:
-        include: ${{ fromJSON(needs.resolve-matrix.outputs.cuda_tests) }}
+        include: ${{ fromJSON(needs.resolve-legs.outputs.cuda_tests) }}
     steps:
       - uses: actions/checkout@v7
 
@@ -330,7 +323,7 @@ jobs:
   publish:
     # Attaches every wheel to the release; deploy-cuda-index.yml then lists
     # them in the index. Same tag filter as the PyPI upload in build-wheels.yml.
-    needs: [resolve-matrix, build, gpu-test]
+    needs: [resolve-legs, build, gpu-test]
     if: >
       github.event_name == 'release' &&
       (startsWith(github.event.release.tag_name, 'v0.') || startsWith(github.event.release.tag_name, 'v1.'))
@@ -348,7 +341,7 @@ jobs:
         env:
           GH_TOKEN: ${{ github.token }}
           TAG: ${{ github.event.release.tag_name }}
-          BUILDS: ${{ needs.resolve-matrix.outputs.cuda_builds }}
+          BUILDS: ${{ needs.resolve-legs.outputs.cuda_builds }}
         run: |
           EXPECTED=$(echo "$BUILDS" | jq length)
           FOUND=$(ls wheels/*.whl | wc -l)

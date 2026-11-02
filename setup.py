@@ -147,8 +147,7 @@ except ImportError:
             "sees it."
         )
 
-# The ops target MIN_TORCH's stable ABI, so one build loads on it and every
-# later torch.
+# See MIN_TORCH in build_support.py.
 install_requires = [f"torch >= {MIN_TORCH}.0"]
 
 if not ext_modules:

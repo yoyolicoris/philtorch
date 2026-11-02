@@ -4,8 +4,7 @@ No test touches the network: ``fetch`` is replaced by a table of responses
 that ``upstream`` derives from a list of torch entries, the way PyPI,
 download.pytorch.org, pytorch/pytorch and the Python release cycle would
 answer for them, plus decoys the script must ignore (pre-releases, yanked
-releases, aarch64 and Windows wheels, free-threaded wheels, CUDA 12.6,
-Python 3.10).
+releases, aarch64 and Windows wheels, CUDA 12.6, Python 3.10).
 """
 
 import datetime
@@ -52,15 +51,14 @@ def upstream(torch, older=("2.11.0",), arch_404=(), tables=None):
     """
 
     # Every release has wheels for the CPythons from 3.11 to its own, a 3.10
-    # one (older than requires-python), a 3.16 one for aarch64 only and a
-    # free-threaded one (cp316t) that is newer than the others.
+    # one (older than requires-python) and a 3.16 one for aarch64 only.
     def wheel(python, platform="manylinux_2_28_x86_64", yanked=False):
         filename = f"torch-0-cp3{python}-cp3{python}-{platform}.whl"
         return {"python_version": f"cp3{python}", "filename": filename, "yanked": yanked}
 
     releases = {
         e["version"]: [wheel(p) for p in range(10, int(e["python"][2:]) + 1)]
-        + [wheel(16, "manylinux_2_28_aarch64"), wheel("16t")]
+        + [wheel(16, "manylinux_2_28_aarch64")]
         for e in torch
     }
     releases |= {v: [wheel(11)] for v in older}
@@ -70,7 +68,7 @@ def upstream(torch, older=("2.11.0",), arch_404=(), tables=None):
         {"cu" + c.replace(".", "") for e in torch for c in e["cuda"]} | {"cu126", "cu118"}
     )
     root = "".join(f'<a href="{t}/">{t}</a><br/>' for t in [*tags, "cpu", "nvidia-cublas-cu12"])
-    urls = {UPDATE.PYPI_URL: json.dumps({"releases": releases}), UPDATE.INDEX_ROOT_URL: root}
+    urls = {UPDATE.PYPI_URL: json.dumps({"releases": releases}), TM.INDEX_URL: root}
     for tag in set(tags) - {"cu126", "cu118"}:
         # other platforms list every version for every CUDA
         wheels = [f"torch-{v}+{tag}-cp311-cp311-manylinux_2_28_aarch64.whl" for v in releases]
@@ -80,7 +78,7 @@ def upstream(torch, older=("2.11.0",), arch_404=(), tables=None):
             for e in torch
             if any("cu" + c.replace(".", "") == tag for c in e["cuda"])
         ]
-        urls[f"{UPDATE.INDEX_ROOT_URL}{tag}/torch/"] = "".join(
+        urls[f"{TM.INDEX_URL}{tag}/torch/"] = "".join(
             f'<a href="https://x/{w}#sha256=0">{w}</a><br/>' for w in wheels
         )
     for e in torch:
@@ -131,7 +129,6 @@ def readme(torch):
 
 def write_repo(root, torch, oldest=11, arch_lists=ARCH_LISTS):
     matrix = {
-        "schema_version": 4,
         "policy": "kept",
         "platform": "manylinux_2_28_x86_64",
         "build_image": "quay.io/pypa/manylinux_2_28_x86_64:2026.10.26-1",
