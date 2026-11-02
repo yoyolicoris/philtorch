@@ -249,6 +249,13 @@ def test_state_space_recursion_without_a_kernel(module):
 
 
 @pytest.mark.parametrize("module", [lti, lpv], ids=["lti", "lpv"])
+def test_state_space_recursion_rejects_float8(module):
+    # Kernel dispatch would raise RuntimeError for a dtype outside its list.
+    with pytest.raises(NotImplementedError, match="pass unroll_factor=1"):
+        module.state_space_recursion(*_recursion_inputs(module, torch.float8_e4m3fn))
+
+
+@pytest.mark.parametrize("module", [lti, lpv], ids=["lti", "lpv"])
 def test_linear_recurrence_without_a_kernel(module):
     A, zi, x = _recursion_inputs(module, torch.int32)
     a = A[0, 0] if module is lti else A[:, 0, 0]

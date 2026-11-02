@@ -157,6 +157,8 @@ def allpole(
 
     Raises:
         ValueError: if the shapes do not match.
+        NotImplementedError: if :attr:`x` is not float32, float64, complex64 or
+            complex128.
 
     Example::
 
@@ -282,7 +284,9 @@ def lfilter(
             or ``"tdf1"``, a batched :attr:`b` or :attr:`a` has a batch size
             other than that of a batched :attr:`x`, or the other shapes do
             not match.
-        NotImplementedError: for ``form="tdf2"`` with ``backend="torchlpc"``.
+        NotImplementedError: with ``backend="torchlpc"``, for ``form="tdf2"``
+            or an :attr:`x` that is not float32, float64, complex64 or
+            complex128.
 
     Note:
         Unlike :func:`philtorch.lti.lfilter`, :attr:`b` and :attr:`a` always

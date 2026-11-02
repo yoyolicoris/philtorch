@@ -66,9 +66,21 @@ def _time_invariant(A: Tensor) -> bool:
     return A.size(1) == 1
 
 
-def _floating_or_int64(x: Tensor) -> bool:
-    """The dtypes of the kernels of order M: integers only as int64."""
-    return x.is_floating_point() or x.is_complex() or x.dtype == torch.int64
+# The dtypes the kernels of order M take: integers only as int64. Others, such
+# as float8, reach no kernel, whose dispatch would raise RuntimeError.
+_KERNEL_DTYPES = (
+    torch.float16,
+    torch.bfloat16,
+    torch.float32,
+    torch.float64,
+    torch.complex64,
+    torch.complex128,
+    torch.int64,
+)
+
+
+def _kernel_dtype(x: Tensor) -> bool:
+    return x.dtype in _KERNEL_DTYPES
 
 
 # The dtypes the Metal kernels take.
@@ -82,7 +94,7 @@ def _lti_recur_applies(A: Tensor, x: Tensor) -> bool:
         and x.size(-1) == 1
         and (
             device in ("cpu", "cuda")
-            and _floating_or_int64(x)
+            and _kernel_dtype(x)
             or device == "mps"
             and x.dtype in _MPS_DTYPES
         )
@@ -95,7 +107,7 @@ def _lti_recur(A: Tensor, zi: Tensor, x: Tensor) -> Tensor:
 
 
 def _lti_recurN_applies(A: Tensor, x: Tensor) -> bool:
-    return x.is_cpu and _time_invariant(A) and _floating_or_int64(x)
+    return x.is_cpu and _time_invariant(A) and _kernel_dtype(x)
 
 
 def _lti_recurN(A: Tensor, zi: Tensor, x: Tensor) -> Tensor:
@@ -103,7 +115,7 @@ def _lti_recurN(A: Tensor, zi: Tensor, x: Tensor) -> Tensor:
 
 
 def _recurN_applies(A: Tensor, x: Tensor) -> bool:
-    return x.is_cpu and not _time_invariant(A) and _floating_or_int64(x)
+    return x.is_cpu and not _time_invariant(A) and _kernel_dtype(x)
 
 
 def _recurN(A: Tensor, zi: Tensor, x: Tensor) -> Tensor:
@@ -120,7 +132,7 @@ def _lti_recur2_applies(A: Tensor, x: Tensor) -> bool:
         x.is_cuda
         and _time_invariant(A)
         and x.size(-1) == 2
-        and _floating_or_int64(x)
+        and _kernel_dtype(x)
         and _fits_cub_scan(x)
     )
 
@@ -160,7 +172,7 @@ def _recur2_applies(A: Tensor, x: Tensor) -> bool:
         and not _time_invariant(A)
         and x.size(-1) == 2
         and not x.is_complex()
-        and _floating_or_int64(x)
+        and _kernel_dtype(x)
         and _fits_cub_scan(x)
     )
 
@@ -234,7 +246,7 @@ def _forward(A: Tensor, zi: Tensor, x: Tensor) -> Tensor:
     if x.is_cuda:
         if _recur_kernels is None:
             reason = ": Triton is not installed"
-        elif not _floating_or_int64(x):
+        elif not _kernel_dtype(x):
             reason = "; the Triton kernels take floating-point, complex and int64 dtypes"
         else:
             most = _recur_kernels.MAX_STATES

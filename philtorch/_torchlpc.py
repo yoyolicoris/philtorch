@@ -94,7 +94,15 @@ class AllPole(Function):
         return y.reshape(info.batch_size, -1, *y.shape[1:]), 0
 
 
+_DTYPES = (torch.float32, torch.float64, torch.complex64, torch.complex128)
+
+
 def lpc(x: torch.Tensor, A: torch.Tensor, zi: torch.Tensor) -> torch.Tensor:
+    # The op's dispatch would raise RuntimeError for another dtype.
+    if x.dtype not in _DTYPES:
+        raise NotImplementedError(
+            f"lpc takes float32, float64, complex64 and complex128, got {x.dtype}"
+        )
     if torch.compiler.is_compiling():
         return torch.ops.philtorch.lpc(x, A, zi)
     return AllPole.apply(x, A, zi)

@@ -8,6 +8,8 @@ _LABEL_RE = re.compile(r"\+cu(\d+)$")
 # The oldest CUDA the sources build with, so the oldest the wheels are built
 # with and run on. scripts/torch_matrix.py reads it from here.
 _MIN_CUDA = (12, 9)
+# The torch the extension targets (build_support.MIN_TORCH); an older torch fails to load it.
+_MIN_TORCH = (2, 12)
 
 
 def check_torch_build(philtorch_version, torch_version, torch_cuda_version):
@@ -15,12 +17,19 @@ def check_torch_build(philtorch_version, torch_version, torch_cuda_version):
 
     A CPU-only torch or a different CUDA major makes the CUDA wheel's compiled
     extension fail to load with an obscure error, so this fails first with a
-    clear one, as does a CUDA older than the wheels are built with. The torch
-    version is not checked: the wheel's requirement does that.
+    clear one, as does a CUDA older than the wheels are built with. A torch
+    older than the extension targets fails the same way, for every build.
 
     CUDA wheels are recognised by the version label ``+cu<major>``; other
-    builds are not checked.
+    builds are checked for the torch version only.
     """
+    version = re.match(r"(\d+)\.(\d+)", torch_version)
+    if version is not None and tuple(map(int, version.groups())) < _MIN_TORCH:
+        minimum = ".".join(map(str, _MIN_TORCH))
+        raise ImportError(
+            f"philtorch {philtorch_version} needs PyTorch {minimum} or newer, but "
+            f"PyTorch {torch_version} is installed. Install PyTorch {minimum} or newer."
+        )
     label = _LABEL_RE.search(philtorch_version)
     if label is None:
         return

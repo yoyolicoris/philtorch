@@ -4,6 +4,7 @@ from runpy import run_path
 
 ROOT = Path(__file__).resolve().parents[1]
 MIN_TORCH = run_path(str(ROOT / "build_support.py"))["MIN_TORCH"]
+BUILD_CHECK = run_path(str(ROOT / "philtorch" / "_build_check.py"))
 CSRC = ROOT / "philtorch" / "csrc"
 
 
@@ -20,3 +21,7 @@ def target_version(source):
 def test_minimum_torch_matches_the_stable_abi_target():
     # Every source targets MIN_TORCH, which the wheels require.
     assert target_version(CSRC / "stable_support.h") == tuple(map(int, MIN_TORCH.split(".")))
+
+
+def test_import_check_minimum_matches_the_build_minimum():
+    assert BUILD_CHECK["_MIN_TORCH"] == tuple(map(int, MIN_TORCH.split(".")))
