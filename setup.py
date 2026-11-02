@@ -70,12 +70,15 @@ def get_macos_openmp_config(extra_compile_args, extra_link_args, torch_lib):
 
 def write_metal_header(source, header):
     # torch's Metal shim compiles only from source text, so the extension
-    # carries the shader as a raw string.
+    # carries the shader as a raw string, whose delimiter it can't contain.
     with open(source, encoding="utf-8") as file:
         text = file.read()
     os.makedirs(os.path.dirname(header), exist_ok=True)
     with open(header, "w", encoding="utf-8") as file:
-        file.write(f'#pragma once\nconstexpr const char *METAL_SOURCE = R"METAL({text})METAL";\n')
+        file.write(
+            "#pragma once\n"
+            f'constexpr const char *METAL_SOURCE = R"PHILTORCH_METAL({text})PHILTORCH_METAL";\n'
+        )
 
 
 def get_extensions():

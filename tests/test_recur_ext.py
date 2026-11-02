@@ -384,7 +384,9 @@ def test_mps_recurrence_rejects_what_the_kernels_do_not_take(time_invariant: boo
 @_MPS
 @pytest.mark.parametrize("op", ["lti_recur", "scan"])
 def test_mps_scalar_recur_rejects_int64(op: str):
-    ones = lambda *shape: torch.ones(shape, dtype=torch.int64, device="mps")  # noqa: E731
+    def ones(*shape):
+        return torch.ones(shape, dtype=torch.int64, device="mps")
+
     args = (
         (ones(2), ones(2), ones(2, 5)) if op == "lti_recur" else (ones(2, 5), ones(2, 5), ones(2))
     )

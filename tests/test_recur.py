@@ -319,10 +319,9 @@ MPS_DISPATCH = [
         marks=pytest.mark.skipif(not torch.backends.mps.is_available(), reason="MPS not available"),
     )
     for case in [
-        (True, 1, torch.float16, "mps", "_lti_recur"),
-        (True, 1, torch.complex64, "mps", "_lti_recur"),
-        (False, 1, torch.bfloat16, "mps", "_scan"),
-        (False, 1, torch.complex64, "mps", "_scan"),
+        (time_invariant, 1, dtype, "mps", "_lti_recur" if time_invariant else "_scan")
+        for time_invariant in (True, False)
+        for dtype in (torch.float32, torch.float16, torch.bfloat16, torch.complex64)
     ]
 ]
 
