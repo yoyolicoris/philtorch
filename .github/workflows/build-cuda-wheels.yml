@@ -1,11 +1,9 @@
 name: Build CUDA wheels
 
-# Builds one Linux CUDA wheel, abi3, per CUDA major (cu12, cu13) and uploads
-# them as CI artifacts. For a published release, it then attaches the wheels to
-# the release as assets, and deploy-cuda-index.yml rebuilds the PEP 503 index
-# that links to them. A release runs it as a job of build-wheels.yml, which
-# publishes to PyPI only once it has passed: github.event_name, github.ref and
-# github.event are then the release's.
+# Builds one Linux CUDA wheel, abi3, per CUDA major (cu12, cu13), uploads them
+# as CI artifacts and GPU-tests them. A release runs it as a job of
+# build-wheels.yml (github.event_name is then `release`), which attaches the
+# wheels to the release once every CPU and CUDA check has passed.
 #
 # Design notes:
 # - `scripts/torch_matrix.py legs` resolves the legs from torch_matrix.json,
@@ -26,10 +24,6 @@ name: Build CUDA wheels
 #   of the newest torch's newest CUDA, on that torch. They run only when the
 #   build inputs change. Releases and manual dispatches GPU-test every (torch,
 #   CUDA) pair in the matrix.
-# - A release's wheels are published only once every wheel has built and every
-#   GPU test has passed. Assets already on the release are never replaced:
-#   a wheel already there with the same contents is skipped, so failed jobs
-#   can be re-run, and one with different contents fails the job.
 
 on:
   push:
@@ -289,74 +283,3 @@ jobs:
           report_type: test_results
           files: junit.xml
           flags: gpu
-
-  publish:
-    # Attaches every wheel to the release; deploy-cuda-index.yml then lists
-    # them in the index. Same tag filter as the PyPI upload in build-wheels.yml.
-    needs: [resolve-legs, build, gpu-test]
-    if: >
-      github.event_name == 'release' &&
-      (startsWith(github.event.release.tag_name, 'v0.') || startsWith(github.event.release.tag_name, 'v1.'))
-    runs-on: ubuntu-latest
-    permissions:
-      contents: write
-    steps:
-      - uses: actions/download-artifact@v8
-        with:
-          pattern: cuda-wheels-*
-          merge-multiple: true
-          path: wheels/
-
-      - name: Upload wheels to the release
-        env:
-          GH_TOKEN: ${{ github.token }}
-          TAG: ${{ github.event.release.tag_name }}
-          BUILDS: ${{ needs.resolve-legs.outputs.cuda_builds }}
-        run: |
-          EXPECTED=$(echo "$BUILDS" | jq length)
-          FOUND=$(ls wheels/*.whl | wc -l)
-          if [ "$FOUND" -ne "$EXPECTED" ]; then
-            echo "::error::Expected $EXPECTED wheels, found $FOUND"
-            exit 1
-          fi
-          published() {
-            gh release view "$TAG" --repo "$GITHUB_REPOSITORY" \
-              --json assets --jq '.assets[] | "\(.name) \(.digest)"' > published.txt
-          }
-          published_digest() {
-            awk -v name="$(basename "$1")" '$1 == name { print $2 }' published.txt
-          }
-          digest() {
-            echo "sha256:$(sha256sum "$1" | cut -d' ' -f1)"
-          }
-          # Check every wheel before uploading any.
-          published
-          for WHEEL in wheels/*.whl; do
-            NAME=$(basename "$WHEEL")
-            VERSION=$(echo "$NAME" | cut -d- -f2)
-            if [ "${VERSION%%+*}" != "${TAG#v}" ]; then
-              echo "::error::$NAME was not built as version ${TAG#v}"
-              exit 1
-            fi
-            PUBLISHED=$(published_digest "$WHEEL")
-            if [ -n "$PUBLISHED" ] && [ "$PUBLISHED" != "$(digest "$WHEEL")" ]; then
-              echo "::error::$NAME is already on $TAG with different contents"
-              exit 1
-            fi
-          done
-          for WHEEL in wheels/*.whl; do
-            if [ -n "$(published_digest "$WHEEL")" ]; then
-              echo "$(basename "$WHEEL") is already on $TAG"
-            else
-              gh release upload "$TAG" "$WHEEL" --repo "$GITHUB_REPOSITORY"
-            fi
-          done
-          # The index links to assets by name, so check that every wheel is
-          # there under its own filename and with its own contents.
-          published
-          for WHEEL in wheels/*.whl; do
-            if [ "$(published_digest "$WHEEL")" != "$(digest "$WHEEL")" ]; then
-              echo "::error::$(basename "$WHEEL") is missing from $TAG or differs"
-              exit 1
-            fi
-          done

@@ -29,6 +29,7 @@ jobs:
       build_os: ${{ steps.legs.outputs.build_os }}
       test_os: ${{ steps.legs.outputs.test_os }}
       cpu_tests: ${{ steps.legs.outputs.cpu_tests }}
+      cuda_builds: ${{ steps.legs.outputs.cuda_builds }}
     steps:
       - uses: actions/checkout@v7
 
@@ -162,23 +163,88 @@ jobs:
       contents: read
     uses: ./.github/workflows/docs.yml
 
-  # Releases only: the CUDA wheels, GPU-tested and attached to the release once
-  # every CPU check has passed, so that a release publishes all or nothing. The
-  # called workflow's jobs can't exceed these permissions.
+  # Releases only: the CUDA wheels, built and GPU-tested alongside the CPU
+  # jobs; attach-cuda-wheels attaches them once everything has passed.
   cuda-wheels:
-    needs: [build, build-newest-torch, build-sdist, docs, test]
-    if: >
-      github.event_name == 'release' &&
-      !cancelled() &&
-      needs.build.result == 'success' &&
-      needs.build-newest-torch.result == 'success' &&
-      needs.build-sdist.result == 'success' &&
-      needs.docs.result == 'success' &&
-      needs.test.result == 'success'
+    if: github.event_name == 'release'
     permissions:
-      contents: write
+      contents: read
     uses: ./.github/workflows/build-cuda-wheels.yml
     secrets: inherit
+
+  # Attaches the CUDA wheels to the release once every CPU and CUDA check has
+  # passed, so that a release publishes all or nothing; deploy-cuda-index.yml
+  # then lists them in the index. Assets already on the release are never
+  # replaced: a wheel already there with the same contents is skipped, so
+  # failed jobs can be re-run, and one with different contents fails the job.
+  attach-cuda-wheels:
+    needs: [resolve-legs, build, build-newest-torch, build-sdist, docs, test, cuda-wheels]
+    if: >
+      github.event_name == 'release' &&
+      (startsWith(github.event.release.tag_name, 'v0.') || startsWith(github.event.release.tag_name, 'v1.'))
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+    steps:
+      - uses: actions/download-artifact@v8
+        with:
+          pattern: cuda-wheels-*
+          merge-multiple: true
+          path: wheels/
+
+      - name: Upload wheels to the release
+        env:
+          GH_TOKEN: ${{ github.token }}
+          TAG: ${{ github.event.release.tag_name }}
+          BUILDS: ${{ needs.resolve-legs.outputs.cuda_builds }}
+        run: |
+          EXPECTED=$(echo "$BUILDS" | jq length)
+          FOUND=$(ls wheels/*.whl | wc -l)
+          if [ "$FOUND" -ne "$EXPECTED" ]; then
+            echo "::error::Expected $EXPECTED wheels, found $FOUND"
+            exit 1
+          fi
+          published() {
+            gh release view "$TAG" --repo "$GITHUB_REPOSITORY" \
+              --json assets --jq '.assets[] | "\(.name) \(.digest)"' > published.txt
+          }
+          published_digest() {
+            awk -v name="$(basename "$1")" '$1 == name { print $2 }' published.txt
+          }
+          digest() {
+            echo "sha256:$(sha256sum "$1" | cut -d' ' -f1)"
+          }
+          # Check every wheel before uploading any.
+          published
+          for WHEEL in wheels/*.whl; do
+            NAME=$(basename "$WHEEL")
+            VERSION=$(echo "$NAME" | cut -d- -f2)
+            if [ "${VERSION%%+*}" != "${TAG#v}" ]; then
+              echo "::error::$NAME was not built as version ${TAG#v}"
+              exit 1
+            fi
+            PUBLISHED=$(published_digest "$WHEEL")
+            if [ -n "$PUBLISHED" ] && [ "$PUBLISHED" != "$(digest "$WHEEL")" ]; then
+              echo "::error::$NAME is already on $TAG with different contents"
+              exit 1
+            fi
+          done
+          for WHEEL in wheels/*.whl; do
+            if [ -n "$(published_digest "$WHEEL")" ]; then
+              echo "$(basename "$WHEEL") is already on $TAG"
+            else
+              gh release upload "$TAG" "$WHEEL" --repo "$GITHUB_REPOSITORY"
+            fi
+          done
+          # The index links to assets by name, so check that every wheel is
+          # there under its own filename and with its own contents.
+          published
+          for WHEEL in wheels/*.whl; do
+            if [ "$(published_digest "$WHEEL")" != "$(digest "$WHEEL")" ]; then
+              echo "::error::$(basename "$WHEEL") is missing from $TAG or differs"
+              exit 1
+            fi
+          done
 
   # Each OS's wheel on every cpu_tests leg: a torch, maybe a later minor than
   # the wheel's, and a Python. A missing wheel (its build failed) fails the
@@ -282,19 +348,19 @@ jobs:
   publish:
     runs-on: ubuntu-latest
     # TestPyPI publishes from dev, PyPI from a supported published GitHub
-    # Release, each only after every job here has passed. A release also waits
-    # for the CUDA wheels to be built, tested and attached.
+    # Release, each only after every job here has passed; a release also waits
+    # for the CUDA wheels to be attached.
     needs:
       - build
       - build-newest-torch
       - build-sdist
       - docs
       - test
-      - cuda-wheels
+      - attach-cuda-wheels
     # `!cancelled()` lets this job run after a failed or skipped dependency, so
     # every required result is checked here. The build and test matrices hold
-    # only the OSes that ran for the event, and cuda-wheels runs only for a
-    # release.
+    # only the OSes that ran for the event, and attach-cuda-wheels runs only
+    # for a release.
     if: >
       !cancelled() &&
       needs.build.result == 'success' &&
@@ -308,7 +374,7 @@ jobs:
           github.event_name == 'release' &&
           github.event.action == 'published' &&
           (startsWith(github.event.release.tag_name, 'v0.') || startsWith(github.event.release.tag_name, 'v1.')) &&
-          needs.cuda-wheels.result == 'success'
+          needs.attach-cuda-wheels.result == 'success'
         )
       )
     permissions:

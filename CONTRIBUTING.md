@@ -112,7 +112,7 @@ Releases are cut from `dev`. The package version comes from the latest `v*` tag 
    `--target` needs the full 40-character SHA: GitHub rejects an abbreviated one with "Release.target_commitish is invalid".
 
    Publishing the release runs `build-wheels.yml`, which builds and tests the CPU wheels and the sdist, builds the docs and calls `build-cuda-wheels.yml`. It uploads to PyPI only after all of them have passed, for tags starting with `v0.` or `v1.`. The CUDA wheels take under an hour:
-   - `build-cuda-wheels.yml` builds one CUDA wheel per CUDA major in `torch_matrix.json`, tests each on every torch/CUDA build of its major on a Modal GPU (a pull request tests only the newest), and attaches them to the release. It attaches none unless every build and test passes.
+   - `build-cuda-wheels.yml` builds one CUDA wheel per CUDA major in `torch_matrix.json`, tests each on every torch/CUDA build of its major on a Modal GPU (a pull request tests only the newest), alongside the CPU wheels. `build-wheels.yml` then attaches them to the release, and none unless every CPU and CUDA build and test passes.
    - `deploy-cuda-index.yml` then rebuilds the CUDA wheel index on GitHub Pages from every release's assets, once `build-wheels.yml` has succeeded.
 
    If a job fails, re-run it from the Actions tab. The CUDA upload skips wheels already on the release with the same contents and refuses different ones, because a published release's assets are never replaced, and the PyPI upload skips files already there. A failure that needs a code change needs a new patch release.
