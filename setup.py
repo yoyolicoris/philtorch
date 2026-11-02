@@ -8,12 +8,7 @@ from setuptools import setup
 
 # build_support.py sits next to setup.py; the setuptools.build_meta:__legacy__
 # backend puts this directory on sys.path, which this import relies on.
-from build_support import (
-    MIN_TORCH_MACOS,
-    resolve_cuda_build,
-    torch_requirement,
-    write_metal_headers,
-)
+from build_support import MIN_TORCH_MACOS, resolve_cuda_build, torch_requirement
 
 library_name = "philtorch"
 # The extension uses only CPython's limited API, so one abi3 wheel, tagged with
@@ -71,6 +66,16 @@ def get_macos_openmp_config(extra_compile_args, extra_link_args, torch_lib):
         f"-Wl,-rpath,{torch_lib}",
     ]
     return compiler, configured_compile_args, configured_link_args
+
+
+def write_metal_header(source, header):
+    # torch's Metal shim compiles only from source text, so the extension
+    # carries the shader as a raw string.
+    with open(source, encoding="utf-8") as file:
+        text = file.read()
+    os.makedirs(os.path.dirname(header), exist_ok=True)
+    with open(header, "w", encoding="utf-8") as file:
+        file.write(f'#pragma once\nconstexpr const char *METAL_SOURCE = R"METAL({text})METAL";\n')
 
 
 def get_extensions():
@@ -134,16 +139,20 @@ def get_extensions():
 
     include_dirs = []
     if sys.platform == "darwin":
+        # torch.__version__ is a TorchVersion, which compares as a version.
         if torch.__version__ < MIN_TORCH_MACOS:
             raise RuntimeError(
                 f"philtorch's MPS kernels need PyTorch {MIN_TORCH_MACOS} or newer on macOS; "
                 f"found {torch.__version__}."
             )
         # The Metal source reaches Metal through torch's C shim alone, and
-        # includes its shaders as headers generated in the build directory.
+        # includes its shader as a header generated in the build directory.
         sources += list(glob.glob(os.path.join(extensions_dir, "*.mm")))
         include_dirs.append(os.path.join(this_dir, "build", "metal"))
-        write_metal_headers(extensions_dir, include_dirs[-1])
+        write_metal_header(
+            os.path.join(extensions_dir, "scalar_recur_mps.metal"),
+            os.path.join(include_dirs[-1], "scalar_recur_mps.metal.h"),
+        )
 
     if use_cuda:
         sources += cuda_sources

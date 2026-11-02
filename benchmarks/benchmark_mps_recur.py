@@ -17,9 +17,9 @@ recurrences: ``|a| < 0.9``, with a random phase for complex64.
 
 Per case it reports the median runtime (and IQR) from
 ``torch.utils.benchmark.Timer.blocked_autorange``, synchronizing the MPS device
-at each measurement boundary, the speedup of MPS over CPU, and the peak memory
-of one call on each device. The MPS result is first checked against the CPU op
-run in float32 (complex64) on the same inputs.
+at each measurement boundary, and the speedup of MPS over CPU. The MPS result
+is first checked against the CPU op run in float32 (complex64) on the same
+inputs.
 
 Run it with no other GPU work going on::
 
@@ -28,9 +28,7 @@ Run it with no other GPU work going on::
 """
 
 import argparse
-import gc
 import platform
-import threading
 import time
 
 import torch
@@ -98,71 +96,11 @@ def measure_runtime(function, timer=time.perf_counter):
     return measurement.median * 1_000, measurement.iqr * 1_000
 
 
-def profile_cpu_peak(function):
-    with torch.profiler.profile(
-        activities=[torch.profiler.ProfilerActivity.CPU],
-        profile_memory=True,
-        record_shapes=True,
-        acc_events=True,
-    ) as profiler:
-        result = function()
-
-    memory_changes = []
-    for event in profiler.events():
-        memory_change = event.self_cpu_memory_usage
-        if memory_change:
-            timestamp = event.time_range.start if memory_change > 0 else event.time_range.end
-            memory_changes.append((timestamp, memory_change))
-
-    current = 0
-    peak = 0
-    for _, memory_change in sorted(memory_changes, key=lambda change: change[0]):
-        current += memory_change
-        peak = max(peak, current)
-
-    del result
-    return peak
-
-
-def profile_mps_peak(function, repeats=20):
-    torch.mps.synchronize()
-    gc.collect()
-    torch.mps.empty_cache()
-    baseline = torch.mps.current_allocated_memory()
-    peak = [baseline]
-    ready = threading.Event()
-    stop = threading.Event()
-
-    def sample_allocator():
-        ready.set()
-        while not stop.is_set():
-            peak[0] = max(peak[0], torch.mps.current_allocated_memory())
-
-    sampler = threading.Thread(target=sample_allocator, daemon=True)
-    sampler.start()
-    ready.wait()
-    try:
-        with torch.profiler.profile(
-            activities=[torch.profiler.ProfilerActivity.CPU], acc_events=True
-        ):
-            with torch.profiler.record_function("mps_recur_memory"):
-                for _ in range(repeats):
-                    result = function()
-                    torch.mps.synchronize()
-                    del result
-    finally:
-        stop.set()
-        sampler.join()
-
-    return peak[0] - baseline
-
-
 def parse_args():
     parser = argparse.ArgumentParser(
         description=(
             "Benchmark the scalar linear recurrence on MPS (lti_recur and scan) "
-            "against the CPU kernels: runtime and peak memory over a grid of "
-            "batch sizes and lengths."
+            "against the CPU kernels, over a grid of batch sizes and lengths."
         )
     )
     parser.add_argument(
@@ -191,12 +129,8 @@ def main():
     print(f"PyTorch: {torch.__version__}")
     print(f"CPU threads: {NUM_THREADS}")
     print()
-    print(
-        "| dtype | B | T | Coefficients | CPU median ms (IQR) | "
-        "MPS median ms (IQR) | Speedup | CPU peak MiB | "
-        "MPS peak MiB | Memory ratio |"
-    )
-    print("| :--- | ---: | ---: | :--- | ---: | ---: | ---: | ---: | ---: | ---: |")
+    print("| dtype | B | T | Coefficients | CPU median ms (IQR) | MPS median ms (IQR) | Speedup |")
+    print("| :--- | ---: | ---: | :--- | ---: | ---: | ---: |")
 
     torch.manual_seed(5)
     for dtype_name in args.dtype:
@@ -231,25 +165,16 @@ def main():
                 del actual, expected
 
                 mps_ms, mps_iqr_ms = measure_runtime(mps_function, timer=synchronized_mps_timer)
-                mps_mib = profile_mps_peak(mps_function) / 2**20
+                cpu_cell, speedup = "n/a", "n/a"
                 if cpu_supports(layout, dtype):
-                    cpu_function = make_function(layout, *cpu_inputs)
-                    cpu_ms, cpu_iqr_ms = measure_runtime(cpu_function)
-                    cpu_mib = profile_cpu_peak(cpu_function) / 2**20
-                    cpu_cells = (
+                    cpu_ms, cpu_iqr_ms = measure_runtime(make_function(layout, *cpu_inputs))
+                    cpu_cell, speedup = (
                         f"{cpu_ms:.4f} ({cpu_iqr_ms:.4f})",
                         f"{cpu_ms / mps_ms:.2f}x",
-                        f"{cpu_mib:.3f}",
                     )
-                    memory_ratio = f"{cpu_mib / mps_mib:.2f}x"
-                else:
-                    cpu_cells = ("n/a", "n/a", "n/a")
-                    memory_ratio = "n/a"
                 print(
-                    f"| {dtype_name} | {batch} | {steps} | {layout} | "
-                    f"{cpu_cells[0]} | {mps_ms:.4f} ({mps_iqr_ms:.4f}) | "
-                    f"{cpu_cells[1]} | {cpu_cells[2]} | {mps_mib:.3f} | "
-                    f"{memory_ratio} |"
+                    f"| {dtype_name} | {batch} | {steps} | {layout} | {cpu_cell} | "
+                    f"{mps_ms:.4f} ({mps_iqr_ms:.4f}) | {speedup} |"
                 )
 
 

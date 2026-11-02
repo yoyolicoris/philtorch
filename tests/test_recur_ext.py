@@ -208,7 +208,7 @@ def _assert_mps_matches_reference(op: str, args, dtype: torch.dtype, **tolerance
 @pytest.mark.parametrize("samples", _MPS_LENGTHS)
 def test_lti_recur_mps_boundaries(dtype: torch.dtype, batch_decay: bool, samples: int):
     batch_size = 3
-    coefficient_shape = (batch_size if batch_decay else 1,)
+    coefficient_shape = (batch_size,) if batch_decay else ()
     args = _mps_args("lti_recur", dtype, coefficient_shape, batch_size, samples)
     _assert_mps_matches_reference("lti_recur", args, dtype)
 
@@ -296,7 +296,7 @@ def _assert_mps_gradients_match_cpu(fn, args, requires_grad, grad_output):
             torch.testing.assert_close(actual, expected, rtol=1e-4, atol=1e-5)
 
 
-@pytest.mark.skipif(not torch.backends.mps.is_available(), reason="MPS not available")
+@_MPS
 @pytest.mark.parametrize(
     ("x_requires_grad", "a_requires_grad", "zi_requires_grad"),
     _REQUIRES_GRAD_CASES,
@@ -315,41 +315,12 @@ def test_lti_recur_mps_grad_equiv(
     x = torch.randn(batch_size, samples, dtype=torch.float32)
     grad_output = torch.randn_like(x)
 
-    requires_grad = (a_requires_grad, zi_requires_grad, x_requires_grad)
-
-    def run(device: str):
-        device_inputs = tuple(
-            value.to(device).detach().requires_grad_(input_requires_grad)
-            for value, input_requires_grad in zip((a, zi, x), requires_grad)
-        )
-        differentiable_inputs = tuple(
-            value
-            for value, input_requires_grad in zip(device_inputs, requires_grad)
-            if input_requires_grad
-        )
-        output = torch.ops.philtorch.lti_recur(*device_inputs)
-        computed_gradients = iter(
-            torch.autograd.grad(
-                output,
-                differentiable_inputs,
-                grad_outputs=grad_output.to(device),
-            )
-        )
-        gradients = tuple(
-            next(computed_gradients).cpu() if input_requires_grad else None
-            for input_requires_grad in requires_grad
-        )
-        return output.detach().cpu(), gradients
-
-    expected_output, expected_gradients = run("cpu")
-    actual_output, actual_gradients = run("mps")
-
-    torch.testing.assert_close(actual_output, expected_output, rtol=1e-5, atol=1e-6)
-    for actual, expected in zip(actual_gradients, expected_gradients):
-        if actual is None or expected is None:
-            assert actual is expected is None
-        else:
-            torch.testing.assert_close(actual, expected, rtol=1e-4, atol=1e-5)
+    _assert_mps_gradients_match_cpu(
+        torch.ops.philtorch.lti_recur,
+        (a, zi, x),
+        (a_requires_grad, zi_requires_grad, x_requires_grad),
+        grad_output,
+    )
 
 
 @_MPS

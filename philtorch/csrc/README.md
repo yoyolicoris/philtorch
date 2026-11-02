@@ -25,7 +25,7 @@ One three-pass design serves every input: reduce each tile, scan the tile totals
 | [`../_ops.py`](../_ops.py) | Registers fake implementations and autograd for `philtorch::lti_recur` and `philtorch::scan`. |
 | [`../_recur.py`](../_recur.py) | Sends M = 1 recurrences on MPS to `lti_recur` or `scan`. |
 | [`../../tests/test_recur_ext.py`](../../tests/test_recur_ext.py) | Checks CPU/MPS parity, boundary lengths, long scans, and gradients. |
-| [`../../benchmarks/benchmark_mps_recur.py`](../../benchmarks/benchmark_mps_recur.py) | Reproduces CPU/MPS runtime and working-memory results. |
+| [`../../benchmarks/benchmark_mps_recur.py`](../../benchmarks/benchmark_mps_recur.py) | Reproduces the CPU/MPS runtime results. |
 
 ## Turning a recurrence into a scan
 
@@ -169,7 +169,7 @@ The host code uses only torch's stable ABI, `torch/csrc/stable` and `torch/heade
 It defines `TORCH_TARGET_VERSION` as torch 2.10, the oldest torch that builds it, which holds it to that version's API; `build_support.MIN_TORCH_MACOS`, the floor of macOS source builds, is the same version.
 No Objective-C remains, and the extension links no Apple framework.
 
-1. `setup.py` turns `scalar_recur_mps.metal` into `scalar_recur_mps.metal.h`, a raw string in `build/metal` (`build_support.write_metal_headers`), which the host code includes.
+1. `setup.py` turns `scalar_recur_mps.metal` into `scalar_recur_mps.metal.h`, a raw string in `build/metal`, which the host code includes.
 2. On first use, `aoti_torch_mps_create_shader_library` compiles that source, and `aoti_torch_mps_get_kernel_function` looks up the kernels, which stay cached for the process.
 3. Scratch tensors are ordinary MPS tensors from the stable `new_empty`, so PyTorch manages their memory.
 4. Inputs are made contiguous; `aoti_torch_mps_set_arg_tensor` binds a tensor's buffer at its storage offset.
@@ -215,7 +215,7 @@ pixi run python benchmarks/benchmark_mps_recur.py
 
 which reports the median latency of `torch.utils.benchmark.Timer.blocked_autorange` over at least 500 ms, interquartile range in parentheses, synchronizing PyTorch's MPS stream at each measurement boundary; input transfers are excluded.
 The CPU kernel of `scan` takes no float16 or bfloat16 (`n/a`).
-Every dtype and layout, with peak memory, is on [issue #39](https://github.com/yoyolicoris/philtorch/issues/39/artifacts/2).
+Every dtype and layout is on [issue #39](https://github.com/yoyolicoris/philtorch/issues/39/artifacts/2).
 
 | dtype | B | T | Coefficients | CPU median ms (IQR) | MPS median ms (IQR) | Speedup |
 | :--- | ---: | ---: | :--- | ---: | ---: | ---: |

@@ -19,10 +19,9 @@
 #include <initializer_list>
 #include <limits>
 #include <string>
-#include <utility>
 
-// SCALAR_RECUR_MPS_METAL, the text of scalar_recur_mps.metal, which setup.py
-// generates in the build directory.
+// METAL_SOURCE, the text of scalar_recur_mps.metal, which setup.py generates
+// in the build directory.
 #include "scalar_recur_mps.metal.h"
 
 namespace
@@ -35,13 +34,6 @@ using torch::stable::Tensor;
 constexpr uint64_t THREADS = 256;
 constexpr int64_t STEPS_PER_THREAD = 4;
 
-// The dtypes the kernels take, with the suffix of their kernels' names.
-constexpr std::array<std::pair<ScalarType, const char *>, 4> DTYPES{{
-    {ScalarType::Float, "float"},
-    {ScalarType::Half, "half"},
-    {ScalarType::BFloat16, "bfloat"},
-    {ScalarType::ComplexFloat, "cfloat"},
-}};
 
 AOTIMetalShaderLibraryHandle library()
 {
@@ -49,7 +41,7 @@ AOTIMetalShaderLibraryHandle library()
     {
         AOTIMetalShaderLibraryHandle created = nullptr;
         TORCH_ERROR_CODE_CHECK(
-            aoti_torch_mps_create_shader_library(SCALAR_RECUR_MPS_METAL, &created));
+            aoti_torch_mps_create_shader_library(METAL_SOURCE, &created));
         return created;
     }();
     return handle;
@@ -71,38 +63,37 @@ AOTIMetalKernelFunctionHandle kernel_function(const std::string &name)
     return function;
 }
 
-Kernels make_kernels(ScalarType dtype, const std::string &suffix)
+// The kernels of the dtype whose kernels' names end in suffix.
+Kernels make_kernels(const std::string &suffix)
 {
     // The scan of tile totals exists per accumulation type alone.
-    const char *accumulation =
-        dtype == ScalarType::ComplexFloat ? "cfloat" : "float";
+    const std::string scan = suffix == "cfloat" ? "cfloat" : "float";
     return {{kernel_function("scalar_recur_reduce_" + suffix + "_lti"),
              kernel_function("scalar_recur_reduce_" + suffix + "_lpv")},
             {kernel_function("scalar_recur_replay_" + suffix + "_lti"),
              kernel_function("scalar_recur_replay_" + suffix + "_lpv")},
-            kernel_function(std::string("scalar_recur_scan_") + accumulation)};
+            kernel_function("scalar_recur_scan_" + scan)};
 }
 
-// The index in DTYPES of dtype, or DTYPES.size() if the kernels don't take it.
-size_t dtype_index(ScalarType dtype)
-{
-    size_t i = 0;
-    while (i < DTYPES.size() && DTYPES[i].first != dtype)
-        ++i;
-    return i;
-}
-
-// The kernels of every dtype, looked up on first use.
+// The kernels of dtype, all looked up on first use.
 const Kernels &kernels(ScalarType dtype)
 {
-    static const std::array<Kernels, DTYPES.size()> all = []
+    static const Kernels f = make_kernels("float"), h = make_kernels("half"),
+                         bf = make_kernels("bfloat"), c = make_kernels("cfloat");
+    switch (dtype)
     {
-        std::array<Kernels, DTYPES.size()> made;
-        for (size_t i = 0; i < DTYPES.size(); ++i)
-            made[i] = make_kernels(DTYPES[i].first, DTYPES[i].second);
-        return made;
-    }();
-    return all[dtype_index(dtype)];
+    case ScalarType::Float:
+        return f;
+    case ScalarType::Half:
+        return h;
+    case ScalarType::BFloat16:
+        return bf;
+    default:
+        STD_TORCH_CHECK(dtype == ScalarType::ComplexFloat,
+                        "the MPS scalar recurrence takes float32, float16, "
+                        "bfloat16 and complex64");
+        return c;
+    }
 }
 
 // One dispatch's arguments: its tensors, then its integers, bound in that
@@ -162,9 +153,7 @@ Tensor scalar_recur_mps(const Tensor &decays, bool varying, int64_t stride_b,
     const ScalarType dtype = x.scalar_type();
     STD_TORCH_CHECK(decays.scalar_type() == dtype && zi.scalar_type() == dtype,
                     "A, zi and x must have the same dtype");
-    STD_TORCH_CHECK(dtype_index(dtype) < DTYPES.size(),
-                    "the MPS scalar recurrence takes float32, float16, "
-                    "bfloat16 and complex64");
+    const Kernels &k = kernels(dtype);
 
     const auto decays_contiguous = torch::stable::contiguous(decays);
     const auto zi_contiguous = torch::stable::contiguous(zi);
@@ -183,7 +172,6 @@ Tensor scalar_recur_mps(const Tensor &decays, bool varying, int64_t stride_b,
     STD_TORCH_CHECK(steps <= grid_limit - tile && n_batches <= grid_limit,
                     "the input is too large for the MPS scalar recurrence");
 
-    const Kernels &k = kernels(dtype);
     const std::array<uint64_t, 2> tile_grid{
         static_cast<uint64_t>(n_tiles) * THREADS,
         static_cast<uint64_t>(n_batches)};
