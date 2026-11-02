@@ -215,7 +215,12 @@ def _lti_recur3(A: Tensor, zi: Tensor, x: Tensor) -> Tensor:
 
 
 def _triton_applies(A: Tensor, x: Tensor) -> bool:
-    return _recur_kernels is not None and x.is_cuda and _recur_kernels.fits(x, x.size(-1))
+    return (
+        _recur_kernels is not None
+        and x.is_cuda
+        and _kernel_dtype(x)
+        and _recur_kernels.fits(x, x.size(-1))
+    )
 
 
 _KERNELS = (
@@ -247,7 +252,10 @@ def _forward(A: Tensor, zi: Tensor, x: Tensor) -> Tensor:
         if _recur_kernels is None:
             reason = ": Triton is not installed"
         elif not _kernel_dtype(x):
-            reason = "; the Triton kernels take floating-point, complex and int64 dtypes"
+            reason = (
+                "; the kernels take float16, bfloat16, float32, float64, complex64,"
+                " complex128 and int64"
+            )
         else:
             most = _recur_kernels.MAX_STATES
             reason = f"; the Triton kernels take M up to {most} ({most // 2} complex)"

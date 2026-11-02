@@ -443,6 +443,8 @@ def resample(
             floating-point, if :attr:`rolloff`, :attr:`beta` or
             :attr:`num_zeros` is out of range, or if the polyphase filter would
             hold more than :math:`2^{22}` coefficients.
+        NotImplementedError: on CUDA, if :attr:`x` is not float16, bfloat16,
+            float32 or float64, which the kernel takes.
 
     Example::
 
@@ -501,6 +503,11 @@ def resample(
     table = _polyphase_table(new, orig, rolloff, beta, num_zeros, taps, device)
     table = table.to(device=x.device, dtype=dtype)
     if x.is_cuda and _HAS_RESAMPLE_OP:
+        if x.dtype not in (torch.float16, torch.bfloat16, torch.float32, torch.float64):
+            raise NotImplementedError(
+                f"resample's CUDA kernel takes float16, bfloat16, float32 and float64, "
+                f"got {x.dtype}"
+            )
         # Dynamo can't trace an autograd.Function with a jvp: compiled code
         # calls the registered op, whose autograd is the same transpose.
         apply = torch.ops.philtorch.resample if torch.compiler.is_compiling() else _Resample.apply

@@ -89,6 +89,8 @@ Tensor lpc_cuda_wrapper(const Tensor& x, const Tensor& a, const Tensor& zi) {
                     "Coefficients must have the same scalar type as input");
     STD_TORCH_CHECK(a.device() == x.device(),
                     "Coefficients must be on the same device as input");
+    STD_TORCH_CHECK(zi.device() == x.device(),
+                    "Initial conditions must be on the same device as input");
     STD_TORCH_CHECK(zi.scalar_type() == x.scalar_type(),
                     "Initial conditions must have the same scalar type as input");
 

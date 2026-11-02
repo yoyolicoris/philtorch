@@ -367,9 +367,7 @@ def _power(A: Tensor, n: int, acc: torch.dtype) -> Tensor:
 
 
 def fits(x: Tensor, M: int) -> bool:
-    """Whether the kernels take x's dtype, floating point, complex or int64, and M."""
-    if not (x.is_floating_point() or x.is_complex() or x.dtype == torch.int64):
-        return False
+    """Whether the kernels take M states of x's dtype, one of philtorch._recur's."""
     return _padded_states(M) * (2 if x.is_complex() else 1) <= MAX_STATES
 
 

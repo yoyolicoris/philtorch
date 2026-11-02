@@ -568,12 +568,12 @@ def test_cpu_recurrence_split_over_time_in_integers(eight_threads, sharing):
 
 
 @pytest.mark.cuda
-@pytest.mark.parametrize("dtype", [torch.int32, torch.bool])
-def test_recurrence_takes_integers_as_int64_only(dtype):
-    A = torch.eye(3, dtype=dtype, device="cuda")[None, None]
-    zi = torch.zeros(1, 3, dtype=dtype, device="cuda")
-    x = torch.ones(1, 5, 3, dtype=dtype, device="cuda")
-    with pytest.raises(NotImplementedError, match="complex and int64 dtypes"):
+@pytest.mark.parametrize("dtype", [torch.int32, torch.bool, torch.float8_e4m3fn])
+def test_recurrence_rejects_dtypes_no_kernel_takes(dtype):
+    A = torch.eye(3, device="cuda").to(dtype)[None, None]
+    zi = torch.zeros(1, 3, device="cuda").to(dtype)
+    x = torch.ones(1, 5, 3, device="cuda").to(dtype)
+    with pytest.raises(NotImplementedError, match="complex128 and int64"):
         recurrence(A, zi, x)
 
 
