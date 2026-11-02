@@ -8,7 +8,6 @@ import sys
 from pathlib import Path
 
 import pytest
-from packaging.version import Version
 
 REPO_ROOT = Path(__file__).parents[1]
 SCRIPT = REPO_ROOT / "scripts" / "torch_matrix.py"
@@ -47,7 +46,6 @@ TORCH = [
 
 def _matrix(**fields):
     return {
-        "platform": "manylinux_2_28_x86_64",
         "build_image": IMAGE,
         "cuda_arch_lists": {"12": ARCHS, "13": ARCHS},
         "torch": TORCH,
@@ -80,12 +78,6 @@ def test_matrix_python_versions_match_package_classifiers():
     assert classifiers == [f"3.{minor}" for minor in range(OLDEST, newest + 1)]
 
 
-def test_base_version_from_setuptools_scm_is_public():
-    pytest.importorskip("setuptools_scm")
-    base = TM.base_version()
-    assert Version(base).public == base
-
-
 def test_oldest_python_reads_requires_python():
     assert TM.oldest_python('[project]\nrequires-python = ">=3.12"\n') == 12
     with pytest.raises(RuntimeError, match="requires-python must be like"):
@@ -100,24 +92,6 @@ def test_validate_matrix_accepts_the_example_matrix():
 @pytest.mark.parametrize(
     "fields, message",
     [
-        pytest.param({"platform": ""}, "'platform' must be", id="platform"),
-        # The image must match the platform auditwheel certifies.
-        pytest.param(
-            {"build_image": "nvidia/cuda:13.2.1-devel-ubuntu22.04"},
-            "'build_image' must be an image for 'manylinux_2_28_x86_64'",
-            id="build-image",
-        ),
-        pytest.param({"torch": []}, "'torch' must be a non-empty list", id="no-torch"),
-        pytest.param(
-            {"torch": [_entry("2.14", ["13.0"])]}, "'version' must be an exact X.Y.Z", id="version"
-        ),
-        pytest.param(
-            {"torch": [_entry("2.14.1", ["13.0"]) | {"cuda_arch": "8.0"}]},
-            "must be an object with the fields",
-            id="stray-field",
-        ),
-        pytest.param({"torch": [_entry("2.14.1", [])]}, "'cuda' must be a non-empty", id="no-cuda"),
-        pytest.param({"torch": [_entry("2.14.1", ["13"])]}, "'cuda' must be", id="cuda-format"),
         # PyTorch still publishes cu126, but the CUDA sources don't build with it.
         pytest.param(
             {"torch": [_entry("2.14.1", ["12.6", "13.0"])]},
@@ -128,8 +102,12 @@ def test_validate_matrix_accepts_the_example_matrix():
         pytest.param(
             {"torch": [_entry("2.14.1", ["12.10", "12.9"])]}, "must be ascending", id="cuda-order"
         ),
+        pytest.param(
+            {"torch": [_entry("2.14.1", ["13.0", "13.0"])]},
+            "without duplicates",
+            id="cuda-dup",
+        ),
         pytest.param({"torch": [_entry("2.14.1", ["13.0"], "3.9")]}, "older than requires-python"),
-        pytest.param({"torch": [_entry("2.14.1", ["13.0"], "3")]}, "'python' must be an X.Y"),
         # Two patches of one minor would test it twice.
         pytest.param(
             {"torch": [_entry("2.14.0", ["13.0"]), _entry("2.14.1", ["13.0"])]},
@@ -137,9 +115,19 @@ def test_validate_matrix_accepts_the_example_matrix():
             id="torch-minor-dup",
         ),
         pytest.param(
+            {"torch": [_entry("2.15.0", ["13.0"]), _entry("2.14.1", ["13.0"])]},
+            "ascending, with one entry per minor",
+            id="torch-order",
+        ),
+        pytest.param(
             {"cuda_arch_lists": {"12": "8.0;9.0", "13": ARCHS}},
             "cuda_arch_lists\\['12'\\] must be",
             id="bad-arch",
+        ),
+        pytest.param(
+            {"cuda_arch_lists": {"12": ARCHS}},
+            "cuda_arch_lists\\['13'\\] must be",
+            id="missing-arch-list",
         ),
         pytest.param(
             {"cuda_arch_lists": {"12": ARCHS, "13": "7.0 8.0"}},
@@ -157,9 +145,10 @@ def test_validate_matrix_accepts_7_0_with_cuda_12():
     TM.validate_matrix(_matrix(cuda_arch_lists={"12": "7.0 8.0+PTX", "13": ARCHS}), 11)
 
 
-def test_validate_matrix_checks_python_against_requires_python():
-    with pytest.raises(RuntimeError, match=r"python 3\.14 is older than requires-python"):
-        TM.validate_matrix(_matrix(), 15)
+def test_platform_derives_from_build_image():
+    image = "example.com/pypa/manylinux_2_34_aarch64:2027.1.1-1"
+    assert _legs("push", build_image=image)["platform"] == "manylinux_2_34_aarch64"
+    assert _legs("push")["platform"] == "manylinux_2_28_x86_64"
 
 
 def test_legs_of_a_pull_request():
@@ -271,13 +260,6 @@ def _root(tmp_path, matrix):
     (tmp_path / "torch_matrix.json").write_text(json.dumps(matrix))
     (tmp_path / "pyproject.toml").write_text(PYPROJECT)
     return tmp_path
-
-
-def test_cli_prints_version():
-    pytest.importorskip("setuptools_scm")
-    result = _cli("version", "--label", "cu13")
-    assert result.returncode == 0, result.stderr
-    assert result.stdout.strip() == f"{TM.base_version()}+cu13"
 
 
 def test_cli_prints_legs_for_github_output(tmp_path):

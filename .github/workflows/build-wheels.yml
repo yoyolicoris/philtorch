@@ -151,12 +151,39 @@ jobs:
         working-directory: ${{ runner.temp }}
         run: python -c "import philtorch"
 
-  # Same Ruff lint and format checks as the standalone Lint workflow, so
-  # publishing is gated on them.
+  # A job of its own, not a reusable workflow's, so that its check is named
+  # exactly `lint`, as the dev ruleset requires.
   lint:
+    runs-on: ubuntu-latest
     permissions:
       contents: read
-    uses: ./.github/workflows/ruff.yml
+    steps:
+      - uses: actions/checkout@v7
+      - uses: astral-sh/ruff-action@v4.1.0
+        with:
+          # Keep in sync with ruff in pixi.toml.
+          version: "0.16.9"
+          args: "--version"
+      - name: Lint
+        run: ruff check
+      - name: Check formatting
+        # Run even if linting failed, so both problems are reported at once.
+        if: ${{ !cancelled() }}
+        run: ruff format --check
+
+  docs:
+    permissions:
+      contents: read
+    uses: ./.github/workflows/docs.yml
+
+  # Releases only: the CUDA wheels, GPU-tested and attached to the release. The
+  # called workflow's jobs can't exceed these permissions.
+  cuda-wheels:
+    if: github.event_name == 'release'
+    permissions:
+      contents: write
+    uses: ./.github/workflows/build-cuda-wheels.yml
+    secrets: inherit
 
   # Each OS's wheel on every cpu_tests leg: a torch, maybe a later minor than
   # the wheel's, and a Python. A missing wheel (its build failed) fails the
@@ -259,25 +286,36 @@ jobs:
 
   publish:
     runs-on: ubuntu-latest
-    # TestPyPI publishes from dev after the Linux builds and tests pass.
-    # Production publishes only from a supported published GitHub Release after
-    # every Linux, macOS, and Windows wheel is built and tested.
-    needs: [build, build-sdist, lint, test]
-    # `!cancelled()` lets this job run after a failed dependency, so every
-    # required result is checked here. The build and test matrices hold only
-    # the OSes that ran for the event.
+    # TestPyPI publishes from dev, PyPI from a supported published GitHub
+    # Release, each only after every job here has passed. A release also waits
+    # for the CUDA wheels to be built, tested and attached.
+    needs:
+      - build
+      - build-newest-torch
+      - build-sdist
+      - lint
+      - docs
+      - test
+      - cuda-wheels
+    # `!cancelled()` lets this job run after a failed or skipped dependency, so
+    # every required result is checked here. The build and test matrices hold
+    # only the OSes that ran for the event, and cuda-wheels runs only for a
+    # release.
     if: >
       !cancelled() &&
       needs.build.result == 'success' &&
+      needs.build-newest-torch.result == 'success' &&
       needs.build-sdist.result == 'success' &&
       needs.lint.result == 'success' &&
+      needs.docs.result == 'success' &&
       needs.test.result == 'success' &&
       (
         (github.event_name == 'push' && github.ref == 'refs/heads/dev') ||
         (
           github.event_name == 'release' &&
           github.event.action == 'published' &&
-          (startsWith(github.event.release.tag_name, 'v0.') || startsWith(github.event.release.tag_name, 'v1.'))
+          (startsWith(github.event.release.tag_name, 'v0.') || startsWith(github.event.release.tag_name, 'v1.')) &&
+          needs.cuda-wheels.result == 'success'
         )
       )
     permissions:
@@ -303,6 +341,7 @@ jobs:
         with:
           packages-dir: dist/
           repository-url: https://test.pypi.org/legacy/
+          skip-existing: true
 
       - name: Publish to PyPI
         if: >

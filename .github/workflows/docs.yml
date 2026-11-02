@@ -1,38 +1,14 @@
 name: Docs
 
-# Build the docs as Read the Docs does, with warnings as errors, on changes to
-# the docs or the package. Check external links weekly, so a site that is down
-# for a moment doesn't fail ordinary pull requests.
+# Build the docs as Read the Docs does, with warnings as errors. build-wheels.yml
+# calls this workflow on every pull request and push to dev, and before a
+# release publishes. Check external links weekly, so a site that is down for a
+# moment doesn't fail ordinary pull requests.
 on:
-  push:
-    branches: ["dev"]
-    paths:
-      - "docs/**"
-      - "philtorch/**"
-      - "README.md"
-      - "pyproject.toml"
-      - "setup.py"
-      - "build_support.py"
-      - ".readthedocs.yaml"
-      - ".github/workflows/docs.yml"
-  pull_request:
-    branches: ["dev"]
-    paths:
-      - "docs/**"
-      - "philtorch/**"
-      - "README.md"
-      - "pyproject.toml"
-      - "setup.py"
-      - "build_support.py"
-      - ".readthedocs.yaml"
-      - ".github/workflows/docs.yml"
+  workflow_call:
   schedule:
     - cron: "0 6 * * 1"
   workflow_dispatch:
-
-concurrency:
-  group: ${{ github.workflow }}-${{ github.ref }}
-  cancel-in-progress: true
 
 permissions:
   contents: read

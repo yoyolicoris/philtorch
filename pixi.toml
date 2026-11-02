@@ -12,7 +12,7 @@ pytest-cov = ">=7.0.0,<8"
 jupyter = ">=1.1.1,<2"
 matplotlib = ">=3.10.8,<4"
 tqdm = ">=4.67.3,<5"
-# Keep in sync with the version in .github/workflows/ruff.yml.
+# Keep in sync with the lint job of .github/workflows/build-wheels.yml.
 ruff = "==0.16.9"
 # Docs toolchain; keep in sync with docs/requirements.txt.
 sphinx = ">=9.1,<10"

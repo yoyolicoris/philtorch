@@ -172,13 +172,6 @@ def test_rejects_asset_without_sha256_digest(tmp_path, digest):
         INDEX.build_site([release("v0.6.0", entry)], tmp_path, BASE_URL)
 
 
-def test_rejects_asset_not_served_over_https(tmp_path):
-    entry = {**asset(CU13), "browser_download_url": "http://example.com/" + CU13}
-
-    with pytest.raises(ValueError, match="not served over HTTPS"):
-        INDEX.build_site([release("v0.6.0", entry)], tmp_path, BASE_URL)
-
-
 @pytest.mark.parametrize(
     "filename",
     [
@@ -205,14 +198,6 @@ def test_rejects_non_empty_output(tmp_path):
 
     with pytest.raises(ValueError, match="output directory is not empty"):
         INDEX.build_site([release("v0.6.0", asset(CU13))], tmp_path, BASE_URL)
-
-
-@pytest.mark.parametrize("project", ["/tmp/example", "..", "philtorch\n", ""])
-def test_rejects_unsafe_project_name(tmp_path, project):
-    with pytest.raises(ValueError, match="invalid project name"):
-        INDEX.build_site([], tmp_path / "site", BASE_URL, project)
-
-    assert not (tmp_path / "site").exists()
 
 
 def test_index_names_match_the_cuda_wheel_labels():

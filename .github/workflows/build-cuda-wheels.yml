@@ -3,7 +3,9 @@ name: Build CUDA wheels
 # Builds one Linux CUDA wheel, abi3, per CUDA major (cu12, cu13) and uploads
 # them as CI artifacts. For a published release, it then attaches the wheels to
 # the release as assets, and deploy-cuda-index.yml rebuilds the PEP 503 index
-# that links to them.
+# that links to them. A release runs it as a job of build-wheels.yml, which
+# publishes to PyPI only once it has passed: github.event_name, github.ref and
+# github.event are then the release's.
 #
 # Design notes:
 # - `scripts/torch_matrix.py legs` resolves the legs from torch_matrix.json,
@@ -32,7 +34,7 @@ name: Build CUDA wheels
 on:
   push:
     branches: ["dev"]
-    paths:
+    paths: &cuda_paths
       - ".github/workflows/build-cuda-wheels.yml"
       - "torch_matrix.json"
       - "scripts/torch_matrix.py"
@@ -67,50 +69,18 @@ on:
       - "tests/test_torchlpc_vendored.py"
   pull_request:
     branches: ["dev"]
-    # Same list as push.
-    paths:
-      - ".github/workflows/build-cuda-wheels.yml"
-      - "torch_matrix.json"
-      - "scripts/torch_matrix.py"
-      - "philtorch/_build_check.py"
-      - "scripts/modal_smoke_test.py"
-      - "setup.py"
-      - "build_support.py"
-      - "pyproject.toml"
-      - "MANIFEST.in"
-      - "philtorch/csrc/**"
-      - "third_party/**"
-      # The Triton kernels, named _*_kernels.py, the recurrence operator that
-      # launches them, the native ops' registered backwards, the alignment
-      # and HMM modules, which run only on CUDA, and every test module the
-      # GPU job runs (-m cuda), which tests/test_ci_paths.py checks.
-      - "philtorch/**/_*_kernels.py"
-      - "philtorch/_recur.py"
-      - "philtorch/_ops.py"
-      - "philtorch/align/*.py"
-      - "philtorch/estimation/hmm.py"
-      - "tests/conftest.py"
-      - "tests/test_align_ctc.py"
-      - "tests/test_align_dtw.py"
-      - "tests/test_docstrings_cuda.py"
-      - "tests/test_estimation_hmm.py"
-      - "tests/test_estimation_kalman.py"
-      - "tests/test_interp.py"
-      - "tests/test_pt2_comp.py"
-      - "tests/test_pt2_vendored_compile.py"
-      - "tests/test_recur.py"
-      - "tests/test_recur_ext.py"
-      - "tests/test_torchlpc_vendored.py"
-  release:
-    types: [published]
+    paths: *cuda_paths
+  workflow_call:
   workflow_dispatch:
 
 permissions:
   contents: read
 
-# A newer push supersedes the previous run's expensive builds.
+# A newer push supersedes the previous run's expensive builds. When
+# build-wheels.yml calls this workflow, github.workflow is its name, so the
+# group is spelled out.
 concurrency:
-  group: ${{ github.workflow }}-${{ github.ref }}
+  group: build-cuda-wheels-${{ github.ref }}
   cancel-in-progress: true
 
 jobs:
@@ -187,7 +157,7 @@ jobs:
       - name: Compute wheel version
         id: version
         run: |
-          VERSION=$(python scripts/torch_matrix.py version --label "${{ matrix.label }}")
+          VERSION="$(python -m setuptools_scm)+${{ matrix.label }}"
           echo "version=${VERSION}" >> "$GITHUB_OUTPUT"
 
       - name: Build wheel

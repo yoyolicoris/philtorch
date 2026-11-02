@@ -130,7 +130,6 @@ def readme(torch):
 def write_repo(root, torch, oldest=11, arch_lists=ARCH_LISTS):
     matrix = {
         "policy": "kept",
-        "platform": "manylinux_2_28_x86_64",
         "build_image": "quay.io/pypa/manylinux_2_28_x86_64:2026.10.26-1",
         "cuda_arch_lists": arch_lists,
         "torch": torch,
