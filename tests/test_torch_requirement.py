@@ -4,20 +4,26 @@ from runpy import run_path
 import pytest
 
 ROOT = Path(__file__).resolve().parents[1]
-torch_requirement = run_path(str(ROOT / "build_support.py"))["torch_requirement"]
+build_support = run_path(str(ROOT / "build_support.py"))
+torch_requirements = build_support["torch_requirements"]
+MIN_TORCH_MACOS = build_support["MIN_TORCH_MACOS"]
 
 
 def test_unpinned_builds_keep_the_supported_range():
-    assert torch_requirement("") == "torch >= 2.6.0"
-    assert torch_requirement() == "torch >= 2.6.0"
+    # macOS needs the torch that builds the Metal source.
+    assert torch_requirements("") == [
+        'torch >= 2.6.0; sys_platform != "darwin"',
+        f'torch >= {MIN_TORCH_MACOS}.0; sys_platform == "darwin"',
+    ]
+    assert torch_requirements() == torch_requirements("")
 
 
 def test_pinned_builds_require_the_build_minor():
     # Any patch of the minor the extension was compiled against.
-    assert torch_requirement("2.14.1") == "torch == 2.14.*"
+    assert torch_requirements("2.14.1") == ["torch == 2.14.*"]
 
 
 @pytest.mark.parametrize("value", ["2.14", "2.14.1+cu132", "latest", " 2.14.1"])
 def test_pin_must_be_an_exact_version(value):
     with pytest.raises(RuntimeError, match="PHILTORCH_TORCH_PIN must be an exact X.Y.Z"):
-        torch_requirement(value)
+        torch_requirements(value)

@@ -34,9 +34,9 @@ PhilTorch requires its compiled `philtorch._C` extension; there is no pure-PyTor
 
 | Route | Platforms | Kernels | Python | PyTorch |
 | --- | --- | --- | --- | --- |
-| PyPI wheel | Linux x86_64 (manylinux_2_28), macOS 14+ arm64, Windows AMD64 | CPU, plus float32 scalar-LTI MPS on macOS (macOS 15+ from PyTorch 2.15) | 3.11 on, the Pythons its PyTorch minor has wheels for | The latest stable minor at publication, which each wheel requires (e.g. `torch == 2.14.*`); listed in the [release notes](https://github.com/yoyolicoris/philtorch/releases) |
+| PyPI wheel | Linux x86_64 (manylinux_2_28), macOS 14+ arm64, Windows AMD64 | CPU, plus scalar LTI and LPV recurrences on MPS on macOS, in float32, float16, bfloat16 and complex64 (macOS 15+ from PyTorch 2.15) | 3.11 on, the Pythons its PyTorch minor has wheels for | The latest stable minor at publication, which each wheel requires (e.g. `torch == 2.14.*`); listed in the [release notes](https://github.com/yoyolicoris/philtorch/releases) |
 | CUDA wheel, from the [PhilTorch index](https://yoyolicoris.github.io/philtorch/) | Linux x86_64 (manylinux_2_28) | CPU and CUDA | 3.11 on, the Pythons its PyTorch minor has wheels for | One build per PyTorch minor and CUDA version; see [CUDA wheels](#cuda-wheels) |
-| Source build | Any platform with a C++ toolchain | CPU, MPS, or CUDA | 3.11+ | 2.4 or newer |
+| Source build | Any platform with a C++ toolchain | CPU, MPS, or CUDA | 3.11+ | 2.6 or newer, 2.10 or newer on macOS |
 
 ### PyPI wheels
 
@@ -93,7 +93,7 @@ python -m pip install --no-binary=philtorch --no-build-isolation philtorch
 The build compiles a CUDA extension when `torch.cuda.is_available()` is true and `CUDA_HOME` is set, and a CPU-only C++ extension otherwise.
 On a headless build server with no visible GPU, set `PHILTORCH_FORCE_CUDA=1` to compile the CUDA extension anyway.
 In that case the installed PyTorch must be a CUDA build, and `TORCH_CUDA_ARCH_LIST` must also be set to the target architectures (e.g. `TORCH_CUDA_ARCH_LIST="8.0 8.6"`), because there is no GPU to infer them from.
-On macOS, when the installed PyTorch supports OpenMP, the build also needs Homebrew `llvm` and `libomp`, unless `PHILTORCH_DISABLE_OPENMP=1` is set.
+On macOS, the build also compiles the MPS kernels, which need PyTorch 2.10 or newer, and, when the installed PyTorch supports OpenMP, needs Homebrew `llvm` and `libomp`, unless `PHILTORCH_DISABLE_OPENMP=1` is set.
 
 For an editable install from Git:
 
@@ -249,12 +249,12 @@ With the default `unroll_factor=None`, the state-space paths (`lfilter`, `state_
 | --- | :---: | :---: | :---: | :---: | :---: | :---: | :---: |
 | CPU | ✓ | ✓ | ✓ | ✓ | ✓ | ✓ | ✓ |
 | CUDA (source builds) | ✓ | ✓ | ✓¹ | ✓ | ✓ | ✓ | ✓¹ |
-| MPS | ✓² | ✗ | ✗ | ✗ | ✗ | ✗ | ✗ |
+| MPS | ✓² | ✗ | ✗ | ✓² | ✗ | ✗ | ✗ |
 
 ✓ native or Triton kernel · ✗ raises `NotImplementedError`, since no kernel takes the input; pass `unroll_factor=1` for the sequential loop, or 2 up to one less than the sequence length for a block-unrolled recursion, or use CPU.
-¹ Triton, up to M = 128 (64 for complex dtypes); larger M raises. A native kernel takes M = 3 in float32. ² float32 only.
+¹ Triton, up to M = 128 (64 for complex dtypes); larger M raises. A native kernel takes M = 3 in float32. ² float32, float16, bfloat16 and complex64.
 
-The kernels take floating-point and complex dtypes, and int64, exactly; other dtypes raise.
+The CPU and CUDA kernels take floating-point and complex dtypes, and int64, exactly; the MPS kernels take the dtypes of ²; other dtypes raise.
 
 Passing an integer `unroll_factor` runs PyTorch ops instead. `unroll_factor=1` runs the sequential loop. Setting `1 < unroll_factor < sequence length` switches to a block-unrolled recursion, which computes blocks in parallel with matrix multiplications ([background](https://iamycy.github.io/posts/2025/06/28/unroll-ssm/)); larger values run the sequential loop too. Both run on any device, in the dtypes PyTorch's matrix products take there: integers on CPU, but not on CUDA.
 The block-unrolled recursion is slower than the native kernels but much faster than the sequential loop.

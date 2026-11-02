@@ -312,7 +312,24 @@ INTEGER_DISPATCH = [
 ]
 
 
-@pytest.mark.parametrize("time_invariant, M, dtype, device, kernel", DISPATCH + INTEGER_DISPATCH)
+# The Metal kernels, which take M = 1 in these four dtypes.
+MPS_DISPATCH = [
+    pytest.param(
+        *case,
+        marks=pytest.mark.skipif(not torch.backends.mps.is_available(), reason="MPS not available"),
+    )
+    for case in [
+        (True, 1, torch.float16, "mps", "_lti_recur"),
+        (True, 1, torch.complex64, "mps", "_lti_recur"),
+        (False, 1, torch.bfloat16, "mps", "_scan"),
+        (False, 1, torch.complex64, "mps", "_scan"),
+    ]
+]
+
+
+@pytest.mark.parametrize(
+    "time_invariant, M, dtype, device, kernel", DISPATCH + INTEGER_DISPATCH + MPS_DISPATCH
+)
 def test_dispatch(time_invariant, M, dtype, device, kernel):
     assert _kernel(time_invariant, M, dtype, device) is getattr(_recur, kernel)
 

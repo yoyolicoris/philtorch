@@ -25,7 +25,8 @@ The forward pass runs the first kernel of ``_KERNELS`` that takes the input:
   M = 2 and 3 apply only while B * (T + 1) fits in an int. The Triton
   kernels of :mod:`philtorch._recur_kernels` take the rest, where they are
   faster, and the inputs past that size;
-* MPS: the Metal ``lti_recur`` for time-invariant M = 1 in float32.
+* MPS: the Metal ``lti_recur`` and ``scan``, for M = 1, time-invariant and
+  time-varying, in float32, float16, bfloat16 and complex64.
 
 Every kernel but ``scan``, ``recur3``, ``lti_recur3`` and the Metal
 ``lti_recur`` takes int64 too, so integer recurrences such as the Fibonacci
@@ -70,6 +71,10 @@ def _floating_or_int64(x: Tensor) -> bool:
     return x.is_floating_point() or x.is_complex() or x.dtype == torch.int64
 
 
+# The dtypes the Metal kernels take.
+_MPS_DTYPES = (torch.float32, torch.float16, torch.bfloat16, torch.complex64)
+
+
 def _lti_recur_applies(A: Tensor, x: Tensor) -> bool:
     device = x.device.type
     return (
@@ -79,7 +84,7 @@ def _lti_recur_applies(A: Tensor, x: Tensor) -> bool:
             device in ("cpu", "cuda")
             and _floating_or_int64(x)
             or device == "mps"
-            and x.dtype == torch.float32
+            and x.dtype in _MPS_DTYPES
         )
     )
 
@@ -130,7 +135,11 @@ _SCAN_DTYPES = (torch.float32, torch.float64, torch.complex64, torch.complex128)
 
 def _scan_applies(A: Tensor, x: Tensor) -> bool:
     # On CPU, scan runs recurN's kernel.
-    return x.is_cuda and not _time_invariant(A) and x.size(-1) == 1 and x.dtype in _SCAN_DTYPES
+    if _time_invariant(A) or x.size(-1) != 1:
+        return False
+    return (x.is_cuda and x.dtype in _SCAN_DTYPES) or (
+        x.device.type == "mps" and x.dtype in _MPS_DTYPES
+    )
 
 
 def _scan(A: Tensor, zi: Tensor, x: Tensor) -> Tensor:
@@ -225,6 +234,8 @@ def _forward(A: Tensor, zi: Tensor, x: Tensor) -> Tensor:
         else:
             most = _recur_kernels.MAX_STATES
             reason = f"; the Triton kernels take M up to {most} ({most // 2} complex)"
+    elif x.device.type == "mps":
+        reason = "; the Metal kernels take M = 1 in float32, float16, bfloat16 and complex64"
     raise NotImplementedError(
         f"no recurrence kernel for {kind} A with M = {x.size(-1)} in {x.dtype} "
         f"on {x.device.type}{reason}"

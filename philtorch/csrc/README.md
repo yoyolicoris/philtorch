@@ -1,15 +1,16 @@
 # Metal scalar recurrence implementation
 
 This directory contains philtorch's native CPU, CUDA, and Metal sources.
-The Metal implementation of the scalar linear time-invariant recurrence lives in [`lti_recur_mps_replay.mm`](lti_recur_mps_replay.mm).
+The Metal implementation of the scalar linear recurrence, time-invariant and time-varying, lives in [`scalar_recur_mps.mm`](scalar_recur_mps.mm) (host code) and [`scalar_recur_mps.metal`](scalar_recur_mps.metal) (kernels).
 It implements
 
 ```text
-h[b, t] = a[b or 0] * (t == 0 ? zi[b] : h[b, t - 1]) + x[b, t]
+h[b, t] = a * (t == 0 ? zi[b] : h[b, t - 1]) + x[b, t]
 ```
 
-as an associative affine scan.
-MPS dispatch uses one three-stage hierarchical SIMD implementation that replays each tile after scanning compact tile totals.
+with `a` one coefficient per step (`philtorch::scan`, time-varying) or per sequence, shared or not (`philtorch::lti_recur`, time-invariant), as an associative affine scan.
+It takes float32, float16, bfloat16 and complex64, accumulating float16 and bfloat16 in float32.
+One three-pass design serves every input: reduce each tile, scan the tile totals of each sequence, and replay each tile from the state before it.
 
 ## Source map
 
@@ -19,253 +20,264 @@ MPS dispatch uses one three-stage hierarchical SIMD implementation that replays 
 | [`host_recur.cpp`](host_recur.cpp) | CPU kernels of the recurrence ops, `philtorch::scan` included, split over time when a batch has fewer sequences than threads, long enough for the split to pay. |
 | [`host_dot.h`](host_dot.h) | The dot product of the CPU kernels of the recurrence ops and of `lpc`, vectorized for float and double from size 8. |
 | [`torchlpc_shim.cpp`](torchlpc_shim.cpp) | Defines the schemas of `philtorch::scan` and `philtorch::lpc`, and the CPU kernel of `lpc`, one sequence per thread. |
-| [`lti_recur_mps_replay.mm`](lti_recur_mps_replay.mm) | Objective-C++ host code and the embedded Metal Shading Language source. |
-| [`../_ops.py`](../_ops.py) | Registers fake implementations and autograd for `philtorch::lti_recur`. |
+| [`scalar_recur_mps.mm`](scalar_recur_mps.mm) | MPS host code of `lti_recur` and `scan`, on torch's stable ABI and Metal C shim. |
+| [`scalar_recur_mps.metal`](scalar_recur_mps.metal) | The Metal kernels, embedded in the extension at build time. |
+| [`../_ops.py`](../_ops.py) | Registers fake implementations and autograd for `philtorch::lti_recur` and `philtorch::scan`. |
+| [`../_recur.py`](../_recur.py) | Sends M = 1 recurrences on MPS to `lti_recur` or `scan`. |
 | [`../../tests/test_recur_ext.py`](../../tests/test_recur_ext.py) | Checks CPU/MPS parity, boundary lengths, long scans, and gradients. |
-| [`../../benchmarks/benchmark_mps_lti_recur.py`](../../benchmarks/benchmark_mps_lti_recur.py) | Reproduces CPU/MPS runtime and working-memory results. |
+| [`../../benchmarks/benchmark_mps_recur.py`](../../benchmarks/benchmark_mps_recur.py) | Reproduces CPU/MPS runtime and working-memory results. |
 
 ## Turning a recurrence into a scan
 
-An `AffinePair { multiplier, value }` represents the function
+A `Pair { m, v }` represents the affine map
 
 ```text
-f(h) = multiplier * h + value.
+f(h) = m * h + v.
 ```
 
-The Metal helper composes two adjacent functions in sequence:
+`compose(left, right)` applies two adjacent maps in sequence:
 
 ```text
-compose_affine(left, right)
-    = (left.multiplier * right.multiplier,
-       left.value * right.multiplier + right.value)
+compose(left, right)
+    = (left.m * right.m, left.v * right.m + right.v)
     = right(left(h)).
 ```
 
-Function composition is associative, so these pairs can be evaluated with a parallel prefix scan.
-Composition is not commutative; changing the operand order changes the recurrence.
+Composition is associative, so the maps can be evaluated with a parallel prefix scan.
+It is not commutative; changing the operand order changes the recurrence.
+For complex64, `m` and `v` are complex numbers (`float2`), multiplied as such.
 
-For each batch, the code scans `T + 1` pairs:
+Step `t` of sequence `b` is the map
 
 ```text
-p[0]     = (0, zi[b])
-p[t + 1] = (a[b or 0], x[b, t])
-identity = (1, 0)
+p[0] = (0, a * zi[b] + x[b, 0])
+p[t] = (a, x[b, t])            for t > 0
+identity = (1, 0)              past the end
 ```
 
-The first pair is a reset function.
-Its zero multiplier makes the scan independent of any state before `zi`.
-Consequently, the value in the inclusive prefix at scan index `t + 1` is exactly `h[b, t]`.
-Out-of-range lanes use the identity pair, which makes partial tiles safe without a separate padding pass.
+The first map folds the initial state in, and its zero multiplier makes every map composed from the start of a sequence a constant: its `m` is zero and its `v` is the state.
+So the inclusive prefix at step `t` holds `h[b, t]` in `v`, and a tile needs only the state at the end of the tile before it, while the first tile needs none.
+Steps past the end are identities, so partial tiles need no padding pass.
 
-## Default execution path
+## Execution
 
 ```mermaid
 flowchart TB
-    opcall["torch.ops.philtorch.lti_recur(a, zi, x)<br/>MPS dispatcher"]
-      host["lti_recur_mps_impl<br/>validate, make inputs contiguous, allocate scratch"]
+    opcall["lti_recur(a, zi, x) or scan(x, decay, zi)<br/>MPS dispatcher"]
+    host["scalar_recur_mps<br/>validate, make inputs contiguous, allocate scratch"]
 
-    subgraph command["One PyTorch MPS command buffer"]
+    subgraph command["PyTorch's MPS stream, through torch's Metal shim"]
         direction TB
 
-         subgraph stage1["1. replay_reduce_tiles"]
+        subgraph stage1["1. reduce_{dtype}_{lti,lpv}, if more than one tile"]
             direction LR
             grid1["Grid: n_tiles x B<br/>256 threads per group"]
-            load["Each thread loads<br/>2 affine pairs"]
-            simd["8 SIMD32 scans<br/>shuffle offsets 1, 2, 4, 8, 16"]
-            groups["SIMD group 0 reduces<br/>the 8 group totals"]
-            totals["block_totals<br/>B x n_tiles pairs"]
-            grid1 --> load --> simd --> groups --> totals
+            load["Each thread loads<br/>4 consecutive steps, one vector"]
+            simd["8 SIMD32 scans<br/>of the thread totals"]
+            totals["totals<br/>B x n_tiles maps"]
+            grid1 --> load --> simd --> totals
         end
 
-      subgraph stage2["2. replay_scan_block_totals"]
+        subgraph stage2["2. scan_{float,cfloat}, if more than one tile"]
             direction LR
-            grid2["Grid: B<br/>one 256-thread group per batch"]
-            chunks["Scan 512 tile totals per chunk<br/>carry prefix between chunks"]
-            prefixes["block_prefixes<br/>B x n_tiles exclusive pairs"]
-            grid2 --> chunks --> prefixes
+            grid2["Grid: B<br/>one 256-thread group per sequence"]
+            chunks["Scan 512 tile totals per chunk<br/>carry the map between chunks"]
+            states["states<br/>B x n_tiles end states"]
+            grid2 --> chunks --> states
         end
 
-         subgraph stage3["3. replay_scan_tiles"]
+        subgraph stage3["3. replay_{dtype}_{lti,lpv}"]
             direction LR
             grid3["Grid: n_tiles x B<br/>256 threads per group"]
-            reload["Reload 2 input pairs<br/>per thread"]
-            simd2["Repeat the tile-local<br/>SIMD inclusive scan"]
-            combine["Apply one exclusive<br/>prefix per tile"]
-            output["output<br/>B x T float32"]
+            reload["Reload 4 steps<br/>per thread"]
+            simd2["Repeat the tile's<br/>SIMD scan"]
+            combine["Start from the previous<br/>tile's end state"]
+            output["output<br/>B x T, one vector store per thread"]
             grid3 --> reload --> simd2 --> combine --> output
         end
 
         totals --> grid2
-        prefixes --> combine
+        states --> combine
     end
 
     opcall --> host --> grid1
-    output --> result["h[t] = a * h[t - 1] + x[t]"]
+    output --> result["h[t] = a h[t - 1] + x[t]"]
 ```
 
 Let
 
 ```text
-n_steps = T + 1
-n_tiles = ceil(n_steps / 512)
+TILE    = 256 threads * 4 steps = 1024 steps
+n_tiles = ceil(T / TILE)
 ```
 
-All three kernels are encoded in order into the current PyTorch MPS command buffer.
-That ordering provides the dependencies between stages without a CPU round trip.
+The kernels are encoded in order on PyTorch's current MPS stream, which orders them without a CPU round trip.
+A sequence of one tile runs the replay alone: one dispatch, which reads its input once.
 
-### Stage 1: reduce tiles in parallel
+### Stage 1: reduce tiles
 
-`replay_reduce_tiles` launches a two-dimensional grid with one threadgroup for every `(tile, batch)` pair.
-A tile contains 512 affine pairs and a threadgroup contains 256 threads, so thread `lid` owns adjacent elements `2 * lid` and `2 * lid + 1`.
+`reduce` runs one 256-thread threadgroup for every `(tile, sequence)` pair.
+Thread `lid` loads steps `4 * lid` to `4 * lid + 3` of its tile with one vector load (`packed_float4` and the like, which need only the element's alignment), so a SIMD group reads 128 consecutive steps.
+Time-varying coefficients are loaded the same way; a time-invariant one is read once per thread.
 
-The threadgroup is eight 32-lane SIMD groups:
-
-1. Each thread composes its two elements into one `thread_total`.
-2. `simd_inclusive_affine` scans those totals with `simd_shuffle_up` at offsets 1, 2, 4, 8, and 16.
-3. Lane 31 writes each SIMD group's total to eight entries of threadgroup memory.
-4. SIMD group 0 scans those eight totals, and lane 7 writes the complete tile total to `block_totals`.
-
-This reduction does not write per-element scan results.
-Partial final tiles naturally produce the correct total because missing elements were loaded as identities.
+1. Each thread composes its four maps into one total.
+2. `simd_inclusive` scans those totals with `simd_shuffle_up` at offsets 1, 2, 4, 8, and 16.
+3. Lane 31 of each SIMD group writes its total to threadgroup memory, and SIMD group 0 scans the eight totals.
+4. The last thread writes the tile's map to `totals`.
 
 ### Stage 2: scan tile totals
 
-`replay_scan_block_totals` launches one 256-thread threadgroup per batch.
-It uses the same two-elements-per-thread SIMD hierarchy to compute the exclusive prefix for each tile.
+`scan`, one kernel per accumulation type (float for float32, float16 and bfloat16, and float2 for complex64), runs one 256-thread threadgroup per sequence, which scans its tile totals two per thread, 512 at a time, carrying the map so far between chunks of 512.
+It writes `v`, the state, of each inclusive prefix to `states`: the state at the end of each tile.
 
-One threadgroup scans up to 512 tile totals at a time.
-If a sequence has more than 512 tiles, the kernel loops over compact 512-total chunks and carries the last inclusive result into the next chunk.
-This keeps the number of Metal dispatches fixed while supporting sequences longer than `512 * 512` scan elements.
-The result is stored in `block_prefixes`; the first tile receives the identity prefix.
+### Stage 3: replay tiles
 
-### Stage 3: replay tiles and apply prefixes
-
-`replay_scan_tiles` launches the same `(n_tiles, B)` grid as stage 1 and reloads the input pairs.
-It repeats the SIMD hierarchy, this time reconstructing both tile-local inclusive results owned by each thread.
-Thread zero loads the tile's exclusive prefix into threadgroup memory once, and every valid scan index evaluates
-
-```text
-global_pair = compose_affine(block_prefixes[b, tile],
-                             tile_local_inclusive[b, t + 1])
-output[b, t] = global_pair.value
-```
-
-The synthetic initial-state pair at scan index zero is not written to the output.
-Replaying the scan adds SIMD arithmetic, but it rereads one 4-byte input instead of writing and rereading an 8-byte `AffinePair`.
-This removes the dominant per-element scratch traffic.
+`replay` runs the same grid as stage 1, reloads the steps, and repeats the tile's scan, which gives each thread the map from the tile's start to its first step.
+Applied to the end state of the previous tile (zero for the first tile, whose first map is constant), it gives the thread's starting state, from which the thread runs its four steps in sequence and writes them with one vector store.
+Replaying the scan costs SIMD arithmetic, but rereads the input instead of writing and rereading per-step prefixes.
 
 ## Buffers and launch geometry
 
-An `AffinePair` is two `float` values, or 8 bytes.
-
 | Buffer | Shape | Purpose |
 | --- | --- | --- |
-| `a_contiguous` | `(1,)` or `(B,)` | Shared or per-batch recurrence multiplier. |
-| `zi_contiguous` | `(B,)` | Initial state. |
-| `x_contiguous` | `(B, T)` | Input sequence. |
-| `block_totals` | `(B, n_tiles, 2)` | One affine total per tile. |
-| `block_prefixes` | `(B, n_tiles, 2)` | Exclusive affine prefix before each tile. |
+| `decays` | `(1,)`, `(B,)` or `(B, T)` | Shared, per-sequence or per-step coefficient. |
+| `zi` | `(B,)` | Initial state. |
+| `x` | `(B, T)` | Input sequence. |
+| `totals` | `(B, n_tiles)` maps | One map per tile, two values of the accumulation type. |
+| `states` | `(B, n_tiles)` | The state at the end of each tile. |
 | `output` | `(B, T)` | Recurrence result. |
 
-Excluding inputs and output, scratch storage is
-
-```text
-16 * B * n_tiles bytes.
-```
-
-Ignoring compact tile metadata, dominant traffic is about 12 bytes per element: read `x` in stages 1 and 3, then write `output`.
-
-The fixed geometry is:
+Scratch, in float32 (two floats per value for complex64), is `3 * B * n_tiles` values, and none for sequences of one tile.
+The dominant traffic is reading `x` (and per-step coefficients) twice and writing `output` once.
 
 | Property | Value |
 | --- | --- |
-| Tile size | 512 affine pairs |
+| Tile size | 1024 steps |
 | Threads per tile | 256 |
-| Elements per thread | 2 |
+| Steps per thread | 4, one vector load and store |
 | SIMD width | 32 lanes |
 | SIMD groups per tile | 8 |
-| Metal dispatches | 3 |
+| Metal dispatches | 3, or 1 for sequences of one tile |
 
-The host checks `threadExecutionWidth == 32` and support for at least 256 threads per threadgroup before dispatching.
-The tile, threadgroup, and SIMD constants are coupled; changing one requires updating both Metal kernels and the Objective-C++ launch code.
+The tile, threadgroup, SIMD and vector constants are coupled: `THREADS`, `K` and `TOTALS` in the Metal source, `THREADS` and `STEPS_PER_THREAD` in the host code.
+Every kernel declares 256 threads as its maximum per threadgroup (`max_total_threads_per_threadgroup`), so the compiler guarantees that size; every Apple GPU has 32-wide SIMD groups, which the kernels assume, as the shim gives no way to query the width.
+Each kernel indexes the steps of a sequence in 32 bits, as 64-bit integer arithmetic is emulated on the GPU: per-sequence pointers are computed once per thread, and the host rejects sequences of 2^32 - 1024 steps or more.
 
 ## PyTorch and Metal integration
 
-The `.mm` file is Objective-C++, allowing the same translation unit to use the PyTorch C++ API and Apple's Metal Objective-C API.
+The host code uses only torch's stable ABI, `torch/csrc/stable` and `torch/headeronly`, and torch's Metal C shim, [`shim_mps.h`](https://github.com/pytorch/pytorch/blob/main/torch/csrc/inductor/aoti_torch/c/shim_mps.h), so the compiled code calls torch through C functions alone.
+It is held to the API of torch 2.10, the oldest torch that builds it, by `TORCH_TARGET_VERSION`, which `setup.py` generates from `build_support.MIN_TORCH_MACOS`, also the floor of macOS source builds.
+No Objective-C remains, and the extension links no Apple framework.
 
-1. On the first call, `get_pipelines()` compiles the embedded `METAL_SOURCE` with `newLibraryWithSource` and creates all compute pipeline states.
-   `dispatch_once` caches them for the process lifetime.
-2. Scratch buffers are ordinary MPS tensors allocated with `at::empty`.
-   This keeps allocation and lifetime management inside PyTorch.
-3. `get_mtl_buffer()` obtains the underlying `MTLBuffer` from tensor storage, while `get_buffer_offset()` preserves a tensor's storage offset.
-4. Inputs are made contiguous before their buffers are bound, so the kernels can use linear indexing.
-5. `torch::mps::get_command_buffer()` and `get_dispatch_queue()` attach the kernels to PyTorch's current MPS stream.
-   Encoding runs under `dispatch_sync`, and `torch::mps::commit()` submits the work.
+1. `setup.py` turns `scalar_recur_mps.metal` into `scalar_recur_mps.metal.h`, a raw string, and writes `torch_target_version.h`, both in `build/metal` (`build_support.write_metal_headers`), which the host code includes.
+2. On first use, `aoti_torch_mps_create_shader_library` compiles that source, and `aoti_torch_mps_get_kernel_function` looks up a dtype's kernels, which stay cached for the process.
+   The bfloat kernels exist only from Metal 3.1 on, so only bfloat16 inputs would fail without them.
+3. Scratch tensors are ordinary MPS tensors from the stable `new_empty`, so PyTorch manages their memory.
+4. Inputs are made contiguous; `aoti_torch_mps_set_arg_tensor` binds a tensor's buffer at its storage offset.
+5. `aoti_torch_mps_run_command_block` encodes each dispatch on PyTorch's MPS stream.
+   Its callback records the first error code, which the host raises after the block returns, so that no C++ exception crosses the shim's C frames.
 
-The extension does not create a separate Metal device, queue, or command buffer for each operation.
-It creates a device only when compiling pipelines; execution uses PyTorch's command infrastructure.
+PyTorch's stable-ABI notes promise its C shim, `shim.h`, and the generated `c_shim_*.h` for at least two years, but don't name `shim_mps.h`, which AOTInductor's MPS models depend on.
 
 ## Dispatcher and autograd
 
-`ops.cpp` defines the operator schema.
-The MPS registration at the end of `lti_recur_mps_replay.mm` maps
+`ops.cpp` and `torchlpc_shim.cpp` define the schemas.
+The MPS registration at the end of `scalar_recur_mps.mm` maps
 
 ```text
-philtorch::lti_recur -> lti_recur_mps_impl
+philtorch::lti_recur -> lti_recur_mps
+philtorch::scan      -> scan_mps
 ```
 
-The public `philtorch::lti_recur` schema has a custom autograd formula in `philtorch/_ops.py`.
-Its backward pass expresses reverse recurrence using the same dispatcher operation, so MPS forward and backward both reach the replay implementation.
-
-## Why tile replay
-
-The first pass reduces each 512-element tile without writing per-element prefixes.
-After the compact tile totals are scanned, the final pass rereads the 4-byte inputs and reconstructs prefixes in registers.
-Repeating SIMD arithmetic is cheaper than writing and rereading an 8-byte `AffinePair`, and scratch remains proportional to `B * ceil((T + 1) / 512)` rather than `B * T`.
+Both schemas have a custom autograd formula in `philtorch/_ops.py`.
+Their backward passes express the reverse recurrence with the same dispatcher operations, so the MPS forward and backward both run these kernels.
 
 ## Supported inputs and edge cases
 
-The MPS implementations currently require:
+The MPS kernels require:
 
 - `a`, `zi`, and `x` on an MPS device with the same dtype;
-- `float32` values;
-- scalar or one-dimensional `a`, containing either one value or one value per batch;
-- one-dimensional `zi` with length `B`;
-- two-dimensional `x` with shape `(B, T)`; and
-- indexing products that fit in `uint32_t`.
+- float32, float16, bfloat16 or complex64 values;
+- for `lti_recur`, a scalar `a`, or a vector of one value or one per sequence; for `scan`, a `(B, T)` decay;
+- one-dimensional `zi` with length `B`, and two-dimensional `x` with shape `(B, T)`;
+- `T` below 2^32 - 1024.
 
-A zero-length sequence is rejected because the custom autograd formula requires a final output state.
-An empty batch with `T > 0` returns `empty_like(x)` without a Metal dispatch.
-Shared and per-batch `a` values use one kernel and a `batched_decay` flag.
-Parallel reassociation can change floating-point rounding relative to a strict serial loop, so tests use explicit `float32` tolerances.
+`lti_recur` rejects a zero-length sequence, because its autograd formula needs a final output state; `scan` returns an empty result.
+An empty batch returns `empty_like(x)` without a Metal dispatch.
+Parallel reassociation can change floating-point rounding relative to a strict serial loop, so tests use explicit per-dtype tolerances.
 
 ## CPU and MPS benchmark
 
-The following results were measured on an Apple M1 Pro with macOS `26.5.2`, PyTorch `2.10.0`, six CPU threads, and `float32` inputs:
+The following results were measured on an Apple M1 Pro (14-core GPU) with macOS 26.7.1, PyTorch 2.13.0 and six CPU threads, by
 
 ```bash
-pixi run python benchmarks/benchmark_mps_lti_recur.py
+pixi run python benchmarks/benchmark_mps_recur.py
 ```
 
 Input transfers are excluded.
-Runtime uses `torch.utils.benchmark.Timer.blocked_autorange` for at least 500 ms and reports median latency with interquartile range in parentheses.
-The MPS timer synchronizes PyTorch's MPS stream at each measurement boundary.
-CPU peak memory is reconstructed from allocation events captured by `torch.profiler.profile(profile_memory=True)`.
-Because PyTorch `2.10.0` does not expose MPS as a `ProfilerActivity`, MPS peak memory is sampled with `torch.mps.current_allocated_memory()` during repeated calls inside a profiler range.
+Runtime uses `torch.utils.benchmark.Timer.blocked_autorange` for at least 500 ms and reports median latency with interquartile range in parentheses; the MPS timer synchronizes PyTorch's MPS stream at each measurement boundary.
+CPU peak memory is reconstructed from allocation events captured by `torch.profiler.profile(profile_memory=True)`; MPS peak memory is sampled with `torch.mps.current_allocated_memory()` during repeated calls.
 Memory figures exclude inputs and allocator cache but include output and native temporary tensors.
-The CPU column predates the CPU kernel of `host_recur.cpp`, which splits a sequence over the threads when there are fewer sequences than threads, long enough for the split to pay: its B = 1 rows ran on one thread, and the kernel now takes them in parallel.
+The CPU kernel of `scan` takes no float16 or bfloat16 (`n/a`).
 
-| B | T | Coefficients | CPU median ms (IQR) | MPS median ms (IQR) | Speedup | CPU peak MiB | MPS peak MiB | Memory ratio |
-| ---: | ---: | :--- | ---: | ---: | ---: | ---: | ---: | ---: |
-| 1 | 4096 | shared | 0.0485 (0.0021) | 0.0274 (0.0043) | 1.77x | 0.016 | 0.016 | 0.97x |
-| 1 | 262144 | shared | 0.4403 (0.0231) | 0.0446 (0.0044) | 9.88x | 1.000 | 1.008 | 0.99x |
-| 16 | 4096 | batched | 0.1475 (0.0155) | 0.0284 (0.0056) | 5.20x | 0.500 | 0.252 | 1.98x |
-| 64 | 65536 | batched | 2.9058 (0.3561) | 0.3285 (0.0485) | 8.85x | 32.000 | 16.126 | 1.98x |
-| 256 | 4096 | batched | 1.1041 (0.2007) | 0.1365 (0.0160) | 8.09x | 8.001 | 4.035 | 1.98x |
+| dtype | B | T | Coefficients | CPU median ms (IQR) | MPS median ms (IQR) | Speedup | CPU peak MiB | MPS peak MiB | Memory ratio |
+| :--- | ---: | ---: | :--- | ---: | ---: | ---: | ---: | ---: | ---: |
+| float32 | 1 | 4096 | shared | 0.0677 (0.0068) | 0.0234 (0.0006) | 2.90x | 0.016 | 0.016 | 0.97x |
+| float32 | 1 | 262144 | shared | 0.2632 (0.0291) | 0.0375 (0.0038) | 7.02x | 1.000 | 1.003 | 1.00x |
+| float32 | 16 | 4096 | shared | 0.0725 (0.0052) | 0.0505 (0.0042) | 1.44x | 0.250 | 0.251 | 1.00x |
+| float32 | 64 | 65536 | shared | 1.6243 (0.2290) | 0.2427 (0.0123) | 6.69x | 16.000 | 16.047 | 1.00x |
+| float32 | 256 | 4096 | shared | 0.4801 (0.0573) | 0.0959 (0.0141) | 5.00x | 4.000 | 4.012 | 1.00x |
+| float32 | 16 | 4096 | batched | 0.0760 (0.0048) | 0.0461 (0.0164) | 1.65x | 0.250 | 0.251 | 1.00x |
+| float32 | 64 | 65536 | batched | 1.9368 (0.3711) | 0.2485 (0.0144) | 7.79x | 16.000 | 16.047 | 1.00x |
+| float32 | 256 | 4096 | batched | 0.4384 (0.0418) | 0.0968 (0.0473) | 4.53x | 4.000 | 4.012 | 1.00x |
+| float32 | 1 | 4096 | per_step | 0.0674 (0.0094) | 0.0232 (0.0007) | 2.90x | 0.016 | 0.016 | 0.97x |
+| float32 | 1 | 262144 | per_step | 0.2332 (0.0143) | 0.0432 (0.0109) | 5.40x | 1.000 | 1.003 | 1.00x |
+| float32 | 16 | 4096 | per_step | 0.0710 (0.0058) | 0.0269 (0.0012) | 2.64x | 0.250 | 0.251 | 1.00x |
+| float32 | 64 | 65536 | per_step | 1.6967 (0.1577) | 0.5039 (0.0120) | 3.37x | 16.000 | 16.047 | 1.00x |
+| float32 | 256 | 4096 | per_step | 0.4406 (0.0324) | 0.0853 (0.0015) | 5.16x | 4.000 | 4.012 | 1.00x |
+| float16 | 1 | 4096 | shared | 0.0681 (0.0180) | 0.0233 (0.0006) | 2.93x | 0.008 | 0.008 | 0.94x |
+| float16 | 1 | 262144 | shared | 0.2395 (0.0072) | 0.0358 (0.0014) | 6.69x | 0.500 | 0.503 | 0.99x |
+| float16 | 16 | 4096 | shared | 0.0732 (0.0048) | 0.0266 (0.0007) | 2.75x | 0.125 | 0.126 | 0.99x |
+| float16 | 64 | 65536 | shared | 1.3633 (0.0760) | 0.2243 (0.0177) | 6.08x | 8.000 | 8.047 | 0.99x |
+| float16 | 256 | 4096 | shared | 0.3940 (0.0540) | 0.1385 (0.0590) | 2.85x | 2.000 | 2.012 | 0.99x |
+| float16 | 16 | 4096 | batched | 0.0727 (0.0013) | 0.0264 (0.0008) | 2.76x | 0.125 | 0.126 | 0.99x |
+| float16 | 64 | 65536 | batched | 1.5489 (0.3382) | 0.2185 (0.0074) | 7.09x | 8.000 | 8.047 | 0.99x |
+| float16 | 256 | 4096 | batched | 0.3869 (0.0212) | 0.0729 (0.0010) | 5.31x | 2.000 | 2.012 | 0.99x |
+| float16 | 1 | 4096 | per_step | n/a | 0.0233 (0.0017) | n/a | n/a | 0.008 | n/a |
+| float16 | 1 | 262144 | per_step | n/a | 0.0413 (0.0135) | n/a | n/a | 0.503 | n/a |
+| float16 | 16 | 4096 | per_step | n/a | 0.0261 (0.0009) | n/a | n/a | 0.126 | n/a |
+| float16 | 64 | 65536 | per_step | n/a | 0.2291 (0.0124) | n/a | n/a | 8.047 | n/a |
+| float16 | 256 | 4096 | per_step | n/a | 0.0831 (0.0129) | n/a | n/a | 2.012 | n/a |
+| bfloat16 | 1 | 4096 | shared | 0.0714 (0.0113) | 0.0239 (0.0013) | 2.99x | 0.008 | 0.008 | 0.94x |
+| bfloat16 | 1 | 262144 | shared | 0.2416 (0.0186) | 0.0574 (0.0189) | 4.21x | 0.500 | 0.503 | 0.99x |
+| bfloat16 | 16 | 4096 | shared | 0.0725 (0.0044) | 0.0463 (0.0209) | 1.57x | 0.125 | 0.126 | 0.99x |
+| bfloat16 | 64 | 65536 | shared | 1.3421 (0.2254) | 0.2366 (0.0031) | 5.67x | 8.000 | 8.047 | 0.99x |
+| bfloat16 | 256 | 4096 | shared | 0.3770 (0.0269) | 0.0786 (0.0026) | 4.80x | 2.000 | 2.012 | 0.99x |
+| bfloat16 | 16 | 4096 | batched | 0.0720 (0.0034) | 0.0271 (0.0007) | 2.66x | 0.125 | 0.126 | 0.99x |
+| bfloat16 | 64 | 65536 | batched | 1.3255 (0.1143) | 0.2438 (0.0113) | 5.44x | 8.000 | 8.047 | 0.99x |
+| bfloat16 | 256 | 4096 | batched | 0.4648 (0.1461) | 0.1009 (0.0203) | 4.61x | 2.000 | 2.012 | 0.99x |
+| bfloat16 | 1 | 4096 | per_step | n/a | 0.0561 (0.0049) | n/a | n/a | 0.008 | n/a |
+| bfloat16 | 1 | 262144 | per_step | n/a | 0.0373 (0.0014) | n/a | n/a | 0.503 | n/a |
+| bfloat16 | 16 | 4096 | per_step | n/a | 0.0467 (0.0033) | n/a | n/a | 0.126 | n/a |
+| bfloat16 | 64 | 65536 | per_step | n/a | 0.2409 (0.0071) | n/a | n/a | 8.047 | n/a |
+| bfloat16 | 256 | 4096 | per_step | n/a | 0.1040 (0.0646) | n/a | n/a | 2.012 | n/a |
+| complex64 | 1 | 4096 | shared | 0.0885 (0.0128) | 0.0264 (0.0014) | 3.36x | 0.031 | 0.032 | 0.98x |
+| complex64 | 1 | 262144 | shared | 0.6272 (0.0284) | 0.0543 (0.0173) | 11.55x | 2.000 | 2.006 | 1.00x |
+| complex64 | 16 | 4096 | shared | 0.1260 (0.0127) | 0.0339 (0.0016) | 3.71x | 0.500 | 0.501 | 1.00x |
+| complex64 | 64 | 65536 | shared | 5.8414 (1.8812) | 0.6170 (0.0150) | 9.47x | 32.000 | 32.094 | 1.00x |
+| complex64 | 256 | 4096 | shared | 1.2396 (0.0650) | 0.1834 (0.0182) | 6.76x | 8.000 | 8.023 | 1.00x |
+| complex64 | 16 | 4096 | batched | 0.1242 (0.0036) | 0.0335 (0.0010) | 3.71x | 0.500 | 0.501 | 1.00x |
+| complex64 | 64 | 65536 | batched | 5.3326 (0.8157) | 0.6030 (0.0114) | 8.84x | 32.000 | 32.094 | 1.00x |
+| complex64 | 256 | 4096 | batched | 1.5673 (0.2158) | 0.1517 (0.0215) | 10.33x | 8.000 | 8.023 | 1.00x |
+| complex64 | 1 | 4096 | per_step | 0.0844 (0.0074) | 0.0443 (0.0165) | 1.91x | 0.031 | 0.032 | 0.98x |
+| complex64 | 1 | 262144 | per_step | 0.6468 (0.0235) | 0.0585 (0.0014) | 11.07x | 2.000 | 2.006 | 1.00x |
+| complex64 | 16 | 4096 | per_step | 0.1234 (0.0030) | 0.0340 (0.0012) | 3.63x | 0.500 | 0.501 | 1.00x |
+| complex64 | 64 | 65536 | per_step | 4.9784 (0.1493) | 0.9920 (0.0146) | 5.02x | 32.000 | 32.094 | 1.00x |
+| complex64 | 256 | 4096 | per_step | 1.2541 (0.0686) | 0.1849 (0.0034) | 6.78x | 8.000 | 8.023 | 1.00x |
 
 ## Build and verification
 
-On macOS, `setup.py` adds every `.mm` source to the C++ extension and links the Foundation and Metal frameworks.
+On macOS, `setup.py` checks that torch is 2.10 or newer, adds every `.mm` source to the C++ extension and generates its headers in `build/metal`.
 It locates Homebrew LLVM and libomp with `brew --prefix`, selects Homebrew Clang unless `CXX` is already set, and uses the Homebrew OpenMP headers.
 The extension links `@rpath/libomp.dylib` through PyTorch's library directory so PyTorch and extension modules share one OpenMP runtime.
 
@@ -275,7 +287,7 @@ Install the required system packages before creating or rebuilding the environme
 brew install llvm libomp
 ```
 
-Rebuild the editable extension after changing Objective-C++ or Metal source:
+Rebuild the editable extension after changing the host code or the Metal source:
 
 ```bash
 pixi reinstall philtorch
@@ -284,20 +296,20 @@ pixi reinstall philtorch
 Run focused native recurrence tests with:
 
 ```bash
-pixi run pytest tests/test_recur_ext.py -q
+pixi run pytest tests/test_recur_ext.py -k mps -q
 ```
 
-The MPS tests cover scalar, shared, and per-batch multipliers, zero-length rejection, lengths around the 512-element tile boundary, CPU/MPS device dispatch, and gradients against CPU.
-The long replay test uses `T = 512 * 512 + 1`, forcing stage 2 to carry a prefix across more than one 512-total chunk.
+The MPS tests cover every dtype and coefficient layout at lengths around the vector width and the 1024-step tile, sliced inputs, gradients, and the public paths, against CPU.
+The long scan test uses `T = 1024 * 512 + 5`, so that stage 2 carries a map across more than one chunk of 512 tile totals.
 
 ## Invariants to preserve
 
 When modifying this implementation, keep these details synchronized:
 
-- `compose_affine(left, right)` means `right(left(h))`; do not reverse it.
-- Scan index zero is `(0, zi)`, while output index `t` reads scan index `t + 1`.
-- Missing elements in a partial tile must be `(1, 0)`.
-- `block_prefixes` is exclusive, while replayed tile-local results are inclusive.
-- The 512-element tile assumes 256 threads, two elements per thread, and eight 32-lane SIMD groups.
-- The three command encoders must remain ordered: tile reduction, block-total scan, then tile replay.
-- The only MPS registration is the public `philtorch::lti_recur` schema.
+- `compose(left, right)` means `right(left(h))`; do not reverse it.
+- The first step folds in `zi` with a zero multiplier, so maps from a sequence's start are constants and `states` holds plain states.
+- Steps past the end must be identities, `(1, 0)`.
+- `states` holds each tile's end state; replay reads the previous tile's, and the first tile starts from zero.
+- The 1024-step tile assumes 256 threads, four steps per thread, and eight 32-lane SIMD groups; `THREADS` and `K` in the Metal source and `THREADS` and `STEPS_PER_THREAD` in the host code must agree.
+- The dispatches must stay ordered: tile reduction, tile-total scan, then tile replay.
+- The MPS registrations are the public `philtorch::lti_recur` and `philtorch::scan` schemas.

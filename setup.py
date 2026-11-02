@@ -8,7 +8,12 @@ from setuptools import setup
 
 # build_support.py sits next to setup.py; the setuptools.build_meta:__legacy__
 # backend puts this directory on sys.path, which this import relies on.
-from build_support import resolve_cuda_build, torch_requirement
+from build_support import (
+    MIN_TORCH_MACOS,
+    resolve_cuda_build,
+    torch_requirements,
+    write_metal_headers,
+)
 
 library_name = "philtorch"
 # The extension uses only CPython's limited API, so one abi3 wheel, tagged with
@@ -127,9 +132,19 @@ def get_extensions():
             f"CUDA compilation was selected, but no .cu sources were found in {extensions_dir}."
         )
 
+    include_dirs = []
     if sys.platform == "darwin":
+        if torch.__version__ < MIN_TORCH_MACOS:
+            raise RuntimeError(
+                f"philtorch's MPS kernels need PyTorch {MIN_TORCH_MACOS} or newer on macOS; "
+                f"found {torch.__version__}."
+            )
+        # The Metal source reaches Metal through torch's C shim alone, and
+        # includes its shaders and target version as headers generated in the
+        # build directory.
         sources += list(glob.glob(os.path.join(extensions_dir, "*.mm")))
-        extra_link_args.extend(["-framework", "Foundation", "-framework", "Metal"])
+        include_dirs.append(os.path.join(this_dir, "build", "metal"))
+        write_metal_headers(extensions_dir, include_dirs[-1])
 
     if use_cuda:
         sources += cuda_sources
@@ -146,6 +161,7 @@ def get_extensions():
         extension(
             f"{library_name}._C",
             [os.path.relpath(s, this_dir) for s in sources],
+            include_dirs=include_dirs,
             extra_compile_args=extra_compile_args,
             extra_link_args=extra_link_args,
             py_limited_api=py_limited_api,
@@ -182,7 +198,7 @@ except ImportError:
             "sees it."
         )
 
-install_requires = [torch_requirement(os.environ.get("PHILTORCH_TORCH_PIN", ""))]
+install_requires = torch_requirements(os.environ.get("PHILTORCH_TORCH_PIN", ""))
 
 if not ext_modules:
     setup(install_requires=install_requires)
