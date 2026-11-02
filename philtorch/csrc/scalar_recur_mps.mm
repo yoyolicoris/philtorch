@@ -64,24 +64,25 @@ AOTIMetalKernelFunctionHandle kernel_function(const std::string &name)
     return function;
 }
 
-// The kernels of the dtype whose kernels' names end in suffix.
-Kernels make_kernels(const std::string &suffix)
+// The kernels of the dtype whose kernels' names end in suffix, and the scan of
+// tile totals of its accumulation type.
+Kernels make_kernels(const std::string &suffix, const std::string &accumulation)
 {
-    // The scan of tile totals exists per accumulation type alone.
-    const std::string scan = suffix == "cfloat" ? "cfloat" : "float";
     return {{kernel_function("scalar_recur_reduce_" + suffix + "_lti"),
              kernel_function("scalar_recur_reduce_" + suffix + "_lpv")},
             {kernel_function("scalar_recur_replay_" + suffix + "_lti"),
              kernel_function("scalar_recur_replay_" + suffix + "_lpv")},
-            kernel_function("scalar_recur_scan_" + scan)};
+            kernel_function("scalar_recur_scan_" + accumulation)};
 }
 
 // The kernels of dtype, all looked up on the first call, one at a time under
 // the statics' initialization, before any launch.
 const Kernels &kernels(ScalarType dtype)
 {
-    static const Kernels f = make_kernels("float"), h = make_kernels("half"),
-                         bf = make_kernels("bfloat"), c = make_kernels("cfloat");
+    static const Kernels f = make_kernels("float", "float"),
+                         h = make_kernels("half", "float"),
+                         bf = make_kernels("bfloat", "float"),
+                         c = make_kernels("cfloat", "cfloat");
     switch (dtype)
     {
     case ScalarType::Float:

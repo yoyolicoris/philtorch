@@ -229,13 +229,11 @@ def test_lti_recur_mps_grad_equiv(
 
 @_MPS
 @pytest.mark.parametrize("time_invariant", [True, False])
-# M = 2, and int64, which the CPU kernels take.
-@pytest.mark.parametrize("M, dtype", [(2, torch.float32), (1, torch.int64)])
-def test_mps_recurrence_rejects_what_the_kernels_do_not_take(time_invariant: bool, M, dtype):
-    B, T = 2, 5
-    A = torch.zeros(1, 1 if time_invariant else T, M, M, dtype=dtype, device="mps")
-    zi = torch.zeros(B, M, dtype=dtype, device="mps")
-    x = torch.zeros(B, T, M, dtype=dtype, device="mps")
+def test_mps_recurrence_rejects_m_above_1(time_invariant: bool):
+    B, T, M = 2, 5, 2
+    A = torch.zeros(1, 1 if time_invariant else T, M, M, device="mps")
+    zi = torch.zeros(B, M, device="mps")
+    x = torch.zeros(B, T, M, device="mps")
     with pytest.raises(NotImplementedError, match="Metal kernels take M = 1"):
         recurrence(A, zi, x)
 

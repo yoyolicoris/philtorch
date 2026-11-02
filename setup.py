@@ -149,7 +149,7 @@ def get_extensions():
                 f"found {torch.__version__}."
             )
         # .mm marks the macOS-only source, which reaches Metal through torch's
-        # C shim and includes its shader as a header generated here.
+        # C shim and includes its shader, written below as a header.
         sources += list(glob.glob(os.path.join(extensions_dir, "*.mm")))
         metal_dir = os.path.join(this_dir, "build", "metal")
         include_dirs.append(metal_dir)

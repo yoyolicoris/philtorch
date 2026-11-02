@@ -25,7 +25,7 @@ One three-pass design serves every input: reduce each tile, scan the tile totals
 | [`../_ops.py`](../_ops.py) | Registers fake implementations and autograd for `philtorch::lti_recur` and `philtorch::scan`. |
 | [`../_recur.py`](../_recur.py) | Sends M = 1 recurrences on MPS to `lti_recur` or `scan`. |
 | [`../../tests/test_recur.py`](../../tests/test_recur.py) | `test_recurrence_low_precision` checks MPS against a float64 reference in every dtype and coefficient layout. |
-| [`../../tests/test_recur_ext.py`](../../tests/test_recur_ext.py) | MPS tests of the carry across chunks of tiles, of overflowed multipliers, of gradients and of the inputs the kernels reject. |
+| [`../../tests/test_recur_ext.py`](../../tests/test_recur_ext.py) | MPS tests of the carry across chunks of tiles, of gradients and of the inputs the kernels reject. |
 | [`../../benchmarks/benchmark_mps_recur.py`](../../benchmarks/benchmark_mps_recur.py) | Reproduces the CPU/MPS runtime results. |
 
 ## Turning a recurrence into a scan

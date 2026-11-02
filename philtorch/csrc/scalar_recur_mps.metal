@@ -108,24 +108,16 @@ inline Sequence<T> sequence(const device T *decays, const device T *zi,
 
 // Four consecutive steps with one vector load or store, which need only the
 // element's alignment: a SIMD group reads 32 * 4 consecutive steps.
-inline void load4(const device float *p, thread float *v)
+template <typename T> inline void load4(const device T *p, thread T *v)
 {
-    const packed_float4 q = *(const device packed_float4 *)p;
+    const packed_vec<T, 4> q = *(const device packed_vec<T, 4> *)p;
     v[0] = q[0]; v[1] = q[1]; v[2] = q[2]; v[3] = q[3];
 }
-inline void store4(device float *p, thread const float *v)
+template <typename T> inline void store4(device T *p, thread const T *v)
 {
-    *(device packed_float4 *)p = packed_float4(v[0], v[1], v[2], v[3]);
+    *(device packed_vec<T, 4> *)p = packed_vec<T, 4>(v[0], v[1], v[2], v[3]);
 }
-inline void load4(const device half *p, thread half *v)
-{
-    const packed_half4 q = *(const device packed_half4 *)p;
-    v[0] = q[0]; v[1] = q[1]; v[2] = q[2]; v[3] = q[3];
-}
-inline void store4(device half *p, thread const half *v)
-{
-    *(device packed_half4 *)p = packed_half4(v[0], v[1], v[2], v[3]);
-}
+// complex64, whose float2 has no packed vector of 4.
 inline void load4(const device float2 *p, thread float2 *v)
 {
     const float4 a = float4(((const device packed_float4 *)p)[0]);
@@ -136,15 +128,6 @@ inline void store4(device float2 *p, thread const float2 *v)
 {
     ((device packed_float4 *)p)[0] = packed_float4(v[0].x, v[0].y, v[1].x, v[1].y);
     ((device packed_float4 *)p)[1] = packed_float4(v[2].x, v[2].y, v[3].x, v[3].y);
-}
-inline void load4(const device bfloat *p, thread bfloat *v)
-{
-    const packed_bfloat4 q = *(const device packed_bfloat4 *)p;
-    v[0] = q[0]; v[1] = q[1]; v[2] = q[2]; v[3] = q[3];
-}
-inline void store4(device bfloat *p, thread const bfloat *v)
-{
-    *(device packed_bfloat4 *)p = packed_bfloat4(v[0], v[1], v[2], v[3]);
 }
 
 template <typename T, bool VARYING, typename A = typename Acc<T>::type>
@@ -161,11 +144,11 @@ inline void load_steps(Sequence<T> s, uint first, uint lid,
     }
     else
     {
-        for (uint k = 0; k < K; ++k)
+        for (uint k = 0; k < K && t0 + k < s.steps; ++k)
         {
-            xv[k] = t0 + k < s.steps ? s.x[t0 + k] : T(0.0f);
+            xv[k] = s.x[t0 + k];
             if (VARYING)
-                av[k] = t0 + k < s.steps ? s.decays[t0 + k] : T(0.0f);
+                av[k] = s.decays[t0 + k];
         }
     }
     const A shared = VARYING ? A(0.0f) : A(*s.decays);

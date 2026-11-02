@@ -42,7 +42,8 @@ MIN_TORCH_MACOS = "2.10"
 
 def torch_requirement(pinned_torch_version=""):
     # A wheel's compiled extension only works with the PyTorch minor it was
-    # built against. Source builds and the CPU wheels keep the broad range;
+    # built against. Source builds and the CPU wheels keep the broad range,
+    # from MIN_TORCH_MACOS on macOS;
     # CUDA wheels set PHILTORCH_TORCH_PIN to the torch they were built with.
     if not pinned_torch_version:
         # 2.6 is the first whose BuildExtension builds with py_limited_api.
