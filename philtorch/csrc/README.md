@@ -18,7 +18,7 @@ One three-pass design serves every input: reduce each tile, scan the tile totals
 | --- | --- |
 | [`ops.cpp`](ops.cpp) | Creates the `philtorch._C` module and defines the dispatcher schemas of the recurrence ops, `philtorch::lti_recur` among them. |
 | [`host_recur.cpp`](host_recur.cpp) | CPU kernels of the recurrence ops, `philtorch::scan` included, split over time when a batch has fewer sequences than threads, long enough for the split to pay. |
-| [`stable_support.h`](stable_support.h) | What every source needs beyond torch's stable C++ API, which they use alone (`torch/csrc/stable`, `torch/headeronly`): the target version, `build_support.MIN_TORCH`, `opmath_type`, `ceil_div`, and dtype predicates. |
+| [`stable_support.h`](stable_support.h) | What every source needs beyond torch's stable C++ API, which they use alone (`torch/csrc/stable`, `torch/headeronly`): the target version, `build_support.MIN_TORCH`, `opmath_type`, `ceil_div`, dtype predicates, `current_cuda_stream`, and, for CUDA sources, the `USE_CUDA` definition. |
 | [`host_dot.h`](host_dot.h) | The dot product of the CPU kernels of the recurrence ops and of `lpc`, vectorized for float and double from size 8. |
 | [`torchlpc_shim.cpp`](torchlpc_shim.cpp) | Defines the schemas of `philtorch::scan` and `philtorch::lpc`, and the CPU kernel of `lpc`, one sequence per thread. |
 | [`scalar_recur_mps.mm`](scalar_recur_mps.mm) | MPS host code of `lti_recur` and `scan`, on torch's stable ABI and Metal C shim. |

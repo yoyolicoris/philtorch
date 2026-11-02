@@ -31,7 +31,7 @@ results.
 - `torchlpc/cuda/lpc.cu`:
   - launches on the current stream and checks each launch;
   - checks the order limit with `STD_TORCH_CHECK` instead of `assert`;
-  - requires the coefficients on the input's device;
+  - requires the coefficients, and `zi`, on the input's device;
   - uses only torch's stable C++ API (`torch/csrc/stable`, `torch/headeronly`);
   - reads `zi` and `x` and writes the output directly, instead of filtering a
     padded copy;

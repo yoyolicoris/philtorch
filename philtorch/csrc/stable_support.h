@@ -2,8 +2,8 @@
 
 // What the compiled ops need beyond torch's stable C++ API, which they use
 // alone: torch/csrc/stable/* and torch/headeronly/*. Every source includes
-// this header first. It sets the version they target, build_support.MIN_TORCH,
-// before any torch header is read.
+// this header before any torch header. It sets the version they target,
+// build_support.MIN_TORCH, before any torch header is read.
 #define TORCH_TARGET_VERSION (((0ULL + 2) << 56) | ((0ULL + 12) << 48))
 
 #if defined(__CUDACC__) && !defined(USE_CUDA)

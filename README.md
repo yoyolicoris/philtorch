@@ -2,7 +2,7 @@
 
 [![PyPI version](https://img.shields.io/pypi/v/philtorch.svg)](https://pypi.org/project/philtorch/)
 [![Python versions](https://img.shields.io/pypi/pyversions/philtorch.svg)](https://pypi.org/project/philtorch/)
-[![Build CPU wheels](https://github.com/yoyolicoris/philtorch/actions/workflows/build-wheels.yml/badge.svg?branch=dev)](https://github.com/yoyolicoris/philtorch/actions/workflows/build-wheels.yml)
+[![Build wheels](https://github.com/yoyolicoris/philtorch/actions/workflows/build-wheels.yml/badge.svg?branch=dev)](https://github.com/yoyolicoris/philtorch/actions/workflows/build-wheels.yml)
 [![Build CUDA wheels](https://github.com/yoyolicoris/philtorch/actions/workflows/build-cuda-wheels.yml/badge.svg?branch=dev)](https://github.com/yoyolicoris/philtorch/actions/workflows/build-cuda-wheels.yml)
 [![codecov](https://codecov.io/gh/yoyolicoris/philtorch/branch/dev/graph/badge.svg?token=288BR3PYIX)](https://codecov.io/gh/yoyolicoris/philtorch)
 [![Documentation](https://readthedocs.org/projects/philtorch/badge/?version=stable)](https://philtorch.readthedocs.io/en/stable/)

@@ -2,7 +2,7 @@ name: Deploy CUDA wheel index
 
 # Rebuilds the PEP 503 index of PhilTorch's CUDA wheels from the assets of
 # every published release (scripts/generate_simple_index.py) and deploys it to
-# GitHub Pages. It runs after "Build CPU wheels" succeeds for a published
+# GitHub Pages. It runs after "Build wheels" succeeds for a published
 # release, which attaches that release's CUDA wheels and publishes to PyPI, and
 # can be run by hand, e.g. after a release is deleted.
 #
@@ -12,7 +12,7 @@ name: Deploy CUDA wheel index
 
 on:
   workflow_run:
-    workflows: ["Build CPU wheels"]
+    workflows: ["Build wheels"]
     types: [completed]
   workflow_dispatch:
 

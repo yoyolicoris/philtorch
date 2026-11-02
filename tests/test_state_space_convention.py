@@ -250,7 +250,7 @@ def test_state_space_recursion_without_a_kernel(module):
 
 @pytest.mark.parametrize("module", [lti, lpv], ids=["lti", "lpv"])
 def test_state_space_recursion_rejects_float8(module):
-    # Kernel dispatch would raise RuntimeError for a dtype outside its list.
+    # The native kernels take no float8; their dispatch would raise RuntimeError.
     with pytest.raises(NotImplementedError, match="pass unroll_factor=1"):
         module.state_space_recursion(*_recursion_inputs(module, torch.float8_e4m3fn))
 

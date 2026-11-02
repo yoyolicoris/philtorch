@@ -9,7 +9,7 @@
 // sizes or complex types made the recurrence and lpc kernels slower.
 template <int stride = 1, typename left_t, typename right_t>
 inline philtorch::opmath_type<right_t> host_dot(const left_t *left,
-                                         const right_t *right, int size)
+                                                const right_t *right, int size)
 {
     using acc_t = philtorch::opmath_type<right_t>;
     constexpr int minimum_simd_size = 8;
