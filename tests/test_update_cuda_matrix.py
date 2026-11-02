@@ -45,13 +45,14 @@ def build(torch, cuda, pythons):
 
 OLD, NEW = ["3.11", "3.12", "3.13", "3.14"], ["3.11", "3.12", "3.13", "3.14", "3.15"]
 BASE = [
+    *(build("2.12.1", cuda, OLD) for cuda in ("12.9", "13.0")),
     *(build("2.13.0", cuda, OLD) for cuda in ("12.9", "13.0")),
     *(build("2.14.1", cuda, OLD) for cuda in ("13.0", "13.2")),
     *(build("2.15.0", cuda, NEW) for cuda in ("13.2", "13.4")),
 ]
 
 
-def upstream(builds, older=("2.12.1",), arch_404=()):
+def upstream(builds, older=("2.11.0",), arch_404=()):
     """The responses upstream gives for ``builds``, by URL; exceptions are failures."""
     pythons = {}
     for b in builds:
@@ -199,16 +200,16 @@ def test_current_upstream_reproduces_the_repository_files(tmp_path, monkeypatch)
 @pytest.mark.parametrize(
     "builds, older, image",
     [
-        # Every minor from the floor on stays, and the older 2.12 is left out.
+        # Every minor from the floor on stays, and the older 2.11 is left out.
         pytest.param(
             BASE + [build("2.16.0", c, NEW) for c in ("13.2", "13.4", "13.6")],
-            ("2.12.1",),
+            ("2.11.0",),
             IMAGE,
             id="new-minor-keeps-older",
         ),
         pytest.param(
             BASE + [build("2.16.0", c, [*NEW, "3.16"]) for c in ("13.2", "13.4")],
-            ("2.12.1",),
+            ("2.11.0",),
             NEW_IMAGE,
             id="new-python-moves-image",
         ),

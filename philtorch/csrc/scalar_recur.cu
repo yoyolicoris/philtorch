@@ -128,7 +128,9 @@ Tensor lti_recur_cuda_impl(const Tensor &a,
 Tensor scan_cuda(const Tensor &impulse, const Tensor &decay,
                  const Tensor &init)
 {
-    STD_TORCH_CHECK(impulse.dim() == 2 && decay.sizes() == impulse.sizes() &&
+    STD_TORCH_CHECK(impulse.dim() == 2 && decay.dim() == 2 &&
+                        decay.size(0) == impulse.size(0) &&
+                        decay.size(1) == impulse.size(1) &&
                         init.dim() == 1 && init.size(0) == impulse.size(0),
                     "impulse and decay must be (B, T) and init (B,)");
     using S = torch::headeronly::ScalarType;

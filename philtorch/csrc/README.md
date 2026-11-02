@@ -18,7 +18,7 @@ One three-pass design serves every input: reduce each tile, scan the tile totals
 | --- | --- |
 | [`ops.cpp`](ops.cpp) | Creates the `philtorch._C` module and defines the dispatcher schemas of the recurrence ops, `philtorch::lti_recur` among them. |
 | [`host_recur.cpp`](host_recur.cpp) | CPU kernels of the recurrence ops, `philtorch::scan` included, split over time when a batch has fewer sequences than threads, long enough for the split to pay. |
-| [`stable_support.h`](stable_support.h) | What the CPU and CUDA sources need beyond torch's stable C++ API, which they use alone (`torch/csrc/stable`, `torch/headeronly`): the target version, `opmath_type`, `ceil_div`, and dtype predicates. `lti_recur_mps_replay.mm` still uses the non-stable API, so the header isn't included there and the target version doesn't apply to it. |
+| [`stable_support.h`](stable_support.h) | What the CPU and CUDA sources need beyond torch's stable C++ API, which they use alone (`torch/csrc/stable`, `torch/headeronly`): the target version, `build_support.MIN_TORCH`, `opmath_type`, `ceil_div`, and dtype predicates. `scalar_recur_mps.mm` sets its own target version and doesn't include it. |
 | [`host_dot.h`](host_dot.h) | The dot product of the CPU kernels of the recurrence ops and of `lpc`, vectorized for float and double from size 8. |
 | [`torchlpc_shim.cpp`](torchlpc_shim.cpp) | Defines the schemas of `philtorch::scan` and `philtorch::lpc`, and the CPU kernel of `lpc`, one sequence per thread. |
 | [`scalar_recur_mps.mm`](scalar_recur_mps.mm) | MPS host code of `lti_recur` and `scan`, on torch's stable ABI and Metal C shim. |
@@ -168,7 +168,7 @@ Each kernel indexes the steps of a sequence in 32 bits, as 64-bit integer arithm
 ## PyTorch and Metal integration
 
 The host code uses only torch's stable ABI, `torch/csrc/stable` and `torch/headeronly`, and torch's Metal C shim, [`shim_mps.h`](https://github.com/pytorch/pytorch/blob/main/torch/csrc/inductor/aoti_torch/c/shim_mps.h), so the compiled code calls torch through C functions alone.
-It defines `TORCH_TARGET_VERSION` as torch 2.10, the oldest torch that builds it, which holds it to that version's API; `build_support.MIN_TORCH_MACOS`, the floor of macOS source builds, is the same version.
+It defines `TORCH_TARGET_VERSION` as torch 2.10, the oldest torch that builds it, which holds it to that version's API; the package's floor, `build_support.MIN_TORCH`, set by the other sources, is no older.
 No Objective-C remains, and the extension links no Apple framework.
 
 1. `setup.py` turns `scalar_recur_mps.metal` into `scalar_recur_mps.metal.h`, a raw string in `build/metal`, which the host code includes.
@@ -224,7 +224,7 @@ Every dtype and layout is on [issue #39](https://github.com/yoyolicoris/philtorc
 
 ## Build and verification
 
-On macOS, `setup.py` checks that torch is 2.10 or newer, adds every `.mm` source to the C++ extension and generates its headers in `build/metal`.
+`setup.py` checks that torch is `build_support.MIN_TORCH` or newer. On macOS, it adds every `.mm` source to the C++ extension and generates its headers in `build/metal`.
 It locates Homebrew LLVM and libomp with `brew --prefix`, selects Homebrew Clang unless `CXX` is already set, and uses the Homebrew OpenMP headers.
 The extension links `@rpath/libomp.dylib` through PyTorch's library directory so PyTorch and extension modules share one OpenMP runtime.
 

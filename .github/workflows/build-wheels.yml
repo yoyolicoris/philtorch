@@ -71,9 +71,8 @@ jobs:
           minors = [seen_minor[k] for k in sorted(seen_minor, reverse=True)]
           newest, floor_torch = minors[0], minors[-1]
 
-          # The Linux and Windows wheels build on the floor torch, the macOS
-          # one (pinned to its torch minor) on the newest. Testing every minor
-          # is expensive; PRs only need the newest and the floor.
+          # The wheels build on the floor torch. Testing every minor is
+          # expensive; PRs only need the newest and the floor.
           pr = os.environ["GITHUB_EVENT_NAME"] == "pull_request"
           test_torches = list(dict.fromkeys([newest, floor_torch])) if pr else minors
 
@@ -114,11 +113,9 @@ jobs:
   # One job per OS (each calling the reusable _build-wheel.yml) so each OS
   # gets its own conclusion and a failure on one OS doesn't skip the others'
   # downstream test/publish jobs. The wheels are abi3 and target torch's
-  # stable ABI from the floor (build_support.MIN_TORCH) on, so Linux and
-  # Windows each build one wheel on the floor torch and the test jobs run it
-  # against every torch minor from the floor to the newest. macOS builds on
-  # the newest torch with the wheel pinned to its minor, as its Metal source
-  # still uses the non-stable API.
+  # stable ABI from the floor (build_support.MIN_TORCH) on, so each OS builds
+  # one wheel on the floor torch and the test jobs run it against every torch
+  # minor from the floor to the newest.
   build-wheels-ubuntu:
     needs: resolve-torch-versions
     permissions:
@@ -141,9 +138,8 @@ jobs:
     uses: ./.github/workflows/_build-wheel.yml
     with:
       os: macos-latest
-      python_versions: ${{ toJson(fromJson(needs.resolve-torch-versions.outputs.pythons)[needs.resolve-torch-versions.outputs.newest]) }}
-      torch_version: ${{ needs.resolve-torch-versions.outputs.newest }}
-      pin_torch: true
+      python_versions: ${{ toJson(fromJson(needs.resolve-torch-versions.outputs.pythons)[needs.resolve-torch-versions.outputs.floor]) }}
+      torch_version: ${{ needs.resolve-torch-versions.outputs.floor }}
 
   # Windows: torchlpc is now vendored (DiffAPF/torchlpc@1bfde4a) and bundled into
   # philtorch._C, so MSVC no longer needs external torchlpc wheel. Windows is
@@ -190,8 +186,8 @@ jobs:
       codecov_token: ${{ secrets.CODECOV_TOKEN }}
 
   # Mirrors build-wheels-macos: only pull_request and official releases test
-  # a macOS wheel. It is pinned to the newest torch's minor, so only that torch
-  # is tested.
+  # a macOS wheel, matrixed over the test torches like ubuntu. The runners have
+  # no usable MPS (#126), so the MPS tests skip.
   test-macos:
     if: >
       github.event_name == 'pull_request' ||
@@ -199,11 +195,15 @@ jobs:
     needs: [resolve-torch-versions, build-wheels-macos]
     permissions:
       contents: read
+    strategy:
+      fail-fast: false
+      matrix:
+        torch-version: ${{ fromJson(needs.resolve-torch-versions.outputs.test_torches) }}
     uses: ./.github/workflows/_test-wheel.yml
     with:
       os: macos-latest
-      python_versions: ${{ toJson(fromJson(needs.resolve-torch-versions.outputs.pythons)[needs.resolve-torch-versions.outputs.newest]) }}
-      torch_version: ${{ needs.resolve-torch-versions.outputs.newest }}
+      python_versions: ${{ toJson(fromJson(needs.resolve-torch-versions.outputs.pythons)[matrix.torch-version]) }}
+      torch_version: ${{ matrix.torch-version }}
     secrets:
       codecov_token: ${{ secrets.CODECOV_TOKEN }}
 

@@ -12,15 +12,9 @@ on:
       torch_version:
         # The torch to build against, e.g. '2.13.1'. The wheel targets torch's
         # stable ABI from build_support.MIN_TORCH on, so it loads on this
-        # torch's minor and every later one, unless pin_torch is set.
+        # torch's minor and every later one.
         required: true
         type: string
-      pin_torch:
-        # Restrict the wheel to torch_version's minor (torch == X.Y.*). Needed
-        # where the sources use torch's non-stable API: the macOS Metal ops.
-        required: false
-        type: boolean
-        default: false
       python_versions:
         # JSON array string of the Pythons torch ships, oldest first, e.g.
         # '["3.11", "3.13"]' (see resolve-torch-versions in build-wheels.yml).
@@ -79,13 +73,6 @@ jobs:
       - name: Build wheels
         run: cibuildwheel --output-dir wheelhouse
         env:
-          # Set only for a wheel that loads with just its build torch's minor,
-          # which then requires torch == X.Y.* (see build_support.py). Unset,
-          # the wheel requires torch >= the floor, as the sdist does.
-          PHILTORCH_TORCH_PIN: ${{ inputs.pin_torch && inputs.torch_version || '' }}
-          # Linux builds run in a container, which doesn't inherit the runner's
-          # environment; macOS and Windows build on the runner itself.
-          CIBW_ENVIRONMENT_PASS_LINUX: PHILTORCH_TORCH_PIN
           # CIBW_BUILD, the Python to build on, is set by the step above.
           CIBW_SKIP: "*-musllinux_*"
           CIBW_ARCHS_LINUX: x86_64
@@ -123,21 +110,15 @@ jobs:
           # which would bundle torch's DLLs; leave them to torch, as above.
           CIBW_REPAIR_WHEEL_COMMAND_WINDOWS: ""
 
-      - name: Check the torch pin
+      - name: Check the torch requirement
         shell: bash
-        env:
-          TORCH_VERSION: ${{ inputs.torch_version }}
-          PIN_TORCH: ${{ inputs.pin_torch }}
         run: |
           python - <<'EOF'
           import glob, os, sys, zipfile
 
           import build_support
 
-          if os.environ["PIN_TORCH"] == "true":
-              pin = "torch==" + os.environ["TORCH_VERSION"].rsplit(".", 1)[0] + ".*"
-          else:
-              pin = f"torch>={build_support.MIN_TORCH}.0"
+          requirement = f"torch>={build_support.MIN_TORCH}.0"
           wheels = sorted(glob.glob("wheelhouse/*.whl"))
           wrong = []
           for path in wheels:
@@ -148,11 +129,11 @@ jobs:
                       for line in wheel.read(name).decode().splitlines()
                       if line.startswith("Requires-Dist:")
                   ]
-              if pin not in requires:
+              if requirement not in requires:
                   wrong.append(f"  {os.path.basename(path)}: {requires}")
           if not wheels or wrong:
-              sys.exit(f"Every wheel must require {pin}:\n" + "\n".join(wrong or ["  no wheels"]))
-          print(f"{len(wheels)} wheels require {pin}")
+              sys.exit(f"Every wheel must require {requirement}:\n" + "\n".join(wrong or ["  no wheels"]))
+          print(f"{len(wheels)} wheels require {requirement}")
           EOF
 
       - uses: actions/upload-artifact@v7

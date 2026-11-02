@@ -8,7 +8,7 @@ from setuptools import setup
 
 # build_support.py sits next to setup.py; the setuptools.build_meta:__legacy__
 # backend puts this directory on sys.path, which this import relies on.
-from build_support import MIN_TORCH_MACOS, resolve_cuda_build, torch_requirement
+from build_support import MIN_TORCH, resolve_cuda_build
 
 library_name = "philtorch"
 # The extension uses only CPython's limited API, so one abi3 wheel, tagged with
@@ -140,14 +140,15 @@ def get_extensions():
             f"CUDA compilation was selected, but no .cu sources were found in {extensions_dir}."
         )
 
+    # torch.__version__ is a TorchVersion, which compares as a version.
+    if torch.__version__ < MIN_TORCH:
+        raise RuntimeError(
+            f"philtorch's ops target the stable ABI of PyTorch {MIN_TORCH}, so they "
+            f"build with PyTorch {MIN_TORCH} or newer; found {torch.__version__}."
+        )
+
     include_dirs = []
     if sys.platform == "darwin":
-        # torch.__version__ is a TorchVersion, which compares as a version.
-        if torch.__version__ < MIN_TORCH_MACOS:
-            raise RuntimeError(
-                f"philtorch's MPS kernels need PyTorch {MIN_TORCH_MACOS} or newer on macOS; "
-                f"found {torch.__version__}."
-            )
         # .mm marks the macOS-only source, which reaches Metal through torch's
         # C shim and includes its shader, written below as a header.
         sources += list(glob.glob(os.path.join(extensions_dir, "*.mm")))
@@ -210,7 +211,9 @@ except ImportError:
             "sees it."
         )
 
-install_requires = torch_requirement(os.environ.get("PHILTORCH_TORCH_PIN", ""))
+# The ops target MIN_TORCH's stable ABI, so one build loads on it and every
+# later torch.
+install_requires = [f"torch >= {MIN_TORCH}.0"]
 
 if not ext_modules:
     setup(install_requires=install_requires)

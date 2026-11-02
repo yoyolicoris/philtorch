@@ -1,13 +1,14 @@
 #pragma once
 
-// What the compiled ops need beyond torch's stable C++ API, which they use
-// alone: torch/csrc/stable/* and torch/headeronly/*. Every converted source
-// includes this header first. It sets the version the extension targets here,
-// before any torch header is read, rather than with a compiler flag, so that
-// it doesn't reach the Metal source (lti_recur_mps_replay.mm), which still
-// uses the non-stable API; -DTORCH_TARGET_VERSION=... overrides it.
+// What the CPU and CUDA ops need beyond torch's stable C++ API, which they use
+// alone: torch/csrc/stable/* and torch/headeronly/*. Every such source
+// includes this header first. It sets the version they target,
+// build_support.MIN_TORCH, before any torch header is read, rather than with a
+// compiler flag, which would also reach the Metal source
+// (scalar_recur_mps.mm), which sets its own; -DTORCH_TARGET_VERSION=...
+// overrides it.
 #ifndef TORCH_TARGET_VERSION
-#define TORCH_TARGET_VERSION (((0ULL + 2) << 56) | ((0ULL + 13) << 48))
+#define TORCH_TARGET_VERSION (((0ULL + 2) << 56) | ((0ULL + 12) << 48))
 #endif
 
 #if defined(__CUDACC__) && !defined(USE_CUDA)
@@ -18,6 +19,7 @@
 #include <torch/csrc/stable/accelerator.h>
 #include <torch/csrc/stable/device.h>
 #include <torch/csrc/stable/library.h>
+#include <torch/csrc/stable/macros.h>
 #include <torch/csrc/stable/ops.h>
 #include <torch/csrc/stable/tensor.h>
 #include <torch/headeronly/core/Dispatch_v2.h>
@@ -26,6 +28,7 @@
 #include <torch/headeronly/util/Exception.h>
 #include <torch/headeronly/util/Half.h>
 #include <torch/headeronly/util/complex.h>
+#include <torch/headeronly/util/shim_utils.h>
 
 #include <array>
 #include <cstdint>
@@ -84,7 +87,7 @@ namespace philtorch
     inline cudaStream_t current_cuda_stream(torch::stable::DeviceIndex device)
     {
         void *stream = nullptr;
-        STABLE_TORCH_ERROR_CODE_CHECK(
+        TORCH_ERROR_CODE_CHECK(
             aoti_torch_get_current_cuda_stream(device, &stream));
         return static_cast<cudaStream_t>(stream);
     }

@@ -2,8 +2,8 @@
 // stable ABI: the stable C++ API and torch's Metal C shim (shim_mps.h), which
 // compiles the shader source, binds tensors and dispatches on PyTorch's MPS
 // stream. It is held to the API of TORCH_TARGET_VERSION, the oldest torch
-// that builds it, build_support.MIN_TORCH_MACOS; the other sources don't
-// include it.
+// that builds it, which is at most build_support.MIN_TORCH, the floor of the
+// package; the other sources don't include it.
 #define TORCH_TARGET_VERSION (((0ULL + 2) << 56) | ((0ULL + 10) << 48))
 
 #include <torch/csrc/inductor/aoti_torch/c/shim_mps.h>
