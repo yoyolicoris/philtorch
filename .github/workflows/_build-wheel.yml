@@ -91,8 +91,11 @@ jobs:
           # -e, auditwheel/delocate abort not finding them on the build image.
           CIBW_REPAIR_WHEEL_COMMAND_LINUX: >-
             auditwheel repair --exclude 'libtorch*.so*' --exclude 'libc10*.so*' -w {dest_dir} {wheel}
+          # --ignore-missing-dependencies: the extension names torch's libs by
+          # @rpath with no rpath of its own, so delocate can't find their
+          # files; they resolve at runtime to the copies `import torch` loaded.
           CIBW_REPAIR_WHEEL_COMMAND_MACOS: >-
-            delocate-wheel --require-archs {delocate_archs} -e libtorch -e libc10 -w {dest_dir} -v {wheel}
+            delocate-wheel --require-archs {delocate_archs} -e libtorch -e libc10 --ignore-missing-dependencies -w {dest_dir} -v {wheel}
           # cibuildwheel 4 repairs Windows wheels with delvewheel by default,
           # which would bundle torch's DLLs; leave them to torch, as above.
           CIBW_REPAIR_WHEEL_COMMAND_WINDOWS: ""
