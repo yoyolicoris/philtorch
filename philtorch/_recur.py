@@ -27,7 +27,7 @@ The forward pass runs the first kernel of ``_KERNELS`` that takes the input:
   faster, and the inputs past that size;
 * MPS: the Metal kernels, in float32, float16, bfloat16 and complex64:
   ``lti_recur`` and ``scan`` for M = 1, ``lti_recurN`` and ``recurN`` for M
-  up to 32.
+  up to 128 (64 complex).
 
 Every kernel but ``scan``, ``recur3``, ``lti_recur3`` and the Metal
 kernels takes int64 too, so integer recurrences such as the Fibonacci
@@ -85,13 +85,15 @@ _NATIVE_DTYPES = (
 )
 
 
-# The dtypes the Metal kernels take, and their largest M.
+# The dtypes the Metal kernels take, and their largest M, half that for
+# complex, as the Triton kernels'.
 _MPS_DTYPES = (torch.float32, torch.float16, torch.bfloat16, torch.complex64)
-_MPS_MAX_STATES = 32
+_MPS_MAX_STATES = 128
 
 
 def _mps_takes(x: Tensor) -> bool:
-    return x.device.type == "mps" and x.dtype in _MPS_DTYPES and x.size(-1) <= _MPS_MAX_STATES
+    most = _MPS_MAX_STATES // 2 if x.is_complex() else _MPS_MAX_STATES
+    return x.device.type == "mps" and x.dtype in _MPS_DTYPES and x.size(-1) <= most
 
 
 def _lti_recur_applies(A: Tensor, x: Tensor) -> bool:
@@ -254,8 +256,8 @@ def _forward(A: Tensor, zi: Tensor, x: Tensor) -> Tensor:
             reason = f"; the Triton kernels take M up to {most} ({most // 2} complex)"
     elif x.device.type == "mps":  # pragma: no cover - MPS-only
         reason = (
-            f"; the Metal kernels take M up to {_MPS_MAX_STATES} in float32, float16, "
-            "bfloat16 and complex64"
+            f"; the Metal kernels take M up to {_MPS_MAX_STATES} ({_MPS_MAX_STATES // 2} "
+            "complex) in float32, float16, bfloat16 and complex64"
         )
     raise NotImplementedError(
         f"no recurrence kernel for {kind} A with M = {x.size(-1)} in {x.dtype} "

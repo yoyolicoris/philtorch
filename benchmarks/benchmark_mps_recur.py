@@ -56,7 +56,7 @@ DTYPES = {
     "complex64": torch.complex64,
 }
 LAYOUTS = ("shared", "batched", "per_step", "per_step_shared")
-STATES = (1, 2, 4, 8, 16, 32)
+STATES = (1, 2, 4, 8, 16, 32, 64, 128)
 MAX_COEFFICIENTS = 2**26
 # scan's CPU kernel takes no half precision; lti_recur's takes all four dtypes.
 SCAN_CPU_DTYPES = (torch.float32, torch.complex64)

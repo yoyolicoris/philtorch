@@ -103,12 +103,13 @@ def test_recurrence_ignores_memory_past_the_states(dtype):
     "device, M, T",
     # 12 states take the products of 16 x 16 blocks as dots (a complex one as
     # four). The Metal kernel takes M = 1 in tiles of 1024 steps read 4 at a
-    # time: one tile, and three, each ending mid-vector. Its kernels of M > 1,
-    # up to 32, take chunks of 64 steps: 301 steps end mid-chunk, and 2049 make
-    # 33 chunks, whose maps are scanned in turn; 6 and 20 states leave lanes
-    # of their vectors, 8 and 32, idle.
+    # time: one tile, and three, each ending mid-vector. Its kernels of M > 1
+    # take chunks of 64 steps: 301 steps end mid-chunk, and 2049 make 33
+    # chunks, whose maps are scanned in turn. 6 and 20 states leave lanes of
+    # their vectors, 8 and 32, idle; 64 take two states a lane, and their
+    # maps 8 x 8 tiles of products, the most complex64 takes.
     [pytest.param("cuda", M, 300, marks=pytest.mark.cuda) for M in (1, 2, 3, 6, 12)]
-    + [pytest.param("mps", M, T, marks=MPS) for M in (1, 2, 3, 6, 20, 32) for T in (301, 2049)],
+    + [pytest.param("mps", M, T, marks=MPS) for M in (1, 2, 3, 6, 20, 32, 64) for T in (301, 2049)],
 )
 def test_recurrence_low_precision(dtype, tolerance, sharing, device, M, T):
     A, zi, x = _problem(4, T, M, sharing, dtype, device)
@@ -134,12 +135,32 @@ def _mps_relative_error(A, zi, x):
 @pytest.mark.parametrize("sharing", SHARING)
 @pytest.mark.parametrize("M", [2, 5])
 @pytest.mark.parametrize("T", [2**17 + 3, 2**15 + 40])
-def test_recurrence_mps_deep_recursion(sharing, M, T):
+@pytest.mark.parametrize("identity", [False, True])
+def test_recurrence_mps_deep_recursion(sharing, M, T, identity):
     # Hundreds or thousands of chunks of 64 steps, whose maps the same kernels
     # scan over chunks of chunks: three levels, the last chunk of each ending
-    # mid-way, with the maps of A per sequence too.
+    # mid-way, with the maps of A per sequence too. Matrices of norm 0.97
+    # forget a chunk's start within thousands of steps, so the identity, whose
+    # states sum the inputs, carries every chunk's state to the end.
     A, zi, x = _problem(2, T, M, sharing, torch.float32)
+    if identity:
+        A = torch.eye(M).expand_as(A).contiguous()
     assert _mps_relative_error(A, zi, x) < 1e-5
+
+
+@MPS
+@pytest.mark.parametrize("sharing", SHARING)
+@pytest.mark.parametrize("dtype, M", [(torch.float32, 40), (torch.complex64, 40),
+                                      (torch.float32, 100), (torch.float32, 128)])  # fmt: skip
+def test_recurrence_mps_many_states(sharing, dtype, M):
+    # Above 32 states, a lane holds two to four of a vector's, and a map's
+    # blocks of 8 columns take up to 16 x 16 tiles of products.
+    A, zi, x = _problem(2, 200, M, sharing, dtype)
+    wide = torch.complex128 if dtype.is_complex else torch.float64
+    expected = _sequential(*(t.to(wide) for t in (A, zi, x)))
+    actual = recurrence(*(t.to("mps") for t in (A, zi, x)))
+    error = (actual.cpu().to(wide) - expected).abs().max() / expected.abs().max()
+    assert error < 1e-5
 
 
 @MPS
@@ -374,7 +395,7 @@ INTEGER_DISPATCH = [
 
 
 # The Metal kernels, which take these four dtypes: the scalar ones M = 1, and
-# those of order M the states from 2 up to 32.
+# those of order M the states from 2 up to 128 (64 complex).
 MPS_DISPATCH = [
     pytest.param(*case, marks=MPS)
     for case in [

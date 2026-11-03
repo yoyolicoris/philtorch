@@ -34,7 +34,7 @@ PhilTorch requires its compiled `philtorch._C` extension; there is no pure-PyTor
 
 | Route | Platforms | Kernels | Python | PyTorch |
 | --- | --- | --- | --- | --- |
-| PyPI wheel | Linux x86_64 (manylinux_2_28), macOS 14+ arm64, Windows AMD64 | CPU, plus LTI and LPV recurrences of up to 32 states on MPS on macOS, in float32, float16, bfloat16 and complex64 (macOS 15+ from PyTorch 2.15) | 3.11 on, the Pythons its PyTorch has wheels for | 2.12 or newer |
+| PyPI wheel | Linux x86_64 (manylinux_2_28), macOS 14+ arm64, Windows AMD64 | CPU, plus LTI and LPV recurrences of up to 128 states (64 complex) on MPS on macOS, in float32, float16, bfloat16 and complex64 (macOS 15+ from PyTorch 2.15) | 3.11 on, the Pythons its PyTorch has wheels for | 2.12 or newer |
 | CUDA wheel, from the [PhilTorch index](https://yoyolicoris.github.io/philtorch/) | Linux x86_64 (manylinux_2_28) | CPU and CUDA | 3.11 on, the Pythons its PyTorch has wheels for | 2.12 or newer, one wheel per CUDA major version; see [CUDA wheels](#cuda-wheels) |
 | Source build | Any platform with a C++ toolchain | CPU, MPS, or CUDA | 3.11+ | 2.12 or newer |
 
@@ -250,7 +250,7 @@ With the default `unroll_factor=None`, the state-space paths (`lfilter`, `state_
 | MPS | ✓² | ✓² | ✓²³ | ✓² | ✓² | ✓² | ✓²³ |
 
 ✓ native or Triton kernel · ✗ raises `NotImplementedError`, since no kernel takes the input; pass `unroll_factor=1` for the sequential loop, or 2 up to one less than the sequence length for a block-unrolled recursion, or use CPU.
-¹ Triton, up to M = 128 (64 for complex dtypes); larger M raises. A native kernel takes M = 3 in float32. ² float32, float16, bfloat16 and complex64. ³ Up to M = 32; larger M raises.
+¹ Triton, up to M = 128 (64 for complex dtypes); larger M raises. A native kernel takes M = 3 in float32. ² float32, float16, bfloat16 and complex64. ³ Up to M = 128 (64 for complex64); larger M raises.
 
 The CPU and CUDA kernels take floating-point and complex dtypes, and int64, exactly; the MPS kernels take the dtypes of ²; other dtypes raise.
 

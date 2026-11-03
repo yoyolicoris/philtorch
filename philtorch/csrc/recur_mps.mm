@@ -4,6 +4,7 @@
 // state size and dtype, on first use.
 #include "mps_shim.h"
 
+#include <algorithm>
 #include <array>
 #include <limits>
 #include <map>
@@ -32,8 +33,10 @@ constexpr int64_t SIMD_WIDTH = 32;
 // run (see sequence_chunk in recur_mps.metal).
 constexpr int64_t CHUNK = 64;
 constexpr int64_t RUN = 32;
-// The largest state size: a vector of states runs on a SIMD group's lanes.
-constexpr int64_t MAX_STATES = SIMD_WIDTH;
+// The largest state size, half that for complex, as the Triton kernels':
+// a lane holds up to MAX_STATES / SIMD_WIDTH states of a vector, and a SIMD
+// group a block of 8 columns of a map, in registers.
+constexpr int64_t MAX_STATES = 128;
 
 struct Kernels
 {
@@ -61,21 +64,20 @@ const Kernels &kernels(int64_t M, ScalarType dtype)
     return cache.emplace(key, compiled).first->second;
 }
 
-// The lanes of a vector of M states, LANES in recur_mps.metal: M rounded up
-// to a power of 2.
-int64_t lanes(int64_t M)
+// The SIMD groups of n vectors of M states, SIMD_WIDTH / LANES to a group,
+// LANES in recur_mps.metal: M rounded up to a power of 2, SIMD_WIDTH at most.
+int64_t vector_groups(int64_t n, int64_t M)
 {
-    int64_t p = 1;
-    while (p < M)
-        p *= 2;
-    return p;
+    int64_t lanes = 1;
+    while (lanes < std::min(M, SIMD_WIDTH))
+        lanes *= 2;
+    return philtorch::ceil_div(n, SIMD_WIDTH / lanes);
 }
 
-// The threads of n vectors of M states, SIMD_WIDTH / lanes(M) to a SIMD
-// group, in whole threadgroups, which the kernels index in 32 bits.
-std::array<uint64_t, 2> threads(int64_t n, int64_t M)
+// The threads of n SIMD groups, in whole threadgroups, which the kernels
+// index in 32 bits.
+std::array<uint64_t, 2> threads(int64_t simd_groups)
 {
-    const int64_t simd_groups = philtorch::ceil_div(n, SIMD_WIDTH / lanes(M));
     const int64_t groups =
         philtorch::ceil_div<int64_t>(simd_groups * SIMD_WIDTH, THREADS);
     STD_TORCH_CHECK(groups <= std::numeric_limits<uint32_t>::max() / THREADS,
@@ -118,7 +120,7 @@ Tensor recur_mps(const Tensor &a, int64_t a_batch, int64_t stride_b,
     {
         launch(k.run, {a.get(), zi.get(), x.get(), out.get(), out.get()},
                {batch, steps, CHUNK, stride_b, stride_t, from_zi, 1},
-               threads(batch, M), group);
+               threads(vector_groups(batch, M)), group);
         return out;
     }
 
@@ -132,8 +134,8 @@ Tensor recur_mps(const Tensor &a, int64_t a_batch, int64_t stride_b,
     launch(k.reduce, {a.get(), zi.get(), x.get(), offsets.get(), maps.get()},
            {batch, steps, CHUNK, stride_b, stride_t, from_zi, a_batch,
             run_length(maps_per_item)},
-           threads(batch * run_vectors(maps_per_item) + a_batch * maps_per_a * M,
-                   M),
+           threads(vector_groups(batch * run_vectors(maps_per_item), M) +
+                   a_batch * maps_per_a * philtorch::ceil_div<int64_t>(M, 8)),
            group);
 
     // The state at each chunk's end, from the same recurrence over the
@@ -144,7 +146,8 @@ Tensor recur_mps(const Tensor &a, int64_t a_batch, int64_t stride_b,
     launch(k.run, {a.get(), zi.get(), x.get(), starts.get(), out.get()},
            {batch, steps, CHUNK, stride_b, stride_t, from_zi,
             run_length(maps_per_item + 1)},
-           threads(batch * run_vectors(maps_per_item + 1), M), group);
+           threads(vector_groups(batch * run_vectors(maps_per_item + 1), M)),
+           group);
     return out;
 }
 
@@ -162,8 +165,11 @@ void check_inputs(const Tensor &A, const Tensor &zi, const Tensor &x)
                     "x must be (B, T, M) and zi (B, M)");
     STD_TORCH_CHECK(A.size(-1) == x.size(2) && A.size(-2) == x.size(2),
                     "the last two dimensions of A must be M, x's last");
-    STD_TORCH_CHECK(x.size(2) <= MAX_STATES, "the MPS recurrence takes M up to ",
-                    MAX_STATES, ", got ", x.size(2));
+    const int64_t most =
+        x.scalar_type() == ScalarType::ComplexFloat ? MAX_STATES / 2 : MAX_STATES;
+    STD_TORCH_CHECK(x.size(2) <= most, "the MPS recurrence takes M up to ",
+                    MAX_STATES, " (", MAX_STATES / 2, " complex), got ",
+                    x.size(2));
     // The kernels index the steps of a sequence, the last chunk's past its
     // end included, in 32 bits, and check their grids' size as they launch.
     STD_TORCH_CHECK(x.size(1) <= std::numeric_limits<int32_t>::max(),

@@ -229,12 +229,14 @@ def test_lti_recur_mps_grad_equiv(
 
 @_MPS
 @pytest.mark.parametrize("time_invariant", [True, False])
-def test_mps_recurrence_rejects_m_above_32(time_invariant: bool):
-    B, T, M = 2, 5, 33
-    A = torch.zeros(1, 1 if time_invariant else T, M, M, device="mps")
-    zi = torch.zeros(B, M, device="mps")
-    x = torch.zeros(B, T, M, device="mps")
-    with pytest.raises(NotImplementedError, match="Metal kernels take M up to 32"):
+@pytest.mark.parametrize("dtype, M", [(torch.float32, 129), (torch.complex64, 65)])
+def test_mps_recurrence_rejects_m_above_128(time_invariant: bool, dtype: torch.dtype, M: int):
+    # The Triton kernels' limit: 128 states, 64 complex.
+    B, T = 2, 5
+    A = torch.zeros(1, 1 if time_invariant else T, M, M, dtype=dtype, device="mps")
+    zi = torch.zeros(B, M, dtype=dtype, device="mps")
+    x = torch.zeros(B, T, M, dtype=dtype, device="mps")
+    with pytest.raises(NotImplementedError, match="Metal kernels take M up to 128"):
         recurrence(A, zi, x)
 
 
@@ -275,9 +277,10 @@ def test_mps_recur_of_order(order: int, time_invariant: bool, batched: bool):
 
 @_MPS
 @pytest.mark.parametrize("op", ["lti_recurN", "recurN"])
-def test_mps_recur_n_rejects_m_above_32(op: str):
-    with pytest.raises(RuntimeError, match="MPS recurrence takes M up to 32, got 33"):
-        _MPS_OPS_N[op](*_mps_recur_n_args(op, 2, 5, 33))
+@pytest.mark.parametrize("dtype, M", [(torch.float32, 129), (torch.complex64, 65)])
+def test_mps_recur_n_rejects_m_above_128(op: str, dtype: torch.dtype, M: int):
+    with pytest.raises(RuntimeError, match=f"MPS recurrence takes M up to 128 .*, got {M}"):
+        _MPS_OPS_N[op](*_mps_recur_n_args(op, 2, 5, M, dtype))
 
 
 @_MPS
