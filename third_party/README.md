@@ -28,7 +28,13 @@ legacy default stream, which PyTorch's streams don't wait for, so on any other
 stream they could read inputs before they were written and return wrong
 results.
 
-- `torchlpc/cuda/lpc.cu`: launch on the current stream, check each launch,
-  check the order limit with `TORCH_CHECK` instead of `assert`, require
-  the coefficients on the input's device, and include ATen in place of
-  `torch/script.h` and `torch/torch.h`, which pull in Python's full API.
+- `torchlpc/cuda/lpc.cu`:
+  - launches on the current stream and checks each launch;
+  - checks the order limit with `STD_TORCH_CHECK` instead of `assert`;
+  - requires the coefficients, and `zi`, on the input's device;
+  - uses only torch's stable C++ API (`torch/csrc/stable`, `torch/headeronly`);
+  - reads `zi` and `x` and writes the output directly, instead of filtering a
+    padded copy;
+  - has one kernel templated on `c10::complex`, in place of the kernels on split
+    real and imaginary parts;
+  - requires `zi` to have one state per coefficient, as on the CPU.

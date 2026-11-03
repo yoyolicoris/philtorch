@@ -9,16 +9,17 @@ from pathlib import Path
 
 import torch
 
-from ._build_check import check_torch_build, installed_torch_requirement
+from ._build_check import check_torch_build
 
 try:
     from ._version import __version__ as __version__  # type: ignore
 except ImportError:
     __version__ = Path(__file__).parent.joinpath("VERSION.txt").read_text().strip()
 
-# Fail clearly on a wheel installed next to a torch it wasn't built for, before
-# loading the extension would fail with an undefined-symbol error.
-check_torch_build(__version__, torch.__version__, torch.version.cuda, installed_torch_requirement())
+# Fail clearly on a torch older than the floor, a CUDA wheel on another CUDA
+# major, or a CUDA older than 12.9, before loading the extension would fail
+# obscurely.
+check_torch_build(__version__, torch.__version__, torch.version.cuda)
 
 # The compiled extension, then its ops' fake and autograd implementations.
 from . import _C, _ops  # noqa: E402, F401

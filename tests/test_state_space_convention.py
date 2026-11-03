@@ -248,6 +248,12 @@ def test_state_space_recursion_without_a_kernel(module):
         assert torch.equal(actual.long(), expected)
 
 
+def test_state_space_recursion_rejects_float8():
+    # The native kernels take no float8; their dispatch would raise RuntimeError.
+    with pytest.raises(NotImplementedError, match="pass unroll_factor=1"):
+        lti.state_space_recursion(*_recursion_inputs(lti, torch.float8_e4m3fn))
+
+
 @pytest.mark.parametrize("module", [lti, lpv], ids=["lti", "lpv"])
 def test_linear_recurrence_without_a_kernel(module):
     A, zi, x = _recursion_inputs(module, torch.int32)

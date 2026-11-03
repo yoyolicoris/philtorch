@@ -1,10 +1,10 @@
 #!/usr/bin/env python3
 """Rebuild PhilTorch's PyTorch-dependent configuration from upstream.
 
-Rewrites ``cuda_wheel_matrix.json``, ``pyproject.toml`` (requires-python, the
+Rewrites ``torch_matrix.json``, ``pyproject.toml`` (requires-python, the
 Python classifiers and ruff's target) and the CUDA index table of ``README.md``
 under ``--root`` (default: the repository root), from PyPI, download.pytorch.org,
-pytorch/pytorch's release branches, the CPython release cycle and quay.io.
+pytorch/pytorch's release branches and the CPython release cycle.
 A file is rewritten only when its content changes, and nothing is written if
 any step fails. Standard library only; network access goes through ``fetch``.
 """
@@ -23,36 +23,27 @@ import urllib.request
 from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).parent))
-import cuda_wheel_version as cwv  # noqa: E402
+import torch_matrix as tm  # noqa: E402
+
+sys.path.insert(0, str(tm.REPO_ROOT))
+from build_support import MIN_TORCH  # noqa: E402
 
 PYPI_URL = "https://pypi.org/pypi/torch/json"
-INDEX_ROOT_URL = "https://download.pytorch.org/whl/"
 RELEASE_CYCLE_URL = "https://peps.python.org/api/release-cycle.json"
 ARCH_TABLE_URL = (
     "https://raw.githubusercontent.com/pytorch/pytorch/release/{minor}"
     "/.ci/wheel/linux/build_env_setup.py"
 )
-# Newest first, so the first page has the newest dated tag.
-QUAY_TAGS_URL = (
-    "https://quay.io/api/v1/repository/pypa/manylinux_2_28_x86_64/tag/"
-    "?onlyActiveTags=true&limit=100"
-)
-BUILD_IMAGE_REPOSITORY = "quay.io/pypa/manylinux_2_28_x86_64"
 PAGES_URL = "https://yoyolicoris.github.io/philtorch/"
-NEWEST_MINORS = 3
 TABLE_START = "<!-- cuda-index-table:start -->"
 TABLE_END = "<!-- cuda-index-table:end -->"
-FILES = ("cuda_wheel_matrix.json", "pyproject.toml", "README.md")
+MATRIX_FILE, PYPROJECT_FILE, README_FILE = "torch_matrix.json", "pyproject.toml", "README.md"
 
 
 def fetch(url):
     """Return the body of ``url`` as text."""
     with urllib.request.urlopen(url, timeout=60) as response:
         return response.read().decode("utf-8")
-
-
-_key = cwv._version_tuple
-_minor = cwv.torch_minor
 
 
 def parse_pypi_torch(data):
@@ -63,7 +54,7 @@ def parse_pypi_torch(data):
     """
     result = {}
     for version, files in data["releases"].items():
-        if cwv._TORCH_RE.fullmatch(version):
+        if tm.TORCH_RE.fullmatch(version):
             pythons = {
                 f"3.{match[1]}"
                 for file in files
@@ -88,8 +79,8 @@ def parse_arch_table(source, cuda):
     """Return PyTorch's x86_64 architecture list for ``cuda``, or None.
 
     ``TORCH_CUDA_ARCH_LIST_TABLE`` maps a CUDA version to compute capabilities
-    as ``cc * 10`` integers per host. Release wheels carry no PTX
-    (``_ptx_arches`` is empty for them), so the list has none either.
+    as ``cc * 10`` integers per host. PyTorch's release wheels carry no PTX;
+    ours do, for the highest architecture.
     """
     for node in ast.walk(ast.parse(source)):
         if isinstance(node, ast.AnnAssign):
@@ -100,7 +91,9 @@ def parse_arch_table(source, cuda):
             continue
         if any(getattr(t, "id", None) == "TORCH_CUDA_ARCH_LIST_TABLE" for t in targets):
             archs = ast.literal_eval(node.value).get(cuda, {}).get("x86_64")
-            return " ".join(f"{cc // 10}.{cc % 10}" for cc in sorted(archs)) if archs else None
+            if not archs:
+                return None
+            return " ".join(f"{cc // 10}.{cc % 10}" for cc in sorted(archs)) + "+PTX"
     return None
 
 
@@ -113,67 +106,74 @@ def end_of_life(entry):
     return datetime.date.fromisoformat(text)
 
 
-def newest_dated_tag(data):
-    """The newest ``YYYY.MM.DD-N`` tag of a quay.io listing."""
-    names = [tag["name"] for tag in data["tags"]]
-    return max(
-        (n for n in names if re.fullmatch(r"\d{4}\.\d{2}\.\d{2}-\d+", n)),
-        key=lambda n: _key(n.replace("-", ".")),
-    )
-
-
-def compute_builds(old, oldest_python):
-    """One build per CUDA version, for the latest patch of the newest torch minors."""
+def compute_torch(oldest):
+    """The torch entries: the latest patch of the floor minor (MIN_TORCH) and of the
+    three newest minors, each with its CUDA versions and its newest CPython."""
     pypi = parse_pypi_torch(json.loads(fetch(PYPI_URL)))
     latest = {}
     for version in pypi:
-        if _minor(version) not in latest or _key(version) > _key(latest[_minor(version)]):
-            latest[_minor(version)] = version
-    versions = [latest[minor] for minor in sorted(latest, key=_key)[-NEWEST_MINORS:]]
+        if tm.torch_minor(version) not in latest or tm.version_tuple(version) > tm.version_tuple(
+            latest[tm.torch_minor(version)]
+        ):
+            latest[tm.torch_minor(version)] = version
+    minors = [
+        minor
+        for minor in sorted(latest, key=tm.version_tuple)
+        if tm.version_tuple(minor) >= tm.version_tuple(MIN_TORCH)
+    ]
     tags = {
         tag: cuda
-        for tag in sorted(set(re.findall(r'href="(cu\d{3})/"', fetch(INDEX_ROOT_URL))))
-        if _key(cuda := f"{tag[2:-1]}.{tag[-1]}") >= cwv._MIN_CUDA
+        for tag in sorted(set(re.findall(r'href="(cu\d{3})/"', fetch(tm.INDEX_URL))))
+        if tm.version_tuple(cuda := f"{tag[2:-1]}.{tag[-1]}") >= tm.MIN_CUDA
     }
-    listed = {
-        tag: parse_index_versions(fetch(f"{INDEX_ROOT_URL}{tag}/torch/"), tag) for tag in tags
-    }
-    existing = {(_minor(b["torch"]), b["cuda"]): b["cuda_arch_list"] for b in old["builds"]}
-    builds = []
-    for version in versions:
-        minor = _minor(version)
-        pythons = sorted((p for p in pypi[version] if _key(p)[1] >= oldest_python), key=_key)
+    listed = {tag: parse_index_versions(fetch(f"{tm.INDEX_URL}{tag}/torch/"), tag) for tag in tags}
+    entries = []
+    for minor in dict.fromkeys(minors[:1] + minors[-3:]):
+        version = latest[minor]
+        cuda = sorted(
+            (cuda for tag, cuda in tags.items() if version in listed[tag]), key=tm.version_tuple
+        )
+        if not cuda:
+            raise RuntimeError(f"torch {version} is on no CUDA index of {tm.INDEX_URL}")
+        pythons = [p for p in pypi[version] if tm.version_tuple(p)[1] >= oldest]
+        if not pythons:
+            raise RuntimeError(f"torch {version} has no wheel for CPython 3.{oldest} or newer")
+        entries.append(
+            {"version": version, "cuda": cuda, "python": max(pythons, key=tm.version_tuple)}
+        )
+    return entries
+
+
+def compute_arch_lists(torch, old):
+    """The arch list of each CUDA major, from the release branch of the torch that builds it."""
+    lists = {}
+    for entry, cuda in tm.build_pairs(torch):
+        minor, major = tm.torch_minor(entry["version"]), tm.cuda_major(cuda)
         try:
             source = fetch(ARCH_TABLE_URL.format(minor=minor))
         except urllib.error.HTTPError as error:
             if error.code != 404:
                 raise
-            source = ""  # no table on that branch: keep the existing lists
-        tags_for = [tag for tag in tags if version in listed[tag]]
-        if not tags_for:
-            raise RuntimeError(f"torch {version} is on no CUDA index of {INDEX_ROOT_URL}")
-        for tag in tags_for:
-            cuda = tags[tag]
-            arch_list = parse_arch_table(source, cuda) or existing.get((minor, cuda))
-            if arch_list is None:
-                raise RuntimeError(
-                    f"no x86_64 arch list for torch {version} with CUDA {cuda} in "
-                    f"release/{minor} of pytorch/pytorch, and no existing build to keep"
-                )
-            builds.append(
-                {
-                    "torch": version,
-                    "cuda": cuda,
-                    "torch_index_url": INDEX_ROOT_URL + tag,
-                    "cuda_arch_list": arch_list,
-                    "python_versions": pythons,
-                }
+            source = ""  # no table on that branch: keep the existing list
+        lists[major] = parse_arch_table(source, cuda) or old["cuda_arch_lists"].get(major)
+        if lists[major] is None:
+            raise RuntimeError(
+                f"no x86_64 arch list for CUDA {cuda} in release/{minor} of pytorch/pytorch, "
+                "and no existing list to keep"
             )
-    return builds
+    return lists
 
 
-def matrix_pythons(matrix):
-    return {python for build in matrix["builds"] for python in build["python_versions"]}
+def render_matrix(data):
+    """The matrix file's text: ``json.dumps`` with indent 2, but a torch entry on one line."""
+
+    def field(key):
+        if key == "torch":
+            body = ",\n".join(f"    {json.dumps(entry)}" for entry in data[key])
+            return f'  "torch": [\n{body}\n  ]'
+        return f"  {json.dumps(key)}: " + json.dumps(data[key], indent=2).replace("\n", "\n  ")
+
+    return "{\n" + ",\n".join(field(key) for key in data) + "\n}\n"
 
 
 def _sub_once(pattern, replacement, text, what, flags=re.MULTILINE):
@@ -183,13 +183,13 @@ def _sub_once(pattern, replacement, text, what, flags=re.MULTILINE):
     return new
 
 
-def update_pyproject(text, oldest, pythons):
-    """Set requires-python, the Python classifiers and ruff's target, textually."""
+def update_pyproject(text, oldest, newest):
+    """Set requires-python, the classifiers for 3.oldest to 3.newest, and ruff's target."""
     text = _sub_once(
         r'^(requires-python = ">=3\.)\d+(")$', rf"\g<1>{oldest}\g<2>", text, "requires-python"
     )
     classifiers = "".join(
-        f'    "Programming Language :: Python :: {p}",\n' for p in sorted(pythons, key=_key)
+        f'    "Programming Language :: Python :: 3.{p}",\n' for p in range(oldest, newest + 1)
     )
     text = _sub_once(
         r'(?:^    "Programming Language :: Python :: 3\.\d+",\n)+',
@@ -202,28 +202,20 @@ def update_pyproject(text, oldest, pythons):
     )
 
 
-def render_index_table(builds):
-    """The README's CUDA index table: a row per torch minor, newest first."""
-    cudas = sorted({b["cuda"] for b in builds}, key=_key)
-    minors = sorted({_minor(b["torch"]) for b in builds}, key=_key, reverse=True)
-    present = {(_minor(b["torch"]), b["cuda"]) for b in builds}
-    lines = [
-        "| PyTorch | " + " | ".join(f"CUDA {cuda}" for cuda in cudas) + " |",
-        "| --- |" + " --- |" * len(cudas),
-    ]
-    for minor in minors:
-        cells = []
-        for cuda in cudas:
-            path = f"whl/torch{minor}-{cwv._cuda_tag(cuda)}/"
-            cells.append(f"[`{path}`]({PAGES_URL}{path})" if (minor, cuda) in present else "—")
-        lines.append(f"| {minor} | " + " | ".join(cells) + " |")
+def render_index_table(torch):
+    """The README's CUDA index table: a row per CUDA major, newest first."""
+    majors = sorted({int(tm.cuda_major(c)) for e in torch for c in e["cuda"]}, reverse=True)
+    lines = ["| CUDA | Index |", "| --- | --- |"]
+    for major in majors:
+        path = f"whl/cu{major}/"
+        lines.append(f"| {major} | [`{path}`]({PAGES_URL}{path}) |")
     return "\n".join(lines)
 
 
-def update_readme(text, builds):
+def update_readme(text, torch):
     return _sub_once(
         rf"({re.escape(TABLE_START)}\n).*?(\n{re.escape(TABLE_END)})",
-        lambda m: m[1] + render_index_table(builds) + m[2],
+        lambda m: m[1] + render_index_table(torch) + m[2],
         text,
         f"{TABLE_START} block in README.md",
         flags=re.DOTALL,
@@ -232,28 +224,32 @@ def update_readme(text, builds):
 
 def run(root, today):
     """Compute the new text of the files under ``root`` that change."""
-    old_text = {name: (Path(root) / name).read_text(encoding="utf-8") for name in FILES}
-    old = cwv.validate_matrix(json.loads(old_text[FILES[0]]), FILES[0])
-    oldest = int(re.search(r'^requires-python = ">=3\.(\d+)"$', old_text[FILES[1]], re.M)[1])
+    names = (MATRIX_FILE, PYPROJECT_FILE, README_FILE)
+    old_text = {name: (Path(root) / name).read_text(encoding="utf-8") for name in names}
+    oldest = tm.oldest_python(old_text[PYPROJECT_FILE])
+    old = tm.validate_matrix(json.loads(old_text[MATRIX_FILE]), oldest, MATRIX_FILE)
     cycle = json.loads(fetch(RELEASE_CYCLE_URL))
     while end_of_life(cycle[f"3.{oldest}"]) <= today:
         oldest += 1
-    new = dict(old, builds=compute_builds(old, oldest))
-    if matrix_pythons(new) - matrix_pythons(old):
-        tag = newest_dated_tag(json.loads(fetch(QUAY_TAGS_URL)))
-        new["build_image"] = f"{BUILD_IMAGE_REPOSITORY}:{tag}"
-    cwv.validate_matrix(new, "the updated matrix")
+    torch = compute_torch(oldest)
+    new = dict(old, torch=torch, cuda_arch_lists=compute_arch_lists(torch, old))
+    tm.validate_matrix(new, oldest, "the updated matrix")
+    newest = max(tm.version_tuple(entry["python"])[1] for entry in torch)
     new_text = {
-        FILES[0]: json.dumps(new, indent=2) + "\n",
-        FILES[1]: update_pyproject(old_text[FILES[1]], oldest, matrix_pythons(new)),
-        FILES[2]: update_readme(old_text[FILES[2]], new["builds"]),
+        MATRIX_FILE: render_matrix(new),
+        PYPROJECT_FILE: update_pyproject(old_text[PYPROJECT_FILE], oldest, newest),
+        README_FILE: update_readme(old_text[README_FILE], torch),
     }
     return {name: text for name, text in new_text.items() if text != old_text[name]}
 
 
 def main(argv=None, today=None):
     parser = argparse.ArgumentParser(description=__doc__.split("\n\n")[0])
-    parser.add_argument("--root", default=str(cwv.REPO_ROOT), help="directory holding the files")
+    parser.add_argument(
+        "--root",
+        default=str(tm.REPO_ROOT),
+        help="directory holding the files; MIN_TORCH comes from this checkout, not here",
+    )
     args = parser.parse_args(argv)
     today = today or datetime.datetime.now(datetime.UTC).date()
     for name, text in run(args.root, today).items():

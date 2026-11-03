@@ -1,4 +1,4 @@
-name: Build CPU wheels
+name: Build wheels
 
 on:
   push:
@@ -9,217 +9,315 @@ on:
     types: [published]
   workflow_dispatch:
 
+# A new push to a pull request cancels its older run. Every other run has a
+# group of its own, so dev pushes and releases never wait or get cancelled.
+concurrency:
+  group: ${{ github.event_name == 'pull_request' && format('build-wheels-{0}', github.ref) || github.run_id }}
+  cancel-in-progress: true
+
 jobs:
-  resolve-torch-versions:
+  resolve-legs:
+    # The torch, Python and OS of each build and test job, from
+    # torch_matrix.json.
     runs-on: ubuntu-latest
     permissions:
       contents: read
     outputs:
-      matrix: ${{ steps.resolve.outputs.matrix }}
-      pythons: ${{ steps.resolve.outputs.pythons }}
+      floor: ${{ steps.legs.outputs.floor }}
+      newest: ${{ steps.legs.outputs.newest }}
+      build_python: ${{ steps.legs.outputs.build_python }}
+      build_os: ${{ steps.legs.outputs.build_os }}
+      test_os: ${{ steps.legs.outputs.test_os }}
+      cpu_tests: ${{ steps.legs.outputs.cpu_tests }}
+      cuda_builds: ${{ steps.legs.outputs.cuda_builds }}
     steps:
       - uses: actions/checkout@v7
 
-      - name: Install packaging
-        run: pip install packaging
+      - name: Resolve the legs
+        id: legs
+        run: python3 scripts/torch_matrix.py legs --event "$GITHUB_EVENT_NAME" >> "$GITHUB_OUTPUT"
 
-      - name: Resolve stable PyTorch versions to build against
-        id: resolve
-        env:
-          GITHUB_EVENT_NAME: ${{ github.event_name }}
+  # One abi3 wheel per OS, built on the floor torch and the oldest Python (its
+  # wheel serves every later Python). The test jobs run it on the cpu_tests
+  # legs.
+  build:
+    needs: resolve-legs
+    strategy:
+      fail-fast: false
+      matrix:
+        os: ${{ fromJson(needs.resolve-legs.outputs.build_os) }}
+    runs-on: ${{ matrix.os }}
+    permissions:
+      contents: read
+    steps:
+      - uses: actions/checkout@v7
+        with:
+          fetch-depth: 0
+          # fetch-depth: 0 required so setuptools_scm can read full
+          # git history and tags to derive the package version number.
+
+      - uses: actions/setup-python@v7
+        with:
+          # The interpreter cibuildwheel runs on, not the wheels' (CIBW_BUILD);
+          # cibuildwheel 4 needs Python 3.11 or newer.
+          python-version: "3.13"
+
+      - name: Configure native build environment (macOS)
+        # cibuildwheel builds macOS wheels on the runner (no container), so
+        # env vars set here reach the build subprocess.
+        if: runner.os == 'macOS'
         run: |
-          python3 - <<'EOF'
-          import json, os, re, tomllib, urllib.request
-          from packaging.specifiers import SpecifierSet
-          from packaging.version import Version
+          # 14.0 floor: the MPS Metal kernels need a newer Metal/MPS runtime
+          # than the arm64 Big Sur (11.0) default. See README.
+          echo "MACOSX_DEPLOYMENT_TARGET=14.0" >> "$GITHUB_ENV"
 
-          # PyPI's JSON API is a stable, documented contract (unlike scraping
-          # download.pytorch.org's HTML directory listing), and its release
-          # versions match 1:1 with the +cpu builds hosted there, so there's
-          # no need to hit that index at all.
-          url = "https://pypi.org/pypi/torch/json"
-          req = urllib.request.Request(url, headers={"User-Agent": "philtorch-ci"})
-          with urllib.request.urlopen(req) as r:
-              data = json.load(r)
+      - name: Install cibuildwheel
+        # 4.2.0 or later builds CPython 3.15 by default. Free-threaded builds
+        # are on by default too, but CIBW_BUILD below names only regular ones.
+        run: pip install cibuildwheel==4.3.5
 
-          # Yanked files don't count, as in scripts/update_cuda_matrix.py.
-          releases = {
-              v: [f for f in files if not f["yanked"]] for v, files in data["releases"].items()
+      - name: Select the Python to build on
+        # Expressions have no string replace: "3.11" becomes "cp311-*".
+        shell: bash
+        run: echo "CIBW_BUILD=cp${PYTHON_VERSION/./}-*" >> "$GITHUB_ENV"
+        env:
+          PYTHON_VERSION: ${{ needs.resolve-legs.outputs.build_python }}
+
+      - name: Build wheels
+        run: cibuildwheel --output-dir wheelhouse
+        env:
+          # CIBW_BUILD, the Python to build on, is set by the step above.
+          CIBW_SKIP: "*-musllinux_*"
+          CIBW_ARCHS_LINUX: x86_64
+          CIBW_ARCHS_MACOS: arm64
+          CIBW_ARCHS_WINDOWS: AMD64
+          CIBW_MANYLINUX_X86_64_IMAGE: manylinux_2_28
+          # CPython's default flags include -g, and on Linux the debug info
+          # lands in _C itself (about 36 of its 37 MB). Strip it at link time:
+          # LDFLAGS is appended to the link command, whereas a CXXFLAGS
+          # override would replace Python's flags, -O3 included.
+          CIBW_ENVIRONMENT_LINUX: LDFLAGS="$LDFLAGS -Wl,--strip-debug"
+          # torch (+ setuptools) are installed into the build env by
+          # CIBW_BEFORE_BUILD, so disable build isolation; otherwise setup.py
+          # can't `import torch` and silently builds an extension-less wheel.
+          CIBW_BUILD_FRONTEND: "pip; args: --no-build-isolation"
+          # macOS CPU wheels on the PyTorch index aren't `+cpu`-suffixed, so
+          # add the suffix only off-macOS (resolved via runner.os).
+          CIBW_BEFORE_BUILD: >-
+            pip install "setuptools>=77.0.3" "setuptools_scm>=8" wheel &&
+            pip install torch==${{ needs.resolve-legs.outputs.floor }}${{ runner.os != 'macOS' && '+cpu' || '' }} --index-url https://download.pytorch.org/whl/cpu
+          CIBW_TEST_SKIP: "*"
+          # torch's libs are excluded from repair: torch is a separate runtime
+          # dep (never vendored), and `import torch` loads them globally before
+          # philtorch._C, so the extension resolves them at runtime. Without
+          # -e, auditwheel/delocate abort not finding them on the build image.
+          CIBW_REPAIR_WHEEL_COMMAND_LINUX: >-
+            auditwheel repair --exclude 'libtorch*.so*' --exclude 'libc10*.so*' -w {dest_dir} {wheel}
+          # --ignore-missing-dependencies: the extension names torch's libs by
+          # @rpath with no rpath of its own, so delocate can't find their
+          # files; they resolve at runtime to the copies `import torch` loaded.
+          CIBW_REPAIR_WHEEL_COMMAND_MACOS: >-
+            delocate-wheel --require-archs {delocate_archs} -e libtorch -e libc10 --ignore-missing-dependencies -w {dest_dir} -v {wheel}
+          # cibuildwheel 4 repairs Windows wheels with delvewheel by default,
+          # which would bundle torch's DLLs; leave them to torch, as above.
+          CIBW_REPAIR_WHEEL_COMMAND_WINDOWS: ""
+
+      - uses: actions/upload-artifact@v7
+        with:
+          name: wheels-${{ matrix.os }}
+          path: wheelhouse/*.whl
+
+  # Every wheel is built against the floor torch, so this is the only job that
+  # compiles against the newest one. It checks that the extension builds and
+  # imports there; no tests, no artifact.
+  build-newest-torch:
+    needs: resolve-legs
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+    steps:
+      - uses: actions/checkout@v7
+        with:
+          fetch-depth: 0
+          # fetch-depth: 0 so setuptools_scm sees the tags.
+
+      - uses: actions/setup-python@v7
+        with:
+          python-version: ${{ needs.resolve-legs.outputs.build_python }}
+
+      - name: Install the build requirements
+        run: |
+          pip install "setuptools>=77.0.3" "setuptools_scm>=8" wheel
+          pip install torch==${{ needs.resolve-legs.outputs.newest }}+cpu --index-url https://download.pytorch.org/whl/cpu
+
+      - name: Build and install
+        run: pip install --no-build-isolation .
+
+      - name: Import
+        # Outside the checkout, so that the installed package is imported.
+        working-directory: ${{ runner.temp }}
+        run: python -c "import philtorch"
+
+  docs:
+    permissions:
+      contents: read
+    uses: ./.github/workflows/docs.yml
+
+  # Releases only: the CUDA wheels, built and GPU-tested alongside the CPU
+  # jobs; attach-cuda-wheels attaches them once everything has passed.
+  cuda-wheels:
+    if: github.event_name == 'release'
+    permissions:
+      contents: read
+    uses: ./.github/workflows/build-cuda-wheels.yml
+    secrets: inherit
+
+  # Attaches the CUDA wheels to the release once every CPU and CUDA check has
+  # passed, so that a release publishes all or nothing; deploy-cuda-index.yml
+  # then lists them in the index. Assets already on the release are never
+  # replaced: a wheel already there with the same contents is skipped, so
+  # failed jobs can be re-run, and one with different contents fails the job.
+  attach-cuda-wheels:
+    needs: [resolve-legs, build, build-newest-torch, build-sdist, docs, test, cuda-wheels]
+    if: >
+      github.event_name == 'release' &&
+      (startsWith(github.event.release.tag_name, 'v0.') || startsWith(github.event.release.tag_name, 'v1.'))
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+    steps:
+      - uses: actions/download-artifact@v8
+        with:
+          pattern: cuda-wheels-*
+          merge-multiple: true
+          path: wheels/
+
+      - name: Upload wheels to the release
+        env:
+          GH_TOKEN: ${{ github.token }}
+          TAG: ${{ github.event.release.tag_name }}
+          BUILDS: ${{ needs.resolve-legs.outputs.cuda_builds }}
+        run: |
+          EXPECTED=$(echo "$BUILDS" | jq length)
+          FOUND=$(ls wheels/*.whl | wc -l)
+          if [ "$FOUND" -ne "$EXPECTED" ]; then
+            echo "::error::Expected $EXPECTED wheels, found $FOUND"
+            exit 1
+          fi
+          published() {
+            gh release view "$TAG" --repo "$GITHUB_REPOSITORY" \
+              --json assets --jq '.assets[] | "\(.name) \(.digest)"' > published.txt
           }
-          versions = [
-              Version(v) for v, files in releases.items() if files and not Version(v).is_prerelease
-          ]
-          if not versions:
-              raise RuntimeError("No stable torch releases found via PyPI JSON API")
-          parsed = sorted(set(versions), reverse=True)
+          published_digest() {
+            awk -v name="$(basename "$1")" '$1 == name { print $2 }' published.txt
+          }
+          digest() {
+            echo "sha256:$(sha256sum "$1" | cut -d' ' -f1)"
+          }
+          # Check every wheel before uploading any.
+          published
+          for WHEEL in wheels/*.whl; do
+            NAME=$(basename "$WHEEL")
+            VERSION=$(echo "$NAME" | cut -d- -f2)
+            if [ "${VERSION%%+*}" != "${TAG#v}" ]; then
+              echo "::error::$NAME was not built as version ${TAG#v}"
+              exit 1
+            fi
+            PUBLISHED=$(published_digest "$WHEEL")
+            if [ -n "$PUBLISHED" ] && [ "$PUBLISHED" != "$(digest "$WHEEL")" ]; then
+              echo "::error::$NAME is already on $TAG with different contents"
+              exit 1
+            fi
+          done
+          for WHEEL in wheels/*.whl; do
+            if [ -n "$(published_digest "$WHEEL")" ]; then
+              echo "$(basename "$WHEEL") is already on $TAG"
+            else
+              gh release upload "$TAG" "$WHEEL" --repo "$GITHUB_REPOSITORY"
+            fi
+          done
+          # The index links to assets by name, so check that every wheel is
+          # there under its own filename and with its own contents.
+          published
+          for WHEEL in wheels/*.whl; do
+            if [ "$(published_digest "$WHEEL")" != "$(digest "$WHEEL")" ]; then
+              echo "::error::$(basename "$WHEEL") is missing from $TAG or differs"
+              exit 1
+            fi
+          done
 
-          # Pick the latest patch for each minor series, take the 3 most recent minors
-          seen_minor = {}
-          for v in parsed:
-              key = (v.major, v.minor)
-              if key not in seen_minor:
-                  seen_minor[key] = str(v)
-          top3 = [seen_minor[k] for k in sorted(seen_minor, reverse=True)[:3]]
-
-          # Building against every supported minor is expensive; PRs only need
-          # a quick sanity check against the latest stable release.
-          pr = os.environ["GITHUB_EVENT_NAME"] == "pull_request"
-          selected = top3[:1] if pr else top3
-
-          # The Pythons each torch ships wheels for, from pyproject.toml's
-          # requires-python on: a new torch minor can drop the oldest (torch
-          # 2.15 has no 3.10 wheels) and add the newest. PyPI lists
-          # free-threaded wheels under the same python_version (cp315), so
-          # they need no filtering here. The wheel builds on the oldest; PRs
-          # test it on the oldest and newest, which catches most
-          # version-specific breakage (e.g. NumPy 2.2 being the last release
-          # for 3.10, see #56); other events the full range.
-          with open("pyproject.toml", "rb") as f:
-              requires = SpecifierSet(tomllib.load(f)["project"]["requires-python"])
-          pythons = {}
-          for v in selected:
-              minors = {
-                  int(m.group(1))
-                  for f in releases[v]
-                  if (m := re.fullmatch(r"cp3(\d+)", f["python_version"]))
-                  and f"3.{m.group(1)}" in requires
-              }
-              if not minors:
-                  raise RuntimeError(f"torch {v} has no wheels for Python {requires}")
-              available = [f"3.{m}" for m in sorted(minors)]
-              pythons[v] = [available[0], available[-1]] if pr else available
-
-          print(f"Resolved torch versions: {selected}, with Pythons {pythons}")
-          with open(os.environ["GITHUB_OUTPUT"], "a") as f:
-              f.write(f"matrix={json.dumps(selected)}\n")
-              f.write(f"pythons={json.dumps(pythons)}\n")
-          EOF
-
-  # One job per OS (each calling the reusable _build-wheel.yml) rather than a
-  # single os x torch matrix, so each OS gets its own conclusion and a failure
-  # on one OS doesn't skip the others' downstream test/publish jobs.
-  # Within each OS, strategy.matrix fans out over the resolved Torch minors
-  # (latest only on pull_request; latest 3 otherwise) for build/test signal.
-  # Only the wheel built against the latest minor (matrix[0]) is published; see
-  # the publish job and PR #20 for why wheels can't be published per-minor.
-  build-wheels-ubuntu:
-    needs: resolve-torch-versions
-    permissions:
-      contents: read
+  # Each OS's wheel on every cpu_tests leg: a torch, maybe a later minor than
+  # the wheel's, and a Python. A missing wheel (its build failed) fails the
+  # leg at the download, without skipping the other OSes. The macOS runners
+  # have no usable MPS (#126), so the MPS tests skip there.
+  test:
+    name: test ${{ matrix.os }}, torch ${{ matrix.leg.torch }}, Python ${{ matrix.leg.python }}
+    needs: [resolve-legs, build]
+    if: ${{ !cancelled() && needs.resolve-legs.result == 'success' }}
     strategy:
       fail-fast: false
       matrix:
-        torch-version: ${{ fromJson(needs.resolve-torch-versions.outputs.matrix) }}
-    uses: ./.github/workflows/_build-wheel.yml
-    with:
-      os: ubuntu-latest
-      python_versions: ${{ toJson(fromJson(needs.resolve-torch-versions.outputs.pythons)[matrix.torch-version]) }}
-      torch_version: ${{ matrix.torch-version }}
-
-  # macOS runners are expensive: build/test only on pull requests and
-  # published releases. Matrixed over the resolved
-  # Torch versions like ubuntu (1 version on PR, top 3 otherwise) so releases
-  # get full torch x python coverage, not just the latest minor.
-  build-wheels-macos:
-    if: >
-      github.event_name == 'pull_request' ||
-      github.event_name == 'release'
-    needs: resolve-torch-versions
+        os: ${{ fromJson(needs.resolve-legs.outputs.test_os) }}
+        leg: ${{ fromJson(needs.resolve-legs.outputs.cpu_tests) }}
+    runs-on: ${{ matrix.os }}
     permissions:
       contents: read
-    strategy:
-      fail-fast: false
-      matrix:
-        torch-version: ${{ fromJson(needs.resolve-torch-versions.outputs.matrix) }}
-    uses: ./.github/workflows/_build-wheel.yml
-    with:
-      os: macos-latest
-      python_versions: ${{ toJson(fromJson(needs.resolve-torch-versions.outputs.pythons)[matrix.torch-version]) }}
-      torch_version: ${{ matrix.torch-version }}
+    env:
+      # Only the first leg, the floor torch on the build Python, on Ubuntu
+      # uploads to Codecov, to avoid duplicate reports for the same commit.
+      UPLOAD_COVERAGE: >-
+        ${{ matrix.os == 'ubuntu-latest' &&
+        matrix.leg.torch == needs.resolve-legs.outputs.floor &&
+        matrix.leg.python == needs.resolve-legs.outputs.build_python }}
+    steps:
+      - uses: actions/checkout@v7
 
-  # Windows: torchlpc is now vendored (DiffAPF/torchlpc@1bfde4a) and bundled into
-  # philtorch._C, so MSVC no longer needs external torchlpc wheel. Windows is
-  # built and publishable; test-windows runs smoke test.
-  build-wheels-windows:
-    needs: resolve-torch-versions
-    permissions:
-      contents: read
-    uses: ./.github/workflows/_build-wheel.yml
-    with:
-      os: windows-latest
-      python_versions: ${{ toJson(fromJson(needs.resolve-torch-versions.outputs.pythons)[fromJson(needs.resolve-torch-versions.outputs.matrix)[0]]) }}
-      torch_version: ${{ fromJson(needs.resolve-torch-versions.outputs.matrix)[0] }}
+      - uses: actions/setup-python@v7
+        with:
+          python-version: ${{ matrix.leg.python }}
 
-  # Same Ruff lint and format checks as the standalone Lint workflow, so
-  # publishing is gated on them.
-  lint:
-    permissions:
-      contents: read
-    uses: ./.github/workflows/ruff.yml
+      - uses: actions/download-artifact@v8
+        with:
+          name: wheels-${{ matrix.os }}
+          path: wheelhouse
 
-  # One test job per OS (see build-wheels-ubuntu comment), matrixed over the
-  # same resolved Torch minors so each leg tests the wheel built against that
-  # minor.
-  test-ubuntu:
-    needs: [resolve-torch-versions, build-wheels-ubuntu]
-    permissions:
-      contents: read
-    strategy:
-      fail-fast: false
-      matrix:
-        torch-version: ${{ fromJson(needs.resolve-torch-versions.outputs.matrix) }}
-    uses: ./.github/workflows/_test-wheel.yml
-    with:
-      os: ubuntu-latest
-      # The Pythons to test the wheel on (see resolve-torch-versions).
-      python_versions: ${{ toJson(fromJson(needs.resolve-torch-versions.outputs.pythons)[matrix.torch-version]) }}
-      torch_version: ${{ matrix.torch-version }}
-      # Only the leg for the latest resolved Torch minor (matrix[0]) uploads
-      # coverage, to avoid duplicate reports for the same commit.
-      upload_coverage: ${{ matrix.torch-version == fromJson(needs.resolve-torch-versions.outputs.matrix)[0] }}
-    secrets:
-      codecov_token: ${{ secrets.CODECOV_TOKEN }}
+      - name: Install wheel and test dependencies
+        # Runs under bash on every OS (Windows uses bundled Git Bash). Torch is
+        # installed without the "+cpu" suffix on macOS, as in the build job.
+        shell: bash
+        run: |
+          shopt -s nullglob
+          WHEELS=(wheelhouse/philtorch-*-abi3-*.whl)
+          if [ "${#WHEELS[@]}" -ne 1 ]; then
+            echo "Expected exactly one abi3 wheel in wheelhouse/, found ${#WHEELS[@]}: ${WHEELS[*]}" >&2
+            exit 1
+          fi
 
-  # Mirrors build-wheels-macos: only pull_request and official releases test
-  # a macOS wheel, matrixed over the same resolved Torch versions so releases
-  # get full torch x python coverage, not just the latest minor.
-  test-macos:
-    if: >
-      github.event_name == 'pull_request' ||
-      github.event_name == 'release'
-    needs: [resolve-torch-versions, build-wheels-macos]
-    permissions:
-      contents: read
-    strategy:
-      fail-fast: false
-      matrix:
-        torch-version: ${{ fromJson(needs.resolve-torch-versions.outputs.matrix) }}
-    uses: ./.github/workflows/_test-wheel.yml
-    with:
-      os: macos-latest
-      python_versions: ${{ toJson(fromJson(needs.resolve-torch-versions.outputs.pythons)[matrix.torch-version]) }}
-      torch_version: ${{ matrix.torch-version }}
-    secrets:
-      codecov_token: ${{ secrets.CODECOV_TOKEN }}
+          pip install torch==${{ matrix.leg.torch }}${{ runner.os != 'macOS' && '+cpu' || '' }} --index-url https://download.pytorch.org/whl/cpu
 
-  # Mirrors build-wheels-macos: only pull_request and official releases test
-  # a Windows wheel. Windows builds only the latest torch version (to save
-  # runner cost), so we constrain this test to that same single version
-  # rather than matrixing over 3 versions which would 404 on missing artifacts.
-  test-windows:
-    if: >
-      github.event_name == 'pull_request' ||
-      github.event_name == 'release'
-    needs: [resolve-torch-versions, build-wheels-windows]
-    permissions:
-      contents: read
-    uses: ./.github/workflows/_test-wheel.yml
-    with:
-      os: windows-latest
-      python_versions: ${{ toJson(fromJson(needs.resolve-torch-versions.outputs.pythons)[fromJson(needs.resolve-torch-versions.outputs.matrix)[0]]) }}
-      torch_version: ${{ fromJson(needs.resolve-torch-versions.outputs.matrix)[0] }}
-    secrets:
-      codecov_token: ${{ secrets.CODECOV_TOKEN }}
+          # Vendored torchlpc is now bundled in philtorch._C; no separate pip install.
+          # Keep --no-deps since torch is already present.
+          pip install --no-deps "${WHEELS[0]}"
+          pip install numpy scipy pytest pytest-cov
+
+      - name: Test with pytest
+        run: pytest --cov-branch --cov-report=xml --junitxml=junit.xml -o junit_family=legacy
+
+      - name: Upload coverage reports to Codecov
+        if: env.UPLOAD_COVERAGE == 'true'
+        uses: codecov/codecov-action@v5
+        with:
+          token: ${{ secrets.CODECOV_TOKEN }}
+
+      - name: Upload test results to Codecov
+        # Per-test durations and failures, for Codecov's test analytics; also
+        # when tests fail.
+        if: ${{ !cancelled() && env.UPLOAD_COVERAGE == 'true' }}
+        uses: codecov/codecov-action@v5
+        with:
+          token: ${{ secrets.CODECOV_TOKEN }}
+          report_type: test_results
+          files: junit.xml
 
   build-sdist:
     runs-on: ubuntu-latest
@@ -249,39 +347,34 @@ jobs:
 
   publish:
     runs-on: ubuntu-latest
-    # TestPyPI publishes from dev after the Linux smoke tests pass.
-    # Production publishes only from a supported published GitHub Release after
-    # every Linux, macOS, and Windows wheel smoke test passes.
+    # TestPyPI publishes from dev, PyPI from a supported published GitHub
+    # Release, each only after every job here has passed; a release also waits
+    # for the CUDA wheels to be attached.
     needs:
-      [
-        resolve-torch-versions,
-        build-wheels-ubuntu,
-        build-wheels-macos,
-        build-wheels-windows,
-        build-sdist,
-        lint,
-        test-ubuntu,
-        test-macos,
-        test-windows,
-      ]
-    # `!cancelled()` allows the dev path to run while release-only macOS and
-    # Windows test jobs are skipped, so every required result is checked here.
+      - build
+      - build-newest-torch
+      - build-sdist
+      - docs
+      - test
+      - attach-cuda-wheels
+    # `!cancelled()` lets this job run after a failed or skipped dependency, so
+    # every required result is checked here. The build and test matrices hold
+    # only the OSes that ran for the event, and attach-cuda-wheels runs only
+    # for a release.
     if: >
       !cancelled() &&
-      needs.build-wheels-ubuntu.result == 'success' &&
-      needs.build-wheels-windows.result == 'success' &&
+      needs.build.result == 'success' &&
+      needs.build-newest-torch.result == 'success' &&
       needs.build-sdist.result == 'success' &&
-      needs.lint.result == 'success' &&
-      needs.test-ubuntu.result == 'success' &&
+      needs.docs.result == 'success' &&
+      needs.test.result == 'success' &&
       (
         (github.event_name == 'push' && github.ref == 'refs/heads/dev') ||
         (
           github.event_name == 'release' &&
           github.event.action == 'published' &&
           (startsWith(github.event.release.tag_name, 'v0.') || startsWith(github.event.release.tag_name, 'v1.')) &&
-          needs.build-wheels-macos.result == 'success' &&
-          needs.test-macos.result == 'success' &&
-          needs.test-windows.result == 'success'
+          needs.attach-cuda-wheels.result == 'success'
         )
       )
     permissions:
@@ -289,25 +382,11 @@ jobs:
     environment:
       name: ${{ github.event_name == 'release' && 'pypi' || 'testpypi' }}
     steps:
-      - name: Download Linux wheel
+      - name: Download the wheels
         uses: actions/download-artifact@v8
         with:
-          name: wheels-ubuntu-latest-torch${{ fromJson(needs.resolve-torch-versions.outputs.matrix)[0] }}
-          path: dist/
-
-      - name: Download macOS wheel
-        if: >
-          github.event_name == 'release' &&
-          needs.build-wheels-macos.result == 'success'
-        uses: actions/download-artifact@v8
-        with:
-          name: wheels-macos-latest-torch${{ fromJson(needs.resolve-torch-versions.outputs.matrix)[0] }}
-          path: dist/
-
-      - name: Download Windows wheel
-        uses: actions/download-artifact@v8
-        with:
-          name: wheels-windows-latest-torch${{ fromJson(needs.resolve-torch-versions.outputs.matrix)[0] }}
+          pattern: wheels-*
+          merge-multiple: true
           path: dist/
 
       - uses: actions/download-artifact@v8
@@ -321,6 +400,7 @@ jobs:
         with:
           packages-dir: dist/
           repository-url: https://test.pypi.org/legacy/
+          skip-existing: true
 
       - name: Publish to PyPI
         if: >

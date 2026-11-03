@@ -1,21 +1,12 @@
 // The scalar recurrence on MPS, time-invariant and time-varying, on torch's
 // stable ABI: the stable C++ API and torch's Metal C shim (shim_mps.h), which
 // compiles the shader source, binds tensors and dispatches on PyTorch's MPS
-// stream. It is held to the API of TORCH_TARGET_VERSION, the oldest torch
-// that builds it, build_support.MIN_TORCH_MACOS; the other sources don't
-// include it.
-#define TORCH_TARGET_VERSION (((0ULL + 2) << 56) | ((0ULL + 10) << 48))
+// stream. stable_support.h holds it to the API of the package's floor torch.
+#include "stable_support.h"
 
 #include <torch/csrc/inductor/aoti_torch/c/shim_mps.h>
-#include <torch/csrc/stable/library.h>
-#include <torch/csrc/stable/ops.h>
-#include <torch/csrc/stable/tensor.h>
-#include <torch/headeronly/core/ScalarType.h>
-#include <torch/headeronly/util/Exception.h>
-#include <torch/headeronly/util/shim_utils.h>
 
 #include <array>
-#include <cstdint>
 #include <initializer_list>
 #include <limits>
 #include <mutex>

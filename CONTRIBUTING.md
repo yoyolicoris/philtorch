@@ -79,12 +79,16 @@ Maintainers may ask for a larger proposal to be split into smaller pull requests
 
 The `update-pytorch` workflow (`.github/workflows/update-pytorch.yml`) runs every Monday and from the Actions tab ("Run workflow"). It never merges or approves anything.
 
-- **The pull request.** `scripts/update_cuda_matrix.py` rewrites, from PyPI, download.pytorch.org, PyTorch's release branches, the CPython release cycle and quay.io: `cuda_wheel_matrix.json` (the torch minors, CUDA versions, Pythons and architectures), `build_image` in it, `requires-python`, the Python classifiers and Ruff's target version in `pyproject.toml` (at CPython end of life), and the README's CUDA table. When that changes a file, the workflow commits it to `bot/pytorch-update` and opens a pull request against `dev`; its body lists what to check by hand. Don't push to that branch: the next update overwrites it. Make follow-ups after merging. If you close the pull request to decline it, the next Monday opens a new one while the update still applies.
-- **CI on it.** The workflow's token starts no workflows on the pull request, so **close and reopen it to run CI**, which includes the CUDA build and the GPU smoke test. This needs "Allow GitHub Actions to create and approve pull requests" on, under Settings, Actions, General.
+- **The pull request.** `scripts/update_torch_matrix.py` rewrites, from PyPI, download.pytorch.org, PyTorch's release branches and the CPython release cycle: `torch_matrix.json` (the floor torch minor and the three newest, their CUDA versions and newest Pythons, and the CUDA architectures), which both wheel workflows read through `scripts/torch_matrix.py`, `requires-python`, the Python classifiers and Ruff's target version in `pyproject.toml` (at CPython end of life), and the README's CUDA table. When that changes a file, the workflow commits it to `bot/pytorch-update` and opens a pull request against `dev`; its body lists what to check by hand. Don't push to that branch: the next update overwrites it. Make follow-ups after merging. If you close the pull request to decline it, the next Monday opens a new one while the update still applies.
+- **The floor.** `MIN_TORCH` in `build_support.py` is the oldest torch the wheels support: they are built on it and require it, and CI tests it with the three newest minors. It stays put when a new minor ships. Raise it, with `TORCH_TARGET_VERSION` in `philtorch/csrc/stable_support.h`, only when one of these holds:
+  - the code needs a stable API that the floor lacks;
+  - the floor torch can't build a wheel PhilTorch ships, such as for a Python it supports, or the CI image can't install it;
+  - PyTorch ends its stable-ABI compatibility for the floor.
+- **CI on it.** The workflow's token starts no workflows on the pull request, so **close and reopen it to run CI**, which includes the CUDA build and the GPU smoke test, on the newest torch with its newest CUDA only (a release tests every pair). This needs "Allow GitHub Actions to create and approve pull requests" on, under Settings, Actions, General.
 - **The issue.** Once the release notes of a new minor release are published, which can be days after its wheels, `scripts/pytorch_release_impact.py` opens an issue "PyTorch X.Y release impact": a link to the notes and a brief summary from GitHub Copilot CLI, run without tools on the notes, of what changed upstream, how it affects PhilTorch and what to do now. The summary can be wrong: check it against the notes before acting. Without the token below, the issue has the link only; if Copilot fails, no issue is opened and the next run tries again.
 - **The Copilot token.** The repository belongs to a user, so Copilot CLI cannot use the workflow's `GITHUB_TOKEN`. Create a fine-grained personal access token at github.com/settings/personal-access-tokens/new, with your personal account as the resource owner and the "Copilot Requests" account permission, and store it as the repository secret `COPILOT_GITHUB_TOKEN`. The run counts against that account's Copilot plan, at about one request per PyTorch minor release. The repository variable `COPILOT_MODEL` picks the model (default `auto`).
 
-To run it by hand, run `python scripts/update_cuda_matrix.py`, which edits the files in place. For the issue, run `scripts/pytorch_release_impact.py --prepare DIR` (with `GH_TOKEN` set), then `copilot -p "$(cat DIR/prompt.md)" -s --available-tools=none --deny-tool=shell --deny-tool=write --deny-tool=url --disable-builtin-mcps > DIR/summary.md` from an empty directory, then `--post DIR --summary-file DIR/summary.md --dry-run`, which prints the issue instead of opening it.
+To run it by hand, run `python scripts/update_torch_matrix.py`, which edits the files in place. For the issue, run `scripts/pytorch_release_impact.py --prepare DIR` (with `GH_TOKEN` set), then `copilot -p "$(cat DIR/prompt.md)" -s --available-tools=none --deny-tool=shell --deny-tool=write --deny-tool=url --disable-builtin-mcps > DIR/summary.md` from an empty directory, then `--post DIR --summary-file DIR/summary.md --dry-run`, which prints the issue instead of opening it.
 
 ## Releasing
 
@@ -107,13 +111,11 @@ Releases are cut from `dev`. The package version comes from the latest `v*` tag 
 
    `--target` needs the full 40-character SHA: GitHub rejects an abbreviated one with "Release.target_commitish is invalid".
 
-   Publishing the release triggers the PyPI upload in `build-wheels.yml`, which accepts tags starting with `v0.` or `v1.`.
+   Publishing the release runs `build-wheels.yml`, which builds and tests the CPU wheels and the sdist, builds the docs and calls `build-cuda-wheels.yml`. It uploads to PyPI only after all of them have passed, for tags starting with `v0.` or `v1.`. The CUDA wheels take under an hour:
+   - `build-cuda-wheels.yml` builds one CUDA wheel per CUDA major in `torch_matrix.json`, tests each on every torch/CUDA build of its major on a Modal GPU, alongside the CPU wheels. `build-wheels.yml` then attaches them to the release, and none unless every CPU and CUDA build and test passes.
+   - `deploy-cuda-index.yml` then rebuilds the CUDA wheel index on GitHub Pages from every release's assets, once `build-wheels.yml` has succeeded.
 
-   It also starts the CUDA wheels, which take under an hour:
-   - `build-cuda-wheels.yml` builds every CUDA wheel in `cuda_wheel_matrix.json`, tests one per torch/CUDA build on a Modal GPU, and attaches them all to the release. It attaches none unless every build and test passes.
-   - `deploy-cuda-index.yml` then rebuilds the CUDA wheel index on GitHub Pages from every release's assets.
-
-   If a CUDA job fails, re-run it from the Actions tab. The upload skips wheels already on the release with the same contents and refuses different ones, because a published release's assets are never replaced. A failure that needs a code change needs a new patch release.
+   If a job fails, re-run it from the Actions tab. The CUDA upload skips wheels already on the release with the same contents and refuses different ones, because a published release's assets are never replaced, and the PyPI upload skips files already there. A failure that needs a code change needs a new patch release.
 
    To rebuild the index without a release, for example after deleting one, run "Deploy CUDA wheel index" from the Actions tab.
 

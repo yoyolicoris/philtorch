@@ -1,9 +1,10 @@
 name: Lint
 
+# Every push, and every pull request, which covers those from forks: the dev
+# ruleset requires this `lint` check.
 on:
   push:
   pull_request:
-  workflow_call:
 
 jobs:
   lint:

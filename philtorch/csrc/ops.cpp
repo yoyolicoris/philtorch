@@ -1,9 +1,11 @@
 #include <Python.h>
-#include <torch/library.h>
+
+#include "stable_support.h"
 
 /* Creates a dummy empty _C module that can be imported from Python.
    The import from Python will load the .so/.pyd associated with this extension
-   built from this file, so that all the TORCH_LIBRARY calls below are run.
+   built from this file, so that all the STABLE_TORCH_LIBRARY calls below are
+   run.
    PyMODINIT_FUNC (rather than a bare `extern "C" PyObject *`) is required so
    the symbol is exported from the DLL on Windows (adds __declspec(dllexport)). */
 PyMODINIT_FUNC PyInit__C(void)
@@ -19,15 +21,15 @@ PyMODINIT_FUNC PyInit__C(void)
     return PyModule_Create(&module_def);
 }
 
-TORCH_LIBRARY(philtorch, m)
+STABLE_TORCH_LIBRARY(philtorch, m)
 {
-    m.def("philtorch::recur2(Tensor A, Tensor zi, Tensor x) -> Tensor", {at::Tag::pt2_compliant_tag});
-    m.def("philtorch::recur3(Tensor A, Tensor zi, Tensor x) -> Tensor", {at::Tag::pt2_compliant_tag});
-    m.def("philtorch::recurN(Tensor A, Tensor zi, Tensor x) -> Tensor", {at::Tag::pt2_compliant_tag});
+    m.def("philtorch::recur2(Tensor A, Tensor zi, Tensor x) -> Tensor", {torch::headeronly::Tag::pt2_compliant_tag});
+    m.def("philtorch::recur3(Tensor A, Tensor zi, Tensor x) -> Tensor", {torch::headeronly::Tag::pt2_compliant_tag});
+    m.def("philtorch::recurN(Tensor A, Tensor zi, Tensor x) -> Tensor", {torch::headeronly::Tag::pt2_compliant_tag});
 
-    m.def("philtorch::lti_recur2(Tensor A, Tensor zi, Tensor x) -> Tensor", {at::Tag::pt2_compliant_tag});
-    m.def("philtorch::lti_recur3(Tensor A, Tensor zi, Tensor x) -> Tensor", {at::Tag::pt2_compliant_tag});
-    m.def("philtorch::lti_recurN(Tensor A, Tensor zi, Tensor x) -> Tensor", {at::Tag::pt2_compliant_tag});
+    m.def("philtorch::lti_recur2(Tensor A, Tensor zi, Tensor x) -> Tensor", {torch::headeronly::Tag::pt2_compliant_tag});
+    m.def("philtorch::lti_recur3(Tensor A, Tensor zi, Tensor x) -> Tensor", {torch::headeronly::Tag::pt2_compliant_tag});
+    m.def("philtorch::lti_recurN(Tensor A, Tensor zi, Tensor x) -> Tensor", {torch::headeronly::Tag::pt2_compliant_tag});
 
-    m.def("philtorch::lti_recur(Tensor A, Tensor zi, Tensor x) -> Tensor", {at::Tag::pt2_compliant_tag});
+    m.def("philtorch::lti_recur(Tensor A, Tensor zi, Tensor x) -> Tensor", {torch::headeronly::Tag::pt2_compliant_tag});
 }

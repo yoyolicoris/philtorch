@@ -1,0 +1,14 @@
+{
+  "policy": "The first torch entry is the floor, the latest patch of the PyTorch minor MIN_TORCH (build_support.py); the rest are the latest patches of the three newest stable minors. cuda lists the CUDA versions download.pytorch.org publishes for that torch, except those older than 12.9: their CCCL lacks thrust::tabulate_output_iterator, which recur_scan.cuh uses. python is the newest CPython that PyPI has a manylinux x86_64 wheel of that torch for; the tests run there. Each wheel is built once, on the oldest CPython requires-python allows: the CPU wheel on the floor torch, and each CUDA wheel on the oldest torch that has its CUDA major, with the oldest CUDA of that major. Pull requests and dev pushes GPU-test one wheel, on the newest torch with its newest CUDA; releases and manual dispatches test every (torch, CUDA) pair. cuda_arch_lists, by CUDA major, mirrors the x86_64 list PyTorch's own wheels use for that CUDA in the release branch of the torch that builds the wheel (.ci/wheel/linux/build_env_setup.py), with +PTX on the highest architecture; a branch without the table keeps the existing list. build_image is changed by hand; its name, without the registry and tag, is the wheel platform auditwheel certifies. Linux x86_64 only; PyPI remains the CPU-only channel.",
+  "build_image": "quay.io/pypa/manylinux_2_28_x86_64:2026.10.26-1",
+  "cuda_arch_lists": {
+    "12": "7.5 8.0 8.6 9.0 10.0 12.0+PTX",
+    "13": "7.5 8.0 8.6 9.0 10.0 12.0+PTX"
+  },
+  "torch": [
+    {"version": "2.12.1", "cuda": ["12.9", "13.0", "13.2"], "python": "3.14"},
+    {"version": "2.13.0", "cuda": ["12.9", "13.0", "13.2"], "python": "3.14"},
+    {"version": "2.14.1", "cuda": ["13.0", "13.2"], "python": "3.14"},
+    {"version": "2.15.0", "cuda": ["13.2", "13.4"], "python": "3.15"}
+  ]
+}

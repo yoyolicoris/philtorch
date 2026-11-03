@@ -2,7 +2,7 @@
 
 [![PyPI version](https://img.shields.io/pypi/v/philtorch.svg)](https://pypi.org/project/philtorch/)
 [![Python versions](https://img.shields.io/pypi/pyversions/philtorch.svg)](https://pypi.org/project/philtorch/)
-[![Build CPU wheels](https://github.com/yoyolicoris/philtorch/actions/workflows/build-wheels.yml/badge.svg?branch=dev)](https://github.com/yoyolicoris/philtorch/actions/workflows/build-wheels.yml)
+[![Build wheels](https://github.com/yoyolicoris/philtorch/actions/workflows/build-wheels.yml/badge.svg?branch=dev)](https://github.com/yoyolicoris/philtorch/actions/workflows/build-wheels.yml)
 [![Build CUDA wheels](https://github.com/yoyolicoris/philtorch/actions/workflows/build-cuda-wheels.yml/badge.svg?branch=dev)](https://github.com/yoyolicoris/philtorch/actions/workflows/build-cuda-wheels.yml)
 [![codecov](https://codecov.io/gh/yoyolicoris/philtorch/branch/dev/graph/badge.svg?token=288BR3PYIX)](https://codecov.io/gh/yoyolicoris/philtorch)
 [![Documentation](https://readthedocs.org/projects/philtorch/badge/?version=stable)](https://philtorch.readthedocs.io/en/stable/)
@@ -34,9 +34,9 @@ PhilTorch requires its compiled `philtorch._C` extension; there is no pure-PyTor
 
 | Route | Platforms | Kernels | Python | PyTorch |
 | --- | --- | --- | --- | --- |
-| PyPI wheel | Linux x86_64 (manylinux_2_28), macOS 14+ arm64, Windows AMD64 | CPU, plus scalar LTI and LPV recurrences on MPS on macOS, in float32, float16, bfloat16 and complex64 (macOS 15+ from PyTorch 2.15) | 3.11 on, the Pythons its PyTorch minor has wheels for | The latest stable minor at publication, which each wheel requires (e.g. `torch == 2.14.*`); listed in the [release notes](https://github.com/yoyolicoris/philtorch/releases) |
-| CUDA wheel, from the [PhilTorch index](https://yoyolicoris.github.io/philtorch/) | Linux x86_64 (manylinux_2_28) | CPU and CUDA | 3.11 on, the Pythons its PyTorch minor has wheels for | One build per PyTorch minor and CUDA version; see [CUDA wheels](#cuda-wheels) |
-| Source build | Any platform with a C++ toolchain | CPU, MPS, or CUDA | 3.11+ | 2.6 or newer, 2.10 or newer on macOS |
+| PyPI wheel | Linux x86_64 (manylinux_2_28), macOS 14+ arm64, Windows AMD64 | CPU, plus scalar LTI and LPV recurrences on MPS on macOS, in float32, float16, bfloat16 and complex64 (macOS 15+ from PyTorch 2.15) | 3.11 on, the Pythons its PyTorch has wheels for | 2.12 or newer |
+| CUDA wheel, from the [PhilTorch index](https://yoyolicoris.github.io/philtorch/) | Linux x86_64 (manylinux_2_28) | CPU and CUDA | 3.11 on, the Pythons its PyTorch has wheels for | 2.12 or newer, one wheel per CUDA major version; see [CUDA wheels](#cuda-wheels) |
+| Source build | Any platform with a C++ toolchain | CPU, MPS, or CUDA | 3.11+ | 2.12 or newer |
 
 ### PyPI wheels
 
@@ -45,40 +45,37 @@ python -m pip install philtorch
 ```
 
 Wheels contain no CUDA kernels.
-Each wheel is built against one PyTorch minor release and requires it (e.g. `torch == 2.14.*`), because the compiled extension does not load with other minor releases.
-pip therefore installs that PyTorch minor with PhilTorch, replacing a different one if needed.
-If a different minor is installed anyway, for example with `--no-deps`, `import philtorch` raises an `ImportError` naming the minor it needs.
-For CUDA on Linux, use the [CUDA wheels](#cuda-wheels); for another PyTorch minor release, build from source.
+The wheels use PyTorch's stable ABI and are tested from PyTorch 2.12 to the newest release.
+For CUDA on Linux, use the [CUDA wheels](#cuda-wheels).
 
 ### CUDA wheels
 
 Linux wheels with CUDA kernels are published on a separate package index rather than PyPI.
-Wheel tags don't record which PyTorch and CUDA build a wheel is for, and PyPI rejects the local version labels that do (e.g. `+torch2.14.1.cu132`).
-There is one index per PyTorch minor and CUDA version that PyTorch publishes wheels for.
-Install PyTorch first, then install PhilTorch from the index that matches it:
+Wheel tags don't record which CUDA version a wheel is for, and PyPI rejects the local version labels that do (e.g. `+cu13`).
+There is one index per CUDA major version. Its wheel uses PyTorch's stable ABI and is tested from PyTorch 2.12 to the newest release built for that CUDA major.
+Install PyTorch first, then install PhilTorch from the index of its CUDA major:
 
 ```bash
-python -m pip install torch==2.14.1 --index-url https://download.pytorch.org/whl/cu132
-python -m pip install philtorch --index-url https://yoyolicoris.github.io/philtorch/whl/torch2.14-cu132/
+python -m pip install torch --index-url https://download.pytorch.org/whl/cu132
+python -m pip install philtorch --index-url https://yoyolicoris.github.io/philtorch/whl/cu13/
 ```
 
-To find the matching index for an installed PyTorch, run `python -c "import torch; print(torch.__version__, torch.version.cuda)"`.
-For example, `2.14.1+cu132 13.2` matches `whl/torch2.14-cu132/`.
+To find the CUDA version of an installed PyTorch, run `python -c "import torch; print(torch.__version__, torch.version.cuda)"`.
+For example, `2.15.0+cu132 13.2` matches `whl/cu13/`.
 On Linux, `pip install torch` from PyPI installs PyTorch's default CUDA build; the command above shows which.
 
 <!-- cuda-index-table:start -->
-| PyTorch | CUDA 12.9 | CUDA 13.0 | CUDA 13.2 | CUDA 13.4 |
-| --- | --- | --- | --- | --- |
-| 2.15 | — | — | [`whl/torch2.15-cu132/`](https://yoyolicoris.github.io/philtorch/whl/torch2.15-cu132/) | [`whl/torch2.15-cu134/`](https://yoyolicoris.github.io/philtorch/whl/torch2.15-cu134/) |
-| 2.14 | — | [`whl/torch2.14-cu130/`](https://yoyolicoris.github.io/philtorch/whl/torch2.14-cu130/) | [`whl/torch2.14-cu132/`](https://yoyolicoris.github.io/philtorch/whl/torch2.14-cu132/) | — |
-| 2.13 | [`whl/torch2.13-cu129/`](https://yoyolicoris.github.io/philtorch/whl/torch2.13-cu129/) | [`whl/torch2.13-cu130/`](https://yoyolicoris.github.io/philtorch/whl/torch2.13-cu130/) | [`whl/torch2.13-cu132/`](https://yoyolicoris.github.io/philtorch/whl/torch2.13-cu132/) | — |
+| CUDA | Index |
+| --- | --- |
+| 13 | [`whl/cu13/`](https://yoyolicoris.github.io/philtorch/whl/cu13/) |
+| 12 | [`whl/cu12/`](https://yoyolicoris.github.io/philtorch/whl/cu12/) |
 <!-- cuda-index-table:end -->
 
-The index URLs are relative to `https://yoyolicoris.github.io/philtorch/`, which lists every index, including those for earlier releases.
+The index URLs are relative to `https://yoyolicoris.github.io/philtorch/`, which lists every index, including the per-PyTorch indexes of earlier releases.
 
-- **Requirements:** a Python the table above lists for the wheel's PyTorch, an NVIDIA GPU with compute capability 7.5, 8.x, 9.0, 10.x or 12.x, and a driver that supports the wheel's CUDA version.
-- **PyTorch:** each wheel requires its PyTorch minor (e.g. `torch == 2.14.*`), so pip keeps the PyTorch you installed.
-- **Mismatches:** `import philtorch` raises an `ImportError` if the installed PyTorch is a different minor release, has no CUDA support, or uses a different CUDA major version. It only warns if the CUDA minor version differs.
+- **Requirements:** a Python your PyTorch has wheels for, an NVIDIA GPU with compute capability 7.5, 8.x, 9.0, 10.x or 12.x, and a PyTorch built for CUDA 12.9 or newer, with a driver that supports its CUDA version.
+- **PyTorch:** each wheel requires `torch >= 2.12.0`, so pip keeps the PyTorch you installed.
+- **Mismatches:** `import philtorch` raises an `ImportError` if the installed PyTorch has no CUDA support, uses a different CUDA major version, or uses a CUDA older than 12.9, such as PyTorch's `cu126` builds.
 - **Use `--index-url`, not `--extra-index-url`:** with PyPI also searched, pip installs PyPI's CPU-only wheel whenever it is a newer release than the CUDA build in the index, without warning.
 
 ### Source builds
@@ -93,7 +90,8 @@ python -m pip install --no-binary=philtorch --no-build-isolation philtorch
 The build compiles a CUDA extension when `torch.cuda.is_available()` is true and `CUDA_HOME` is set, and a CPU-only C++ extension otherwise.
 On a headless build server with no visible GPU, set `PHILTORCH_FORCE_CUDA=1` to compile the CUDA extension anyway.
 In that case the installed PyTorch must be a CUDA build, and `TORCH_CUDA_ARCH_LIST` must also be set to the target architectures (e.g. `TORCH_CUDA_ARCH_LIST="8.0 8.6"`), because there is no GPU to infer them from.
-On macOS, the build also compiles the MPS kernels, which need PyTorch 2.10 or newer, and, when the installed PyTorch supports OpenMP, needs Homebrew `llvm` and `libomp`, unless `PHILTORCH_DISABLE_OPENMP=1` is set.
+On macOS, the build also compiles the MPS kernels.
+Set `PHILTORCH_DISABLE_OPENMP=1` to build without OpenMP's SIMD hints (`-fopenmp-simd`), for a compiler that lacks them.
 
 For an editable install from Git:
 
@@ -212,7 +210,7 @@ The supported high-level interfaces are exported from [`philtorch.lti`](philtorc
 | Apply a time-varying filter. | `philtorch.lpv.lfilter`, `philtorch.lpv.fir`, or `philtorch.lpv.allpole` | Coefficient tensors include a time dimension aligned with the input. `lpv.lfilter` defaults to `backend="ssm"`; `backend="torchlpc"` does not support `form="tdf2"`. |
 | Evaluate a scalar linear recurrence. | `philtorch.lti.linear_recurrence` or `philtorch.lpv.linear_recurrence` | Choose the namespace according to whether the recurrence coefficient is fixed or time-varying. |
 | Evaluate a state-space system. | `philtorch.lti.state_space` or `philtorch.lpv.state_space` | Use `state_space_recursion` directly when only the internal state sequence is needed. |
-| Estimate the states of a linear Gaussian state-space model from noisy measurements. | `philtorch.estimation.kalman_filter` or `philtorch.estimation.kalman_smoother` | `A`, `C`, `Q`, and `R` shared, time-varying, per signal, or both; uses PyTorch's `associative_scan` in generic mode, so it needs PyTorch 2.11 or later. |
+| Estimate the states of a linear Gaussian state-space model from noisy measurements. | `philtorch.estimation.kalman_filter` or `philtorch.estimation.kalman_smoother` | `A`, `C`, `Q`, and `R` shared, time-varying, per signal, or both; uses PyTorch's `associative_scan` in generic mode. |
 | Align two sequences, or measure their distance, by dynamic time warping. | `philtorch.align.dtw`, `philtorch.align.dtw_path`, or `philtorch.align.soft_dtw_divergence` | **CUDA GPUs only.** Takes any `(B, N, M)` cost, or features `x=`, `y=` of shapes `(B, N, F)` and `(B, M, F)` for their squared Euclidean distances, computed in the kernels (in memory linear in N + M, but for soft-DTW's gradient); `gamma=0` for DTW, positive for soft-DTW. Symmetric, asymmetric or orthogonal steps, padded lengths and, from features, a Sakoe-Chiba band. The gradient with respect to the cost is the alignment. |
 | Train a sequence model on unsegmented targets with the CTC loss, or align targets to frames. | `philtorch.align.ctc_loss` or `philtorch.align.forced_align` | **CUDA GPUs only.** The arguments of `torch.nn.functional.ctc_loss`, batch first: `(N, T, C)` log-probabilities, padded or concatenated targets, the same reductions. Faster than `torch.nn.functional.ctc_loss` on long inputs with targets of up to about 60 labels, and differentiable to any order. |
 | Infer or decode the states of a hidden Markov model. | `philtorch.estimation.hmm_filter`, `philtorch.estimation.hmm_smoother`, or `philtorch.estimation.hmm_viterbi` | **CUDA GPUs only.** Log-probabilities in; transitions shared, time-varying, per signal, or both. Chunked parallel scans in Triton, differentiable to any order in reverse mode; the work grows as K³, so they suit small state spaces on long sequences. |

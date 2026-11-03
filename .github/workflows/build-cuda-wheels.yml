@@ -1,41 +1,38 @@
 name: Build CUDA wheels
 
-# Builds one Linux CUDA wheel, abi3, for every (PyTorch, CUDA) build in
-# cuda_wheel_matrix.json and uploads them as CI artifacts. For a published
-# release, it then attaches them to the release as assets, and
-# deploy-cuda-index.yml rebuilds the PEP 503 index that links to them.
+# Builds one Linux CUDA wheel, abi3, per CUDA major (cu12, cu13), uploads them
+# as CI artifacts and GPU-tests them. A release runs it as a job of
+# build-wheels.yml (github.event_name is then `release`), which attaches the
+# wheels to the release once every CPU and CUDA check has passed.
 #
 # Design notes:
-# - The build matrix comes from `scripts/cuda_wheel_version.py --list`, so the
-#   checked-in JSON file is the single source of truth, including the build
-#   image. The workflow hardcodes no torch, CUDA or image versions.
+# - `scripts/torch_matrix.py legs` resolves the legs from torch_matrix.json,
+#   the single source of truth, including the build image. The workflow
+#   hardcodes no torch, CUDA or image versions.
 # - Each leg builds in the matrix's manylinux image, the same glibc 2.28
 #   environment the CPU wheels build in, with only the CUDA packages the build
 #   needs installed from NVIDIA's RHEL 8 repository. No GPU runner is needed:
 #   nvcc cross-compiles, and PHILTORCH_FORCE_CUDA=1 tells setup.py to take the
 #   CUDA path without a visible GPU (see build_support.py).
 # - `auditwheel repair --plat <platform>` is a fail-loud conformance gate, and
-#   a check step then rejects bundled CUDA or torch libraries, leftover debug
-#   info, and a missing torch pin.
-# - Each wheel builds on its build's oldest Python. A GPU job then installs it,
-#   on the build's newest Python, with --no-deps,
-#   next to the matching official torch on a Modal GPU, and runs the CUDA
-#   tests against it (scripts/modal_smoke_test.py).
-# - PRs and dev pushes build and GPU-test the newest torch/CUDA build, and
-#   only when the build inputs change. Releases and manual dispatches build
-#   and GPU-test all of them (currently 7).
-# - A release's wheels are published only once every leg has built and every
-#   GPU test has passed. Assets already on the release are never replaced:
-#   a wheel already there with the same contents is skipped, so failed jobs
-#   can be re-run, and one with different contents fails the job.
+#   a check step then rejects bundled CUDA or torch libraries and leftover
+#   debug info.
+# - A GPU job per cuda_tests leg then installs that leg's torch from its index
+#   and the wheel of its CUDA major with --no-deps, on that leg's Python, on a
+#   Modal GPU, and runs the CUDA tests against it (scripts/modal_smoke_test.py).
+# - Pull requests and dev pushes build every wheel and GPU-test one: the wheel
+#   of the newest torch's newest CUDA, on that torch. They run only when the
+#   build inputs change. Releases and manual dispatches GPU-test every (torch,
+#   CUDA) pair in the matrix.
 
 on:
   push:
     branches: ["dev"]
-    paths:
+    paths: &cuda_paths
       - ".github/workflows/build-cuda-wheels.yml"
-      - "cuda_wheel_matrix.json"
-      - "scripts/cuda_wheel_version.py"
+      - "torch_matrix.json"
+      - "scripts/torch_matrix.py"
+      - "philtorch/_build_check.py"
       - "scripts/modal_smoke_test.py"
       - "setup.py"
       - "build_support.py"
@@ -66,131 +63,52 @@ on:
       - "tests/test_torchlpc_vendored.py"
   pull_request:
     branches: ["dev"]
-    # Same list as push.
-    paths:
-      - ".github/workflows/build-cuda-wheels.yml"
-      - "cuda_wheel_matrix.json"
-      - "scripts/cuda_wheel_version.py"
-      - "scripts/modal_smoke_test.py"
-      - "setup.py"
-      - "build_support.py"
-      - "pyproject.toml"
-      - "MANIFEST.in"
-      - "philtorch/csrc/**"
-      - "third_party/**"
-      # The Triton kernels, named _*_kernels.py, the recurrence operator that
-      # launches them, the native ops' registered backwards, the alignment
-      # and HMM modules, which run only on CUDA, and every test module the
-      # GPU job runs (-m cuda), which tests/test_ci_paths.py checks.
-      - "philtorch/**/_*_kernels.py"
-      - "philtorch/_recur.py"
-      - "philtorch/_ops.py"
-      - "philtorch/align/*.py"
-      - "philtorch/estimation/hmm.py"
-      - "tests/conftest.py"
-      - "tests/test_align_ctc.py"
-      - "tests/test_align_dtw.py"
-      - "tests/test_docstrings_cuda.py"
-      - "tests/test_estimation_hmm.py"
-      - "tests/test_estimation_kalman.py"
-      - "tests/test_interp.py"
-      - "tests/test_pt2_comp.py"
-      - "tests/test_pt2_vendored_compile.py"
-      - "tests/test_recur.py"
-      - "tests/test_recur_ext.py"
-      - "tests/test_torchlpc_vendored.py"
-  release:
-    types: [published]
+    paths: *cuda_paths
+  workflow_call:
   workflow_dispatch:
 
 permissions:
   contents: read
 
-# A newer push supersedes the previous run's expensive builds.
+# A newer push supersedes the previous run's expensive builds. When
+# build-wheels.yml calls this workflow, github.workflow is its name, so the
+# group is spelled out.
 concurrency:
-  group: ${{ github.workflow }}-${{ github.ref }}
+  group: build-cuda-wheels-${{ github.ref }}
   cancel-in-progress: true
 
 jobs:
-  resolve-matrix:
+  resolve-legs:
     runs-on: ubuntu-latest
     outputs:
-      matrix: ${{ steps.matrix.outputs.matrix }}
-      smoke: ${{ steps.matrix.outputs.smoke }}
-      builds: ${{ steps.matrix.outputs.builds }}
-      build_image: ${{ steps.matrix.outputs.build_image }}
-      platform: ${{ steps.matrix.outputs.platform }}
+      build_image: ${{ steps.legs.outputs.build_image }}
+      platform: ${{ steps.legs.outputs.platform }}
+      cuda_builds: ${{ steps.legs.outputs.cuda_builds }}
+      cuda_tests: ${{ steps.legs.outputs.cuda_tests }}
     steps:
       - uses: actions/checkout@v7
 
-      - name: Expand CUDA wheel matrix
-        id: matrix
-        env:
-          GITHUB_EVENT_NAME: ${{ github.event_name }}
-        run: |
-          pip install -q packaging
-          python3 scripts/cuda_wheel_version.py --list > legs.json
-          python3 - >> "$GITHUB_OUTPUT" <<'EOF'
-          import json, os
-
-          legs = json.load(open("legs.json"))
-
-          def newest(group):
-              # Compare versions numerically ("3.9" < "3.13"): newest Python,
-              # then torch, then CUDA, independent of file order.
-              return max(group, key=lambda leg: [
-                  tuple(int(p) for p in leg[k].split(".")) for k in ("python", "torch", "cuda")
-              ])
-
-          def oldest(group):
-              return min(group, key=lambda leg: tuple(int(p) for p in leg["python"].split(".")))
-
-          if os.environ["GITHUB_EVENT_NAME"] not in ("release", "workflow_dispatch"):
-              top = newest(legs)
-              legs = [leg for leg in legs if (leg["torch"], leg["cuda"]) == (top["torch"], top["cuda"])]
-          # One abi3 wheel per torch/CUDA build, built on its oldest Python and
-          # tested on a GPU on its newest.
-          groups = {}
-          for leg in legs:
-              groups.setdefault((leg["torch"], leg["cuda"]), []).append(leg)
-
-          # GitHub appends every matrix value to a job's name, so matrix
-          # entries hold only what tells legs apart. Jobs look up the rest of
-          # a build in "builds", keyed "<torch>-<cuda>".
-          def entry(leg):
-              return {key: leg[key] for key in ("python", "torch", "cuda")}
-
-          builds = {
-              f"{leg['torch']}-{leg['cuda']}": {
-                  key: leg[key] for key in ("torch_index_url", "cuda_arch_list")
-              }
-              for leg in legs
-          }
-          print("matrix=" + json.dumps([entry(oldest(group)) for group in groups.values()]))
-          print("smoke=" + json.dumps([entry(newest(group)) for group in groups.values()]))
-          print("builds=" + json.dumps(builds))
-          # The same for every leg.
-          print("build_image=" + legs[0]["build_image"])
-          print("platform=" + legs[0]["platform"])
-          EOF
+      - name: Resolve the legs
+        id: legs
+        run: python3 scripts/torch_matrix.py legs --event "$GITHUB_EVENT_NAME" >> "$GITHUB_OUTPUT"
 
   build:
-    # No custom name: GitHub names each job "build (<python>, <torch>,
-    # <cuda>)", and a job that never starts (in a cancelled or failed run)
-    # just "build". A name with ${{ }} in it would show unevaluated there.
-    needs: resolve-matrix
+    # A name of its own: GitHub would otherwise list every matrix value, the
+    # index URL and arch list included.
+    name: build ${{ matrix.label }}
+    needs: resolve-legs
     runs-on: ubuntu-latest
     timeout-minutes: 120
     strategy:
       fail-fast: false
       matrix:
-        leg: ${{ fromJSON(needs.resolve-matrix.outputs.matrix) }}
+        include: ${{ fromJSON(needs.resolve-legs.outputs.cuda_builds) }}
     container:
-      image: ${{ needs.resolve-matrix.outputs.build_image }}
+      image: ${{ needs.resolve-legs.outputs.build_image }}
     env:
-      CUDA_HOME: /usr/local/cuda-${{ matrix.leg.cuda }}
-      TORCH_INDEX_URL: ${{ fromJSON(needs.resolve-matrix.outputs.builds)[format('{0}-{1}', matrix.leg.torch, matrix.leg.cuda)].torch_index_url }}
-      TORCH_CUDA_ARCH_LIST: ${{ fromJSON(needs.resolve-matrix.outputs.builds)[format('{0}-{1}', matrix.leg.torch, matrix.leg.cuda)].cuda_arch_list }}
+      CUDA_HOME: /usr/local/cuda-${{ matrix.cuda }}
+      TORCH_INDEX_URL: ${{ matrix.index_url }}
+      TORCH_CUDA_ARCH_LIST: ${{ matrix.arch_list }}
     steps:
       - name: Install CUDA toolkit
         # Only nvcc and the headers the build includes (cudart, CCCL, CRT). The
@@ -200,7 +118,7 @@ jobs:
         run: |
           curl -fsSL -o /etc/yum.repos.d/cuda-rhel8.repo \
             https://developer.download.nvidia.com/compute/cuda/repos/rhel8/x86_64/cuda-rhel8.repo
-          V=$(echo "${{ matrix.leg.cuda }}" | tr . -)
+          V=$(echo "${{ matrix.cuda }}" | tr . -)
           dnf install -y -q "cuda-nvcc-$V" "cuda-cudart-devel-$V" "cuda-crt-$V"
           echo "$CUDA_HOME/bin" >> "$GITHUB_PATH"
 
@@ -219,7 +137,7 @@ jobs:
         # The manylinux image ships every CPython under /opt/python, with
         # headers, plus auditwheel and patchelf.
         run: |
-          PY=cp$(echo "${{ matrix.leg.python }}" | tr -d .)
+          PY=cp$(echo "${{ matrix.python }}" | tr -d .)
           "/opt/python/${PY}-${PY}/bin/python" -m venv /opt/venv
           echo /opt/venv/bin >> "$GITHUB_PATH"
 
@@ -228,20 +146,17 @@ jobs:
         run: |
           pip install -q -U pip
           pip install -q "setuptools>=77.0.3" "setuptools_scm>=8" wheel packaging ninja
-          pip install -q "torch==${{ matrix.leg.torch }}" --index-url "$TORCH_INDEX_URL"
+          pip install -q "torch==${{ matrix.torch }}" --index-url "$TORCH_INDEX_URL"
 
       - name: Compute wheel version
         id: version
         run: |
-          VERSION=$(python scripts/cuda_wheel_version.py \
-            --torch "${{ matrix.leg.torch }}" --cuda "${{ matrix.leg.cuda }}")
+          VERSION="$(python -m setuptools_scm)+${{ matrix.label }}"
           echo "version=${VERSION}" >> "$GITHUB_OUTPUT"
 
       - name: Build wheel
         env:
           PHILTORCH_FORCE_CUDA: "1"
-          # Pins the wheel to the torch minor it is compiled against.
-          PHILTORCH_TORCH_PIN: ${{ matrix.leg.torch }}
           MAX_JOBS: "4"
           # The image puts clang first on PATH; build with its GCC toolset,
           # which is what nvcc supports as a host compiler.
@@ -263,13 +178,11 @@ jobs:
         # provides and loads them, so the wheel must not ship its own copies.
         run: |
           auditwheel repair \
-            --plat "${{ needs.resolve-matrix.outputs.platform }}" \
+            --plat "${{ needs.resolve-legs.outputs.platform }}" \
             --exclude "libtorch*.so*" --exclude "libc10*.so*" --exclude "libcudart.so*" \
             -w repaired/ wheelhouse/philtorch-*.whl
 
       - name: Check wheel
-        env:
-          TORCH_VERSION: ${{ matrix.leg.torch }}
         run: |
           WHEEL=$(ls repaired/*.whl)
           auditwheel show "$WHEEL"
@@ -282,12 +195,6 @@ jobs:
             echo "::error::$WHEEL still carries debug info"
             exit 1
           fi
-          PIN="torch==${TORCH_VERSION%.*}.*"
-          if ! grep -qxF "Requires-Dist: ${PIN}" check/philtorch-*.dist-info/METADATA; then
-            echo "::error::$WHEEL does not require ${PIN}"
-            grep "^Requires-Dist" check/philtorch-*.dist-info/METADATA
-            exit 1
-          fi
           pip install -q twine
           twine check --strict "$WHEEL"
           ls -l "$WHEEL"
@@ -295,14 +202,14 @@ jobs:
       - name: Upload wheel artifact
         uses: actions/upload-artifact@v7
         with:
-          name: cuda-wheels-torch${{ matrix.leg.torch }}-cu${{ matrix.leg.cuda }}
+          name: cuda-wheels-${{ matrix.label }}
           path: repaired/*.whl
 
   gpu-test:
-    # Runs the CUDA tests against the exact wheel built above, on a Modal GPU.
-    # Plain text, for the same reason as build: GitHub appends the matrix values.
-    name: GPU test
-    needs: [resolve-matrix, build]
+    # Runs the CUDA tests against the exact wheel built above for the leg's
+    # CUDA major, on a Modal GPU.
+    name: GPU test ${{ matrix.label }}, torch ${{ matrix.torch }}, CUDA ${{ matrix.cuda }}
+    needs: [resolve-legs, build]
     # Repository secrets are not available to pull requests from forks.
     if: github.event_name != 'pull_request' || github.event.pull_request.head.repo.full_name == github.repository
     runs-on: ubuntu-latest
@@ -310,7 +217,7 @@ jobs:
     strategy:
       fail-fast: false
       matrix:
-        leg: ${{ fromJSON(needs.resolve-matrix.outputs.smoke) }}
+        include: ${{ fromJSON(needs.resolve-legs.outputs.cuda_tests) }}
     steps:
       - uses: actions/checkout@v7
 
@@ -320,16 +227,16 @@ jobs:
 
       - uses: actions/download-artifact@v8
         with:
-          name: cuda-wheels-torch${{ matrix.leg.torch }}-cu${{ matrix.leg.cuda }}
+          name: cuda-wheels-${{ matrix.label }}
           path: wheel/
 
       - name: Run CUDA tests on a Modal GPU
         env:
           MODAL_TOKEN_ID: ${{ secrets.MODAL_TOKEN_ID }}
           MODAL_TOKEN_SECRET: ${{ secrets.MODAL_TOKEN_SECRET }}
-          SMOKE_PYTHON: ${{ matrix.leg.python }}
-          SMOKE_TORCH: ${{ matrix.leg.torch }}
-          SMOKE_TORCH_INDEX_URL: ${{ fromJSON(needs.resolve-matrix.outputs.builds)[format('{0}-{1}', matrix.leg.torch, matrix.leg.cuda)].torch_index_url }}
+          SMOKE_PYTHON: ${{ matrix.python }}
+          SMOKE_TORCH: ${{ matrix.torch }}
+          SMOKE_TORCH_INDEX_URL: ${{ matrix.index_url }}
           # T4 (sm_75) is Modal's cheapest GPU and our oldest target
           # architecture. Set the MODAL_GPU repository variable to use another.
           SMOKE_GPU: ${{ vars.MODAL_GPU || 'T4' }}
@@ -376,74 +283,3 @@ jobs:
           report_type: test_results
           files: junit.xml
           flags: gpu
-
-  publish:
-    # Attaches every wheel to the release; deploy-cuda-index.yml then lists
-    # them in the index. Same tag filter as the PyPI upload in build-wheels.yml.
-    needs: [resolve-matrix, build, gpu-test]
-    if: >
-      github.event_name == 'release' &&
-      (startsWith(github.event.release.tag_name, 'v0.') || startsWith(github.event.release.tag_name, 'v1.'))
-    runs-on: ubuntu-latest
-    permissions:
-      contents: write
-    steps:
-      - uses: actions/download-artifact@v8
-        with:
-          pattern: cuda-wheels-*
-          merge-multiple: true
-          path: wheels/
-
-      - name: Upload wheels to the release
-        env:
-          GH_TOKEN: ${{ github.token }}
-          TAG: ${{ github.event.release.tag_name }}
-          MATRIX: ${{ needs.resolve-matrix.outputs.matrix }}
-        run: |
-          EXPECTED=$(echo "$MATRIX" | jq length)
-          FOUND=$(ls wheels/*.whl | wc -l)
-          if [ "$FOUND" -ne "$EXPECTED" ]; then
-            echo "::error::Expected $EXPECTED wheels, found $FOUND"
-            exit 1
-          fi
-          published() {
-            gh release view "$TAG" --repo "$GITHUB_REPOSITORY" \
-              --json assets --jq '.assets[] | "\(.name) \(.digest)"' > published.txt
-          }
-          published_digest() {
-            awk -v name="$(basename "$1")" '$1 == name { print $2 }' published.txt
-          }
-          digest() {
-            echo "sha256:$(sha256sum "$1" | cut -d' ' -f1)"
-          }
-          # Check every wheel before uploading any.
-          published
-          for WHEEL in wheels/*.whl; do
-            NAME=$(basename "$WHEEL")
-            VERSION=$(echo "$NAME" | cut -d- -f2)
-            if [ "${VERSION%%+*}" != "${TAG#v}" ]; then
-              echo "::error::$NAME was not built as version ${TAG#v}"
-              exit 1
-            fi
-            PUBLISHED=$(published_digest "$WHEEL")
-            if [ -n "$PUBLISHED" ] && [ "$PUBLISHED" != "$(digest "$WHEEL")" ]; then
-              echo "::error::$NAME is already on $TAG with different contents"
-              exit 1
-            fi
-          done
-          for WHEEL in wheels/*.whl; do
-            if [ -n "$(published_digest "$WHEEL")" ]; then
-              echo "$(basename "$WHEEL") is already on $TAG"
-            else
-              gh release upload "$TAG" "$WHEEL" --repo "$GITHUB_REPOSITORY"
-            fi
-          done
-          # The index links to assets by name, so check that every wheel is
-          # there under its own filename and with its own contents.
-          published
-          for WHEEL in wheels/*.whl; do
-            if [ "$(published_digest "$WHEEL")" != "$(digest "$WHEEL")" ]; then
-              echo "::error::$(basename "$WHEEL") is missing from $TAG or differs"
-              exit 1
-            fi
-          done

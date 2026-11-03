@@ -152,6 +152,14 @@ def test_allpole_vmap(device: str):
         assert torch.allclose(jac, arg.grad)
 
 
+@pytest.mark.cuda
+def test_lpc_rejects_initial_conditions_on_another_device():
+    x = torch.ones(2, 8, device="cuda")
+    A = torch.zeros(2, 8, 2, device="cuda")
+    with pytest.raises(RuntimeError, match="Initial conditions must be on the same device"):
+        torch.ops.philtorch.lpc(x, A, torch.zeros(2, 2))
+
+
 @pytest.mark.parametrize("device", _DEVICES)
 def test_scan_rejects_dtype(device: str):
     # The recurrence kernels it runs take float16; scan keeps torchlpc's dtypes.

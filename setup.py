@@ -1,6 +1,5 @@
 import glob
 import os
-import subprocess
 import sys
 import sysconfig
 
@@ -8,64 +7,13 @@ from setuptools import setup
 
 # build_support.py sits next to setup.py; the setuptools.build_meta:__legacy__
 # backend puts this directory on sys.path, which this import relies on.
-from build_support import MIN_TORCH_MACOS, resolve_cuda_build, torch_requirement
+from build_support import MIN_TORCH, resolve_cuda_build
 
 library_name = "philtorch"
 # The extension uses only CPython's limited API, so one abi3 wheel, tagged with
 # the Python that builds it, serves that Python and every later one. abi3
 # doesn't cover free-threaded CPython, which gets a regular wheel.
 py_limited_api = not sysconfig.get_config_var("Py_GIL_DISABLED")
-
-
-def get_homebrew_prefix(formula):
-    try:
-        result = subprocess.run(
-            ["brew", "--prefix", formula],
-            check=True,
-            capture_output=True,
-            text=True,
-        )
-    except FileNotFoundError as error:
-        raise RuntimeError(
-            "Homebrew is required for macOS OpenMP builds; "
-            "install Homebrew, then run 'brew install llvm libomp'."
-        ) from error
-    except subprocess.CalledProcessError as error:
-        raise RuntimeError(
-            f"Homebrew formula '{formula}' is required for macOS OpenMP builds; "
-            "install it with 'brew install llvm libomp'."
-        ) from error
-
-    return result.stdout.strip()
-
-
-def get_macos_openmp_config(extra_compile_args, extra_link_args, torch_lib):
-    llvm_prefix = get_homebrew_prefix("llvm")
-    libomp_prefix = get_homebrew_prefix("libomp")
-    compiler = os.path.join(llvm_prefix, "bin", "clang++")
-    include_dir = os.path.join(libomp_prefix, "include")
-
-    required_paths = (
-        compiler,
-        os.path.join(include_dir, "omp.h"),
-        os.path.join(torch_lib, "libomp.dylib"),
-    )
-    missing_paths = [path for path in required_paths if not os.path.isfile(path)]
-    if missing_paths:
-        raise RuntimeError(
-            "macOS OpenMP build dependencies are incomplete; missing: " + ", ".join(missing_paths)
-        )
-
-    configured_compile_args = {
-        **extra_compile_args,
-        "cxx": [*extra_compile_args.get("cxx", ()), f"-I{include_dir}"],
-    }
-    configured_link_args = [
-        *extra_link_args,
-        f"-L{torch_lib}",
-        f"-Wl,-rpath,{torch_lib}",
-    ]
-    return compiler, configured_compile_args, configured_link_args
 
 
 def write_metal_header(source, header):
@@ -105,31 +53,18 @@ def get_extensions():
         "TORCH_CUDA_ARCH_LIST="
         f"{os.environ.get('TORCH_CUDA_ARCH_LIST') or 'unset'}"
     )
-    use_openmp = (
-        torch.backends.openmp.is_available()
-        and os.environ.get("PHILTORCH_DISABLE_OPENMP", "0") != "1"
-    )
     extension = CUDAExtension if use_cuda else CppExtension
 
-    extra_link_args = []
     extra_compile_args = {}
-    if use_openmp:
-        if sys.platform == "win32":
-            # host_dot.h, in the CPU kernels, uses `#pragma omp simd`,
-            # which requires MSVC's experimental OpenMP mode; the legacy
-            # `/openmp` flag only supports OpenMP 2.0 constructs (no `simd`)
-            # and fails to compile.
-            extra_compile_args["cxx"] = ["/openmp:experimental"]
-            # MSVC links OpenMP automatically — no extra_link_args entry needed
-        else:
-            extra_compile_args["cxx"] = ["-fopenmp"]
-            extra_link_args.append("-fopenmp")
-        if sys.platform == "darwin":
-            torch_lib = os.path.join(os.path.dirname(torch.__file__), "lib")
-            compiler, extra_compile_args, extra_link_args = get_macos_openmp_config(
-                extra_compile_args, extra_link_args, torch_lib
-            )
-            os.environ.setdefault("CXX", compiler)
+    # The CPU kernels run on torch's threads (torch::stable::parallel_for), so
+    # the extension needs no OpenMP runtime: only host_dot.h's
+    # `#pragma omp simd`, which -fopenmp-simd enables. MSVC has no such flag;
+    # its experimental OpenMP mode takes `simd`, which the legacy `/openmp`
+    # (OpenMP 2.0) rejects.
+    if os.environ.get("PHILTORCH_DISABLE_OPENMP", "0") != "1":
+        extra_compile_args["cxx"] = (
+            ["/openmp:experimental"] if sys.platform == "win32" else ["-fopenmp-simd"]
+        )
 
     this_dir = os.path.abspath(os.path.dirname(__file__))
     extensions_dir = os.path.join(this_dir, library_name, "csrc")
@@ -140,14 +75,15 @@ def get_extensions():
             f"CUDA compilation was selected, but no .cu sources were found in {extensions_dir}."
         )
 
+    # torch.__version__ is a TorchVersion, which compares as a version.
+    if torch.__version__ < MIN_TORCH:
+        raise RuntimeError(
+            f"philtorch's ops target the stable ABI of PyTorch {MIN_TORCH}, so they "
+            f"build with PyTorch {MIN_TORCH} or newer; found {torch.__version__}."
+        )
+
     include_dirs = []
     if sys.platform == "darwin":
-        # torch.__version__ is a TorchVersion, which compares as a version.
-        if torch.__version__ < MIN_TORCH_MACOS:
-            raise RuntimeError(
-                f"philtorch's MPS kernels need PyTorch {MIN_TORCH_MACOS} or newer on macOS; "
-                f"found {torch.__version__}."
-            )
         # .mm marks the macOS-only source, which reaches Metal through torch's
         # C shim and includes its shader, written below as a header.
         sources += list(glob.glob(os.path.join(extensions_dir, "*.mm")))
@@ -175,7 +111,6 @@ def get_extensions():
             [os.path.relpath(s, this_dir) for s in sources],
             include_dirs=include_dirs,
             extra_compile_args=extra_compile_args,
-            extra_link_args=extra_link_args,
             py_limited_api=py_limited_api,
         )
     ]
@@ -187,7 +122,7 @@ try:
     ext_modules = get_extensions()
 except ImportError:
     # Only torch's absence is treated as "maybe metadata-only"; other errors
-    # from get_extensions() (e.g. missing Homebrew on macOS) propagate as-is,
+    # from get_extensions() (e.g. a torch older than MIN_TORCH) propagate as-is,
     # since those are real build failures rather than a missing-torch case.
     #
     # Metadata-only invocations (e.g. `setup.py egg_info`/`sdist`, which pip
@@ -210,7 +145,8 @@ except ImportError:
             "sees it."
         )
 
-install_requires = torch_requirement(os.environ.get("PHILTORCH_TORCH_PIN", ""))
+# See MIN_TORCH in build_support.py.
+install_requires = [f"torch >= {MIN_TORCH}.0"]
 
 if not ext_modules:
     setup(install_requires=install_requires)

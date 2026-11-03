@@ -71,6 +71,19 @@ def _floating_or_int64(x: Tensor) -> bool:
     return x.is_floating_point() or x.is_complex() or x.dtype == torch.int64
 
 
+# The dtypes the native kernels dispatch on; others, such as float8, would
+# raise RuntimeError there.
+_NATIVE_DTYPES = (
+    torch.float16,
+    torch.bfloat16,
+    torch.float32,
+    torch.float64,
+    torch.complex64,
+    torch.complex128,
+    torch.int64,
+)
+
+
 # The dtypes the Metal kernels take.
 _MPS_DTYPES = (torch.float32, torch.float16, torch.bfloat16, torch.complex64)
 
@@ -228,6 +241,11 @@ def _forward(A: Tensor, zi: Tensor, x: Tensor) -> Tensor:
         return x + zi[:, :0].sum(-1)[:, None, None] + A[..., :0].sum()
     for applies, run in _KERNELS:
         if applies(A, x):
+            if run is not recur_triton and x.dtype not in _NATIVE_DTYPES:
+                raise NotImplementedError(
+                    "the native kernels take float16, bfloat16, float32, float64, "
+                    f"complex64, complex128 and int64, got {x.dtype}"
+                )
             return run(A, zi, x)
     kind = "time-invariant" if _time_invariant(A) else "time-varying"
     reason = ""

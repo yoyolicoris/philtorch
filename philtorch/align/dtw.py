@@ -658,12 +658,9 @@ def _cross(g: _Grid, x, y, items: Tensor) -> Tensor:
 
 
 # The path search syncs with the host, which a CUDA graph can't capture: the
-# tag, from PyTorch 2.8, keeps the op out of the graphs of reduce-overhead.
-_UNSAFE = getattr(torch.Tag, "cudagraph_unsafe", None)
-
-
+# tag keeps the op out of the graphs of reduce-overhead.
 @torch.library.custom_op(
-    "philtorch::dtw_linear_path", mutates_args=(), **({"tags": (_UNSAFE,)} if _UNSAFE else {})
+    "philtorch::dtw_linear_path", mutates_args=(), tags=(torch.Tag.cudagraph_unsafe,)
 )
 def linear_path(
     x: Tensor, y: Tensor, window: Tensor | None, big: float, scale: float, steps: str,

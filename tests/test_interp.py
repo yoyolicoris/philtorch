@@ -602,6 +602,13 @@ def test_resample_cuda_longest_filter():
 
 
 @pytest.mark.cuda
+def test_resample_cuda_rejects_dtypes_its_kernel_lacks():
+    x = torch.zeros(1, 32, device="cuda").to(torch.float8_e4m3fn)
+    with pytest.raises(NotImplementedError, match="CUDA kernel takes"):
+        resample(x, 2, 1)
+
+
+@pytest.mark.cuda
 @pytest.mark.parametrize("dtype", [torch.float32, torch.float64])
 @pytest.mark.parametrize("T", [48, 5000])
 def test_resample_cuda_graph_capture(dtype, T):

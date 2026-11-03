@@ -8,7 +8,6 @@ GPUs" (arXiv:2511.10363).
 """
 
 import math
-import re
 from typing import NamedTuple
 
 import torch
@@ -19,27 +18,11 @@ try:
 except ImportError:  # pragma: no cover - PyTorch without associative_scan
     _associative_scan = None
 
-# The generic mode of associative_scan takes any combine function. It runs
-# eagerly from PyTorch 2.8: the combine function is vmapped over the scan
-# dimension and applied O(log N) times, so autograd follows it as usual.
-# Earlier releases fail on these elements: 2.5 requires every leaf to have the
-# same shape, and these mix matrices and vectors, while 2.6 and 2.7 always run
-# the scan under torch.compile, which fails on the batched matrix products.
-# The scan also calls the combine function on empty slices, and vmapped
-# torch.linalg.solve fails on those before PyTorch 2.11.
-_MIN_TORCH_VERSION = (2, 11)
-
-
-def _supports_generic_scan(torch_version: str) -> bool:
-    major, minor = re.match(r"(\d+)\.(\d+)", torch_version).groups()
-    return _associative_scan is not None and (int(major), int(minor)) >= _MIN_TORCH_VERSION
-
 
 def _scan(combine_fn, xs: tuple[Tensor, ...], reverse: bool = False) -> tuple[Tensor, ...]:
-    if not _supports_generic_scan(torch.__version__):
+    if _associative_scan is None:  # pragma: no cover - PyTorch without associative_scan
         raise RuntimeError(
-            "Kalman filtering needs the generic mode of PyTorch's associative_scan "
-            f"from PyTorch 2.11; this is PyTorch {torch.__version__}."
+            "Kalman filtering needs PyTorch's associative_scan, which this PyTorch lacks"
         )
     # With no signals, steps or states there is nothing to combine, and the
     # scan itself rejects an empty scan dimension and fails on an empty batch.
@@ -325,7 +308,7 @@ def kalman_filter(
     Parallel Kalman Filters and Smoothers on GPUs`_ (Särkkä and
     García-Fernández, 2025) studies. The scan is PyTorch's
     :func:`associative_scan <torch._higher_order_ops.associative_scan.associative_scan>`
-    in its generic mode, which needs PyTorch 2.11 or later.
+    in its generic mode.
 
     Each of :attr:`A`, :attr:`C`, :attr:`Q` and :attr:`R` may be constant or
     time-varying, and shared or one per signal, as listed below. When a 3-D
@@ -398,7 +381,6 @@ def kalman_filter(
     Raises:
         ValueError: if :attr:`y` is not 3-D, :attr:`A` is not square, or a
             coefficient has an unsupported shape.
-        RuntimeError: on PyTorch older than 2.11.
 
     Example::
 
@@ -440,8 +422,7 @@ def kalman_smoother(
     smoother's
     gains, :math:`\mathrm{Cov}(\mathbf{x}[n], \mathbf{x}[n + 1] \mid
     \mathbf{y}) = E[n] \, \mathrm{Cov}(\mathbf{x}[n + 1] \mid \mathbf{y})`.
-    The arguments are those of :func:`kalman_filter`, and the same PyTorch
-    2.11 requirement applies.
+    The arguments are those of :func:`kalman_filter`.
 
     These are the expectations of the E-step of expectation-maximization;
     :func:`kalman_em_step` runs its closed-form M-step.
@@ -476,7 +457,6 @@ def kalman_smoother(
     Raises:
         ValueError: if :attr:`y` is not 3-D, :attr:`A` is not square, or a
             coefficient has an unsupported shape.
-        RuntimeError: on PyTorch older than 2.11.
 
     Example::
 
@@ -547,7 +527,6 @@ def kalman_em_step(
             parameter is not of a shape listed above, or :attr:`A` and
             :attr:`Q`, :attr:`C` and :attr:`R`, or :attr:`m0` and :attr:`P0`
             differ in layout.
-        RuntimeError: on PyTorch older than 2.11.
 
     Example::
 

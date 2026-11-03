@@ -1,20 +1,17 @@
 #pragma once
 
-#include <c10/cuda/CUDACachingAllocator.h>
-#include <c10/cuda/CUDAException.h>
-#include <c10/cuda/CUDAGuard.h>
-#include <c10/cuda/CUDAStream.h>
+#include "stable_support.h"
+
 #include <cub/device/device_scan.cuh>
 #include <cuda/std/functional>
 #include <thrust/iterator/counting_iterator.h>
 #include <thrust/iterator/tabulate_output_iterator.h>
 #include <thrust/iterator/transform_iterator.h>
-#include <ATen/OpMathType.h>
-#include <ATen/ATen.h>
-#include <torch/library.h>
 
 #include <cstdint>
 #include <limits>
+
+using torch::stable::Tensor;
 
 // The affine map h -> A h + x of a step, or of a run of steps, of M states.
 template <int M, typename T>
@@ -118,65 +115,69 @@ struct index2key
 };
 
 // Scan each run of equal keys with scan_op, like thrust::inclusive_scan_by_key,
-// but asynchronously on PyTorch's current stream, with scratch memory from its
-// caching allocator. thrust::device runs on the legacy default stream and
-// allocates with cudaMalloc, which synchronized the whole device on every call.
+// but asynchronously on PyTorch's current stream, with scratch memory from a
+// tensor, so from its caching allocator. thrust::device runs on the legacy
+// default stream and allocates with cudaMalloc, which synchronized the whole
+// device on every call.
 template <typename KeysIt, typename InputIt, typename OutputIt, typename ScanOp>
 void scan_by_key_on_current_stream(KeysIt keys, InputIt input, OutputIt output,
-                                   ScanOp scan_op, int64_t num_items)
+                                   ScanOp scan_op, int64_t num_items,
+                                   const Tensor &like)
 {
-    TORCH_CHECK(num_items <= std::numeric_limits<int>::max(),
-                "the recurrence has ", num_items,
-                " steps over all batches, but at most INT_MAX are supported");
+    STD_TORCH_CHECK(num_items <= std::numeric_limits<int>::max(),
+                    "the recurrence has ", num_items,
+                    " steps over all batches, but at most INT_MAX are supported");
     if (num_items == 0)
         return;
-    auto stream = c10::cuda::getCurrentCUDAStream();
+    auto stream = philtorch::current_cuda_stream(like.get_device_index());
     ::cuda::std::equal_to<int> equality_op;
     size_t temp_storage_bytes = 0;
-    C10_CUDA_CHECK(cub::DeviceScan::InclusiveScanByKey(
+    STD_CUDA_CHECK(cub::DeviceScan::InclusiveScanByKey(
         nullptr, temp_storage_bytes, keys, input, output, scan_op,
         static_cast<int>(num_items), equality_op, stream));
-    auto temp_storage =
-        c10::cuda::CUDACachingAllocator::get()->allocate(temp_storage_bytes);
-    C10_CUDA_CHECK(cub::DeviceScan::InclusiveScanByKey(
-        temp_storage.get(), temp_storage_bytes, keys, input, output, scan_op,
-        static_cast<int>(num_items), equality_op, stream));
+    auto temp_storage = torch::stable::empty(
+        {static_cast<int64_t>(temp_storage_bytes)},
+        torch::headeronly::ScalarType::Byte, std::nullopt, like.device());
+    STD_CUDA_CHECK(cub::DeviceScan::InclusiveScanByKey(
+        temp_storage.mutable_data_ptr(), temp_storage_bytes, keys, input,
+        output, scan_op, static_cast<int>(num_items), equality_op, stream));
 }
 
 template <int M>
-void check_recur_inputs(const at::Tensor &A, const at::Tensor &zi, const at::Tensor &x)
+void check_recur_inputs(const Tensor &A, const Tensor &zi, const Tensor &x)
 {
-    TORCH_CHECK(zi.scalar_type() == x.scalar_type(),
-                "zi must have the same scalar type as input");
-    TORCH_CHECK(A.scalar_type() == x.scalar_type(),
-                "A must have the same scalar type as input");
-    TORCH_CHECK(A.device() == x.device() && zi.device() == x.device(),
-                "A and zi must be on the same device as input");
-    TORCH_CHECK(x.dim() == 3 && x.size(2) == M, "x must be of shape (B, T, ", M, ")");
-    TORCH_CHECK(A.size(-1) == M && A.size(-2) == M,
-                "Last two dimensions of A must be of size ", M);
-    TORCH_CHECK(zi.dim() == 2 && zi.size(0) == x.size(0) && zi.size(1) == M,
-                "zi must be of shape (B, ", M, ")");
+    STD_TORCH_CHECK(zi.scalar_type() == x.scalar_type(),
+                    "zi must have the same scalar type as input");
+    STD_TORCH_CHECK(A.scalar_type() == x.scalar_type(),
+                    "A must have the same scalar type as input");
+    STD_TORCH_CHECK(A.device() == x.device() && zi.device() == x.device(),
+                    "A and zi must be on the same device as input");
+    STD_TORCH_CHECK(x.dim() == 3 && x.size(2) == M, "x must be of shape (B, T, ", M, ")");
+    STD_TORCH_CHECK(A.size(-1) == M && A.size(-2) == M,
+                    "Last two dimensions of A must be of size ", M);
+    STD_TORCH_CHECK(zi.dim() == 2 && zi.size(0) == x.size(0) && zi.size(1) == M,
+                    "zi must be of shape (B, ", M, ")");
 }
 
 // The recurrence of M states, A read with these strides; the caller checks the inputs.
 // dispatch(type, f) calls f(scalar_t{}) for a scalar type of the dtypes the op
 // supports: a macro needs its name as a literal, so the caller dispatches.
 template <int M, typename Dispatch>
-at::Tensor recur_small_launch(const at::Tensor &A, const at::Tensor &zi,
-                              const at::Tensor &x, int64_t stride_b,
-                              int64_t stride_t, Dispatch dispatch)
+Tensor recur_small_launch(const Tensor &A, const Tensor &zi,
+                          const Tensor &x, int64_t stride_b,
+                          int64_t stride_t, Dispatch dispatch)
 {
     auto n_steps = x.size(1) + 1; // +1 for the initial state
-    auto A_contiguous = A.contiguous();
-    auto zi_contiguous = zi.contiguous();
-    auto x_contiguous = x.contiguous();
-    auto out = at::empty_like(x_contiguous);
+    auto A_contiguous = torch::stable::contiguous(A);
+    auto zi_contiguous = torch::stable::contiguous(zi);
+    auto x_contiguous = torch::stable::contiguous(x);
+    auto out = torch::stable::empty_like(x_contiguous);
 
-    const at::cuda::OptionalCUDAGuard device_guard(device_of(x));
+    const torch::stable::accelerator::DeviceGuard device_guard(
+        x.get_device_index());
     dispatch(x.scalar_type(), [&](auto tag) {
         using scalar_t = decltype(tag);
-        using acc_t = at::opmath_type<scalar_t>; // the state stays in the accumulation type
+        using acc_t = philtorch::opmath_type<scalar_t>; // the state stays in the accumulation type
         thrust::counting_iterator<int> iter(0);
         index2key key_op{static_cast<int>(n_steps)};
         scan_by_key_on_current_stream(
@@ -189,7 +190,7 @@ at::Tensor recur_small_launch(const at::Tensor &A, const at::Tensor &zi,
                           static_cast<int>(n_steps), stride_b, stride_t}),
             thrust::make_tabulate_output_iterator(recur_output_op<M, scalar_t, acc_t>{
                 out.mutable_data_ptr<scalar_t>(), static_cast<int>(n_steps)}),
-            affine_binary_op<M, acc_t>(), x.size(0) * n_steps);
+            affine_binary_op<M, acc_t>(), x.size(0) * n_steps, x);
     });
     return out;
 }
