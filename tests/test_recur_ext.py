@@ -252,6 +252,13 @@ def _mps_recur_n_args(op: str, B: int, T: int, M: int, dtype=torch.float32):
 
 @_MPS
 @pytest.mark.parametrize("op", ["lti_recurN", "recurN"])
+def test_mps_recur_n_rejects_m_above_32(op: str):
+    with pytest.raises(RuntimeError, match="MPS recurrence takes M up to 32, got 33"):
+        _MPS_OPS_N[op](*_mps_recur_n_args(op, 2, 5, 33))
+
+
+@_MPS
+@pytest.mark.parametrize("op", ["lti_recurN", "recurN"])
 def test_mps_recur_n_rejects_int64(op: str):
     with pytest.raises(RuntimeError, match="MPS recurrence takes"):
         _MPS_OPS_N[op](*_mps_recur_n_args(op, 2, 5, 3, torch.int64))

@@ -272,7 +272,7 @@ Time-invariant `A` costs two passes over the steps; time-varying `A` costs `M` m
 
 ### Execution
 
-The library is compiled from source on the first call for each state size and dtype, with `STATES` and `SCALAR` defined before `mps_common.metal`, so that every loop over the states unrolls and the states stay in registers.
+The library is compiled from source on the first call for each state size and dtype, with `STATES`, `SCALAR` and `THREADS` (per threadgroup) defined before `mps_common.metal`, so that every loop over the states unrolls and the states stay in registers.
 
 A vector of `M` states, a chunk's state or a column of its `P`, runs on `LANES` lanes of a SIMD group, `M` rounded up to a power of 2, so that a SIMD group holds `32 / LANES` vectors; the lanes past `M` hold zeros.
 Lane `j` holds state `j` and reads column `j` of each step's matrix, so that a vector's lanes read the row-major matrix in order.
@@ -280,7 +280,7 @@ A step multiplies each lane's column by its state, and a butterfly of `log2(LANE
 Every shuffle exchanges lanes by a mask shared by all lanes, which Apple GPUs run faster than shuffles from a lane index of each lane's own.
 
 Vectors run consecutive chunks of a sequence, 32 at most, in runs as even as a sequence's chunks allow, those of each sequence in turn, then the next run: the vectors in flight then read neighbouring inputs, and the matrices of time-varying `A` shared over the batch at once.
-With neighbouring vectors on the same chunk of different sequences, `recur_run` of `M = 16` over 64 sequences of 65536 steps took 2.7 times as long, its vectors' inputs spread over hundreds of megabytes; with neighbouring vectors on consecutive chunks of one sequence, it took 2.4 times as long for time-varying `A` shared over the batch, which every sequence's chunks read again.
+Against this order, `recur_run` of `M = 16` over 64 sequences of 65536 steps took 2.7 times as long with neighbouring vectors on the same chunk of different sequences, its vectors' inputs spread over hundreds of megabytes, and 2.4 times as long for time-varying `A` shared over the batch with every chunk of one sequence before the next sequence's, which read `A` again for each sequence.
 
 | Buffer | Shape | Purpose |
 | --- | --- | --- |

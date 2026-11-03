@@ -10,10 +10,10 @@
 // chunk's end is a map of the state at its start, h -> P h + o, with P the
 // product of the chunk's matrices, A^chunk for time-invariant A, and o the
 // chunk's end state from a zero start. Chunk 0 starts from zi instead, so
-// the scan of the maps starts from zero. Two kernels (see README.md): reduce each chunk but the last
-// to its map, which the host scans, as the same recurrence over the chunks,
-// recursively, into the state at each chunk's end, and run each chunk from
-// the state before it.
+// the scan of the maps starts from zero. Two kernels (see README.md): reduce
+// each chunk but the last to its map, which the host scans, as the same
+// recurrence over the chunks, recursively, into the state at each chunk's
+// end, and run each chunk from the state before it.
 //
 // A vector of M states, a chunk's state or a column of its P, runs on LANES
 // lanes of a SIMD group, M rounded up to a power of 2, the lanes past M
@@ -42,6 +42,9 @@ struct Lane
     uint vector, state;
 };
 
+// The kernels run one-dimensional grids in threadgroups of a multiple of
+// SIMD_WIDTH threads, so that thread `index` is lane `lane` of SIMD group
+// index / SIMD_WIDTH.
 inline Lane lane_of(uint index, uint lane)
 {
     return {index / SIMD_WIDTH * VECTORS + lane / LANES, lane % LANES};
@@ -142,20 +145,21 @@ inline bool sequence_chunk(uint v, uint n_batch, uint chunks, uint run,
 // c - 1], the state at the previous chunk's end, for c > 0, and for c = 0
 // from zi[b] if from_zi, and zero otherwise. A[b] is a + b * stride_b, its
 // step t's matrix t * stride_t after.
-[[kernel, max_total_threads_per_threadgroup(THREADS)]] void recur_run(const device T *a [[buffer(0)]],
-                          const device T *zi [[buffer(1)]],
-                          const device T *x [[buffer(2)]],
-                          const device A *starts [[buffer(3)]],
-                          device T *out [[buffer(4)]],
-                          constant long &batch [[buffer(5)]],
-                          constant long &steps [[buffer(6)]],
-                          constant long &chunk [[buffer(7)]],
-                          constant long &stride_b [[buffer(8)]],
-                          constant long &stride_t [[buffer(9)]],
-                          constant long &from_zi [[buffer(10)]],
-                          constant long &run [[buffer(11)]],
-                          uint index [[thread_position_in_grid]],
-                          uint lane [[thread_index_in_simdgroup]])
+[[kernel, max_total_threads_per_threadgroup(THREADS)]]
+void recur_run(const device T *a [[buffer(0)]],
+               const device T *zi [[buffer(1)]],
+               const device T *x [[buffer(2)]],
+               const device A *starts [[buffer(3)]],
+               device T *out [[buffer(4)]],
+               constant long &batch [[buffer(5)]],
+               constant long &steps [[buffer(6)]],
+               constant long &chunk [[buffer(7)]],
+               constant long &stride_b [[buffer(8)]],
+               constant long &stride_t [[buffer(9)]],
+               constant long &from_zi [[buffer(10)]],
+               constant long &run [[buffer(11)]],
+               uint index [[thread_position_in_grid]],
+               uint lane [[thread_index_in_simdgroup]])
 {
     const Lane l = lane_of(index, lane);
     const uint n_batch = uint(batch), length = uint(chunk);
@@ -187,21 +191,22 @@ inline bool sequence_chunk(uint v, uint n_batch, uint chunks, uint run,
 // of unit vector k by the chunk's matrices. Chunk 0's o holds zi, so its P
 // is zero for time-varying A, and the scan of the maps starts from zero,
 // which time-invariant A's P, shared by chunk 0, then leaves at zero.
-[[kernel, max_total_threads_per_threadgroup(THREADS)]] void recur_reduce(const device T *a [[buffer(0)]],
-                             const device T *zi [[buffer(1)]],
-                             const device T *x [[buffer(2)]],
-                             device A *offsets [[buffer(3)]],
-                             device A *maps [[buffer(4)]],
-                             constant long &batch [[buffer(5)]],
-                             constant long &steps [[buffer(6)]],
-                             constant long &chunk [[buffer(7)]],
-                             constant long &stride_b [[buffer(8)]],
-                             constant long &stride_t [[buffer(9)]],
-                             constant long &from_zi [[buffer(10)]],
-                             constant long &a_batch [[buffer(11)]],
-                             constant long &run [[buffer(12)]],
-                             uint index [[thread_position_in_grid]],
-                             uint lane [[thread_index_in_simdgroup]])
+[[kernel, max_total_threads_per_threadgroup(THREADS)]]
+void recur_reduce(const device T *a [[buffer(0)]],
+                  const device T *zi [[buffer(1)]],
+                  const device T *x [[buffer(2)]],
+                  device A *offsets [[buffer(3)]],
+                  device A *maps [[buffer(4)]],
+                  constant long &batch [[buffer(5)]],
+                  constant long &steps [[buffer(6)]],
+                  constant long &chunk [[buffer(7)]],
+                  constant long &stride_b [[buffer(8)]],
+                  constant long &stride_t [[buffer(9)]],
+                  constant long &from_zi [[buffer(10)]],
+                  constant long &a_batch [[buffer(11)]],
+                  constant long &run [[buffer(12)]],
+                  uint index [[thread_position_in_grid]],
+                  uint lane [[thread_index_in_simdgroup]])
 {
     const Lane l = lane_of(index, lane);
     const uint n_batch = uint(batch), length = uint(chunk);

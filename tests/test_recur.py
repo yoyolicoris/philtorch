@@ -105,9 +105,10 @@ def test_recurrence_ignores_memory_past_the_states(dtype):
     # four). The Metal kernel takes M = 1 in tiles of 1024 steps read 4 at a
     # time: one tile, and three, each ending mid-vector. Its kernels of M > 1,
     # up to 32, take chunks of 64 steps: 301 steps end mid-chunk, and 2049 make
-    # 33 chunks, whose maps are scanned in turn.
+    # 33 chunks, whose maps are scanned in turn; 6 and 20 states leave lanes
+    # of their vectors, 8 and 32, idle.
     [pytest.param("cuda", M, 300, marks=pytest.mark.cuda) for M in (1, 2, 3, 6, 12)]
-    + [pytest.param("mps", M, T, marks=MPS) for M in (1, 2, 3, 6, 32) for T in (301, 2049)],
+    + [pytest.param("mps", M, T, marks=MPS) for M in (1, 2, 3, 6, 20, 32) for T in (301, 2049)],
 )
 def test_recurrence_low_precision(dtype, tolerance, sharing, device, M, T):
     A, zi, x = _problem(4, T, M, sharing, dtype, device)
@@ -130,14 +131,14 @@ def _mps_relative_error(A, zi, x):
 
 
 @MPS
-@pytest.mark.parametrize("sharing", ["one", "per_step"])
+@pytest.mark.parametrize("sharing", SHARING)
 @pytest.mark.parametrize("M", [2, 5])
 @pytest.mark.parametrize("T", [2**17 + 3, 2**15 + 40])
 def test_recurrence_mps_deep_recursion(sharing, M, T):
     # Hundreds or thousands of chunks of 64 steps, whose maps the same kernels
     # scan over chunks of chunks: three levels, the last chunk of each ending
-    # mid-way.
-    A, zi, x = _problem(1, T, M, sharing, torch.float32)
+    # mid-way, with the maps of A per sequence too.
+    A, zi, x = _problem(2, T, M, sharing, torch.float32)
     assert _mps_relative_error(A, zi, x) < 1e-5
 
 
