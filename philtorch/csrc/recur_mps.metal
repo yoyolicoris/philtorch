@@ -419,9 +419,12 @@ inline void run_block(const device T *a, const device T *zi,
             Xr[i].thread_elements()[k] = in ? real_part(h) : 0.0f;
             Xi[i].thread_elements()[k] = in ? imag_part(h) : 0.0f;
         }
-    // The columns share their matrices: of sequence b0, or of chunk c0.
+    // The columns share their matrices: of sequence b0, whose constant matrix
+    // serves chunks of any length, or of chunk c0, whose steps end with the
+    // sequences', so that no matrix past A's last is read.
     const device T *m = a + b0 * stride_b + c0 * length * stride_t;
-    for (uint t = 0; t < length; ++t, m += stride_t)
+    const uint last = stride_t == 0 ? length : min(length, steps - c0 * length);
+    for (uint t = 0; t < last; ++t, m += stride_t)
     {
         multiply(m, Xr, Xi, e, 1);
         UNROLL
