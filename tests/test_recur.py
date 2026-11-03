@@ -166,10 +166,12 @@ def test_recurrence_mps_many_states(sharing, dtype, M):
 @MPS
 @pytest.mark.parametrize("sharing", SHARING)
 @pytest.mark.parametrize("T", [1, 63, 64, 65, 128, 129])
-def test_recurrence_mps_chunk_boundaries(sharing, T):
+@pytest.mark.parametrize("M", [3, 16])
+def test_recurrence_mps_chunk_boundaries(sharing, T, M):
     # Around chunks of 64 steps: one chunk, partial or whole, and a second
-    # chunk of one step, whole, or of one step past it.
-    A, zi, x = _problem(3, T, 3, sharing, torch.float32)
+    # chunk of one step, whole, or of one step past it; at 16 states, shared
+    # matrices run their vectors in blocks of 8, padded.
+    A, zi, x = _problem(3, T, M, sharing, torch.float32)
     assert _mps_relative_error(A, zi, x) < 1e-5
 
 

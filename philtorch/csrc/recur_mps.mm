@@ -37,6 +37,8 @@ constexpr int64_t RUN = 32;
 // a lane holds up to MAX_STATES / SIMD_WIDTH states of a vector, and a SIMD
 // group a block of 8 columns of a map, in registers.
 constexpr int64_t MAX_STATES = 128;
+// The fewest states of vectors that run in blocks (see blocked).
+constexpr int64_t BLOCK_STATES = 16;
 
 struct Kernels
 {
@@ -64,27 +66,6 @@ const Kernels &kernels(int64_t M, ScalarType dtype)
     return cache.emplace(key, compiled).first->second;
 }
 
-// The SIMD groups of n vectors of M states, SIMD_WIDTH / LANES to a group,
-// LANES in recur_mps.metal: M rounded up to a power of 2, SIMD_WIDTH at most.
-int64_t vector_groups(int64_t n, int64_t M)
-{
-    int64_t lanes = 1;
-    while (lanes < std::min(M, SIMD_WIDTH))
-        lanes *= 2;
-    return philtorch::ceil_div(n, SIMD_WIDTH / lanes);
-}
-
-// The threads of n SIMD groups, in whole threadgroups, which the kernels
-// index in 32 bits.
-std::array<uint64_t, 2> threads(int64_t simd_groups)
-{
-    const int64_t groups =
-        philtorch::ceil_div<int64_t>(simd_groups * SIMD_WIDTH, THREADS);
-    STD_TORCH_CHECK(groups <= std::numeric_limits<uint32_t>::max() / THREADS,
-                    "the input is too large for ", OP);
-    return {static_cast<uint64_t>(groups) * THREADS, 1};
-}
-
 // The chunks per run of a sequence of n chunks, RUN at most, the runs as
 // even as they can be, so that the last is padded by fewer chunks than
 // there are runs.
@@ -97,6 +78,49 @@ int64_t run_length(int64_t n)
 int64_t run_vectors(int64_t n)
 {
     return philtorch::ceil_div(n, run_length(n)) * run_length(n);
+}
+
+// Whether vectors run in blocks of 8, by 8 x 8 matrix products: vectors of
+// BLOCK_STATES or more that share their matrices, time-invariant or shared
+// over the batch. Smaller ones leave the tiles mostly idle, and their own
+// lanes ran up to 3 times as fast.
+bool blocked(int64_t M, int64_t stride_t, int64_t a_batch)
+{
+    return M >= BLOCK_STATES && (stride_t == 0 || a_batch == 1);
+}
+
+// The SIMD groups of the vectors of n_batch sequences' chunks, as
+// vector_groups in recur_mps.metal: blocks of 8 if blocked, a sequence's
+// chunks or a chunk's sequences padded to a multiple of 8 where a block may
+// not span two; and otherwise SIMD_WIDTH / LANES a group in runs (see
+// run_length), LANES being M rounded up to a power of 2, SIMD_WIDTH at most.
+int64_t vector_groups(int64_t batch, int64_t chunks, int64_t M,
+                      int64_t stride_t, int64_t a_batch)
+{
+    if (blocked(M, stride_t, a_batch))
+    {
+        const int64_t inner = stride_t != 0 ? batch : chunks;
+        const int64_t outer = stride_t != 0 ? chunks : batch;
+        const int64_t padded = stride_t != 0 || a_batch > 1
+            ? philtorch::ceil_div<int64_t>(inner, 8) * 8
+            : inner;
+        return philtorch::ceil_div<int64_t>(outer * padded, 8);
+    }
+    int64_t lanes = 1;
+    while (lanes < std::min(M, SIMD_WIDTH))
+        lanes *= 2;
+    return philtorch::ceil_div(batch * run_vectors(chunks), SIMD_WIDTH / lanes);
+}
+
+// The threads of n SIMD groups, in whole threadgroups, which the kernels
+// index in 32 bits.
+std::array<uint64_t, 2> threads(int64_t simd_groups)
+{
+    const int64_t groups =
+        philtorch::ceil_div<int64_t>(simd_groups * SIMD_WIDTH, THREADS);
+    STD_TORCH_CHECK(groups <= std::numeric_limits<uint32_t>::max() / THREADS,
+                    "the input is too large for ", OP);
+    return {static_cast<uint64_t>(groups) * THREADS, 1};
 }
 
 // h[b, t] = A[b, t] h[b, t - 1] + x[b, t], with A[b, t] the M x M matrix at
@@ -119,8 +143,9 @@ Tensor recur_mps(const Tensor &a, int64_t a_batch, int64_t stride_b,
     if (maps_per_item == 0)
     {
         launch(k.run, {a.get(), zi.get(), x.get(), out.get(), out.get()},
-               {batch, steps, CHUNK, stride_b, stride_t, from_zi, 1},
-               threads(vector_groups(batch, M)), group);
+               {batch, steps, CHUNK, stride_b, stride_t, from_zi, 1, a_batch,
+                blocked(M, stride_t, a_batch)},
+               threads(vector_groups(batch, 1, M, stride_t, a_batch)), group);
         return out;
     }
 
@@ -138,8 +163,8 @@ Tensor recur_mps(const Tensor &a, int64_t a_batch, int64_t stride_b,
                                philtorch::ceil_div<int64_t>(M, 8);
     launch(k.reduce, {a.get(), zi.get(), x.get(), offsets.get(), maps.get()},
            {batch, steps, CHUNK, stride_b, stride_t, from_zi, a_batch,
-            run_length(maps_per_item), packed},
-           threads(vector_groups(batch * run_vectors(maps_per_item), M) +
+            run_length(maps_per_item), packed, blocked(M, stride_t, a_batch)},
+           threads(vector_groups(batch, maps_per_item, M, stride_t, a_batch) +
                    map_groups),
            group);
 
@@ -150,8 +175,9 @@ Tensor recur_mps(const Tensor &a, int64_t a_batch, int64_t stride_b,
         stride_t == 0 ? 0 : M * M, offsets, false, offsets);
     launch(k.run, {a.get(), zi.get(), x.get(), starts.get(), out.get()},
            {batch, steps, CHUNK, stride_b, stride_t, from_zi,
-            run_length(maps_per_item + 1)},
-           threads(vector_groups(batch * run_vectors(maps_per_item + 1), M)),
+            run_length(maps_per_item + 1), a_batch,
+            blocked(M, stride_t, a_batch)},
+           threads(vector_groups(batch, maps_per_item + 1, M, stride_t, a_batch)),
            group);
     return out;
 }

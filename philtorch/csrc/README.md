@@ -275,7 +275,11 @@ Time-invariant `A` costs two passes over the steps; time-varying `A` costs `M` m
 The library is compiled from source on the first call for each state size and dtype, with `STATES`, `SCALAR` and `THREADS` (per threadgroup) defined before `mps_common.metal`, so that every loop over the states unrolls and the states stay in registers.
 Every loop over states, lanes and tiles is unrolled whole (`clang loop unroll(full)`): left to the compiler, the larger ones kept a loop, whose arrays then lived in memory, up to 30 times as slow.
 
-**Vectors.** A vector of `M` states, a chunk's state, runs on `LANES` lanes of a SIMD group, `M` rounded up to a power of 2 and 32 at most, so that a SIMD group holds `32 / LANES` vectors; above 32 states, each lane holds `ceil(M / 32)` of them, `j`, `j + 32`, and so on.
+**Blocks.** Vectors of 16 states or more that share their matrices, the chunks of time-invariant `A` and those of time-varying `A` shared over the batch, run 8 at a time as the columns of an `M x 8` block on a SIMD group, `X <- A[t] X + x[t]`, by the 8 x 8 matrix products of the maps below: the chunks of a sequence for time-invariant `A`, and the sequences of a chunk for time-varying `A`, whose block then reads one chunk's matrices.
+A vector's step otherwise costs a load of `A` per product: blocks made float32 at `M = 128` 5 to 8 times as fast, from half the CPU's speed to 1.5 to 6 times it.
+Below 16 states, the tiles stay mostly idle, and their own lanes ran up to 3 times as fast.
+
+**Vectors.** Other vectors run on `LANES` lanes of a SIMD group, `M` rounded up to a power of 2 and 32 at most, so that a SIMD group holds `32 / LANES` vectors; above 32 states, each lane holds `ceil(M / 32)` of them, `j`, `j + 32`, and so on.
 Lane `j` holds state `j` and reads column `j` of each step's matrix, so that a vector's lanes read the row-major matrix in order.
 A step forms each lane's share of every row, the products of its columns by its states, and a butterfly of `log2(LANES)` rounds of `simd_shuffle_xor` sums the shares over the lanes, a block of `LANES` rows at a time: each round, a lane keeps the half of the rows its lane's bit selects and adds its partner's other half, until it holds its own row's sum.
 The first round is taken as the shares are formed, so that a lane holds half a block's at most: with all of them, complex64 at `M = 32` spilled its registers and ran six times as long.
