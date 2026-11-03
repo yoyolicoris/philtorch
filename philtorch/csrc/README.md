@@ -1,7 +1,8 @@
-# Metal scalar recurrence implementation
+# Metal recurrence implementations
 
 This directory contains philtorch's native CPU, CUDA, and Metal sources.
-The Metal implementation of the scalar linear recurrence, time-invariant and time-varying, lives in [`scalar_recur_mps.mm`](scalar_recur_mps.mm) (host code) and [`scalar_recur_mps.metal`](scalar_recur_mps.metal) (kernels).
+The Metal implementations of the linear recurrence come in two: the scalar one, M = 1, described first, and that of M states, up to 32, in [the last section](#metal-recurrence-of-m-states).
+The scalar recurrence, time-invariant and time-varying, lives in [`scalar_recur_mps.mm`](scalar_recur_mps.mm) (host code) and [`scalar_recur_mps.metal`](scalar_recur_mps.metal) (kernels).
 It implements
 
 ```text
@@ -21,12 +22,17 @@ One three-pass design serves every input: reduce each tile, scan the tile totals
 | [`stable_support.h`](stable_support.h) | What every source needs beyond torch's stable C++ API, which they use alone (`torch/csrc/stable`, `torch/headeronly`): the target version, `build_support.MIN_TORCH`, `opmath_type`, `ceil_div`, dtype predicates, `current_cuda_stream`, and, for CUDA sources, the `USE_CUDA` definition. |
 | [`host_dot.h`](host_dot.h) | The dot product of the CPU kernels of the recurrence ops and of `lpc`, vectorized for float and double from size 8. |
 | [`torchlpc_shim.cpp`](torchlpc_shim.cpp) | Defines the schemas of `philtorch::scan` and `philtorch::lpc`, and the CPU kernel of `lpc`, one sequence per thread. |
+| [`mps_shim.h`](mps_shim.h) | What the Metal host sources share of torch's Metal C shim: compiling a shader after `mps_common.metal`, looking up and launching kernels, and the Metal type and accumulation type of each dtype. |
+| [`mps_common.metal`](mps_common.metal) | What the Metal kernels share, compiled at the head of each shader: the SIMD width, the accumulation types and complex products. |
 | [`scalar_recur_mps.mm`](scalar_recur_mps.mm) | MPS host code of `lti_recur` and `scan`, on torch's stable ABI and Metal C shim. |
-| [`scalar_recur_mps.metal`](scalar_recur_mps.metal) | The Metal kernels, embedded in the extension at build time. |
-| [`../_ops.py`](../_ops.py) | Registers fake implementations and autograd for `philtorch::lti_recur` and `philtorch::scan`. |
-| [`../_recur.py`](../_recur.py) | Sends M = 1 recurrences on MPS to `lti_recur` or `scan`. |
+| [`scalar_recur_mps.metal`](scalar_recur_mps.metal) | Their Metal kernels, embedded in the extension at build time. |
+| [`recur_mps.mm`](recur_mps.mm) | MPS host code of `lti_recurN` and `recurN`, M up to 32. |
+| [`recur_mps.metal`](recur_mps.metal) | Their Metal kernels, compiled once per state size and dtype. |
+| [`../_ops.py`](../_ops.py) | Registers fake implementations and autograd for the recurrence ops. |
+| [`../_recur.py`](../_recur.py) | Sends recurrences on MPS to `lti_recur` or `scan` for M = 1, and to `lti_recurN` or `recurN` for M up to 32. |
 | [`../../tests/test_recur.py`](../../tests/test_recur.py) | `test_recurrence_low_precision` checks MPS against a float64 reference in every dtype and coefficient layout. |
 | [`../../tests/test_recur_ext.py`](../../tests/test_recur_ext.py) | MPS tests of the carry across chunks of tiles, of gradients and of the inputs the kernels reject. |
+| [`../../tests/test_recur.py`](../../tests/test_recur.py) | Also MPS tests of M > 1: a large batch, deep recursion over the chunks, gradients and dispatch. |
 | [`../../benchmarks/benchmark_mps_recur.py`](../../benchmarks/benchmark_mps_recur.py) | Reproduces the CPU/MPS runtime results. |
 
 ## Turning a recurrence into a scan
@@ -171,8 +177,8 @@ The host code uses only torch's stable ABI, `torch/csrc/stable` and `torch/heade
 Like the other sources, it includes `stable_support.h`, which holds it to `MIN_TORCH`'s API.
 No Objective-C remains, and the extension links no Apple framework.
 
-1. `setup.py` turns `scalar_recur_mps.metal` into `scalar_recur_mps.metal.h`, a raw string in `build/metal`, which the host code includes.
-2. On first use, `aoti_torch_mps_create_shader_library` compiles that source, and `aoti_torch_mps_get_kernel_function` looks up the kernels, which stay cached for the process.
+1. `setup.py` turns each `.metal` file into a header in `build/metal`, a raw string named after the file (`scalar_recur_mps.metal` is `SCALAR_RECUR_MPS_METAL`), which the host code includes.
+2. On first use, `aoti_torch_mps_create_shader_library` compiles that source after `mps_common.metal`, and `aoti_torch_mps_get_kernel_function` looks up the kernels, which stay cached for the process.
 3. Scratch tensors are ordinary MPS tensors from the stable `new_empty`, so PyTorch manages their memory.
 4. Inputs are made contiguous; `aoti_torch_mps_set_arg_tensor` binds a tensor's buffer at its storage offset.
 5. `aoti_torch_mps_run_command_block` encodes each dispatch on PyTorch's MPS stream.
@@ -240,3 +246,62 @@ pixi run pytest tests/test_recur.py tests/test_recur_ext.py -k "mps or low_preci
 ```
 
 They run 301 and 2049 steps, one tile and three, each ending mid-vector, and `T = 1024 * 512 + 5`, so that stage 2 carries a map across more than one chunk of 512 tile totals.
+
+## Metal recurrence of M states
+
+[`recur_mps.mm`](recur_mps.mm) and [`recur_mps.metal`](recur_mps.metal) implement `lti_recurN` and `recurN` on MPS,
+
+```text
+h[b, t] = A[b, t] h[b, t - 1] + x[b, t],   h[b, -1] = zi[b],
+```
+
+for M up to 32, in the same four dtypes as the scalar kernels, accumulating in float32 (complex64 for complex64).
+`_recur.py` sends M = 1 to the scalar kernels, which are faster, and M from 2 to 32 here.
+
+### Algorithm
+
+The design follows the Triton kernels of [`../_recur_kernels.py`](../_recur_kernels.py), without their decoupled look-back, which needs a forward-progress guarantee Apple GPUs don't give.
+Every sequence longer than one chunk of 64 steps is split into chunks, whatever the batch: one behaviour for every input.
+The state at a chunk's end is the affine map `h -> P h + o` of the state at its start, with `P` the product of the chunk's matrices and `o` its end state from a zero start.
+Chunk 0 starts from `zi` instead, and its `P` is zero, as step 0 is in the CUDA `recur2` and `recur3`.
+
+1. `recur_reduce` computes the map of every chunk but the last: `o` per chunk of each sequence, and `P` per chunk of each distinct time-varying `A`, column by column, as the product of the chunk's matrices by each unit vector. Time-invariant `A` has one `P`, `A^64`, the same for every chunk, computed the same way from one chunk's steps.
+2. The state at each chunk's end is the same recurrence over the chunks, with `P` as its matrices and `o` as its inputs, from a zero start: the host runs it recursively, in the accumulation type, until a level fits in one chunk. A sequence of `T` steps takes about `log_64(T)` levels.
+3. `recur_run` runs every chunk from the state at the previous chunk's end, writing the states.
+
+Time-invariant `A` costs two passes over the steps; time-varying `A` costs `M` more for the maps, once per distinct `A`, so `M + 2` when each sequence has its own.
+
+### Execution
+
+The library is compiled from source on the first call for each state size and dtype, with `STATES` and `SCALAR` defined before `mps_common.metal`, so that every loop over the states unrolls and the states stay in registers.
+
+A vector of `M` states, a chunk's state or a column of its `P`, runs on `LANES` lanes of a SIMD group, `M` rounded up to a power of 2, so that a SIMD group holds `32 / LANES` vectors; the lanes past `M` hold zeros.
+Lane `j` holds state `j` and reads column `j` of each step's matrix, so that a vector's lanes read the row-major matrix in order.
+A step multiplies each lane's column by its state, and a butterfly of `log2(LANES)` rounds of `simd_shuffle_xor` sums the products over the lanes: each round, a lane keeps the half of its rows its state's bit selects and adds its partner's other half, until it holds its own row's sum.
+Every shuffle exchanges lanes by a mask shared by all lanes, which Apple GPUs run faster than shuffles from a lane index of each lane's own.
+
+Vectors run 32 consecutive chunks of a sequence, those of each sequence in turn, then the next 32: the vectors in flight then read neighbouring inputs, and the matrices of time-varying `A` shared over the batch at once.
+With neighbouring vectors on the same chunk of different sequences, `recur_run` of `M = 16` over 64 sequences of 65536 steps took 2.7 times as long, its vectors' inputs spread over hundreds of megabytes; with neighbouring vectors on consecutive chunks of one sequence, it took 2.4 times as long for time-varying `A` shared over the batch, which every sequence's chunks read again.
+
+| Buffer | Shape | Purpose |
+| --- | --- | --- |
+| `A` | `(M, M)`, `(B, M, M)`, `(T, M, M)` or `(B, T, M, M)` | Shared or per-sequence, time-invariant or per-step matrices. |
+| `offsets` | `(B, C - 1, M)` | Each chunk's `o`, `C` chunks per sequence. |
+| `maps` | `(Ba, C - 1, M, M)`, or `(Ba, 1, M, M)` for time-invariant `A` | Each chunk's `P`, `Ba` the distinct `A`'s. |
+| `starts` | `(B, C - 1, M)` | The state at each chunk's end, from the recursion. |
+
+The kernels index the steps of a sequence and the grid's lanes in 32 bits, and the inputs' offsets in 64; the host rejects inputs whose chunks need more lanes.
+As in the scalar kernels, maps compose with plain products: an unstable recurrence whose chunk maps overflow gives NaN or infinite states, even where the sequential recurrence stays finite.
+
+### Benchmark
+
+Measured on an Apple M1 Pro (14-core GPU) as the scalar kernels' benchmark, by
+
+```bash
+pixi run python benchmarks/benchmark_mps_recur.py --states 2 8 16 32
+```
+
+The tables are on the pull request that added these kernels.
+Time-invariant `A`, and time-varying `A` shared over the batch, run 1.1 to 7 times as fast as the CPU in float32 at every size measured but the shortest single sequences, where the dispatches cost more than the steps.
+Time-varying `A` of each sequence's own is the slowest, as its maps cost `M` more passes: slower than the CPU from `M = 16` in short batches.
+

@@ -2,18 +2,14 @@
 // stable ABI: the stable C++ API and torch's Metal C shim (shim_mps.h), which
 // compiles the shader source, binds tensors and dispatches on PyTorch's MPS
 // stream. stable_support.h holds it to the API of the package's floor torch.
-#include "stable_support.h"
-
-#include <torch/csrc/inductor/aoti_torch/c/shim_mps.h>
+#include "mps_shim.h"
 
 #include <array>
-#include <initializer_list>
 #include <limits>
-#include <mutex>
 #include <string>
 
-// METAL_SOURCE, the text of scalar_recur_mps.metal, which setup.py generates
-// in the build directory.
+// SCALAR_RECUR_MPS_METAL, the text of scalar_recur_mps.metal, which setup.py
+// generates in the build directory.
 #include "scalar_recur_mps.metal.h"
 
 namespace
@@ -22,6 +18,9 @@ namespace
 using torch::headeronly::ScalarType;
 using torch::stable::Tensor;
 
+// The kernels' name in errors.
+constexpr const char *OP = "the MPS scalar recurrence";
+
 // Threads per threadgroup and steps per thread, as in scalar_recur_mps.metal.
 constexpr uint64_t THREADS = 256;
 constexpr int64_t STEPS_PER_THREAD = 4;
@@ -29,13 +28,8 @@ constexpr int64_t STEPS_PER_THREAD = 4;
 
 AOTIMetalShaderLibraryHandle library()
 {
-    static AOTIMetalShaderLibraryHandle handle = []
-    {
-        AOTIMetalShaderLibraryHandle created = nullptr;
-        TORCH_ERROR_CODE_CHECK(
-            aoti_torch_mps_create_shader_library(METAL_SOURCE, &created));
-        return created;
-    }();
+    static const AOTIMetalShaderLibraryHandle handle =
+        philtorch::mps::compile("", SCALAR_RECUR_MPS_METAL);
     return handle;
 }
 
@@ -49,16 +43,17 @@ struct Kernels
 
 AOTIMetalKernelFunctionHandle kernel_function(const std::string &name)
 {
-    AOTIMetalKernelFunctionHandle function = nullptr;
-    TORCH_ERROR_CODE_CHECK(
-        aoti_torch_mps_get_kernel_function(library(), name.c_str(), &function));
-    return function;
+    return philtorch::mps::kernel_function(library(), name);
 }
 
-// The kernels of the dtype whose kernels' names end in suffix, and the scan of
+// The kernels of dtype, whose names end in its Metal type, and the scan of
 // tile totals of its accumulation type.
-Kernels make_kernels(const std::string &suffix, const std::string &accumulation)
+Kernels make_kernels(ScalarType dtype)
 {
+    using philtorch::mps::metal_type;
+    const std::string suffix = metal_type(dtype, OP);
+    const std::string accumulation =
+        metal_type(philtorch::mps::accumulation_type(dtype), OP);
     return {{kernel_function("scalar_recur_reduce_" + suffix + "_lti"),
              kernel_function("scalar_recur_reduce_" + suffix + "_lpv")},
             {kernel_function("scalar_recur_replay_" + suffix + "_lti"),
@@ -70,10 +65,11 @@ Kernels make_kernels(const std::string &suffix, const std::string &accumulation)
 // the statics' initialization, before any launch.
 const Kernels &kernels(ScalarType dtype)
 {
-    static const Kernels f = make_kernels("float", "float"),
-                         h = make_kernels("half", "float"),
-                         bf = make_kernels("bfloat", "float"),
-                         c = make_kernels("cfloat", "cfloat");
+    philtorch::mps::metal_type(dtype, OP);
+    static const Kernels f = make_kernels(ScalarType::Float),
+                         h = make_kernels(ScalarType::Half),
+                         bf = make_kernels(ScalarType::BFloat16),
+                         c = make_kernels(ScalarType::ComplexFloat);
     switch (dtype)
     {
     case ScalarType::Float:
@@ -83,59 +79,17 @@ const Kernels &kernels(ScalarType dtype)
     case ScalarType::BFloat16:
         return bf;
     default:
-        STD_TORCH_CHECK(dtype == ScalarType::ComplexFloat,
-                        "the MPS scalar recurrence takes float32, float16, "
-                        "bfloat16 and complex64");
         return c;
     }
 }
 
-// One dispatch's arguments: its tensors, then its integers, bound in that
-// order from index 0, over a grid of grid[0] x grid[1] threads in rows of
-// THREADS.
-struct Launch
-{
-    std::initializer_list<AtenTensorHandle> tensors;
-    std::initializer_list<int64_t> integers;
-    std::array<uint64_t, 2> grid;
-    AOTITorchError error = AOTI_TORCH_SUCCESS;
-};
-
-// Runs inside the shim's command block: it records the first error, which
-// launch() raises, rather than throwing through the shim's C frames.
-void encode(AOTIMetalKernelFunctionHandle function, void *data)
-{
-    Launch &launch = *static_cast<Launch *>(data);
-    const auto ok = [&] { return launch.error == AOTI_TORCH_SUCCESS; };
-    launch.error = aoti_torch_mps_start_encoding(function);
-    unsigned index = 0;
-    for (AtenTensorHandle tensor : launch.tensors)
-        if (ok())
-            launch.error = aoti_torch_mps_set_arg_tensor(function, index++, tensor);
-    for (int64_t integer : launch.integers)
-        if (ok())
-            launch.error = aoti_torch_mps_set_arg_int(function, index++, integer);
-    if (!ok())
-        return;
-    const std::array<uint64_t, 2> group{THREADS, 1};
-    launch.error = aoti_torch_mps_dispatch_array_with_group_size(
-        function, launch.grid.data(), launch.grid.size(), group.data(),
-        group.size());
-}
-
+// One dispatch over a grid of grid[0] x grid[1] threads in rows of THREADS.
 void launch(AOTIMetalKernelFunctionHandle function,
             std::initializer_list<AtenTensorHandle> tensors,
             std::initializer_list<int64_t> integers,
             std::array<uint64_t, 2> grid)
 {
-    // A kernel handle holds the encoder of its command block, and the handles
-    // are shared, so calls on different MPS streams encode one at a time.
-    static std::mutex mutex;
-    const std::lock_guard<std::mutex> lock(mutex);
-    Launch arguments{tensors, integers, grid};
-    TORCH_ERROR_CODE_CHECK(
-        aoti_torch_mps_run_command_block(function, encode, &arguments));
-    TORCH_ERROR_CODE_CHECK(arguments.error);
+    philtorch::mps::launch(function, tensors, integers, grid, {THREADS, 1});
 }
 
 // h[b, t] = a h[b, t - 1] + x[b, t], h[b, -1] = zi[b], with a = decays[b, t]
@@ -144,9 +98,8 @@ void launch(AOTIMetalKernelFunctionHandle function,
 Tensor scalar_recur_mps(const Tensor &decays, bool varying, int64_t stride_b,
                         const Tensor &zi, const Tensor &x)
 {
-    STD_TORCH_CHECK(decays.device().type() == torch::headeronly::DeviceType::MPS &&
-                        zi.device().type() == torch::headeronly::DeviceType::MPS &&
-                        x.device().type() == torch::headeronly::DeviceType::MPS,
+    using philtorch::mps::is_mps;
+    STD_TORCH_CHECK(is_mps(decays) && is_mps(zi) && is_mps(x),
                     "the coefficients, initial states and inputs must be MPS tensors");
     const ScalarType dtype = x.scalar_type();
     STD_TORCH_CHECK(decays.scalar_type() == dtype && zi.scalar_type() == dtype,

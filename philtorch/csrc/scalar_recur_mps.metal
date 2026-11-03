@@ -1,6 +1,6 @@
 // The Metal kernels of the scalar recurrence, scalar_recur_mps.mm's: setup.py
-// embeds this file in the extension, which torch's Metal shim compiles on
-// first use.
+// embeds this file in the extension, which compiles it after
+// mps_common.metal on first use.
 //
 // h[b, t] = a h[b, t - 1] + x[b, t], h[b, -1] = zi[b], with a one coefficient
 // per step (time-varying, lpv) or per sequence (time-invariant, lti), as a
@@ -11,38 +11,16 @@
 // from a sequence's start has m = 0, as zi is folded into the first step,
 // (0, a zi + x[b, 0]), so a tile needs only the previous tile's end state, and
 // tile 0 none: a sequence of one tile runs the replay alone.
-#include <metal_stdlib>
-using namespace metal;
 
 // Every kernel runs THREADS threads per threadgroup, which each declares as
-// its maximum so that the compiler guarantees it, in SIMD groups of 32 lanes,
-// the width of every Apple GPU, which torch's Metal shim can't query.
+// its maximum so that the compiler guarantees it, in SIMD groups.
 constant constexpr uint THREADS = 256;
-constant constexpr uint SIMD_GROUPS = THREADS / 32;
+constant constexpr uint SIMD_GROUPS = THREADS / SIMD_WIDTH;
 // Consecutive steps per thread, read and written as one vector.
 constant constexpr uint K = 4;
 constant constexpr uint TILE = THREADS * K;
 // Tile totals per thread in the scan of the tiles.
 constant constexpr uint TOTALS = 2;
-
-// The accumulation type: float for float, half and bfloat; float2, a complex
-// number, for complex64.
-template <typename T> struct Acc
-{
-    using type = float;
-    static float one() { return 1.0f; }
-};
-template <> struct Acc<float2>
-{
-    using type = float2;
-    static float2 one() { return float2(1.0f, 0.0f); }
-};
-
-inline float mul(float a, float b) { return a * b; }
-inline float2 mul(float2 a, float2 b)
-{
-    return float2(a.x * b.x - a.y * b.y, a.x * b.y + a.y * b.x);
-}
 
 // The map f(h) = m h + v.
 template <typename A> struct Pair
@@ -78,7 +56,7 @@ template <typename A> inline Pair<A> shuffle_up(Pair<A> p, ushort delta)
 
 template <typename A> inline Pair<A> simd_inclusive(Pair<A> p, uint lane)
 {
-    for (ushort offset = 1; offset < 32; offset <<= 1)
+    for (ushort offset = 1; offset < SIMD_WIDTH; offset <<= 1)
     {
         const Pair<A> left = shuffle_up(p, offset);
         if (lane >= offset)
@@ -327,6 +305,6 @@ inline void replay_tiles(Sequence<T> s, const device A *states, device T *out,
 DEFINE_KERNELS(float, float)
 DEFINE_KERNELS(half, half)
 DEFINE_KERNELS(bfloat, bfloat)
-DEFINE_KERNELS(float2, cfloat)
+DEFINE_KERNELS(float2, float2)
 DEFINE_SCAN(float, float)
-DEFINE_SCAN(float2, cfloat)
+DEFINE_SCAN(float2, float2)

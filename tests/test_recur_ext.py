@@ -229,13 +229,42 @@ def test_lti_recur_mps_grad_equiv(
 
 @_MPS
 @pytest.mark.parametrize("time_invariant", [True, False])
-def test_mps_recurrence_rejects_m_above_1(time_invariant: bool):
-    B, T, M = 2, 5, 2
+def test_mps_recurrence_rejects_m_above_32(time_invariant: bool):
+    B, T, M = 2, 5, 33
     A = torch.zeros(1, 1 if time_invariant else T, M, M, device="mps")
     zi = torch.zeros(B, M, device="mps")
     x = torch.zeros(B, T, M, device="mps")
-    with pytest.raises(NotImplementedError, match="Metal kernels take M = 1"):
+    with pytest.raises(NotImplementedError, match="Metal kernels take M up to 32"):
         recurrence(A, zi, x)
+
+
+_MPS_OPS_N = {"lti_recurN": torch.ops.philtorch.lti_recurN, "recurN": torch.ops.philtorch.recurN}
+
+
+def _mps_recur_n_args(op: str, B: int, T: int, M: int, dtype=torch.float32):
+    A = torch.zeros(*((M, M) if op == "lti_recurN" else (T, M, M)), dtype=dtype, device="mps")
+    return (
+        A,
+        torch.zeros(B, M, dtype=dtype, device="mps"),
+        torch.zeros(B, T, M, dtype=dtype, device="mps"),
+    )
+
+
+@_MPS
+@pytest.mark.parametrize("op", ["lti_recurN", "recurN"])
+def test_mps_recur_n_rejects_int64(op: str):
+    with pytest.raises(RuntimeError, match="MPS recurrence takes"):
+        _MPS_OPS_N[op](*_mps_recur_n_args(op, 2, 5, 3, torch.int64))
+
+
+@_MPS
+@pytest.mark.parametrize("op", ["lti_recurN", "recurN"])
+@pytest.mark.parametrize("B, T", [(0, 5), (2, 0), (0, 0)])
+def test_mps_recur_n_empty(op: str, B: int, T: int):
+    # No sequences or no steps: an empty result of x's shape.
+    out = _MPS_OPS_N[op](*_mps_recur_n_args(op, B, T, 3))
+    assert out.shape == (B, T, 3)
+    assert out.device.type == "mps"
 
 
 @_MPS

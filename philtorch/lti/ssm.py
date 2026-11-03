@@ -33,7 +33,7 @@ def state_space_recursion(
     With the default ``unroll_factor=None``, this runs a kernel chosen by
     device, dtype and :math:`M`: native ones on CPU, CUDA and MPS, and a
     Triton scan on CUDA for the rest, and raises where none takes the input,
-    such as :math:`M \ge 2` on MPS. On any device, ``unroll_factor=1`` runs
+    such as :math:`M > 32` on MPS. On any device, ``unroll_factor=1`` runs
     the sequential PyTorch loop, and so does one of :math:`N` or more; an
     :attr:`unroll_factor` from 2 to :math:`N - 1` runs a block-unrolled
     PyTorch recursion instead. Both take the dtypes PyTorch's matrix

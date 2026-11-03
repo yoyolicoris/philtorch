@@ -18,14 +18,16 @@ py_limited_api = not sysconfig.get_config_var("Py_GIL_DISABLED")
 
 def write_metal_header(source, header):
     # torch's Metal shim compiles only from source text, so the extension
-    # carries the shader as a raw string, whose delimiter it can't contain.
+    # carries each shader as a raw string, whose delimiter it can't contain,
+    # named after its file: mps_common.metal is MPS_COMMON_METAL.
     with open(source, encoding="utf-8") as file:
         text = file.read()
+    name = os.path.basename(source).replace(".", "_").upper()
     os.makedirs(os.path.dirname(header), exist_ok=True)
     with open(header, "w", encoding="utf-8") as file:
         file.write(
             "#pragma once\n"
-            f'constexpr const char *METAL_SOURCE = R"PHILTORCH_METAL({text})PHILTORCH_METAL";\n'
+            f'constexpr const char *{name} = R"PHILTORCH_METAL({text})PHILTORCH_METAL";\n'
         )
 
 
@@ -84,15 +86,14 @@ def get_extensions():
 
     include_dirs = []
     if sys.platform == "darwin":
-        # .mm marks the macOS-only source, which reaches Metal through torch's
-        # C shim and includes its shader, written below as a header.
+        # .mm marks the macOS-only sources, which reach Metal through torch's
+        # C shim and include their shaders, written below as headers.
         sources += list(glob.glob(os.path.join(extensions_dir, "*.mm")))
         metal_dir = os.path.join(this_dir, "build", "metal")
         include_dirs.append(metal_dir)
-        write_metal_header(
-            os.path.join(extensions_dir, "scalar_recur_mps.metal"),
-            os.path.join(metal_dir, "scalar_recur_mps.metal.h"),
-        )
+        for shader in glob.glob(os.path.join(extensions_dir, "*.metal")):
+            name = os.path.basename(shader)
+            write_metal_header(shader, os.path.join(metal_dir, f"{name}.h"))
 
     if use_cuda:
         sources += cuda_sources
