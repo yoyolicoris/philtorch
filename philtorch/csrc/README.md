@@ -309,7 +309,8 @@ pixi run python benchmarks/benchmark_mps_recur.py --states 2 4 8 16 32 64 128
 
 The tables are on the pull request that added these kernels; against the CPU, outside one sequence of 4096 steps:
 
-- time-invariant `A`, and time-varying `A` shared over the batch, run 0.9 to 11.5 times as fast in float32 and complex64, and from 0.5 times in float16 and bfloat16, slowest at `M = 32`;
-- time-varying `A` of each sequence's own, whose maps cost `M` more passes, runs 1.2 to 8.6 times as fast at `M` up to 4 or 65536 steps and more, but is slower from `M = 8` in batches of 4096 steps, down to 0.1 times at `M = 32` in bfloat16.
+- time-invariant `A`, and time-varying `A` shared over the batch, run 0.9 to 10 times as fast from `M = 2` to 32, 3.2 times at the median;
+- time-varying `A` of each sequence's own runs 0.8 to 8.6 times as fast from `M = 2` to 16, 2.1 times at the median, but 0.3 to 0.9 times at `M = 32`, where its maps' extra work tells;
+- at `M = 64`, complex64 runs 1.3 to 16 times as fast, but float32, float16 and bfloat16 0.35 to 2 times, and every dtype at `M = 128` 0.15 to 1.2 times: a vector's step there costs a load per product, which the CPU's caches serve faster.
 
-One sequence of 4096 steps, whose dispatches cost more than its steps, runs 0.2 to 2.4 times as fast.
+One sequence of 4096 steps, whose dispatches cost more than its steps, runs 0.1 to 2.7 times as fast.
