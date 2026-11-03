@@ -28,8 +28,8 @@ constexpr const char *OP = "the MPS recurrence";
 // Threads per threadgroup of the chunks' kernels, and per SIMD group.
 constexpr uint64_t THREADS = 64;
 constexpr int64_t SIMD_WIDTH = 32;
-// Steps per chunk, and consecutive chunks of a sequence per run, RUN in
-// recur_mps.metal.
+// Steps per chunk, and at most as many consecutive chunks of a sequence per
+// run (see sequence_chunk in recur_mps.metal).
 constexpr int64_t CHUNK = 64;
 constexpr int64_t RUN = 32;
 // The largest state size: a vector of states runs on a SIMD group's lanes.
@@ -52,7 +52,8 @@ const Kernels &kernels(int64_t M, ScalarType dtype)
         return found->second;
     const AOTIMetalShaderLibraryHandle library = philtorch::mps::compile(
         "#define STATES " + std::to_string(M) + "\n#define SCALAR " +
-            philtorch::mps::metal_type(dtype, OP) + "\n",
+            philtorch::mps::metal_type(dtype, OP) + "\n#define THREADS " +
+            std::to_string(THREADS) + "\n",
         RECUR_MPS_METAL);
     using philtorch::mps::kernel_function;
     const Kernels compiled{kernel_function(library, "recur_run"),
@@ -71,19 +72,29 @@ int64_t lanes(int64_t M)
 }
 
 // The threads of n vectors of M states, SIMD_WIDTH / lanes(M) to a SIMD
-// group, in whole threadgroups.
+// group, in whole threadgroups, which the kernels index in 32 bits.
 std::array<uint64_t, 2> threads(int64_t n, int64_t M)
 {
     const int64_t simd_groups = philtorch::ceil_div(n, SIMD_WIDTH / lanes(M));
     const int64_t groups =
         philtorch::ceil_div<int64_t>(simd_groups * SIMD_WIDTH, THREADS);
+    STD_TORCH_CHECK(groups <= std::numeric_limits<uint32_t>::max() / THREADS,
+                    "the input is too large for ", OP);
     return {static_cast<uint64_t>(groups) * THREADS, 1};
 }
 
-// The vectors of the runs of n chunks, the last run padded.
-int64_t runs(int64_t n)
+// The chunks per run of a sequence of n chunks, RUN at most, the runs as
+// even as they can be, so that the last is padded by fewer chunks than
+// there are runs.
+int64_t run_length(int64_t n)
 {
-    return philtorch::ceil_div(n, RUN) * RUN;
+    return philtorch::ceil_div(n, philtorch::ceil_div(n, RUN));
+}
+
+// The vectors of each sequence's runs of n chunks, padding included.
+int64_t run_vectors(int64_t n)
+{
+    return philtorch::ceil_div(n, run_length(n)) * run_length(n);
 }
 
 // h[b, t] = A[b, t] h[b, t - 1] + x[b, t], with A[b, t] the M x M matrix at
@@ -106,8 +117,8 @@ Tensor recur_mps(const Tensor &a, int64_t a_batch, int64_t stride_b,
     if (maps_per_item == 0)
     {
         launch(k.run, {a.get(), zi.get(), x.get(), out.get(), out.get()},
-               {batch, steps, CHUNK, stride_b, stride_t, from_zi},
-               threads(batch * runs(1), M), group);
+               {batch, steps, CHUNK, stride_b, stride_t, from_zi, 1},
+               threads(batch, M), group);
         return out;
     }
 
@@ -119,8 +130,10 @@ Tensor recur_mps(const Tensor &a, int64_t a_batch, int64_t stride_b,
     auto offsets = torch::stable::new_empty(x, {batch, maps_per_item, M}, acc);
     auto maps = torch::stable::new_empty(x, {a_batch, maps_per_a, M, M}, acc);
     launch(k.reduce, {a.get(), zi.get(), x.get(), offsets.get(), maps.get()},
-           {batch, steps, CHUNK, stride_b, stride_t, from_zi, a_batch},
-           threads(batch * runs(maps_per_item) + a_batch * maps_per_a * M, M),
+           {batch, steps, CHUNK, stride_b, stride_t, from_zi, a_batch,
+            run_length(maps_per_item)},
+           threads(batch * run_vectors(maps_per_item) + a_batch * maps_per_a * M,
+                   M),
            group);
 
     // The state at each chunk's end, from the same recurrence over the
@@ -129,8 +142,9 @@ Tensor recur_mps(const Tensor &a, int64_t a_batch, int64_t stride_b,
         maps, a_batch, a_batch == 1 ? 0 : maps_per_a * M * M,
         stride_t == 0 ? 0 : M * M, offsets, false, offsets);
     launch(k.run, {a.get(), zi.get(), x.get(), starts.get(), out.get()},
-           {batch, steps, CHUNK, stride_b, stride_t, from_zi},
-           threads(batch * runs(maps_per_item + 1), M), group);
+           {batch, steps, CHUNK, stride_b, stride_t, from_zi,
+            run_length(maps_per_item + 1)},
+           threads(batch * run_vectors(maps_per_item + 1), M), group);
     return out;
 }
 
@@ -151,13 +165,9 @@ void check_inputs(const Tensor &A, const Tensor &zi, const Tensor &x)
     STD_TORCH_CHECK(x.size(2) <= MAX_STATES, "the MPS recurrence takes M up to ",
                     MAX_STATES, ", got ", x.size(2));
     // The kernels index the steps of a sequence, the last chunk's past its
-    // end included, and the grid's lanes, up to a SIMD group per chunk, in 32
-    // bits.
-    constexpr int64_t limit = std::numeric_limits<int32_t>::max();
-    STD_TORCH_CHECK(x.size(1) <= limit &&
-                        x.size(0) * runs(philtorch::ceil_div(x.size(1), CHUNK)) <=
-                            limit / SIMD_WIDTH,
-                    "the input is too large for the MPS recurrence");
+    // end included, in 32 bits, and check their grids' size as they launch.
+    STD_TORCH_CHECK(x.size(1) <= std::numeric_limits<int32_t>::max(),
+                    "the input is too large for ", OP);
 }
 
 Tensor recurN_mps(const Tensor &A, const Tensor &zi, const Tensor &x)

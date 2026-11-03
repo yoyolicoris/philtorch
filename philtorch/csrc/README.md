@@ -30,9 +30,8 @@ One three-pass design serves every input: reduce each tile, scan the tile totals
 | [`recur_mps.metal`](recur_mps.metal) | Their Metal kernels, compiled once per state size and dtype. |
 | [`../_ops.py`](../_ops.py) | Registers fake implementations and autograd for the recurrence ops. |
 | [`../_recur.py`](../_recur.py) | Sends recurrences on MPS to `lti_recur` or `scan` for M = 1, and to `lti_recurN` or `recurN` for M up to 32. |
-| [`../../tests/test_recur.py`](../../tests/test_recur.py) | `test_recurrence_low_precision` checks MPS against a float64 reference in every dtype and coefficient layout. |
+| [`../../tests/test_recur.py`](../../tests/test_recur.py) | `test_recurrence_low_precision` checks MPS against a float64 reference in every dtype and coefficient layout, for M = 1 and above; other MPS tests cover the chunk boundaries, deep recursion over the chunks, a large batch, gradients and dispatch. |
 | [`../../tests/test_recur_ext.py`](../../tests/test_recur_ext.py) | MPS tests of the carry across chunks of tiles, of gradients and of the inputs the kernels reject. |
-| [`../../tests/test_recur.py`](../../tests/test_recur.py) | Also MPS tests of M > 1: a large batch, deep recursion over the chunks, gradients and dispatch. |
 | [`../../benchmarks/benchmark_mps_recur.py`](../../benchmarks/benchmark_mps_recur.py) | Reproduces the CPU/MPS runtime results. |
 
 ## Turning a recurrence into a scan
@@ -77,7 +76,7 @@ flowchart TB
     subgraph command["PyTorch's MPS stream, through torch's Metal shim"]
         direction TB
 
-        subgraph stage1["1. reduce_{dtype}_{lti,lpv}, if more than one tile"]
+        subgraph stage1["1. reduce_{type}_{lti,lpv}, if more than one tile"]
             direction LR
             grid1["Grid: n_tiles x B<br/>256 threads per group"]
             load["Each thread loads<br/>4 consecutive steps, one vector"]
@@ -86,7 +85,7 @@ flowchart TB
             grid1 --> load --> simd --> totals
         end
 
-        subgraph stage2["2. scan_{float,cfloat}, if more than one tile"]
+        subgraph stage2["2. scan_{float,float2}, if more than one tile"]
             direction LR
             grid2["Grid: B<br/>one 256-thread group per sequence"]
             chunks["Scan 512 tile totals per chunk<br/>carry the map between chunks"]
@@ -94,7 +93,7 @@ flowchart TB
             grid2 --> chunks --> states
         end
 
-        subgraph stage3["3. replay_{dtype}_{lti,lpv}"]
+        subgraph stage3["3. replay_{type}_{lti,lpv}"]
             direction LR
             grid3["Grid: n_tiles x B<br/>256 threads per group"]
             reload["Reload 4 steps<br/>per thread"]
@@ -263,7 +262,7 @@ for M up to 32, in the same four dtypes as the scalar kernels, accumulating in f
 The design follows the Triton kernels of [`../_recur_kernels.py`](../_recur_kernels.py), without their decoupled look-back, which needs a forward-progress guarantee Apple GPUs don't give.
 Every sequence longer than one chunk of 64 steps is split into chunks, whatever the batch: one behaviour for every input.
 The state at a chunk's end is the affine map `h -> P h + o` of the state at its start, with `P` the product of the chunk's matrices and `o` its end state from a zero start.
-Chunk 0 starts from `zi` instead, and its `P` is zero, as step 0 is in the CUDA `recur2` and `recur3`.
+Chunk 0 starts from `zi` instead, as step 0 does in the CUDA `recur2` and `recur3`, so the scan of the maps starts from zero: chunk 0's `P` is then irrelevant, zero for time-varying `A`, and `A^64`, shared, for time-invariant `A`.
 
 1. `recur_reduce` computes the map of every chunk but the last: `o` per chunk of each sequence, and `P` per chunk of each distinct time-varying `A`, column by column, as the product of the chunk's matrices by each unit vector. Time-invariant `A` has one `P`, `A^64`, the same for every chunk, computed the same way from one chunk's steps.
 2. The state at each chunk's end is the same recurrence over the chunks, with `P` as its matrices and `o` as its inputs, from a zero start: the host runs it recursively, in the accumulation type, until a level fits in one chunk. A sequence of `T` steps takes about `log_64(T)` levels.
@@ -280,7 +279,7 @@ Lane `j` holds state `j` and reads column `j` of each step's matrix, so that a v
 A step multiplies each lane's column by its state, and a butterfly of `log2(LANES)` rounds of `simd_shuffle_xor` sums the products over the lanes: each round, a lane keeps the half of its rows its state's bit selects and adds its partner's other half, until it holds its own row's sum.
 Every shuffle exchanges lanes by a mask shared by all lanes, which Apple GPUs run faster than shuffles from a lane index of each lane's own.
 
-Vectors run 32 consecutive chunks of a sequence, those of each sequence in turn, then the next 32: the vectors in flight then read neighbouring inputs, and the matrices of time-varying `A` shared over the batch at once.
+Vectors run consecutive chunks of a sequence, 32 at most, in runs as even as a sequence's chunks allow, those of each sequence in turn, then the next run: the vectors in flight then read neighbouring inputs, and the matrices of time-varying `A` shared over the batch at once.
 With neighbouring vectors on the same chunk of different sequences, `recur_run` of `M = 16` over 64 sequences of 65536 steps took 2.7 times as long, its vectors' inputs spread over hundreds of megabytes; with neighbouring vectors on consecutive chunks of one sequence, it took 2.4 times as long for time-varying `A` shared over the batch, which every sequence's chunks read again.
 
 | Buffer | Shape | Purpose |

@@ -95,16 +95,10 @@ def _mps_takes(x: Tensor) -> bool:
 
 
 def _lti_recur_applies(A: Tensor, x: Tensor) -> bool:
-    device = x.device.type
     return (
         _time_invariant(A)
         and x.size(-1) == 1
-        and (
-            device in ("cpu", "cuda")
-            and _floating_or_int64(x)
-            or device == "mps"
-            and x.dtype in _MPS_DTYPES
-        )
+        and (x.device.type in ("cpu", "cuda") and _floating_or_int64(x) or _mps_takes(x))
     )
 
 
@@ -157,12 +151,7 @@ def _scan_applies(A: Tensor, x: Tensor) -> bool:
     return (
         not _time_invariant(A)
         and x.size(-1) == 1
-        and (
-            x.is_cuda
-            and x.dtype in _SCAN_DTYPES
-            or x.device.type == "mps"
-            and x.dtype in _MPS_DTYPES
-        )
+        and (x.is_cuda and x.dtype in _SCAN_DTYPES or _mps_takes(x))
     )
 
 

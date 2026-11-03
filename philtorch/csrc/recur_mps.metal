@@ -1,15 +1,16 @@
 // The Metal kernels of the recurrence of M states, recur_mps.mm's: setup.py
 // embeds this file in the extension, and the host compiles it after
-// mps_common.metal once per state size and dtype, defining STATES (M) and
-// SCALAR (the dtype: float, half, bfloat or float2, which is complex64)
-// before both, so that loops over the states unroll.
+// mps_common.metal once per state size and dtype, defining STATES (M),
+// SCALAR (the dtype: float, half, bfloat or float2, which is complex64) and
+// THREADS (per threadgroup) before both, so that loops over the states
+// unroll.
 //
 // h[b, t] = A[b, t] h[b, t - 1] + x[b, t], h[b, -1] = zi[b], in chunks of
 // `chunk` steps, as the Triton kernels of _recur_kernels.py: the state at a
 // chunk's end is a map of the state at its start, h -> P h + o, with P the
 // product of the chunk's matrices, A^chunk for time-invariant A, and o the
 // chunk's end state from a zero start. Chunk 0 starts from zi instead, so
-// its P is zero. Two kernels (see README.md): reduce each chunk but the last
+// the scan of the maps starts from zero. Two kernels (see README.md): reduce each chunk but the last
 // to its map, which the host scans, as the same recurrence over the chunks,
 // recursively, into the state at each chunk's end, and run each chunk from
 // the state before it.
@@ -122,20 +123,18 @@ inline A run_steps(const device T *m, long stride_t, const device T *x,
     return h;
 }
 
-// Vectors run RUN consecutive chunks of a sequence, those of each sequence
-// in turn, then the next RUN chunks: the vectors in flight then read
-// neighbouring inputs, and the matrices of time-varying A shared over the
-// batch at once. sequence_chunk sets the sequence and chunk of vector v,
-// one of n_batch * ceil(chunks / RUN) * RUN, and returns whether that chunk
+// Vectors run `run` consecutive chunks of a sequence, those of each
+// sequence in turn, then the next `run` chunks: the vectors in flight then
+// read neighbouring inputs, and the matrices of time-varying A shared over
+// the batch at once. sequence_chunk sets the sequence and chunk of vector v,
+// one of n_batch * ceil(chunks / run) * run, and returns whether that chunk
 // exists.
-constant constexpr uint RUN = 32;
-
-inline bool sequence_chunk(uint v, uint n_batch, uint chunks, thread uint &b,
-                           thread uint &c)
+inline bool sequence_chunk(uint v, uint n_batch, uint chunks, uint run,
+                           thread uint &b, thread uint &c)
 {
-    const uint run = v / RUN;
-    b = run % n_batch;
-    c = run / n_batch * RUN + v % RUN;
+    const uint index = v / run;
+    b = index % n_batch;
+    c = index / n_batch * run + v % run;
     return c < chunks;
 }
 
@@ -143,7 +142,7 @@ inline bool sequence_chunk(uint v, uint n_batch, uint chunks, thread uint &b,
 // c - 1], the state at the previous chunk's end, for c > 0, and for c = 0
 // from zi[b] if from_zi, and zero otherwise. A[b] is a + b * stride_b, its
 // step t's matrix t * stride_t after.
-[[kernel]] void recur_run(const device T *a [[buffer(0)]],
+[[kernel, max_total_threads_per_threadgroup(THREADS)]] void recur_run(const device T *a [[buffer(0)]],
                           const device T *zi [[buffer(1)]],
                           const device T *x [[buffer(2)]],
                           const device A *starts [[buffer(3)]],
@@ -154,6 +153,7 @@ inline bool sequence_chunk(uint v, uint n_batch, uint chunks, thread uint &b,
                           constant long &stride_b [[buffer(8)]],
                           constant long &stride_t [[buffer(9)]],
                           constant long &from_zi [[buffer(10)]],
+                          constant long &run [[buffer(11)]],
                           uint index [[thread_position_in_grid]],
                           uint lane [[thread_index_in_simdgroup]])
 {
@@ -161,7 +161,7 @@ inline bool sequence_chunk(uint v, uint n_batch, uint chunks, thread uint &b,
     const uint n_batch = uint(batch), length = uint(chunk);
     const uint chunks = (uint(steps) - 1) / length + 1;
     uint b, c;
-    if (!sequence_chunk(l.vector, n_batch, chunks, b, c))
+    if (!sequence_chunk(l.vector, n_batch, chunks, uint(run), b, c))
         return;
     const uint state = min(l.state, M - 1);
     A h = A(0.0f);
@@ -178,14 +178,16 @@ inline bool sequence_chunk(uint v, uint n_batch, uint chunks, thread uint &b,
 }
 
 // The maps of chunks 0 to chunks - 2, each of chunk steps. The first
-// n_batch * runs(chunks - 1) * RUN vectors write o of chunk c of sequence b
-// (see sequence_chunk) to offsets[b, c]: its end state from zero, or for
-// c = 0 from zi[b] if from_zi. The vectors after write P, one per chunk of
-// time-varying A and one for time-invariant A, all of whose chunks share
-// it: vector (p * maps_per_a + j) * M + k after them writes column k of map
-// j of A[p], a_batch of them, to maps[p, j], as the product of unit vector
-// k by the chunk's matrices. Chunk 0's P is zero, as its o holds zi.
-[[kernel]] void recur_reduce(const device T *a [[buffer(0)]],
+// n_batch * ceil((chunks - 1) / run) * run vectors write o of chunk c of
+// sequence b (see sequence_chunk) to offsets[b, c]: its end state from
+// zero, or for c = 0 from zi[b] if from_zi. The vectors after write P, one
+// per chunk of time-varying A and one for time-invariant A, all of whose
+// chunks share it: vector (p * maps_per_a + j) * M + k after them writes
+// column k of map j of A[p], a_batch of them, to maps[p, j], as the product
+// of unit vector k by the chunk's matrices. Chunk 0's o holds zi, so its P
+// is zero for time-varying A, and the scan of the maps starts from zero,
+// which time-invariant A's P, shared by chunk 0, then leaves at zero.
+[[kernel, max_total_threads_per_threadgroup(THREADS)]] void recur_reduce(const device T *a [[buffer(0)]],
                              const device T *zi [[buffer(1)]],
                              const device T *x [[buffer(2)]],
                              device A *offsets [[buffer(3)]],
@@ -197,17 +199,19 @@ inline bool sequence_chunk(uint v, uint n_batch, uint chunks, thread uint &b,
                              constant long &stride_t [[buffer(9)]],
                              constant long &from_zi [[buffer(10)]],
                              constant long &a_batch [[buffer(11)]],
+                             constant long &run [[buffer(12)]],
                              uint index [[thread_position_in_grid]],
                              uint lane [[thread_index_in_simdgroup]])
 {
     const Lane l = lane_of(index, lane);
     const uint n_batch = uint(batch), length = uint(chunk);
     const uint maps_per_item = (uint(steps) - 1) / length;
-    const uint n_offsets = n_batch * ((maps_per_item - 1) / RUN + 1) * RUN;
+    const uint n_offsets =
+        n_batch * ((maps_per_item - 1) / uint(run) + 1) * uint(run);
     if (l.vector < n_offsets)
     {
         uint b, c;
-        if (!sequence_chunk(l.vector, n_batch, maps_per_item, b, c))
+        if (!sequence_chunk(l.vector, n_batch, maps_per_item, uint(run), b, c))
             return;
         const A h = c == 0 && from_zi && l.state < M
             ? A(zi[b * M + min(l.state, M - 1)])
