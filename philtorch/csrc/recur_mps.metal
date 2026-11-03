@@ -1,39 +1,21 @@
-// The Metal kernels of the recurrence of M states, recur_mps.mm's: setup.py
-// embeds this file in the extension, and the host compiles it after
-// mps_common.metal once per state size and dtype, defining STATES (M),
-// SCALAR (the dtype: float, half, bfloat or float2, which is complex64) and
-// THREADS (per threadgroup) before both, so that loops over the states
-// unroll.
-//
-// h[b, t] = A[b, t] h[b, t - 1] + x[b, t], h[b, -1] = zi[b], in chunks of
-// `chunk` steps, as the Triton kernels of _recur_kernels.py: the state at a
-// chunk's end is a map of the state at its start, h -> P h + o, with P the
-// product of the chunk's matrices, A^chunk for time-invariant A, and o the
-// chunk's end state from a zero start. Chunk 0 starts from zi instead, so
-// the scan of the maps starts from zero. Two kernels (see README.md): reduce
-// each chunk but the last to its map, which the host scans, as the same
-// recurrence over the chunks, recursively, into the state at each chunk's
-// end, and run each chunk from the state before it.
-//
-// Vectors of 16 states or more that share their matrices, the chunks of
-// time-invariant A and those of time-varying A shared over the batch, run 8
-// at a time as the columns of an M x 8 block on a SIMD group, by 8 x 8
-// matrix products (see multiply), as the host's `blocked` says, and so do a
-// map's P's columns, which share their chunk's. Other vectors run on LANES
-// lanes of a SIMD group each, M rounded up to a power of 2, 32 at most, each
-// holding SLOTS states: lane j holds states j, j + LANES, ..., and reads
-// their columns of each matrix, so that a vector's lanes read the matrix's
-// rows in order. Each row's products are summed over the lanes by a
-// butterfly of shuffles (see step).
+// The Metal kernels of recur_mps.mm, compiled after mps_common.metal once
+// per state size and dtype, with STATES (M), SCALAR (float, half, bfloat, or
+// float2 for complex64), THREADS (per threadgroup) and CHUNK (steps per
+// chunk) defined, so that loops over the states unroll. README.md describes
+// the algorithm: recur_reduce reduces each chunk but the last to its map
+// h -> P h + o, the host scans the maps as the same recurrence, and
+// recur_run runs each chunk from the state before it. A chunk's vector of
+// states runs in a block of 8 by 8 x 8 matrix products (run_block) or on its
+// own lanes (run_vector), and a map's P in blocks of 8 columns (map_block).
 
 using T = SCALAR;
 using A = Acc<T>::type;
 constant constexpr uint M = STATES;
+constant constexpr uint CHUNK_STEPS = CHUNK;
 constant constexpr bool COMPLEX = sizeof(A) == 2 * sizeof(float);
 
-// Loops over states, lanes and tiles unroll whole: left to the compiler, the
-// larger ones keep a loop, whose arrays then live in memory, as much as 30
-// times as slow.
+// Loops over states, lanes and tiles unroll whole, or their arrays leave
+// registers.
 #define UNROLL _Pragma("clang loop unroll(full)")
 
 constexpr uint power_of_2_from(uint n)
@@ -49,8 +31,7 @@ constant constexpr uint LANES =
 constant constexpr uint SLOTS = (M + LANES - 1) / LANES;
 constant constexpr uint VECTORS = SIMD_WIDTH / LANES;
 constant constexpr uint HALF = LANES / 2;
-// Whether vectors hold states past M, whose rows and columns every access
-// then checks; without, those checks compile away.
+// Whether vectors hold states past M, which every access then checks.
 constant constexpr bool PADDED = LANES * SLOTS != M;
 
 // A lane's vector in the grid, and its lane in the vector, whose state in
@@ -74,9 +55,8 @@ inline uint state_of(Lane l, uint slot) { return l.lane + LANES * slot; }
 // no address leaves the matrix or vector.
 inline uint clamp(uint i) { return PADDED ? min(i, M - 1) : i; }
 
-// The lane's pointers into a step's matrix, inputs and states are offset
-// once by its first state, clamped, and slot i's index is column(l, i)
-// after it: computed in every access, the offsets made a step 14% slower.
+// Slot i's index past the lane's pointers, which are offset once by its
+// first state, clamped.
 inline uint column(Lane l, uint i)
 {
     return PADDED ? clamp(state_of(l, i)) - clamp(l.lane) : LANES * i;
@@ -116,14 +96,10 @@ template <uint SPAN> inline void butterfly(thread A *v, uint lane)
 template <> inline void butterfly<0>(thread A *, uint) {}
 
 // The vector's states after a step, whose matrix is at m and inputs at x,
-// offset by the lane, added if ADD: the matrix by the states, a block of
-// LANES rows at a time, whose shares the butterfly sums into the block's
-// states, one per lane, then x, which, added to a partial sum, could be
-// rounded away before cancelling products meet. The butterfly's first round
-// is taken as the shares are formed, so that a lane holds half of a block's
-// at most: with all of them, complex64 at M = 32 spilled its registers and
-// ran six times as long. Every lane of the vector calls it.
-template <bool ADD>
+// offset by the lane: the matrix by the states, LANES rows at a time, whose
+// shares the butterfly sums, then x, added last so that cancelling products
+// meet first. The butterfly's first round is taken as the shares are
+// formed, so that a lane holds half of them at most, in registers.
 inline void step(const device T *m, const device T *x, thread A *h, Lane l)
 {
     A next[SLOTS];
@@ -142,60 +118,17 @@ inline void step(const device T *m, const device T *x, thread A *h, Lane l)
                                     ushort(HALF));
         butterfly<HALF / 2>(v, l.lane);
         const uint s = state_of(l, block);
-        next[block] = ADD && s < M ? v[0] + A(x[column(l, block)]) : v[0];
+        next[block] = s < M ? v[0] + A(x[column(l, block)]) : v[0];
     }
     UNROLL
     for (uint i = 0; i < SLOTS; ++i)
         h[i] = next[i];
 }
 
-// The vector's states h through steps first to last - 1 of a sequence,
-// whose matrices are m + t * stride_t and inputs x + t * M, added if ADD;
-// if WRITE, the states are written to out + t * M. Pointers advance a step
-// at a time, as 64-bit integer arithmetic is emulated.
-template <bool ADD, bool WRITE>
-inline void run_steps(const device T *m, long stride_t, const device T *x,
-                      device T *out, uint first, uint last, thread A *h,
-                      Lane l)
-{
-    m += first * stride_t + clamp(l.lane);
-    x += long(first) * M + clamp(l.lane);
-    if (WRITE)
-        out += long(first) * M + clamp(l.lane);
-    for (uint t = first; t < last; ++t)
-    {
-        step<ADD>(m, x, h, l);
-        m += stride_t;
-        x += M;
-        if (WRITE)
-        {
-            UNROLL
-            for (uint i = 0; i < SLOTS; ++i)
-                if (state_of(l, i) < M)
-                    out[column(l, i)] = T(h[i]);
-            out += M;
-        }
-    }
-}
-
-// The vector's states from v[0], ..., v[M - 1], or zero if v is null.
-template <typename V>
-inline void load_states(thread A *h, const device V *v, Lane l)
-{
-    UNROLL
-    for (uint i = 0; i < SLOTS; ++i)
-    {
-        const uint s = state_of(l, i);
-        h[i] = v && s < M ? A(v[clamp(s)]) : A(0.0f);
-    }
-}
-
-// Vectors run `run` consecutive chunks of a sequence, those of each
-// sequence in turn, then the next `run` chunks: the vectors in flight then
-// read neighbouring inputs, and the matrices of time-varying A shared over
-// the batch at once. sequence_chunk sets the sequence and chunk of vector v,
-// one of n_batch * ceil(chunks / run) * run, and returns whether that chunk
-// exists.
+// The sequence and chunk of vector v, and whether that chunk exists:
+// vectors run `run` consecutive chunks of a sequence, those of each sequence
+// in turn, then the next `run`, so that the vectors in flight read
+// neighbouring memory.
 inline bool sequence_chunk(uint v, uint n_batch, uint chunks, uint run,
                            thread uint &b, thread uint &c)
 {
@@ -205,9 +138,58 @@ inline bool sequence_chunk(uint v, uint n_batch, uint chunks, uint run,
     return c < chunks;
 }
 
-// The lane's two entries of an 8 x 8 tile of a SIMD group's matrix,
-// thread_elements(): their row, and the first of their two columns. The
-// layout is that of every Apple GPU, which MLX's matrix products rely on.
+// The vector of thread `index` through its chunk (see sequence_chunk), as
+// run_block's columns. Pointers advance a step at a time, as 64-bit integer
+// arithmetic is emulated.
+template <bool WRITE>
+inline void run_vector(const device T *a, const device T *zi,
+                       const device T *x, const device A *starts,
+                       device T *out, device A *ends, uint index, uint lane,
+                       uint n_batch, uint chunks, uint steps, long stride_b,
+                       long stride_t, uint run)
+{
+    const Lane l = lane_of(index, lane);
+    uint b, c;
+    if (!sequence_chunk(l.vector, n_batch, chunks, run, b, c))
+        return;
+    A h[SLOTS];
+    UNROLL
+    for (uint i = 0; i < SLOTS; ++i)
+    {
+        const uint s = state_of(l, i);
+        h[i] = A(0.0f);
+        if (s < M && c > 0 && starts)
+            h[i] = starts[(b * (chunks - 1) + c - 1) * M + s];
+        else if (s < M && c == 0 && zi)
+            h[i] = A(zi[b * M + s]);
+    }
+    const uint first = c * CHUNK_STEPS;
+    const uint last = min(first + CHUNK_STEPS, steps);
+    const long offset = (long(b) * steps + first) * M + clamp(l.lane);
+    const device T *m = a + b * stride_b + first * stride_t + clamp(l.lane);
+    x += offset;
+    if (WRITE)
+        out += offset;
+    for (uint t = first; t < last; ++t, m += stride_t, x += M)
+    {
+        step(m, x, h, l);
+        if (!WRITE)
+            continue;
+        UNROLL
+        for (uint i = 0; i < SLOTS; ++i)
+            if (state_of(l, i) < M)
+                out[column(l, i)] = T(h[i]);
+        out += M;
+    }
+    UNROLL
+    for (uint i = 0; i < SLOTS; ++i)
+        if (ends && state_of(l, i) < M)
+            ends[(b * chunks + c) * M + state_of(l, i)] = h[i];
+}
+
+// The row and first column of a lane's two entries of an 8 x 8
+// simdgroup_matrix, thread_elements(), in the layout of every Apple GPU,
+// which MLX relies on too.
 inline uint2 tile_entries(uint lane)
 {
     const uint q = lane / 4;
@@ -221,11 +203,10 @@ inline float imag_part(float2 v) { return v.y; }
 
 constant constexpr uint TILES = (M + 7) / 8;
 
-// Entry (row, col) of a SIMD group's matrix of TILES x TILES tiles, which
-// holds `packed` maps' blocks on its diagonal, each M x M: its map, the
-// entry's row and column in it, and whether it is in a map's block. Maps of
-// M up to 4 are packed 8 / M to a tile, which they would otherwise leave
-// mostly idle; larger ones fill their tiles alone, packed = 1.
+// Entry (row, col) of a SIMD group's TILES x TILES tiles, which hold
+// `packed` M x M matrices on their diagonal, 8 / M of them up to 4 states
+// and 1 above: its matrix, its row and column there, and whether it lies in
+// one.
 struct Entry
 {
     uint map, row, col;
@@ -270,9 +251,8 @@ inline void store_entry(device float2 *p, float re, float im)
 }
 
 // X <- A X for a SIMD group's block X, in tiles Xr and Xi, its real and
-// imaginary parts, A the step's matrix at m (see load_tile), by 8 x 8 matrix
-// products, the Metal counterpart of Triton's tl.dot; complex64 as four
-// real ones.
+// imaginary parts, A the step's matrix at m (see load_tile); complex64 as
+// four real products.
 inline void multiply(const device T *m, thread simdgroup_float8x8 *Xr,
                      thread simdgroup_float8x8 *Xi, uint2 e, uint packed)
 {
@@ -303,17 +283,13 @@ inline void multiply(const device T *m, thread simdgroup_float8x8 *Xr,
     }
 }
 
-// A SIMD group's columns of `packed` maps, maps first to first + packed - 1
-// of n_maps, map p * maps_per_a + j being that of A[p]'s chunk j: columns
-// 8 kb to 8 kb + 7 of a map of more than 4 states, or all of the 8 / M maps
-// a tile packs. Each map is the product of its chunk's matrices, steps j *
-// length on, by those columns of the identity; zero for map 0 of
-// time-varying A, whose chunk's offset holds zi. A lane's rows belong to
-// one map, whose matrices it reads, and X's tiles live in registers,
-// 2 * TILES floats per lane, whatever the chunk, where Triton's maps from
-// M = 32 on alternate between two scratch buffers.
+// Columns 8 kb to 8 kb + 7 of maps first to first + packed - 1 of n_maps,
+// map p * maps_per_a + j being A[p]'s chunk j's: the product of the chunk's
+// matrices by those columns of the identity, zero for map 0 of
+// time-varying A, whose chunk's offset holds zi. A lane's rows belong to one
+// map, whose matrices it reads.
 inline void map_block(const device T *a, device A *maps, uint first, uint kb,
-                      uint packed, uint n_maps, uint maps_per_a, uint length,
+                      uint packed, uint n_maps, uint maps_per_a,
                       long stride_b, long stride_t, uint lane)
 {
     const uint2 e = tile_entries(lane);
@@ -332,8 +308,8 @@ inline void map_block(const device T *a, device A *maps, uint first, uint kb,
             Xi[i].thread_elements()[c] = 0.0f;
         }
     // Time-invariant A's map is that of any chunk: chunk 0's steps.
-    const device T *m = a + p * stride_b + j * length * stride_t;
-    for (uint t = 0; t < length; ++t, m += stride_t)
+    const device T *m = a + p * stride_b + j * CHUNK_STEPS * stride_t;
+    for (uint t = 0; t < CHUNK_STEPS; ++t, m += stride_t)
         multiply(m, Xr, Xi, e, packed);
     UNROLL
     for (uint i = 0; i < TILES; ++i)
@@ -351,10 +327,9 @@ inline void map_block(const device T *a, device A *maps, uint first, uint kb,
 }
 
 // Blocks' columns are vectors in turn: the chunks of each sequence for
-// time-invariant A, and the sequences of each chunk for time-varying A,
-// whose block then reads one chunk's matrices. The inner count is padded to
-// a multiple of 8 where a block may not span two: sequences, and chunks of
-// time-invariant A of each sequence's own.
+// time-invariant A, and the sequences of each chunk for time-varying A, so
+// that a block's columns share their matrices. The inner count is padded to
+// a multiple of 8 where a block must not span two.
 struct Layout
 {
     bool by_chunk;
@@ -381,17 +356,16 @@ inline bool block_column(Layout o, uint block, uint k, thread uint &b,
 }
 
 // The 8 vectors of block `block` through their chunks (see block_column),
-// from starts[b, c - 1], the state at the previous chunk's end, for c > 0,
-// or zero without starts, and for c = 0 from zi[b], or zero without zi, as
-// the columns of X <- A[t] X + x[t]. With WRITE, their states go to out, a
-// chunk's last partial; with ends, the chunks' end states to ends[b, c].
+// as the columns of X <- A[t] X + x[t]: from starts[b, c - 1], the state at
+// the previous chunk's end, for c > 0, and from zi[b] for c = 0, or zero
+// without them. With WRITE, their states go to out; with ends, their end
+// states to ends[b, c].
 template <bool WRITE>
 inline void run_block(const device T *a, const device T *zi,
                       const device T *x, const device A *starts,
-                      device T *out, device A *ends, uint block,
-                      uint n_batch, uint chunks, uint steps,
-                      uint length, long stride_b, long stride_t, long a_batch,
-                      uint lane)
+                      device T *out, device A *ends, uint block, uint lane,
+                      uint n_batch, uint chunks, uint steps, long stride_b,
+                      long stride_t, long a_batch)
 {
     const Layout o = layout(n_batch, chunks, stride_t, a_batch);
     uint b0, c0;
@@ -422,8 +396,10 @@ inline void run_block(const device T *a, const device T *zi,
     // The columns share their matrices: of sequence b0, whose constant matrix
     // serves chunks of any length, or of chunk c0, whose steps end with the
     // sequences', so that no matrix past A's last is read.
-    const device T *m = a + b0 * stride_b + c0 * length * stride_t;
-    const uint last = stride_t == 0 ? length : min(length, steps - c0 * length);
+    const device T *m = a + b0 * stride_b + c0 * CHUNK_STEPS * stride_t;
+    const uint last = stride_t == 0
+        ? CHUNK_STEPS
+        : min(CHUNK_STEPS, steps - c0 * CHUNK_STEPS);
     for (uint t = 0; t < last; ++t, m += stride_t)
     {
         multiply(m, Xr, Xi, e, 1);
@@ -432,7 +408,7 @@ inline void run_block(const device T *a, const device T *zi,
             UNROLL
             for (uint k = 0; k < 2; ++k)
             {
-                const uint row = i * 8 + e.x, s = c[k] * length + t;
+                const uint row = i * 8 + e.x, s = c[k] * CHUNK_STEPS + t;
                 if (!live[k] || row >= M || s >= steps)
                     continue;
                 const long at = (long(b[k]) * steps + s) * M + row;
@@ -462,7 +438,7 @@ inline void run_block(const device T *a, const device T *zi,
 // Chunk c of sequence b runs from starts[b, c - 1], the state at the
 // previous chunk's end, for c > 0, and for c = 0 from zi[b] if from_zi, and
 // zero otherwise, in a block of 8 if blocked (see run_block), and otherwise
-// as a vector (see sequence_chunk). A[b] is a + b * stride_b, its step t's
+// as a vector (see run_vector). A[b] is a + b * stride_b, its step t's
 // matrix t * stride_t after.
 [[kernel, max_total_threads_per_threadgroup(THREADS)]]
 void recur_run(const device T *a [[buffer(0)]],
@@ -472,51 +448,32 @@ void recur_run(const device T *a [[buffer(0)]],
                device T *out [[buffer(4)]],
                constant long &batch [[buffer(5)]],
                constant long &steps [[buffer(6)]],
-               constant long &chunk [[buffer(7)]],
-               constant long &stride_b [[buffer(8)]],
-               constant long &stride_t [[buffer(9)]],
+               constant long &stride_b [[buffer(7)]],
+               constant long &stride_t [[buffer(8)]],
+               constant long &a_batch [[buffer(9)]],
                constant long &from_zi [[buffer(10)]],
                constant long &run [[buffer(11)]],
-               constant long &a_batch [[buffer(12)]],
-               constant long &blocked [[buffer(13)]],
+               constant long &blocked [[buffer(12)]],
                uint index [[thread_position_in_grid]],
                uint lane [[thread_index_in_simdgroup]])
 {
-    const uint n_batch = uint(batch), length = uint(chunk);
-    const uint chunks = (uint(steps) - 1) / length + 1;
+    const uint chunks = (uint(steps) - 1) / CHUNK_STEPS + 1;
     if (blocked)
-    {
         run_block<true>(a, from_zi ? zi : nullptr, x, starts, out, nullptr,
-                        index / SIMD_WIDTH, n_batch, chunks, uint(steps),
-                        length, stride_b, stride_t, a_batch, lane);
-        return;
-    }
-    const Lane l = lane_of(index, lane);
-    uint b, c;
-    if (!sequence_chunk(l.vector, n_batch, chunks, uint(run), b, c))
-        return;
-    A h[SLOTS];
-    if (c > 0)
-        load_states(h, starts + (b * (chunks - 1) + c - 1) * M, l);
+                        index / SIMD_WIDTH, lane, batch, chunks, steps,
+                        stride_b, stride_t, a_batch);
     else
-        load_states(h, from_zi ? zi + b * M : nullptr, l);
-    const long offset = long(b) * steps * M;
-    run_steps<true, true>(a + b * stride_b, stride_t, x + offset, out + offset,
-                          c * length, min(c * length + length, uint(steps)),
-                          h, l);
+        run_vector<true>(a, from_zi ? zi : nullptr, x, starts, out, nullptr,
+                         index, lane, batch, chunks, steps, stride_b,
+                         stride_t, run);
 }
 
-// The maps of chunks 0 to chunks - 2, each of chunk steps. Its first SIMD
-// groups, offset_groups of them, write o of chunk c of sequence b to
-// offsets[b, c], as blocks or vectors as recur_run: its end state from zero,
-// or for c = 0 from zi[b] if from_zi. The SIMD groups after them write P,
-// one per chunk of time-varying A and one for time-invariant A, all of whose
-// chunks share it, to maps[p, j], map j of A[p], a_batch of them: SIMD group
-// g * TILES + kb after them writes columns 8 kb to 8 kb + 7 of maps
-// g * packed to g * packed + packed - 1 (see map_block). Chunk 0's o holds
-// zi, so its P is zero for time-varying A, and the scan of the maps starts
-// from zero, which time-invariant A's P, shared by chunk 0, then leaves at
-// zero.
+// The maps of chunks 0 to chunks - 2. The first offset_groups SIMD groups
+// write o of chunk c of sequence b to offsets[b, c], as recur_run runs it
+// but from zero for c > 0. The SIMD groups after them write P to maps[p, j],
+// one per chunk j of time-varying A[p] and one for time-invariant A[p]:
+// SIMD group g * TILES + kb after them writes columns 8 kb to 8 kb + 7 of
+// maps g * packed to g * packed + packed - 1 (see map_block).
 [[kernel, max_total_threads_per_threadgroup(THREADS)]]
 void recur_reduce(const device T *a [[buffer(0)]],
                   const device T *zi [[buffer(1)]],
@@ -525,51 +482,32 @@ void recur_reduce(const device T *a [[buffer(0)]],
                   device A *maps [[buffer(4)]],
                   constant long &batch [[buffer(5)]],
                   constant long &steps [[buffer(6)]],
-                  constant long &chunk [[buffer(7)]],
-                  constant long &stride_b [[buffer(8)]],
-                  constant long &stride_t [[buffer(9)]],
+                  constant long &stride_b [[buffer(7)]],
+                  constant long &stride_t [[buffer(8)]],
+                  constant long &a_batch [[buffer(9)]],
                   constant long &from_zi [[buffer(10)]],
-                  constant long &a_batch [[buffer(11)]],
-                  constant long &run [[buffer(12)]],
+                  constant long &run [[buffer(11)]],
+                  constant long &blocked [[buffer(12)]],
                   constant long &packed [[buffer(13)]],
-                  constant long &blocked [[buffer(14)]],
-                  constant long &offset_groups [[buffer(15)]],
+                  constant long &offset_groups [[buffer(14)]],
                   uint index [[thread_position_in_grid]],
                   uint lane [[thread_index_in_simdgroup]])
 {
-    const uint n_batch = uint(batch), length = uint(chunk);
-    const uint maps_per_item = (uint(steps) - 1) / length;
+    const uint maps_per_item = (uint(steps) - 1) / CHUNK_STEPS;
     const uint group = index / SIMD_WIDTH;
     if (group < offset_groups && blocked)
-    {
-        run_block<false>(a, from_zi ? zi : nullptr, x, nullptr, nullptr,
-                         offsets, group, n_batch, maps_per_item, uint(steps),
-                         length, stride_b, stride_t, a_batch, lane);
-        return;
-    }
+        return run_block<false>(a, from_zi ? zi : nullptr, x, nullptr, nullptr,
+                                offsets, group, lane, batch, maps_per_item,
+                                steps, stride_b, stride_t, a_batch);
     if (group < offset_groups)
-    {
-        const Lane l = lane_of(index, lane);
-        uint b, c;
-        if (!sequence_chunk(l.vector, n_batch, maps_per_item, uint(run), b, c))
-            return;
-        A h[SLOTS];
-        load_states(h, c == 0 && from_zi ? zi + b * M : nullptr, l);
-        run_steps<true, false>(a + b * stride_b, stride_t,
-                               x + long(b) * steps * M, nullptr, c * length,
-                               c * length + length, h, l);
-        UNROLL
-        for (uint i = 0; i < SLOTS; ++i)
-            if (state_of(l, i) < M)
-                offsets[(b * maps_per_item + c) * M + state_of(l, i)] = h[i];
-        return;
-    }
+        return run_vector<false>(a, from_zi ? zi : nullptr, x, nullptr,
+                                 nullptr, offsets, index, lane, batch,
+                                 maps_per_item, steps, stride_b, stride_t, run);
     const uint maps_per_a = stride_t == 0 ? 1 : maps_per_item;
     const uint n_maps = uint(a_batch) * maps_per_a;
     const uint block = group - uint(offset_groups);
     const uint kb = block % TILES, first = block / TILES * uint(packed);
-    if (first >= n_maps)
-        return;
-    map_block(a, maps, first, kb, uint(packed), n_maps, maps_per_a, length,
-              stride_b, stride_t, lane);
+    if (first < n_maps)
+        map_block(a, maps, first, kb, uint(packed), n_maps, maps_per_a,
+                  stride_b, stride_t, lane);
 }

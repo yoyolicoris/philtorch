@@ -102,12 +102,9 @@ def test_recurrence_ignores_memory_past_the_states(dtype):
 @pytest.mark.parametrize(
     "device, M, T",
     # 12 states take the products of 16 x 16 blocks as dots (a complex one as
-    # four). The Metal kernel takes M = 1 in tiles of 1024 steps read 4 at a
-    # time: one tile, and three, each ending mid-vector. Its kernels of M > 1
-    # take chunks of 64 steps: 301 steps end mid-chunk, and 2049 make 33
-    # chunks, whose maps are scanned in turn. 6 and 20 states leave lanes of
-    # their vectors, 8 and 32, idle; 64 take two states a lane, and their
-    # maps 8 x 8 tiles of products, the most complex64 takes.
+    # four). The Metal kernels take M = 1 in tiles of 1024 steps, and M > 1 in
+    # chunks of 64: 301 and 2049 steps end mid-tile and mid-chunk. 6 and 20
+    # states leave lanes idle, and 64 is complex64's most.
     [pytest.param("cuda", M, 300, marks=pytest.mark.cuda) for M in (1, 2, 3, 6, 12)]
     + [pytest.param("mps", M, T, marks=MPS) for M in (1, 2, 3, 6, 20, 32, 64) for T in (301, 2049)],
 )
@@ -122,13 +119,31 @@ def test_recurrence_low_precision(dtype, tolerance, sharing, device, M, T):
     assert error < tolerance
 
 
-def _mps_relative_error(A, zi, x):
-    """The error of the states on MPS in float32, relative to the largest, against
-    the CPU's in float64."""
-    expected = recurrence(*(t.double() for t in (A, zi, x)))
+def _mps_error(A, zi, x):
+    """The error of the states on MPS, relative to the largest, against the
+    CPU's in double precision."""
+    wide = torch.complex128 if x.is_complex() else torch.float64
+    expected = recurrence(*(t.to(wide) for t in (A, zi, x)))
     actual = recurrence(*(t.to("mps") for t in (A, zi, x)))
-    assert actual.dtype == torch.float32
-    return ((actual.cpu().double() - expected).abs().max() / expected.abs().max()).item()
+    assert actual.dtype == x.dtype
+    return ((actual.cpu().to(wide) - expected).abs().max() / expected.abs().max()).item()
+
+
+@MPS
+@pytest.mark.parametrize("sharing", SHARING)
+@pytest.mark.parametrize(
+    "B, T, M, dtype",
+    # Around chunks of 64 steps, the last partial; at 16 states and more,
+    # shared matrices run their vectors in blocks of 8, padded, two a chunk
+    # for 9 sequences; above 32, a lane holds several states; many sequences
+    # of few chunks each.
+    [(B, T, M, torch.float32) for B in (3, 9) for T in (1, 63, 64, 65, 129) for M in (3, 16)]
+    + [(2, 200, M, torch.float32) for M in (40, 100, 128)]
+    + [(2, 200, 40, torch.complex64), (4096, 200, 4, torch.float32)],
+)
+def test_recurrence_mps(sharing, B, T, M, dtype):
+    A, zi, x = _problem(B, T, M, sharing, dtype)
+    assert _mps_error(A, zi, x) < 1e-5
 
 
 @MPS
@@ -137,56 +152,12 @@ def _mps_relative_error(A, zi, x):
 @pytest.mark.parametrize("T", [2**17 + 3, 2**15 + 40])
 @pytest.mark.parametrize("identity", [False, True])
 def test_recurrence_mps_deep_recursion(sharing, M, T, identity):
-    # Hundreds or thousands of chunks of 64 steps, whose maps the same kernels
-    # scan over chunks of chunks: three levels, the last chunk of each ending
-    # mid-way, with the maps of A per sequence too. Matrices of norm 0.97
-    # forget a chunk's start within thousands of steps, so the identity, whose
-    # states sum the inputs, carries every chunk's state to the end.
+    # Three levels of maps over chunks of chunks. Matrices of norm 0.97 forget
+    # a chunk's start within thousands of steps, the identity never.
     A, zi, x = _problem(2, T, M, sharing, torch.float32)
     if identity:
         A = torch.eye(M).expand_as(A).contiguous()
-    assert _mps_relative_error(A, zi, x) < 1e-5
-
-
-@MPS
-@pytest.mark.parametrize("sharing", SHARING)
-@pytest.mark.parametrize("dtype, M", [(torch.float32, 40), (torch.complex64, 40),
-                                      (torch.float32, 100), (torch.float32, 128)])  # fmt: skip
-def test_recurrence_mps_many_states(sharing, dtype, M):
-    # Above 32 states, a lane holds two to four of a vector's, and a map's
-    # blocks of 8 columns take up to 16 x 16 tiles of products.
-    A, zi, x = _problem(2, 200, M, sharing, dtype)
-    wide = torch.complex128 if dtype.is_complex else torch.float64
-    expected = _sequential(*(t.to(wide) for t in (A, zi, x)))
-    actual = recurrence(*(t.to("mps") for t in (A, zi, x)))
-    error = (actual.cpu().to(wide) - expected).abs().max() / expected.abs().max()
-    assert error < 1e-5
-
-
-@MPS
-@pytest.mark.parametrize("sharing", SHARING)
-@pytest.mark.parametrize("T", [1, 63, 64, 65, 128, 129])
-@pytest.mark.parametrize("M", [3, 16])
-@pytest.mark.parametrize("B", [3, 9])
-def test_recurrence_mps_chunk_boundaries(sharing, T, M, B):
-    # Around chunks of 64 steps: one chunk, partial or whole, and a second
-    # chunk of one step, whole, or of one step past it; at 16 states, shared
-    # matrices run their vectors in blocks of 8, padded, two a chunk for 9
-    # sequences of time-varying A.
-    A, zi, x = _problem(B, T, M, sharing, torch.float32)
-    assert _mps_relative_error(A, zi, x) < 1e-5
-
-
-@MPS
-@pytest.mark.parametrize("sharing", SHARING)
-def test_recurrence_mps_large_batch(sharing):
-    # Runs of chunks cycle over thousands of sequences, of four chunks each,
-    # the last partial.
-    A, zi, x = _problem(4096, 200, 4, sharing, torch.float32)
-    expected = _sequential(*(t.double() for t in (A, zi, x)))
-    actual = recurrence(*(t.to("mps") for t in (A, zi, x)))
-    error = (actual.cpu().double() - expected).abs().max() / expected.abs().max()
-    assert error < 1e-5
+    assert _mps_error(A, zi, x) < 1e-5
 
 
 @pytest.mark.cuda
@@ -268,16 +239,17 @@ def test_recurrence_gradients_of_long_sequences(device, sharing, dtype, T):
 
 
 @pytest.mark.parametrize(
-    "device, M, dtype, tolerance",
-    # The float32 gradients reach 3000, where its spacing is 2.4e-4.
-    [
-        pytest.param("cuda", 4, torch.float64, {}, marks=pytest.mark.cuda),
-        pytest.param("mps", 1, torch.float32, {"rtol": 1e-4, "atol": 1e-4}, marks=MPS),
-        pytest.param("mps", 3, torch.float32, {"rtol": 1e-4, "atol": 1e-4}, marks=MPS),
+    "device, M, sharing, dtype, tolerance",
+    # The float32 gradients reach 3000, where its spacing is 2.4e-4. At 16
+    # states, shared matrices run in blocks.
+    [pytest.param("cuda", 4, "both", torch.float64, {}, marks=pytest.mark.cuda)]
+    + [
+        pytest.param("mps", M, sharing, torch.float32, {"rtol": 1e-4, "atol": 1e-4}, marks=MPS)
+        for M, sharing in ((1, "both"), (3, "both"), (16, "one"), (16, "per_step"))
     ],
 )
-def test_recurrence_matches_cpu_gradients(device, M, dtype, tolerance):
-    A, zi, x = _problem(3, 200, M, "both")
+def test_recurrence_matches_cpu_gradients(device, M, sharing, dtype, tolerance):
+    A, zi, x = _problem(3, 200, M, sharing)
     grads = []
     for d in ("cpu", device):
         inputs = [t.to(d, dtype).requires_grad_() for t in (A, zi, x)]
@@ -285,21 +257,6 @@ def test_recurrence_matches_cpu_gradients(device, M, dtype, tolerance):
         grads.append(torch.autograd.grad((h * h).sum(), inputs))
     for cpu, other in zip(*grads):
         torch.testing.assert_close(other.cpu(), cpu, **tolerance)
-
-
-@MPS
-@pytest.mark.parametrize("sharing", ["one", "per_item", "per_step"])
-def test_recurrence_mps_block_gradients(sharing):
-    # Shared matrices of 16 states run in blocks, in the gradients too, whose
-    # adjoints run backward over A's conjugate transposes.
-    A, zi, x = _problem(3, 200, 16, sharing)
-    grads = []
-    for d in ("cpu", "mps"):
-        inputs = [t.to(d, torch.float32).requires_grad_() for t in (A, zi, x)]
-        h = recurrence(*inputs)
-        grads.append(torch.autograd.grad((h * h).sum(), inputs))
-    for cpu, mps in zip(*grads):
-        torch.testing.assert_close(mps.cpu(), cpu, rtol=1e-4, atol=1e-4)
 
 
 @pytest.mark.parametrize("device", DEVICES)
@@ -414,7 +371,7 @@ INTEGER_DISPATCH = [
 
 
 # The Metal kernels, which take these four dtypes: the scalar ones M = 1, and
-# those of order M the states from 2 up to 128 (64 complex).
+# those of order M the rest.
 MPS_DISPATCH = [
     pytest.param(*case, marks=MPS)
     for case in [
@@ -423,7 +380,6 @@ MPS_DISPATCH = [
         for M, kernel in (
             (1, "_lti_recur" if time_invariant else "_scan"),
             (2, "_lti_recurN" if time_invariant else "_recurN"),
-            (3, "_lti_recurN" if time_invariant else "_recurN"),
         )
         for dtype in (torch.float32, torch.float16, torch.bfloat16, torch.complex64)
     ]

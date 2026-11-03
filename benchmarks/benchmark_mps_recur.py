@@ -1,32 +1,22 @@
 """Benchmark the linear recurrence on MPS against the CPU kernels.
 
-Measures the native ops on the MPS device and, where the CPU kernel takes the
-dtype, on the CPU, over a grid of batch sizes B and lengths T, for state sizes
-M: the scalar ops for M = 1, ``torch.ops.philtorch.lti_recur``
-(time-invariant) and ``torch.ops.philtorch.scan`` (time-varying), and for M > 1
-``torch.ops.philtorch.lti_recurN`` and ``torch.ops.philtorch.recurN``. Three
-coefficient layouts are timed:
+Times the native ops, on MPS and, where its kernel takes the dtype, on the CPU,
+over batch sizes B, lengths T and state sizes M: ``lti_recur`` and ``scan`` for
+M = 1, ``lti_recurN`` and ``recurN`` above. The coefficient layouts are
 
-* ``shared``: time-invariant, one coefficient, or M x M matrix, for all items;
-* ``batched``: time-invariant, one per item (skipped at B = 1, where it is
-  the same as ``shared``);
-* ``per_step``: time-varying, one per step of each item.
+* ``shared``: time-invariant, one coefficient or M x M matrix for all items;
+* ``batched``: time-invariant, one per item (from B = 2);
+* ``per_step``: time-varying, one per step of each item;
+* ``per_step_shared``: time-varying, one per step shared over the batch
+  (M > 1, from B = 2).
 
-For M > 1 a fourth, ``per_step_shared``, has one matrix per step shared over
-the batch (skipped at B = 1). Cases whose coefficients would exceed 2^26
-values are skipped.
-
-Each is run in float32, float16, bfloat16 and complex64. The CPU column runs the
-same op in the same dtype, except for ``scan`` in float16 and bfloat16, which the
-CPU kernel does not take (its column is ``n/a``). The inputs are stable
-recurrences: ``|a| < 0.9``, with a random phase for complex64, and matrices of
-spectral norm 0.9. Each op runs untimed for 0.2 s first, which compiles its
-Metal library and warms the GPU up, and complex64 runs up to M = 64, the
-kernels' limit.
-
-Per case it reports the median runtime (and IQR) from
+Cases of more than 2^26 coefficients are skipped, and complex64 runs up to
+M = 64, the kernels' limit. The CPU column is ``n/a`` where ``scan``'s CPU
+kernel takes no float16 or bfloat16. The recurrences are stable: ``|a| < 0.9``,
+with a random phase for complex64, and matrices of spectral norm 0.9. Each case
+reports the median runtime (and IQR) of
 ``torch.utils.benchmark.Timer.blocked_autorange``, synchronizing the MPS device
-at each measurement boundary, and the speedup of MPS over CPU.
+at each measurement boundary, and the speed-up of MPS over CPU.
 
 Run it with no other GPU work going on::
 

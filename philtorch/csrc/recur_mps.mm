@@ -58,7 +58,8 @@ const Kernels &kernels(int64_t M, ScalarType dtype)
     const AOTIMetalShaderLibraryHandle library = philtorch::mps::compile(
         "#define STATES " + std::to_string(M) + "\n#define SCALAR " +
             philtorch::mps::metal_type(dtype, OP) + "\n#define THREADS " +
-            std::to_string(THREADS) + "\n",
+            std::to_string(THREADS) + "\n#define CHUNK " +
+            std::to_string(CHUNK) + "\n",
         RECUR_MPS_METAL);
     using philtorch::mps::kernel_function;
     const Kernels compiled{kernel_function(library, "recur_run"),
@@ -74,16 +75,9 @@ int64_t run_length(int64_t n)
     return philtorch::ceil_div(n, philtorch::ceil_div(n, RUN));
 }
 
-// The vectors of each sequence's runs of n chunks, padding included.
-int64_t run_vectors(int64_t n)
-{
-    return philtorch::ceil_div(n, run_length(n)) * run_length(n);
-}
-
 // Whether vectors run in blocks of 8, by 8 x 8 matrix products: vectors of
 // BLOCK_STATES or more that share their matrices, time-invariant or shared
-// over the batch. Smaller ones leave the tiles mostly idle, and their own
-// lanes ran up to 3 times as fast.
+// over the batch; smaller ones would leave the tiles mostly idle.
 bool blocked(int64_t M, int64_t stride_t, int64_t a_batch)
 {
     return M >= BLOCK_STATES && (stride_t == 0 || a_batch == 1);
@@ -95,9 +89,9 @@ bool blocked(int64_t M, int64_t stride_t, int64_t a_batch)
 // not span two; and otherwise SIMD_WIDTH / LANES a group in runs (see
 // run_length), LANES being M rounded up to a power of 2, SIMD_WIDTH at most.
 int64_t vector_groups(int64_t batch, int64_t chunks, int64_t M,
-                      int64_t stride_t, int64_t a_batch)
+                      int64_t stride_t, int64_t a_batch, bool block)
 {
-    if (blocked(M, stride_t, a_batch))
+    if (block)
     {
         const int64_t inner = stride_t != 0 ? batch : chunks;
         const int64_t outer = stride_t != 0 ? chunks : batch;
@@ -109,7 +103,9 @@ int64_t vector_groups(int64_t batch, int64_t chunks, int64_t M,
     int64_t lanes = 1;
     while (lanes < std::min(M, SIMD_WIDTH))
         lanes *= 2;
-    return philtorch::ceil_div(batch * run_vectors(chunks), SIMD_WIDTH / lanes);
+    const int64_t run = run_length(chunks);
+    return philtorch::ceil_div(batch * philtorch::ceil_div(chunks, run) * run,
+                               SIMD_WIDTH / lanes);
 }
 
 // The threads of n SIMD groups, in whole threadgroups, which the kernels
@@ -137,48 +133,41 @@ Tensor recur_mps(const Tensor &a, int64_t a_batch, int64_t stride_b,
         return out;
     const Kernels &k = kernels(M, x.scalar_type());
     const std::array<uint64_t, 2> group{THREADS, 1};
+    const bool block = blocked(M, stride_t, a_batch);
+    const int64_t chunks = philtorch::ceil_div(steps, CHUNK);
 
-    // A sequence of one chunk needs no state from before it.
-    const int64_t maps_per_item = (steps - 1) / CHUNK;
-    if (maps_per_item == 0)
+    // The state at each chunk's end but the last, from the same recurrence
+    // over the maps of those chunks, from a zero start, as chunk 0's offset
+    // holds zi; a sequence of one chunk needs none.
+    Tensor starts = out;
+    if (chunks > 1)
     {
-        launch(k.run, {a.get(), zi.get(), x.get(), out.get(), out.get()},
-               {batch, steps, CHUNK, stride_b, stride_t, from_zi, 1, a_batch,
-                blocked(M, stride_t, a_batch)},
-               threads(vector_groups(batch, 1, M, stride_t, a_batch)), group);
-        return out;
+        // The maps, in the accumulation type: their offsets o, and their
+        // matrices P, one per chunk of time-varying A, and one, A^CHUNK, for
+        // time-invariant A, in SIMD groups of 8 x 8 tiles: ceil(M / 8) per
+        // map, or 8 / M maps per group up to 4 states.
+        const int64_t maps_per_item = chunks - 1;
+        const int64_t maps_per_a = stride_t == 0 ? 1 : maps_per_item;
+        const ScalarType acc = philtorch::mps::accumulation_type(x.scalar_type());
+        auto offsets = torch::stable::new_empty(x, {batch, maps_per_item, M}, acc);
+        auto maps = torch::stable::new_empty(x, {a_batch, maps_per_a, M, M}, acc);
+        const int64_t packed = M <= 4 ? 8 / M : 1;
+        const int64_t offset_groups =
+            vector_groups(batch, maps_per_item, M, stride_t, a_batch, block);
+        const int64_t map_groups =
+            philtorch::ceil_div(a_batch * maps_per_a, packed) *
+            philtorch::ceil_div<int64_t>(M, 8);
+        launch(k.reduce, {a.get(), zi.get(), x.get(), offsets.get(), maps.get()},
+               {batch, steps, stride_b, stride_t, a_batch, from_zi,
+                run_length(maps_per_item), block, packed, offset_groups},
+               threads(offset_groups + map_groups), group);
+        starts = recur_mps(maps, a_batch, a_batch == 1 ? 0 : maps_per_a * M * M,
+                           stride_t == 0 ? 0 : M * M, offsets, false, offsets);
     }
-
-    // The maps of every chunk but the last, in the accumulation type: their
-    // offsets o, and their matrices P, one per chunk of time-varying A, and
-    // one, A^chunk, for time-invariant A.
-    const int64_t maps_per_a = stride_t == 0 ? 1 : maps_per_item;
-    const ScalarType acc = philtorch::mps::accumulation_type(x.scalar_type());
-    auto offsets = torch::stable::new_empty(x, {batch, maps_per_item, M}, acc);
-    auto maps = torch::stable::new_empty(x, {a_batch, maps_per_a, M, M}, acc);
-    // The maps' SIMD groups, each of 8 x 8 tiles: ceil(M / 8) per map, or
-    // 8 / M maps per group up to 4 states.
-    const int64_t packed = M <= 4 ? 8 / M : 1;
-    const int64_t map_groups = philtorch::ceil_div(a_batch * maps_per_a, packed) *
-                               philtorch::ceil_div<int64_t>(M, 8);
-    const int64_t offset_groups =
-        vector_groups(batch, maps_per_item, M, stride_t, a_batch);
-    launch(k.reduce, {a.get(), zi.get(), x.get(), offsets.get(), maps.get()},
-           {batch, steps, CHUNK, stride_b, stride_t, from_zi, a_batch,
-            run_length(maps_per_item), packed, blocked(M, stride_t, a_batch),
-            offset_groups},
-           threads(offset_groups + map_groups), group);
-
-    // The state at each chunk's end, from the same recurrence over the
-    // chunks' maps, from a zero start, as chunk 0's offset holds zi.
-    const Tensor starts = recur_mps(
-        maps, a_batch, a_batch == 1 ? 0 : maps_per_a * M * M,
-        stride_t == 0 ? 0 : M * M, offsets, false, offsets);
     launch(k.run, {a.get(), zi.get(), x.get(), starts.get(), out.get()},
-           {batch, steps, CHUNK, stride_b, stride_t, from_zi,
-            run_length(maps_per_item + 1), a_batch,
-            blocked(M, stride_t, a_batch)},
-           threads(vector_groups(batch, maps_per_item + 1, M, stride_t, a_batch)),
+           {batch, steps, stride_b, stride_t, a_batch, from_zi,
+            run_length(chunks), block},
+           threads(vector_groups(batch, chunks, M, stride_t, a_batch, block)),
            group);
     return out;
 }
@@ -231,36 +220,23 @@ Tensor lti_recurN_mps(const Tensor &A, const Tensor &zi, const Tensor &x)
                      torch::stable::contiguous(x));
 }
 
-// recur2's, lti_recur2's, recur3's and lti_recur3's MPS kernels: those of M
-// states, taking the order of their name only, as their CUDA kernels and
+// recur2's, recur3's, lti_recur2's and lti_recur3's MPS kernels: those of
+// M states, taking the order of their name only, as their CUDA kernels and
 // fakes do.
-Tensor of_order(int64_t order,
-                Tensor (*run)(const Tensor &, const Tensor &, const Tensor &),
-                const Tensor &A, const Tensor &zi, const Tensor &x)
+template <int64_t order>
+Tensor recur_of_order(const Tensor &A, const Tensor &zi, const Tensor &x)
 {
     STD_TORCH_CHECK(x.dim() == 3 && x.size(2) == order,
                     "x must be of shape (B, T, ", order, ")");
-    return run(A, zi, x);
+    return recurN_mps(A, zi, x);
 }
 
-Tensor recur2_mps(const Tensor &A, const Tensor &zi, const Tensor &x)
+template <int64_t order>
+Tensor lti_recur_of_order(const Tensor &A, const Tensor &zi, const Tensor &x)
 {
-    return of_order(2, recurN_mps, A, zi, x);
-}
-
-Tensor lti_recur2_mps(const Tensor &A, const Tensor &zi, const Tensor &x)
-{
-    return of_order(2, lti_recurN_mps, A, zi, x);
-}
-
-Tensor recur3_mps(const Tensor &A, const Tensor &zi, const Tensor &x)
-{
-    return of_order(3, recurN_mps, A, zi, x);
-}
-
-Tensor lti_recur3_mps(const Tensor &A, const Tensor &zi, const Tensor &x)
-{
-    return of_order(3, lti_recurN_mps, A, zi, x);
+    STD_TORCH_CHECK(x.dim() == 3 && x.size(2) == order,
+                    "x must be of shape (B, T, ", order, ")");
+    return lti_recurN_mps(A, zi, x);
 }
 
 } // namespace
@@ -269,8 +245,8 @@ STABLE_TORCH_LIBRARY_IMPL(philtorch, MPS, m)
 {
     m.impl("recurN", TORCH_BOX(&recurN_mps));
     m.impl("lti_recurN", TORCH_BOX(&lti_recurN_mps));
-    m.impl("recur2", TORCH_BOX(&recur2_mps));
-    m.impl("lti_recur2", TORCH_BOX(&lti_recur2_mps));
-    m.impl("recur3", TORCH_BOX(&recur3_mps));
-    m.impl("lti_recur3", TORCH_BOX(&lti_recur3_mps));
+    m.impl("recur2", TORCH_BOX(&recur_of_order<2>));
+    m.impl("lti_recur2", TORCH_BOX(&lti_recur_of_order<2>));
+    m.impl("recur3", TORCH_BOX(&recur_of_order<3>));
+    m.impl("lti_recur3", TORCH_BOX(&lti_recur_of_order<3>));
 }

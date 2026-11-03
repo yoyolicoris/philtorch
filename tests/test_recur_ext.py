@@ -231,7 +231,6 @@ def test_lti_recur_mps_grad_equiv(
 @pytest.mark.parametrize("time_invariant", [True, False])
 @pytest.mark.parametrize("dtype, M", [(torch.float32, 129), (torch.complex64, 65)])
 def test_mps_recurrence_rejects_m_above_128(time_invariant: bool, dtype: torch.dtype, M: int):
-    # The Triton kernels' limit: 128 states, 64 complex.
     B, T = 2, 5
     A = torch.zeros(1, 1 if time_invariant else T, M, M, dtype=dtype, device="mps")
     zi = torch.zeros(B, M, dtype=dtype, device="mps")
@@ -257,8 +256,7 @@ def _mps_recur_n_args(op: str, B: int, T: int, M: int, dtype=torch.float32):
 @pytest.mark.parametrize("time_invariant", [True, False])
 @pytest.mark.parametrize("batched", [True, False])
 def test_mps_recur_of_order(order: int, time_invariant: bool, batched: bool):
-    # recur2, lti_recur2, recur3 and lti_recur3 run the kernels of M states on
-    # MPS, as on CPU, and take their order of states only.
+    # They run the kernels of M states, and take their order only.
     B, T = 3, 200
     name = f"{'lti_' if time_invariant else ''}recur{order}"
     op = getattr(torch.ops.philtorch, name)
@@ -270,31 +268,29 @@ def test_mps_recur_of_order(order: int, time_invariant: bool, batched: bool):
     expected = op(A.double(), zi.double(), x.double())
     actual = op(A.to("mps"), zi.to("mps"), x.to("mps"))
     torch.testing.assert_close(actual.cpu().double(), expected, rtol=1e-5, atol=1e-5)
-    wrong = order + 1
     with pytest.raises(RuntimeError, match=f"x must be of shape \\(B, T, {order}\\)"):
-        op(*_mps_recur_n_args("lti_recurN" if time_invariant else "recurN", B, 5, wrong))
+        op(*_mps_recur_n_args("lti_recurN" if time_invariant else "recurN", B, 5, order + 1))
 
 
 @_MPS
 @pytest.mark.parametrize("op", ["lti_recurN", "recurN"])
-@pytest.mark.parametrize("dtype, M", [(torch.float32, 129), (torch.complex64, 65)])
-def test_mps_recur_n_rejects_m_above_128(op: str, dtype: torch.dtype, M: int):
-    with pytest.raises(RuntimeError, match=f"MPS recurrence takes M up to 128 .*, got {M}"):
+@pytest.mark.parametrize(
+    "dtype, M, match",
+    [
+        (torch.int64, 3, "takes float32, float16, bfloat16 and complex64"),
+        (torch.float32, 129, "takes M up to 128 .*, got 129"),
+        (torch.complex64, 65, "takes M up to 128 .*, got 65"),
+    ],
+)
+def test_mps_recur_n_rejects(op: str, dtype: torch.dtype, M: int, match: str):
+    with pytest.raises(RuntimeError, match=match):
         _MPS_OPS_N[op](*_mps_recur_n_args(op, 2, 5, M, dtype))
-
-
-@_MPS
-@pytest.mark.parametrize("op", ["lti_recurN", "recurN"])
-def test_mps_recur_n_rejects_int64(op: str):
-    with pytest.raises(RuntimeError, match="MPS recurrence takes"):
-        _MPS_OPS_N[op](*_mps_recur_n_args(op, 2, 5, 3, torch.int64))
 
 
 @_MPS
 @pytest.mark.parametrize("op", ["lti_recurN", "recurN"])
 @pytest.mark.parametrize("B, T", [(0, 5), (2, 0), (0, 0)])
 def test_mps_recur_n_empty(op: str, B: int, T: int):
-    # No sequences or no steps: an empty result of x's shape.
     out = _MPS_OPS_N[op](*_mps_recur_n_args(op, B, T, 3))
     assert out.shape == (B, T, 3)
     assert out.device.type == "mps"
