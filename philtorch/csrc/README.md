@@ -300,7 +300,9 @@ Measured on an Apple M1 Pro (14-core GPU) as the scalar kernels' benchmark, by
 pixi run python benchmarks/benchmark_mps_recur.py --states 2 8 16 32
 ```
 
-The tables are on the pull request that added these kernels.
-Time-invariant `A`, and time-varying `A` shared over the batch, run 1.1 to 7 times as fast as the CPU in float32 at every size measured but the shortest single sequences, where the dispatches cost more than the steps.
-Time-varying `A` of each sequence's own is the slowest, as its maps cost `M` more passes: slower than the CPU from `M = 16` in short batches.
+The tables are on the pull request that added these kernels; against the CPU, outside one sequence of 4096 steps:
 
+- time-invariant `A`, and time-varying `A` shared over the batch, run 0.9 to 11.5 times as fast in float32 and complex64, and from 0.5 times in float16 and bfloat16, slowest at `M = 32`;
+- time-varying `A` of each sequence's own, whose maps cost `M` more passes, runs 1.2 to 8.6 times as fast at `M` up to 4 or 65536 steps and more, but is slower from `M = 8` in batches of 4096 steps, down to 0.1 times at `M = 32` in bfloat16.
+
+One sequence of 4096 steps, whose dispatches cost more than its steps, runs 0.2 to 2.4 times as fast.
