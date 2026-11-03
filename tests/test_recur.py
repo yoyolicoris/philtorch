@@ -167,11 +167,13 @@ def test_recurrence_mps_many_states(sharing, dtype, M):
 @pytest.mark.parametrize("sharing", SHARING)
 @pytest.mark.parametrize("T", [1, 63, 64, 65, 128, 129])
 @pytest.mark.parametrize("M", [3, 16])
-def test_recurrence_mps_chunk_boundaries(sharing, T, M):
+@pytest.mark.parametrize("B", [3, 9])
+def test_recurrence_mps_chunk_boundaries(sharing, T, M, B):
     # Around chunks of 64 steps: one chunk, partial or whole, and a second
     # chunk of one step, whole, or of one step past it; at 16 states, shared
-    # matrices run their vectors in blocks of 8, padded.
-    A, zi, x = _problem(3, T, M, sharing, torch.float32)
+    # matrices run their vectors in blocks of 8, padded, two a chunk for 9
+    # sequences of time-varying A.
+    A, zi, x = _problem(B, T, M, sharing, torch.float32)
     assert _mps_relative_error(A, zi, x) < 1e-5
 
 
@@ -283,6 +285,21 @@ def test_recurrence_matches_cpu_gradients(device, M, dtype, tolerance):
         grads.append(torch.autograd.grad((h * h).sum(), inputs))
     for cpu, other in zip(*grads):
         torch.testing.assert_close(other.cpu(), cpu, **tolerance)
+
+
+@MPS
+@pytest.mark.parametrize("sharing", ["one", "per_item", "per_step"])
+def test_recurrence_mps_block_gradients(sharing):
+    # Shared matrices of 16 states run in blocks, in the gradients too, whose
+    # adjoints run backward over A's conjugate transposes.
+    A, zi, x = _problem(3, 200, 16, sharing)
+    grads = []
+    for d in ("cpu", "mps"):
+        inputs = [t.to(d, torch.float32).requires_grad_() for t in (A, zi, x)]
+        h = recurrence(*inputs)
+        grads.append(torch.autograd.grad((h * h).sum(), inputs))
+    for cpu, mps in zip(*grads):
+        torch.testing.assert_close(mps.cpu(), cpu, rtol=1e-4, atol=1e-4)
 
 
 @pytest.mark.parametrize("device", DEVICES)

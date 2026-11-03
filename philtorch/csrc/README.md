@@ -300,7 +300,7 @@ Against this order, `recur_run` of `M = 16` over 64 sequences of 65536 steps too
 | `maps` | `(Ba, C - 1, M, M)`, or `(Ba, 1, M, M)` for time-invariant `A` | Each chunk's `P`, `Ba` the distinct `A`s. |
 | `starts` | `(B, C - 1, M)` | The state at each chunk's end, from the recursion. |
 
-The kernels index the steps of a sequence and the grid's lanes in 32 bits, and the inputs' offsets in 64; the host rejects inputs whose chunks need more lanes.
+The kernels index the steps of a sequence, the grid's lanes and the chunks' buffers (`offsets`, `starts`) in 32 bits, which the inputs, some 64 times as large, bound, and the inputs' and maps' offsets in 64; the host rejects grids that need more lanes.
 As in the scalar kernels, maps compose with plain products: an unstable recurrence whose chunk maps overflow gives NaN or infinite states, even where the sequential recurrence stays finite.
 
 ### Benchmark

@@ -20,11 +20,11 @@
 // at a time as the columns of an M x 8 block on a SIMD group, by 8 x 8
 // matrix products (see multiply), as the host's `blocked` says, and so do a
 // map's P's columns, which share their chunk's. Other vectors run on LANES
-// lanes of a SIMD group each, M rounded up to a power
-// of 2, 32 at most, each holding SLOTS states: lane j holds states j, j +
-// LANES, ..., and reads their columns of each matrix, so that a vector's
-// lanes read the matrix's rows in order. Each row's products are summed
-// over the lanes by a butterfly of shuffles (see step).
+// lanes of a SIMD group each, M rounded up to a power of 2, 32 at most, each
+// holding SLOTS states: lane j holds states j, j + LANES, ..., and reads
+// their columns of each matrix, so that a vector's lanes read the matrix's
+// rows in order. Each row's products are summed over the lanes by a
+// butterfly of shuffles (see step).
 
 using T = SCALAR;
 using A = Acc<T>::type;
@@ -459,20 +459,6 @@ inline void run_block(const device T *a, const device T *zi,
             }
 }
 
-// The SIMD groups of the vectors of n_batch sequences' chunks: blocks of 8
-// if blocked, and VECTORS a group in runs of `run` chunks otherwise (see
-// sequence_chunk).
-inline uint vector_groups(uint n_batch, uint chunks, uint run, long stride_t,
-                          long a_batch, bool blocked)
-{
-    if (blocked)
-    {
-        const Layout o = layout(n_batch, chunks, stride_t, a_batch);
-        return (o.outer * o.padded + 7) / 8;
-    }
-    return (n_batch * ((chunks - 1) / run + 1) * run - 1) / VECTORS + 1;
-}
-
 // Chunk c of sequence b runs from starts[b, c - 1], the state at the
 // previous chunk's end, for c > 0, and for c = 0 from zi[b] if from_zi, and
 // zero otherwise, in a block of 8 if blocked (see run_block), and otherwise
@@ -521,7 +507,7 @@ void recur_run(const device T *a [[buffer(0)]],
 }
 
 // The maps of chunks 0 to chunks - 2, each of chunk steps. Its first SIMD
-// groups, vector_groups of them, write o of chunk c of sequence b to
+// groups, offset_groups of them, write o of chunk c of sequence b to
 // offsets[b, c], as blocks or vectors as recur_run: its end state from zero,
 // or for c = 0 from zi[b] if from_zi. The SIMD groups after them write P,
 // one per chunk of time-varying A and one for time-invariant A, all of whose
@@ -547,13 +533,12 @@ void recur_reduce(const device T *a [[buffer(0)]],
                   constant long &run [[buffer(12)]],
                   constant long &packed [[buffer(13)]],
                   constant long &blocked [[buffer(14)]],
+                  constant long &offset_groups [[buffer(15)]],
                   uint index [[thread_position_in_grid]],
                   uint lane [[thread_index_in_simdgroup]])
 {
     const uint n_batch = uint(batch), length = uint(chunk);
     const uint maps_per_item = (uint(steps) - 1) / length;
-    const uint offset_groups = vector_groups(n_batch, maps_per_item, uint(run),
-                                             stride_t, a_batch, blocked);
     const uint group = index / SIMD_WIDTH;
     if (group < offset_groups && blocked)
     {
@@ -581,7 +566,7 @@ void recur_reduce(const device T *a [[buffer(0)]],
     }
     const uint maps_per_a = stride_t == 0 ? 1 : maps_per_item;
     const uint n_maps = uint(a_batch) * maps_per_a;
-    const uint block = group - offset_groups;
+    const uint block = group - uint(offset_groups);
     const uint kb = block % TILES, first = block / TILES * uint(packed);
     if (first >= n_maps)
         return;

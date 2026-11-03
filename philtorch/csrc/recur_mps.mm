@@ -90,7 +90,7 @@ bool blocked(int64_t M, int64_t stride_t, int64_t a_batch)
 }
 
 // The SIMD groups of the vectors of n_batch sequences' chunks, as
-// vector_groups in recur_mps.metal: blocks of 8 if blocked, a sequence's
+// recur_mps.metal lays them out: blocks of 8 if blocked, a sequence's
 // chunks or a chunk's sequences padded to a multiple of 8 where a block may
 // not span two; and otherwise SIMD_WIDTH / LANES a group in runs (see
 // run_length), LANES being M rounded up to a power of 2, SIMD_WIDTH at most.
@@ -161,12 +161,13 @@ Tensor recur_mps(const Tensor &a, int64_t a_batch, int64_t stride_b,
     const int64_t packed = M <= 4 ? 8 / M : 1;
     const int64_t map_groups = philtorch::ceil_div(a_batch * maps_per_a, packed) *
                                philtorch::ceil_div<int64_t>(M, 8);
+    const int64_t offset_groups =
+        vector_groups(batch, maps_per_item, M, stride_t, a_batch);
     launch(k.reduce, {a.get(), zi.get(), x.get(), offsets.get(), maps.get()},
            {batch, steps, CHUNK, stride_b, stride_t, from_zi, a_batch,
-            run_length(maps_per_item), packed, blocked(M, stride_t, a_batch)},
-           threads(vector_groups(batch, maps_per_item, M, stride_t, a_batch) +
-                   map_groups),
-           group);
+            run_length(maps_per_item), packed, blocked(M, stride_t, a_batch),
+            offset_groups},
+           threads(offset_groups + map_groups), group);
 
     // The state at each chunk's end, from the same recurrence over the
     // chunks' maps, from a zero start, as chunk 0's offset holds zi.
