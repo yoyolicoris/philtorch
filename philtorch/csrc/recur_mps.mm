@@ -131,11 +131,16 @@ Tensor recur_mps(const Tensor &a, int64_t a_batch, int64_t stride_b,
     const ScalarType acc = philtorch::mps::accumulation_type(x.scalar_type());
     auto offsets = torch::stable::new_empty(x, {batch, maps_per_item, M}, acc);
     auto maps = torch::stable::new_empty(x, {a_batch, maps_per_a, M, M}, acc);
+    // The maps' SIMD groups, each of 8 x 8 tiles: ceil(M / 8) per map, or
+    // 8 / M maps per group up to 4 states.
+    const int64_t packed = M <= 4 ? 8 / M : 1;
+    const int64_t map_groups = philtorch::ceil_div(a_batch * maps_per_a, packed) *
+                               philtorch::ceil_div<int64_t>(M, 8);
     launch(k.reduce, {a.get(), zi.get(), x.get(), offsets.get(), maps.get()},
            {batch, steps, CHUNK, stride_b, stride_t, from_zi, a_batch,
-            run_length(maps_per_item)},
+            run_length(maps_per_item), packed},
            threads(vector_groups(batch * run_vectors(maps_per_item), M) +
-                   a_batch * maps_per_a * philtorch::ceil_div<int64_t>(M, 8)),
+                   map_groups),
            group);
 
     // The state at each chunk's end, from the same recurrence over the

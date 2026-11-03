@@ -1,7 +1,7 @@
 # Metal recurrence implementations
 
 This directory contains philtorch's native CPU, CUDA, and Metal sources.
-The Metal implementations of the linear recurrence come in two: the scalar one, M = 1, described first, and that of M states, up to 32, in [the last section](#metal-recurrence-of-m-states).
+The Metal implementations of the linear recurrence come in two: the scalar one, M = 1, described first, and that of M states, up to 128 (64 complex), in [the last section](#metal-recurrence-of-m-states).
 The scalar recurrence, time-invariant and time-varying, lives in [`scalar_recur_mps.mm`](scalar_recur_mps.mm) (host code) and [`scalar_recur_mps.metal`](scalar_recur_mps.metal) (kernels).
 It implements
 
@@ -26,10 +26,10 @@ One three-pass design serves every input: reduce each tile, scan the tile totals
 | [`mps_common.metal`](mps_common.metal) | What the Metal kernels share, compiled at the head of each shader: the SIMD width, the accumulation types and complex products. |
 | [`scalar_recur_mps.mm`](scalar_recur_mps.mm) | MPS host code of `lti_recur` and `scan`, on torch's stable ABI and Metal C shim. |
 | [`scalar_recur_mps.metal`](scalar_recur_mps.metal) | Their Metal kernels, embedded in the extension at build time. |
-| [`recur_mps.mm`](recur_mps.mm) | MPS host code of `lti_recurN` and `recurN`, M up to 32, which `lti_recur2`, `recur2`, `lti_recur3` and `recur3` run too. |
+| [`recur_mps.mm`](recur_mps.mm) | MPS host code of `lti_recurN` and `recurN`, M up to 128 (64 complex), which `lti_recur2`, `recur2`, `lti_recur3` and `recur3` run too. |
 | [`recur_mps.metal`](recur_mps.metal) | Their Metal kernels, compiled once per state size and dtype. |
 | [`../_ops.py`](../_ops.py) | Registers fake implementations and autograd for the recurrence ops. |
-| [`../_recur.py`](../_recur.py) | Sends recurrences on MPS to `lti_recur` or `scan` for M = 1, and to `lti_recurN` or `recurN` for M up to 32. |
+| [`../_recur.py`](../_recur.py) | Sends recurrences on MPS to `lti_recur` or `scan` for M = 1, and to `lti_recurN` or `recurN` for M up to 128 (64 complex). |
 | [`../../tests/test_recur.py`](../../tests/test_recur.py) | `test_recurrence_low_precision` checks MPS against a float64 reference in every dtype and coefficient layout, for M = 1 and above; other MPS tests cover the chunk boundaries, deep recursion over the chunks, a large batch, gradients and dispatch. |
 | [`../../tests/test_recur_ext.py`](../../tests/test_recur_ext.py) | MPS tests of the carry across chunks of tiles, of gradients and of the inputs the kernels reject. |
 | [`../../benchmarks/benchmark_mps_recur.py`](../../benchmarks/benchmark_mps_recur.py) | Reproduces the CPU/MPS runtime results. |
@@ -254,8 +254,8 @@ They run 301 and 2049 steps, one tile and three, each ending mid-vector, and `T 
 h[b, t] = A[b, t] h[b, t - 1] + x[b, t],   h[b, -1] = zi[b],
 ```
 
-for M up to 32, in the same four dtypes as the scalar kernels, accumulating in float32 (complex64 for complex64).
-`_recur.py` sends M = 1 to the scalar kernels, which are faster, and M from 2 to 32 here.
+for M up to 128 (64 for complex64), the Triton kernels' limit, in the same four dtypes as the scalar kernels, accumulating in float32 (complex64 for complex64).
+`_recur.py` sends M = 1 to the scalar kernels, which are faster, and M from 2 on here.
 
 ### Algorithm
 
@@ -264,7 +264,7 @@ Every sequence longer than one chunk of 64 steps is split into chunks, whatever 
 The state at a chunk's end is the affine map `h -> P h + o` of the state at its start, with `P` the product of the chunk's matrices and `o` its end state from a zero start.
 Chunk 0 starts from `zi` instead, as step 0 does in the CUDA `recur2` and `recur3`, so the scan of the maps starts from zero: chunk 0's `P` is then irrelevant, zero for time-varying `A`, and `A^64`, shared, for time-invariant `A`.
 
-1. `recur_reduce` computes the map of every chunk but the last: `o` per chunk of each sequence, and `P` per chunk of each distinct time-varying `A`, column by column, as the product of the chunk's matrices by each unit vector. Time-invariant `A` has one `P`, `A^64`, the same for every chunk, computed the same way from one chunk's steps.
+1. `recur_reduce` computes the map of every chunk but the last: `o` per chunk of each sequence, and `P` per chunk of each distinct time-varying `A`, 8 columns at a time, as the product of the chunk's matrices by those columns of the identity. Time-invariant `A` has one `P`, `A^64`, the same for every chunk, computed the same way from one chunk's steps.
 2. The state at each chunk's end is the same recurrence over the chunks, with `P` as its matrices and `o` as its inputs, from a zero start: the host runs it recursively, in the accumulation type, until a level fits in one chunk. A sequence of `T` steps takes about `log_64(T)` levels.
 3. `recur_run` runs every chunk from the state at the previous chunk's end, writing the states.
 
@@ -273,11 +273,18 @@ Time-invariant `A` costs two passes over the steps; time-varying `A` costs `M` m
 ### Execution
 
 The library is compiled from source on the first call for each state size and dtype, with `STATES`, `SCALAR` and `THREADS` (per threadgroup) defined before `mps_common.metal`, so that every loop over the states unrolls and the states stay in registers.
+Every loop over states, lanes and tiles is unrolled whole (`clang loop unroll(full)`): left to the compiler, the larger ones kept a loop, whose arrays then lived in memory, up to 30 times as slow.
 
-A vector of `M` states, a chunk's state or a column of its `P`, runs on `LANES` lanes of a SIMD group, `M` rounded up to a power of 2, so that a SIMD group holds `32 / LANES` vectors; the lanes past `M` hold zeros.
+**Vectors.** A vector of `M` states, a chunk's state, runs on `LANES` lanes of a SIMD group, `M` rounded up to a power of 2 and 32 at most, so that a SIMD group holds `32 / LANES` vectors; above 32 states, each lane holds `ceil(M / 32)` of them, `j`, `j + 32`, and so on.
 Lane `j` holds state `j` and reads column `j` of each step's matrix, so that a vector's lanes read the row-major matrix in order.
-A step multiplies each lane's column by its state, and a butterfly of `log2(LANES)` rounds of `simd_shuffle_xor` sums the products over the lanes: each round, a lane keeps the half of its rows its state's bit selects and adds its partner's other half, until it holds its own row's sum.
+A step forms each lane's share of every row, the products of its columns by its states, and a butterfly of `log2(LANES)` rounds of `simd_shuffle_xor` sums the shares over the lanes, a block of `LANES` rows at a time: each round, a lane keeps the half of the rows its lane's bit selects and adds its partner's other half, until it holds its own row's sum.
+The first round is taken as the shares are formed, so that a lane holds half a block's at most: with all of them, complex64 at `M = 32` spilled its registers and ran six times as long.
 Every shuffle exchanges lanes by a mask shared by all lanes, which Apple GPUs run faster than shuffles from a lane index of each lane's own.
+
+**Maps.** A map's `P` runs 8 columns at a time on a SIMD group: the `M x 8` block `X <- A[t] X`, in tiles of 8 x 8, by `simdgroup_multiply_accumulate`, the Metal counterpart of Triton's `tl.dot`, in float32, complex64 as four real products.
+The tiles of `A[t]` are read entry by entry into `thread_elements()`, converted to the accumulation type, in the layout that every Apple GPU shares and MLX's matrix products rely on.
+A block's columns evolve apart from the others', so it needs only its own `2 ceil(M / 8)` floats a lane, in registers whatever `M`, where the Triton kernels' maps from 32 states on alternate between two scratch buffers.
+Against a vector per column, each with its own butterfly, the maps of `M = 32` over 16 sequences of 4096 steps ran in 4.5 ms rather than about 14, and float32 at `M = 128` reached about half the GPU's peak.
 
 Vectors run consecutive chunks of a sequence, 32 at most, in runs as even as a sequence's chunks allow, those of each sequence in turn, then the next run: the vectors in flight then read neighbouring inputs, and the matrices of time-varying `A` shared over the batch at once.
 Against this order, `recur_run` of `M = 16` over 64 sequences of 65536 steps took 2.7 times as long with neighbouring vectors on the same chunk of different sequences, its vectors' inputs spread over hundreds of megabytes, and 2.4 times as long for time-varying `A` shared over the batch with every chunk of one sequence before the next sequence's, which read `A` again for each sequence.
@@ -286,7 +293,7 @@ Against this order, `recur_run` of `M = 16` over 64 sequences of 65536 steps too
 | --- | --- | --- |
 | `A` | `(M, M)`, `(B, M, M)`, `(T, M, M)` or `(B, T, M, M)` | Shared or per-sequence, time-invariant or per-step matrices. |
 | `offsets` | `(B, C - 1, M)` | Each chunk's `o`, `C` chunks per sequence. |
-| `maps` | `(Ba, C - 1, M, M)`, or `(Ba, 1, M, M)` for time-invariant `A` | Each chunk's `P`, `Ba` the distinct `A`'s. |
+| `maps` | `(Ba, C - 1, M, M)`, or `(Ba, 1, M, M)` for time-invariant `A` | Each chunk's `P`, `Ba` the distinct `A`s. |
 | `starts` | `(B, C - 1, M)` | The state at each chunk's end, from the recursion. |
 
 The kernels index the steps of a sequence and the grid's lanes in 32 bits, and the inputs' offsets in 64; the host rejects inputs whose chunks need more lanes.
@@ -297,7 +304,7 @@ As in the scalar kernels, maps compose with plain products: an unstable recurren
 Measured on an Apple M1 Pro (14-core GPU) as the scalar kernels' benchmark, by
 
 ```bash
-pixi run python benchmarks/benchmark_mps_recur.py --states 2 8 16 32
+pixi run python benchmarks/benchmark_mps_recur.py --states 2 4 8 16 32 64 128
 ```
 
 The tables are on the pull request that added these kernels; against the CPU, outside one sequence of 4096 steps:

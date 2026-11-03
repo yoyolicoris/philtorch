@@ -20,7 +20,9 @@ Each is run in float32, float16, bfloat16 and complex64. The CPU column runs the
 same op in the same dtype, except for ``scan`` in float16 and bfloat16, which the
 CPU kernel does not take (its column is ``n/a``). The inputs are stable
 recurrences: ``|a| < 0.9``, with a random phase for complex64, and matrices of
-spectral norm 0.9.
+spectral norm 0.9. Each op runs untimed for 0.2 s first, which compiles its
+Metal library and warms the GPU up, and complex64 runs up to M = 64, the
+kernels' limit.
 
 Per case it reports the median runtime (and IQR) from
 ``torch.utils.benchmark.Timer.blocked_autorange``, synchronizing the MPS device
@@ -58,6 +60,8 @@ DTYPES = {
 LAYOUTS = ("shared", "batched", "per_step", "per_step_shared")
 STATES = (1, 2, 4, 8, 16, 32, 64, 128)
 MAX_COEFFICIENTS = 2**26
+# The Metal kernels' largest M, half that for complex64.
+MAX_STATES = 128
 # scan's CPU kernel takes no half precision; lti_recur's takes all four dtypes.
 SCAN_CPU_DTYPES = (torch.float32, torch.complex64)
 MAX_DECAY = 0.9
@@ -115,6 +119,11 @@ def synchronized_mps_timer():
 
 
 def measure_runtime(function, timer=time.perf_counter):
+    # Untimed first, for 0.2 s: the first call of a state size and dtype
+    # compiles its Metal library, and the GPU takes its first calls slower.
+    start = timer()
+    while timer() - start < 0.2:
+        function()
     measurement = benchmark.Timer(
         stmt="function()",
         globals={"function": function},
@@ -177,6 +186,8 @@ def main():
                 for batch, steps in CASES:
                     shape = coefficient_shape(layout, batch, steps, states)
                     if shape is None or torch.Size(shape).numel() > MAX_COEFFICIENTS:
+                        continue
+                    if states > (MAX_STATES // 2 if dtype.is_complex else MAX_STATES):
                         continue
                     if states == 1:
                         a_cpu = random_decay(shape, dtype)
