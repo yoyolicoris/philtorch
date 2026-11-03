@@ -102,10 +102,11 @@ def test_recurrence_ignores_memory_past_the_states(dtype):
 @pytest.mark.parametrize(
     "device, M, T",
     # 12 states take the products of 16 x 16 blocks as dots (a complex one as
-    # four). The Metal kernel takes M = 1, in tiles of 1024 steps read 4 at a
-    # time: one tile, and three, each ending mid-vector.
+    # four). The Metal kernels take M = 1 in tiles of 1024 steps, and M > 1 in
+    # chunks of 64: 301 and 2049 steps end mid-tile and mid-chunk. 6 and 20
+    # states leave lanes idle, and 64 is complex64's most.
     [pytest.param("cuda", M, 300, marks=pytest.mark.cuda) for M in (1, 2, 3, 6, 12)]
-    + [pytest.param("mps", 1, T, marks=MPS) for T in (301, 2049)],
+    + [pytest.param("mps", M, T, marks=MPS) for M in (1, 2, 3, 6, 20, 32, 64) for T in (301, 2049)],
 )
 def test_recurrence_low_precision(dtype, tolerance, sharing, device, M, T):
     A, zi, x = _problem(4, T, M, sharing, dtype, device)
@@ -116,6 +117,47 @@ def test_recurrence_low_precision(dtype, tolerance, sharing, device, M, T):
     assert actual.dtype == dtype
     error = (actual.cpu().to(expected.dtype) - expected).abs().max() / expected.abs().max()
     assert error < tolerance
+
+
+def _mps_error(A, zi, x):
+    """The error of the states on MPS, relative to the largest, against the
+    CPU's in double precision."""
+    wide = torch.complex128 if x.is_complex() else torch.float64
+    expected = recurrence(*(t.to(wide) for t in (A, zi, x)))
+    actual = recurrence(*(t.to("mps") for t in (A, zi, x)))
+    assert actual.dtype == x.dtype
+    return ((actual.cpu().to(wide) - expected).abs().max() / expected.abs().max()).item()
+
+
+@MPS
+@pytest.mark.parametrize("sharing", SHARING)
+@pytest.mark.parametrize(
+    "B, T, M, dtype",
+    # Around chunks of 64 steps, the last partial; at 16 states and more,
+    # shared matrices run their vectors in blocks of 8, padded, two a chunk
+    # for 9 sequences; above 32, a lane holds several states; many sequences
+    # of few chunks each.
+    [(B, T, M, torch.float32) for B in (3, 9) for T in (1, 63, 64, 65, 129) for M in (3, 16)]
+    + [(2, 200, M, torch.float32) for M in (40, 100, 128)]
+    + [(2, 200, 40, torch.complex64), (4096, 200, 4, torch.float32)],
+)
+def test_recurrence_mps(sharing, B, T, M, dtype):
+    A, zi, x = _problem(B, T, M, sharing, dtype)
+    assert _mps_error(A, zi, x) < 1e-5
+
+
+@MPS
+@pytest.mark.parametrize("sharing", SHARING)
+@pytest.mark.parametrize("M", [2, 5])
+@pytest.mark.parametrize("T", [2**17 + 3, 2**15 + 40])
+@pytest.mark.parametrize("identity", [False, True])
+def test_recurrence_mps_deep_recursion(sharing, M, T, identity):
+    # Three levels of maps over chunks of chunks. Matrices of norm 0.97 forget
+    # a chunk's start within thousands of steps, the identity never.
+    A, zi, x = _problem(2, T, M, sharing, torch.float32)
+    if identity:
+        A = torch.eye(M).expand_as(A).contiguous()
+    assert _mps_error(A, zi, x) < 1e-5
 
 
 @pytest.mark.cuda
@@ -197,15 +239,17 @@ def test_recurrence_gradients_of_long_sequences(device, sharing, dtype, T):
 
 
 @pytest.mark.parametrize(
-    "device, M, dtype, tolerance",
-    # The float32 gradients reach 3000, where its spacing is 2.4e-4.
-    [
-        pytest.param("cuda", 4, torch.float64, {}, marks=pytest.mark.cuda),
-        pytest.param("mps", 1, torch.float32, {"rtol": 1e-4, "atol": 1e-4}, marks=MPS),
+    "device, M, sharing, dtype, tolerance",
+    # The float32 gradients reach 3000, where its spacing is 2.4e-4. At 16
+    # states, shared matrices run in blocks.
+    [pytest.param("cuda", 4, "both", torch.float64, {}, marks=pytest.mark.cuda)]
+    + [
+        pytest.param("mps", M, sharing, torch.float32, {"rtol": 1e-4, "atol": 1e-4}, marks=MPS)
+        for M, sharing in ((1, "both"), (3, "both"), (16, "one"), (16, "per_step"))
     ],
 )
-def test_recurrence_matches_cpu_gradients(device, M, dtype, tolerance):
-    A, zi, x = _problem(3, 200, M, "both")
+def test_recurrence_matches_cpu_gradients(device, M, sharing, dtype, tolerance):
+    A, zi, x = _problem(3, 200, M, sharing)
     grads = []
     for d in ("cpu", device):
         inputs = [t.to(d, dtype).requires_grad_() for t in (A, zi, x)]
@@ -326,12 +370,17 @@ INTEGER_DISPATCH = [
 ]
 
 
-# The Metal kernels, which take M = 1 in these four dtypes.
+# The Metal kernels, which take these four dtypes: the scalar ones M = 1, and
+# those of order M the rest.
 MPS_DISPATCH = [
     pytest.param(*case, marks=MPS)
     for case in [
-        (time_invariant, 1, dtype, "mps", "_lti_recur" if time_invariant else "_scan")
+        (time_invariant, M, dtype, "mps", kernel)
         for time_invariant in (True, False)
+        for M, kernel in (
+            (1, "_lti_recur" if time_invariant else "_scan"),
+            (2, "_lti_recurN" if time_invariant else "_recurN"),
+        )
         for dtype in (torch.float32, torch.float16, torch.bfloat16, torch.complex64)
     ]
 ]
@@ -578,7 +627,7 @@ def test_recurrence_takes_integers_as_int64_only(dtype):
 
 
 def test_recurrence_raises_where_no_kernel_applies():
-    # A device with no kernels, standing in for e.g. MPS beyond M = 1.
+    # A device with no kernels.
     A, zi, x = _problem(2, 7, 3, "both", device="meta")
     with pytest.raises(NotImplementedError, match="time-varying A with M = 3 .* on meta"):
         _forward(A, zi, x)

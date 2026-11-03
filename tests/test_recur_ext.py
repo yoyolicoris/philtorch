@@ -144,7 +144,11 @@ def test_lti_recur_rejects_zero_length(device: str):
 
 _MPS = pytest.mark.skipif(not torch.backends.mps.is_available(), reason="MPS not available")
 
-_MPS_OPS = {"lti_recur": torch.ops.philtorch.lti_recur, "scan": torch.ops.philtorch.scan}
+_MPS_OPS = {
+    name: getattr(torch.ops.philtorch, name)
+    for name in ("lti_recur", "scan", "lti_recurN", "recurN")
+    + ("lti_recur2", "recur2", "lti_recur3", "recur3")
+}
 
 
 @_MPS
@@ -229,13 +233,77 @@ def test_lti_recur_mps_grad_equiv(
 
 @_MPS
 @pytest.mark.parametrize("time_invariant", [True, False])
-def test_mps_recurrence_rejects_m_above_1(time_invariant: bool):
-    B, T, M = 2, 5, 2
-    A = torch.zeros(1, 1 if time_invariant else T, M, M, device="mps")
-    zi = torch.zeros(B, M, device="mps")
-    x = torch.zeros(B, T, M, device="mps")
-    with pytest.raises(NotImplementedError, match="Metal kernels take M = 1"):
+@pytest.mark.parametrize("dtype, M", [(torch.float32, 129), (torch.complex64, 65)])
+def test_mps_recurrence_rejects_m_above_128(time_invariant: bool, dtype: torch.dtype, M: int):
+    B, T = 2, 5
+    A = torch.zeros(1, 1 if time_invariant else T, M, M, dtype=dtype, device="mps")
+    zi = torch.zeros(B, M, dtype=dtype, device="mps")
+    x = torch.zeros(B, T, M, dtype=dtype, device="mps")
+    with pytest.raises(NotImplementedError, match="Metal kernels take M up to 128"):
         recurrence(A, zi, x)
+
+
+def _mps_matrix_args(op: str, B: int, T: int, M: int, dtype=torch.float32):
+    A = torch.zeros(*((M, M) if op.startswith("lti_") else (T, M, M)), dtype=dtype, device="mps")
+    return (
+        A,
+        torch.zeros(B, M, dtype=dtype, device="mps"),
+        torch.zeros(B, T, M, dtype=dtype, device="mps"),
+    )
+
+
+@_MPS
+@pytest.mark.parametrize("order", [2, 3])
+@pytest.mark.parametrize("time_invariant", [True, False])
+@pytest.mark.parametrize("batched", [True, False])
+def test_mps_recur_of_order(order: int, time_invariant: bool, batched: bool):
+    B, T = 3, 200
+    op = _MPS_OPS[f"{'lti_' if time_invariant else ''}recur{order}"]
+    gen = torch.Generator().manual_seed(order)
+    a_shape = ((B,) if batched else ()) + (() if time_invariant else (T,)) + (order, order)
+    A = torch.randn(a_shape, generator=gen)
+    A = A / torch.linalg.matrix_norm(A, ord=2, keepdim=True) * 0.97
+    zi, x = torch.randn(B, order, generator=gen), torch.randn(B, T, order, generator=gen)
+    expected = op(A.double(), zi.double(), x.double())
+    actual = op(A.to("mps"), zi.to("mps"), x.to("mps"))
+    torch.testing.assert_close(actual.cpu().double(), expected, rtol=1e-5, atol=1e-5)
+
+
+@_MPS
+@pytest.mark.parametrize(
+    "op, dtype, M, match",
+    [
+        (op, dtype, M, match)
+        for op in ("lti_recurN", "recurN")
+        for dtype, M, match in [
+            (torch.int64, 3, "takes float32, float16, bfloat16 and complex64"),
+            (torch.float32, 129, "takes M up to 128 .*, got 129"),
+            (torch.complex64, 65, "takes M up to 128 .*, got 65"),
+        ]
+    ]
+    + [
+        (
+            f"{prefix}recur{order}",
+            torch.float32,
+            order + 1,
+            rf"x must be of shape \(B, T, {order}\)",
+        )
+        for prefix in ("lti_", "")
+        for order in (2, 3)
+    ],
+)
+def test_mps_recur_rejects(op: str, dtype: torch.dtype, M: int, match: str):
+    with pytest.raises(RuntimeError, match=match):
+        _MPS_OPS[op](*_mps_matrix_args(op, 2, 5, M, dtype))
+
+
+@_MPS
+@pytest.mark.parametrize("op", ["lti_recurN", "recurN"])
+@pytest.mark.parametrize("B, T", [(0, 5), (2, 0), (0, 0)])
+def test_mps_recur_n_empty(op: str, B: int, T: int):
+    out = _MPS_OPS[op](*_mps_matrix_args(op, B, T, 3))
+    assert out.shape == (B, T, 3)
+    assert out.device.type == "mps"
 
 
 @_MPS

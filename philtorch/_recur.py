@@ -25,11 +25,12 @@ The forward pass runs the first kernel of ``_KERNELS`` that takes the input:
   M = 2 and 3 apply only while B * (T + 1) fits in an int. The Triton
   kernels of :mod:`philtorch._recur_kernels` take the rest, where they are
   faster, and the inputs past that size;
-* MPS: the Metal ``lti_recur`` and ``scan``, for M = 1, time-invariant and
-  time-varying, in float32, float16, bfloat16 and complex64.
+* MPS: the Metal kernels, in float32, float16, bfloat16 and complex64:
+  ``lti_recur`` and ``scan`` for M = 1, ``lti_recurN`` and ``recurN`` for M
+  up to 128 (64 complex).
 
 Every kernel but ``scan``, ``recur3``, ``lti_recur3`` and the Metal
-``lti_recur`` takes int64 too, so integer recurrences such as the Fibonacci
+kernels takes int64 too, so integer recurrences such as the Fibonacci
 numbers run exactly. Anything else raises: there is no fallback to PyTorch ops.
 """
 
@@ -84,21 +85,22 @@ _NATIVE_DTYPES = (
 )
 
 
-# The dtypes the Metal kernels take.
+# The dtypes the Metal kernels take, and their largest M, half that for
+# complex, as the Triton kernels'.
 _MPS_DTYPES = (torch.float32, torch.float16, torch.bfloat16, torch.complex64)
+_MPS_MAX_STATES = 128
+
+
+def _mps_takes(x: Tensor) -> bool:
+    most = _MPS_MAX_STATES // 2 if x.is_complex() else _MPS_MAX_STATES
+    return x.device.type == "mps" and x.dtype in _MPS_DTYPES and x.size(-1) <= most
 
 
 def _lti_recur_applies(A: Tensor, x: Tensor) -> bool:
-    device = x.device.type
     return (
         _time_invariant(A)
         and x.size(-1) == 1
-        and (
-            device in ("cpu", "cuda")
-            and _floating_or_int64(x)
-            or device == "mps"
-            and x.dtype in _MPS_DTYPES
-        )
+        and (x.device.type in ("cpu", "cuda") and _floating_or_int64(x) or _mps_takes(x))
     )
 
 
@@ -108,7 +110,7 @@ def _lti_recur(A: Tensor, zi: Tensor, x: Tensor) -> Tensor:
 
 
 def _lti_recurN_applies(A: Tensor, x: Tensor) -> bool:
-    return x.is_cpu and _time_invariant(A) and _floating_or_int64(x)
+    return _time_invariant(A) and (x.is_cpu and _floating_or_int64(x) or _mps_takes(x))
 
 
 def _lti_recurN(A: Tensor, zi: Tensor, x: Tensor) -> Tensor:
@@ -116,7 +118,7 @@ def _lti_recurN(A: Tensor, zi: Tensor, x: Tensor) -> Tensor:
 
 
 def _recurN_applies(A: Tensor, x: Tensor) -> bool:
-    return x.is_cpu and not _time_invariant(A) and _floating_or_int64(x)
+    return not _time_invariant(A) and (x.is_cpu and _floating_or_int64(x) or _mps_takes(x))
 
 
 def _recurN(A: Tensor, zi: Tensor, x: Tensor) -> Tensor:
@@ -151,12 +153,7 @@ def _scan_applies(A: Tensor, x: Tensor) -> bool:
     return (
         not _time_invariant(A)
         and x.size(-1) == 1
-        and (
-            x.is_cuda
-            and x.dtype in _SCAN_DTYPES
-            or x.device.type == "mps"
-            and x.dtype in _MPS_DTYPES
-        )
+        and (x.is_cuda and x.dtype in _SCAN_DTYPES or _mps_takes(x))
     )
 
 
@@ -258,7 +255,10 @@ def _forward(A: Tensor, zi: Tensor, x: Tensor) -> Tensor:
             most = _recur_kernels.MAX_STATES
             reason = f"; the Triton kernels take M up to {most} ({most // 2} complex)"
     elif x.device.type == "mps":  # pragma: no cover - MPS-only
-        reason = "; the Metal kernels take M = 1 in float32, float16, bfloat16 and complex64"
+        reason = (
+            f"; the Metal kernels take M up to {_MPS_MAX_STATES} ({_MPS_MAX_STATES // 2} "
+            "complex) in float32, float16, bfloat16 and complex64"
+        )
     raise NotImplementedError(
         f"no recurrence kernel for {kind} A with M = {x.size(-1)} in {x.dtype} "
         f"on {x.device.type}{reason}"
