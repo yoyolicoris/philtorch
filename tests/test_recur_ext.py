@@ -251,6 +251,29 @@ def _mps_recur_n_args(op: str, B: int, T: int, M: int, dtype=torch.float32):
 
 
 @_MPS
+@pytest.mark.parametrize("order", [2, 3])
+@pytest.mark.parametrize("time_invariant", [True, False])
+@pytest.mark.parametrize("batched", [True, False])
+def test_mps_recur_of_order(order: int, time_invariant: bool, batched: bool):
+    # recur2, lti_recur2, recur3 and lti_recur3 run the kernels of M states on
+    # MPS, as on CPU, and take their order of states only.
+    B, T = 3, 200
+    name = f"{'lti_' if time_invariant else ''}recur{order}"
+    op = getattr(torch.ops.philtorch, name)
+    gen = torch.Generator().manual_seed(order)
+    a_shape = ((B,) if batched else ()) + (() if time_invariant else (T,)) + (order, order)
+    A = torch.randn(a_shape, generator=gen)
+    A = A / torch.linalg.matrix_norm(A, ord=2, keepdim=True) * 0.97
+    zi, x = torch.randn(B, order, generator=gen), torch.randn(B, T, order, generator=gen)
+    expected = op(A.double(), zi.double(), x.double())
+    actual = op(A.to("mps"), zi.to("mps"), x.to("mps"))
+    torch.testing.assert_close(actual.cpu().double(), expected, rtol=1e-5, atol=1e-5)
+    wrong = order + 1
+    with pytest.raises(RuntimeError, match=f"x must be of shape \\(B, T, {order}\\)"):
+        op(*_mps_recur_n_args("lti_recurN" if time_invariant else "recurN", B, 5, wrong))
+
+
+@_MPS
 @pytest.mark.parametrize("op", ["lti_recurN", "recurN"])
 def test_mps_recur_n_rejects_m_above_32(op: str):
     with pytest.raises(RuntimeError, match="MPS recurrence takes M up to 32, got 33"):

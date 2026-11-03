@@ -193,10 +193,46 @@ Tensor lti_recurN_mps(const Tensor &A, const Tensor &zi, const Tensor &x)
                      torch::stable::contiguous(x));
 }
 
+// recur2's, lti_recur2's, recur3's and lti_recur3's MPS kernels: those of M
+// states, taking the order of their name only, as their CUDA kernels and
+// fakes do.
+Tensor of_order(int64_t order,
+                Tensor (*run)(const Tensor &, const Tensor &, const Tensor &),
+                const Tensor &A, const Tensor &zi, const Tensor &x)
+{
+    STD_TORCH_CHECK(x.dim() == 3 && x.size(2) == order,
+                    "x must be of shape (B, T, ", order, ")");
+    return run(A, zi, x);
+}
+
+Tensor recur2_mps(const Tensor &A, const Tensor &zi, const Tensor &x)
+{
+    return of_order(2, recurN_mps, A, zi, x);
+}
+
+Tensor lti_recur2_mps(const Tensor &A, const Tensor &zi, const Tensor &x)
+{
+    return of_order(2, lti_recurN_mps, A, zi, x);
+}
+
+Tensor recur3_mps(const Tensor &A, const Tensor &zi, const Tensor &x)
+{
+    return of_order(3, recurN_mps, A, zi, x);
+}
+
+Tensor lti_recur3_mps(const Tensor &A, const Tensor &zi, const Tensor &x)
+{
+    return of_order(3, lti_recurN_mps, A, zi, x);
+}
+
 } // namespace
 
 STABLE_TORCH_LIBRARY_IMPL(philtorch, MPS, m)
 {
     m.impl("recurN", TORCH_BOX(&recurN_mps));
     m.impl("lti_recurN", TORCH_BOX(&lti_recurN_mps));
+    m.impl("recur2", TORCH_BOX(&recur2_mps));
+    m.impl("lti_recur2", TORCH_BOX(&lti_recur2_mps));
+    m.impl("recur3", TORCH_BOX(&recur3_mps));
+    m.impl("lti_recur3", TORCH_BOX(&lti_recur3_mps));
 }

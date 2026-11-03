@@ -26,7 +26,7 @@ One three-pass design serves every input: reduce each tile, scan the tile totals
 | [`mps_common.metal`](mps_common.metal) | What the Metal kernels share, compiled at the head of each shader: the SIMD width, the accumulation types and complex products. |
 | [`scalar_recur_mps.mm`](scalar_recur_mps.mm) | MPS host code of `lti_recur` and `scan`, on torch's stable ABI and Metal C shim. |
 | [`scalar_recur_mps.metal`](scalar_recur_mps.metal) | Their Metal kernels, embedded in the extension at build time. |
-| [`recur_mps.mm`](recur_mps.mm) | MPS host code of `lti_recurN` and `recurN`, M up to 32. |
+| [`recur_mps.mm`](recur_mps.mm) | MPS host code of `lti_recurN` and `recurN`, M up to 32, which `lti_recur2`, `recur2`, `lti_recur3` and `recur3` run too. |
 | [`recur_mps.metal`](recur_mps.metal) | Their Metal kernels, compiled once per state size and dtype. |
 | [`../_ops.py`](../_ops.py) | Registers fake implementations and autograd for the recurrence ops. |
 | [`../_recur.py`](../_recur.py) | Sends recurrences on MPS to `lti_recur` or `scan` for M = 1, and to `lti_recurN` or `recurN` for M up to 32. |
