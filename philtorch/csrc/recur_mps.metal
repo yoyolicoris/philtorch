@@ -50,29 +50,19 @@ inline Lane lane_of(uint index, uint lane)
     return {index / SIMD_WIDTH * VECTORS + lane / LANES, lane % LANES};
 }
 
-// Column j of a step's matrix, padded to LANES rows, and input j if ADD; a
-// lane past M reads zeros, from state M - 1's addresses, which it holds.
-template <bool ADD> struct Column
+// Lane j's product of row `row` of a step's matrix, whose column j is at m,
+// by its state h: zero for a row or a lane past M, which reads the matrix's
+// last row, so that no address leaves it.
+inline A product(const device T *m, uint row, A h, Lane l)
 {
-    A m[LANES];
-    A x;
-};
-
-template <bool ADD>
-inline Column<ADD> load_column(const device T *m, const device T *x, Lane l)
-{
-    Column<ADD> c;
-    const bool live = l.state < M;
-    for (uint q = 0; q < LANES; ++q)
-        c.m[q] = live && q < M ? A(m[q * M]) : A(0.0f);
-    c.x = ADD && live ? A(*x) : A(0.0f);
-    return c;
+    const A a = A(m[min(row, M - 1) * M]);
+    return l.state < M && row < M ? mul(a, h) : A(0.0f);
 }
 
-// A reduce-scatter over the vector's lanes, from v, each lane's products of
-// its column by its state: each round halves the rows a lane holds, keeping
-// the half its state's bit selects and adding its partner's, so that v[0]
-// ends as the sum over the lanes of row `state`'s products.
+// A reduce-scatter over the vector's lanes: each round halves the rows a
+// lane holds, keeping the half its state's bit selects and adding its
+// partner's, so that v[0] ends as the sum over the lanes of row `state`'s
+// products.
 template <uint SPAN> inline void butterfly(thread A *v, uint state)
 {
     const bool upper = state & SPAN;
@@ -86,16 +76,27 @@ template <uint SPAN> inline void butterfly(thread A *v, uint state)
 }
 template <> inline void butterfly<0>(thread A *, uint) {}
 
-// The vector's state after a step: the matrix by the states, then x, which,
-// added to a partial sum, could be rounded away before cancelling products
-// meet. Every lane of the vector calls it.
-template <bool ADD> inline A step(Column<ADD> column, A h, Lane l)
+constant constexpr uint HALF = LANES / 2;
+
+// The vector's state after a step, whose matrix's column j is at m and input
+// j at x, added if ADD: the matrix by the states, summed over the lanes by
+// the butterfly, then x, which, added to a partial sum, could be rounded away
+// before cancelling products meet. The butterfly's first round is taken as
+// the products are formed, so that a lane holds half of them at most: with
+// all of them, complex64 at M = 32 spilled its registers and ran six times
+// as long. Every lane of the vector calls it.
+template <bool ADD>
+inline A step(const device T *m, const device T *x, A h, Lane l)
 {
-    A v[LANES];
-    for (uint q = 0; q < LANES; ++q)
-        v[q] = mul(column.m[q], h);
-    butterfly<LANES / 2>(v, l.state);
-    return v[0] + column.x;
+    A v[HALF > 0 ? HALF : 1];
+    if (HALF == 0)
+        v[0] = product(m, 0, h, l);
+    const uint kept = l.state & HALF;
+    for (uint q = 0; q < HALF; ++q)
+        v[q] = product(m, q + kept, h, l) +
+               simd_shuffle_xor(product(m, q + HALF - kept, h, l), ushort(HALF));
+    butterfly<HALF / 2>(v, l.state);
+    return ADD && l.state < M ? v[0] + A(*x) : v[0];
 }
 
 // The vector's state through steps first to last - 1 of a sequence, whose
@@ -113,7 +114,7 @@ inline A run_steps(const device T *m, long stride_t, const device T *x,
         out += long(first) * M + state;
     for (uint t = first; t < last; ++t)
     {
-        h = step(load_column<ADD>(m, x, l), h, l);
+        h = step<ADD>(m, x, h, l);
         m += stride_t;
         x += M;
         if (WRITE)
