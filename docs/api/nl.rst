@@ -5,8 +5,8 @@ philtorch.nl
 
 .. currentmodule:: philtorch.nl
 
-Non-linear solvers
-------------------
+Solvers
+-------
 
 .. autosummary::
    :toctree: generated

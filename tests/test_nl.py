@@ -102,7 +102,7 @@ def test_newton_solve_batch_independence(is_scalar: bool):
     init = torch.randn(*shape[:1], *shape[2:], dtype=torch.float64)
     x[1, 2] = float("nan")
     y_ref = _sequential(step_fn, x, init, A)
-    with pytest.warns(RuntimeWarning, match="non-finite step or residual") as w:
+    with pytest.warns(RuntimeWarning, match="non-finite residual") as w:
         y, iters = newton_solve(step_fn, x, init, params=(A,))
     assert len(w) == 1
     assert "1 of 3 batch elements" in str(w[0].message)
@@ -114,11 +114,12 @@ def test_newton_solve_batch_independence(is_scalar: bool):
 
 
 @pytest.mark.parametrize("is_scalar", [True, False])
-def test_newton_solve_gradcheck(is_scalar: bool):
-    step_fn, _, x, init, params = _tanh_problem(is_scalar, requires_grad=True, T=3)
+@pytest.mark.parametrize("use_fprime", [False, True])
+def test_newton_solve_gradcheck(is_scalar: bool, use_fprime: bool):
+    step_fn, fprime, x, init, params = _tanh_problem(is_scalar, requires_grad=True, T=3)
 
     def func_to_check(init_, x_, *p_):
-        return newton_solve(step_fn, x_, init_, params=p_)[0]
+        return newton_solve(step_fn, x_, init_, params=p_, fprime=fprime if use_fprime else None)[0]
 
     args = (init, x, *params)
     assert torch.autograd.gradcheck(func_to_check, args, eps=1e-6, atol=1e-4)
@@ -220,18 +221,40 @@ def test_newton_solve_divergence():
     torch.manual_seed(0)
     x = torch.randn(B, T, dtype=torch.float64)
     init = torch.randn(B, dtype=torch.float64)
-    with pytest.warns(RuntimeWarning, match="non-finite step") as w:
+    with pytest.warns(RuntimeWarning, match="non-finite residual") as w:
         _, iters = newton_solve(lambda y, x: torch.full_like(y, float("nan")), x, init)
     assert iters.tolist() == [0, 0]
     assert w[0].filename == __file__
 
-    with pytest.warns(RuntimeWarning, match="non-finite step"):
-        newton_solve(
-            lambda y, x: torch.tanh(y + x),
-            x,
-            init,
-            fprime=lambda y, x: torch.full_like(y, float("inf")),
+
+def test_newton_solve_non_finite_step_is_rejected():
+    B, T = 2, 12
+    torch.manual_seed(0)
+
+    def step_fn(y, x):
+        return torch.tanh(0.5 * y + x)
+
+    # The Jacobian is infinite for row 0 (positive x) only: its steps are rejected,
+    # so it gains one exact sample per step, while row 1 takes normal steps
+    def fprime(y, x):
+        return torch.where(x > 0, float("inf"), 0.5 * (1.0 - step_fn(y, x).square()))
+
+    x = torch.rand(B, T, dtype=torch.float64) * torch.tensor([[1.0], [-1.0]], dtype=torch.float64)
+    init = torch.randn(B, dtype=torch.float64)
+    y_ref = _sequential(step_fn, x, init)
+    with warnings.catch_warnings():
+        warnings.simplefilter("error")
+        y, iters = newton_solve(step_fn, x, init, fprime=fprime)
+    assert torch.allclose(y, y_ref, atol=1e-10, rtol=1e-10)
+    assert iters[0] == T and iters[1] < T
+
+    with warnings.catch_warnings():
+        warnings.simplefilter("error")
+        y, iters = newton_solve(
+            step_fn, x, init, fprime=lambda y, x: torch.full_like(y, float("inf"))
         )
+    assert torch.allclose(y, y_ref, atol=1e-10, rtol=1e-10)
+    assert iters.tolist() == [T, T]
 
 
 def test_newton_solve_max_iter():
@@ -316,23 +339,28 @@ def test_newton_solve_invalid_arguments():
         newton_solve(step_fn, torch.zeros(2, 4), torch.zeros(2), y0=torch.zeros(2, 5))
     with pytest.raises(ValueError, match="params must be a tuple of Tensors"):
         newton_solve(step_fn, torch.zeros(2, 4), torch.zeros(2), params=(0.5,))
+    with pytest.raises(ValueError, match="params must be a tuple of Tensors"):
+        newton_solve(step_fn, torch.zeros(2, 4), torch.zeros(2), params=torch.zeros(2))
 
 
 def test_newton_solve_rtol_scales_with_state_size():
-    B, T, M = 2, 2000, 32
+    B, T, M = 2, 50, 4
+    eps = torch.finfo(torch.float64).eps
     torch.manual_seed(0)
-    W = torch.randn(M, M) / M**0.5
+    A = 0.01 * torch.randn(M, M, dtype=torch.float64)
 
     def step_fn(y, x):
-        return torch.tanh(y @ W.T + x)
+        return y @ A.T + x
 
-    x = torch.randn(B, T, M)
-    init = torch.randn(B, M)
-    with warnings.catch_warnings():
-        warnings.simplefilter("error")
-        y, iters = newton_solve(step_fn, x, init)
-    assert (iters < 100).all()
-    assert torch.allclose(y, _sequential(step_fn, x, init), atol=1e-5)
+    x = torch.randn(B, T, M, dtype=torch.float64) + 2.0
+    init = torch.randn(B, M, dtype=torch.float64)
+    # A guess off by 16 eps: within the default 8 M eps, not within 8 eps
+    y0 = _sequential(step_fn, x, init) * (1 + 16 * eps)
+    y, iters = newton_solve(step_fn, x, init, y0=y0)
+    assert iters.tolist() == [0, 0]
+    assert torch.equal(y, y0)
+    _, iters = newton_solve(step_fn, x, init, y0=y0, rtol=8 * eps)
+    assert (iters > 0).all()
 
 
 def _per_element_problem():

@@ -1,4 +1,8 @@
-"""Non-linear recurrent sequence solvers."""
+"""Non-linear operators.
+
+:func:`newton_solve` solves a non-linear recurrence over a whole sequence in
+parallel.
+"""
 
 import warnings
 from collections.abc import Callable
@@ -65,6 +69,7 @@ def _norm(res: Tensor) -> Tensor:
     return torch.linalg.vector_norm(res.flatten(1), dim=1)
 
 
+@torch.compiler.disable
 def _solve(options, init, x, params):
     func, fprime, y0, max_iter, max_halvings, atol, rtol, recur_kwargs, is_tuple_x, _ = options
     B, T = init.size(0), (x[0] if is_tuple_x else x).size(1)
@@ -89,12 +94,11 @@ def _solve(options, init, x, params):
         return func(ys[:, s:-1], inputs_from(s), *params) - ys[:, s + 1 :]
 
     iters = torch.zeros(B, dtype=torch.long, device=y.device)
-    step_failed = torch.zeros(B, dtype=torch.bool, device=y.device)
     n_diverged = 0
     res = residual(0)
     converged = _converged(res, ys[:, 1:], atol, rtol)
     for i in range(max_iter + 1):  # pragma: no branch - the last pass breaks
-        diverged = ~_finite(res) | step_failed
+        diverged = ~_finite(res)
         done = diverged | converged
         n_diverged += int(diverged.sum())
         if done.any():
@@ -117,18 +121,18 @@ def _solve(options, init, x, params):
         jac = _jacobian(func, ys[:, i + 1 : -1], inputs_from(i + 1), params, fprime)
         delta = recur_fn(jac, res[:, 0], res[:, 1:], **recur_kwargs)
         ys[:, i + 1] += res[:, 0]
-        step_failed = ~_finite(delta)
-        iters[rows] += ~step_failed
+        iters[rows] += 1
+        # A step that is not finite is rejected, as a failed line search is
         per_row = (rows.numel(),) + (1,) * (y.dim() - 1)
-        if step_failed.any():
-            delta = torch.where(step_failed.view(per_row), 0.0, delta)
+        pending = _finite(delta)
+        if not pending.all():
+            delta = torch.where(pending.view(per_row), delta, 0.0)
 
         # Halve the step of each element until its residual norm decreases;
         # the norm before the step includes y[i + 1]'s, now 0
         base = ys[:, i + 2 :].clone()
         norm = _norm(res)
         t = torch.ones(per_row, dtype=y.dtype, device=y.device)
-        pending = ~step_failed
         for _ in range(max_halvings + 1):
             torch.addcmul(base, t, delta, out=ys[:, i + 2 :])
             res = residual(i + 1)
@@ -263,19 +267,23 @@ def newton_solve(
     needs far fewer. A step is halved until it decreases the norm of the
     residual :math:`f(y[t - 1], x[t]; \theta) - y[t]`. The gradients come
     from one more linear recurrence, backward in time, and are themselves
-    differentiable.
+    differentiable. They are those of the exact solution, taken at the
+    returned trajectory, so they hold for the elements that converged.
+
+    :attr:`init`, :attr:`x` and :attr:`params` are real floating-point tensors
+    with the dtype and device of :attr:`init`.
 
     Batch elements are solved independently. One is done when it converges,
     once :math:`|f(y[t - 1], x[t]; \theta) - y[t]| \le \text{atol} +
     \text{rtol}\, |y[t]|` for every :math:`t`, or diverges, when its
-    residual or step is not finite. A ``RuntimeWarning`` reports the
+    residual is not finite. A ``RuntimeWarning`` reports the
     elements that diverged or did not converge within :attr:`max_iter`
     steps; they return their last iterate.
 
     Args:
         func (Callable): the step :math:`f`, called as
-            ``func(y_prev, x_prev, *params)`` on whole sequences or their
-            ends, with ``y_prev`` holding :math:`y[t - 1]` and ``x_prev`` the
+            ``func(y_prev, x_t, *params)`` on whole sequences or their
+            ends, with ``y_prev`` holding :math:`y[t - 1]` and ``x_t`` the
             matching :math:`x[t]`: :attr:`x` cut to :math:`(B, T', *)`, the
             leading dimensions of ``y_prev`` (a tuple stays a tuple). For a
             1-D :attr:`init`, it acts elementwise on ``y_prev`` of any shape.
@@ -322,20 +330,21 @@ def newton_solve(
 
     Raises:
         ValueError: if :attr:`max_iter` is not positive,
-            :attr:`max_halvings` is negative, :attr:`params` holds anything
-            but tensors, :attr:`init` is not 1-D or 2-D, a tensor of
+            :attr:`max_halvings` is negative, :attr:`params` is not a tuple of
+            tensors, :attr:`init` is not 1-D or 2-D, a tensor of
             :attr:`x` has fewer than 2 dimensions or a length :math:`T` of
-            0, the batch sizes or lengths of :attr:`x` and :attr:`init`
-            differ, or :attr:`y0` is not of the shape of the output.
+            0, the tensors of :attr:`x` differ in batch size or length,
+            :attr:`init`'s batch size differs from :attr:`x`'s, or
+            :attr:`y0` is not of the shape of the output.
 
     Example::
 
         >>> from philtorch.nl import newton_solve
         >>> step = lambda y, x: torch.tanh(0.5 * y + x)
-        >>> x = torch.full((1, 8), 0.5)
+        >>> x = torch.full((1, 6), 0.5)
         >>> y, steps = newton_solve(step, x, torch.zeros(1))
         >>> y
-        tensor([[0.4621, 0.6237, 0.6706, 0.6833, 0.6867, 0.6876, 0.6878, 0.6879]])
+        tensor([[0.4621, 0.6237, 0.6706, 0.6833, 0.6867, 0.6876]])
         >>> steps
         tensor([3])
 
@@ -372,7 +381,7 @@ def newton_solve(
         if y0.shape != expected_shape:
             raise ValueError(f"y0 must have shape {expected_shape}, got {y0.shape}")
 
-    if not all(isinstance(p, Tensor) for p in params):
+    if not isinstance(params, tuple) or not all(isinstance(p, Tensor) for p in params):
         raise ValueError("params must be a tuple of Tensors")
 
     all_tensors = x_tensors + tuple(params)
@@ -392,8 +401,7 @@ def newton_solve(
     B = init.size(0)
     if n_diverged:
         warnings.warn(
-            "newton_solve diverged (non-finite step or residual) in "
-            f"{n_diverged} of {B} batch elements",
+            f"newton_solve diverged (non-finite residual) in {n_diverged} of {B} batch elements",
             RuntimeWarning,
             stacklevel=2,
         )

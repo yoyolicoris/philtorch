@@ -7,6 +7,7 @@ from philtorch.poly import polydiv
 
 @pytest.mark.parametrize(("dividend", "divisor"), [(6, 3), (4, 4), (5, 1)])
 def test_polydiv_matches_numpy(dividend: int, divisor: int):
+    torch.manual_seed(0)
     u = torch.randn(3, dividend, dtype=torch.double)
     v = torch.randn(3, divisor, dtype=torch.double)
     q, r = polydiv(u, v)
