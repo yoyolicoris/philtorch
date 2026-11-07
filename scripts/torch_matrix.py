@@ -133,10 +133,11 @@ def legs(data, event, build_python):
         tests = [(entry, cuda) for entry in reversed(torch) for cuda in entry["cuda"]]
     else:  # one GPU test: the newest torch with its newest CUDA
         tests = [(newest, newest["cuda"][-1])]
-    # macOS runners are expensive: only pull requests and releases build a
-    # macOS wheel, and test the macOS and Windows ones.
+    # Every event builds the three CPU wheels, so dev pushes publish all of
+    # them to TestPyPI; only pull requests and releases test the macOS and
+    # Windows ones.
     full = event in ("pull_request", "release")
-    build_os = ["ubuntu-latest", "windows-latest"] + (["macos-latest"] if full else [])
+    build_os = ["ubuntu-latest", "windows-latest", "macos-latest"]
     test_os = ["ubuntu-latest"] + (["macos-latest", "windows-latest"] if full else [])
     return {
         "floor": floor["version"],

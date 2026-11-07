@@ -177,15 +177,13 @@ def test_legs_of_a_push_are_those_of_a_pull_request_but_for_the_cpu_tests():
 
 
 def test_legs_name_the_runners_of_each_event():
-    full = ["ubuntu-latest", "windows-latest", "macos-latest"]
-    for event in ("pull_request", "release"):
+    for event in ("pull_request", "release", "push", "workflow_dispatch"):
         legs = _legs(event)
-        assert legs["build_os"] == full
-        assert legs["test_os"] == ["ubuntu-latest", "macos-latest", "windows-latest"]
-    for event in ("push", "workflow_dispatch"):
-        legs = _legs(event)
-        assert legs["build_os"] == ["ubuntu-latest", "windows-latest"]
-        assert legs["test_os"] == ["ubuntu-latest"]
+        assert legs["build_os"] == ["ubuntu-latest", "windows-latest", "macos-latest"]
+        tested = event in ("pull_request", "release")
+        assert legs["test_os"] == (
+            ["ubuntu-latest", "macos-latest", "windows-latest"] if tested else ["ubuntu-latest"]
+        )
 
 
 def test_legs_of_a_release_test_every_torch_and_cuda_pair():
