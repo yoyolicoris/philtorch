@@ -114,8 +114,9 @@ def test_newton_solve_divergence():
     x = torch.full((B, T), 10.0, dtype=torch.float64)
     init = torch.full((B,), 10.0, dtype=torch.float64)
     with pytest.warns(RuntimeWarning, match="diverged"):
-        y, _ = newton_solve(step_fn, x, init, max_iter=3)
-        assert torch.isnan(y).any()
+        y, iters = newton_solve(step_fn, x, init, max_iter=3)
+        assert iters == 3
+        assert y.shape == (B, T)
 
 
 def test_newton_solve_invalid_shapes():

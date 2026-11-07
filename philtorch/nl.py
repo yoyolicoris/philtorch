@@ -23,33 +23,36 @@ def _jacobian(
 ) -> Tensor:
     if fprime is not None:
         return fprime(y, x, *params)
+    create_graph = torch.is_grad_enabled()
     if y.dim() == 2:
         with torch.enable_grad():
+            y_in = y.detach().requires_grad_()
             return torch.autograd.grad(
-                func(y.requires_grad_(), x, *params).sum(), y, create_graph=True
+                func(y_in, x, *params).sum(), y_in, create_graph=create_graph
             )[0]
     return torch.autograd.functional.jacobian(
         lambda y_: func(y_, x, *params).sum((0, 1)),
         y,
-        create_graph=True,
+        create_graph=create_graph,
         vectorize=True,
     ).permute(1, 2, 0, 3)
 
 
 class _NewtonSolve(Function):
     @staticmethod
-    def forward(config, init, *all_tensors):
-        (
-            func,
-            fprime,
-            y0,
-            max_iter,
-            max_halvings,
-            atol,
-            rtol,
-            recur_kwargs,
-            num_x,
-        ) = config
+    def forward(
+        func,
+        fprime,
+        y0,
+        max_iter,
+        max_halvings,
+        atol,
+        rtol,
+        recur_kwargs,
+        num_x,
+        init,
+        *all_tensors,
+    ):
         x = all_tensors[0] if num_x == 1 else all_tensors[:num_x]
         params = all_tensors[num_x:]
         x_prim = all_tensors[0]
@@ -96,12 +99,10 @@ class _NewtonSolve(Function):
 
             if not torch.isfinite(delta).all():
                 warnings.warn(
-                    "newton_solve diverged (non-finite step or residual); "
-                    "the returned state is set to NaN",
+                    "newton_solve diverged (non-finite step or residual)",
                     RuntimeWarning,
                     stacklevel=2,
                 )
-                y[:, 1:] = float("nan")
                 break
 
             base = y[:, i + 2 :].clone()
@@ -116,46 +117,41 @@ class _NewtonSolve(Function):
                     or (cand_res.abs() <= atol_eff + rtol_eff * cand.abs()).all()
                 ):
                     break
-                t /= 2.0
+                t *= 0.5
         else:
             warnings.warn(
-                f"newton_solve diverged (did not converge in {max_iter} iterations); "
-                "the returned state is set to NaN",
+                f"newton_solve diverged (did not converge in {max_iter} iterations)",
                 RuntimeWarning,
                 stacklevel=2,
             )
-            y[:, 1:] = float("nan")
 
         return y[:, 1:], i + 1
 
     @staticmethod
     def setup_context(ctx, inputs, outputs):
-        config, init, *all_tensors = inputs
+        func, fprime, *_, recur_kwargs, num_x, init = inputs[:10]
         ctx.set_materialize_grads(False)
-        ctx.config = config
-        ctx.save_for_backward(outputs[0], init, *all_tensors)
+        ctx.func = func
+        ctx.fprime = fprime
+        ctx.recur_kwargs = recur_kwargs
+        ctx.num_x = num_x
+        ctx.save_for_backward(outputs[0], init, *inputs[10:])
 
     @staticmethod
     def backward(ctx, grad_y, _):
         if grad_y is None:
-            return (None,) * (2 + len(ctx.saved_tensors) - 2)
+            return (None,) * (10 + len(ctx.saved_tensors) - 2)
 
-        needs_init = ctx.needs_input_grad[1]
-        needs_all = ctx.needs_input_grad[2:]
+        needs_init = ctx.needs_input_grad[9]
+        needs_all = ctx.needs_input_grad[10:]
         if not (needs_init or any(needs_all)):
-            return (None,) * (2 + len(needs_all))
+            return (None,) * (10 + len(needs_all))
 
-        (
-            func,
-            fprime,
-            _,
-            _,
-            _,
-            _,
-            _,
-            recur_kwargs,
-            num_x,
-        ) = ctx.config
+        func = ctx.func
+        fprime = ctx.fprime
+        recur_kwargs = ctx.recur_kwargs
+        num_x = ctx.num_x
+
         y, init, *all_tensors = ctx.saved_tensors
         x = all_tensors[0] if num_x == 1 else all_tensors[:num_x]
         params = all_tensors[num_x:]
@@ -187,21 +183,18 @@ class _NewtonSolve(Function):
             )
 
         if any(needs_all):
-            diff_tensors = [t.detach().requires_grad_() for t in all_tensors]
-            x_diff = diff_tensors[0] if num_x == 1 else tuple(diff_tensors[:num_x])
-            with torch.enable_grad():
-                out = func(y_prev, x_diff, *diff_tensors[num_x:])
-                grads = torch.autograd.grad(
-                    out,
-                    diff_tensors,
-                    grad_outputs=lam,
-                    create_graph=True,
-                    allow_unused=True,
-                )
+
+            def step_eval(*diff_all):
+                x_in = diff_all[0] if num_x == 1 else tuple(diff_all[:num_x])
+                return func(y_prev, x_in, *diff_all[num_x:])
+
+            _, grads = torch.autograd.functional.vjp(
+                step_eval, tuple(all_tensors), v=lam, create_graph=torch.is_grad_enabled()
+            )
         else:
             grads = (None,) * len(all_tensors)
 
-        return None, grad_init, *grads
+        return (None,) * 9 + (grad_init,) + tuple(grads)
 
 
 def newton_solve(
@@ -288,7 +281,8 @@ def newton_solve(
             f"Batch size of init ({init.size(0)}) must match x ({x_tensors[0].size(0)})"
         )
 
-    config = (
+    all_tensors = x_tensors + tuple(params)
+    return _NewtonSolve.apply(
         func,
         fprime,
         y0,
@@ -298,6 +292,6 @@ def newton_solve(
         rtol,
         recur_kwargs,
         len(x_tensors),
+        init,
+        *all_tensors,
     )
-    all_tensors = x_tensors + tuple(params)
-    return _NewtonSolve.apply(config, init, *all_tensors)
