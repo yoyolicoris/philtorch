@@ -108,11 +108,12 @@ Package versions come from Git tags through [`setuptools_scm`](https://setuptool
 ### Development version
 
 Development builds from `dev` are published to TestPyPI. TestPyPI hosts no
-PyTorch, so install it from PyPI first, then PhilTorch alone from TestPyPI:
+current PyTorch, so install it from PyPI first, then PhilTorch alone from
+TestPyPI, as a wheel:
 
 ```bash
 python -m pip install "torch>=2.12"
-python -m pip install --pre --no-deps -i https://test.pypi.org/simple/ philtorch
+python -m pip install -U --pre --no-deps --only-binary=philtorch -i https://test.pypi.org/simple/ philtorch
 ```
 
 <!-- docs-install-end -->
