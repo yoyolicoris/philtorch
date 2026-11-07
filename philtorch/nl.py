@@ -123,14 +123,16 @@ class _NewtonSolve(Function):
                 break
 
             # y[i + 1] follows from the exact y[i]; the last one needs no step
-            ys[:, i + 1] += res[:, 0]
             if i == T - 1:
+                ys[:, T] += res[:, 0]
                 iters[rows] += 1
                 n_unconverged = 0
                 break
 
+            # Linearize about the current trajectory before y[i + 1] moves
             jac = _jacobian(func, ys[:, i + 1 : -1], inputs_from(i + 1), ps, fprime)
             delta = recur_fn(jac, res[:, 0], res[:, 1:], **recur_kwargs)
+            ys[:, i + 1] += res[:, 0]
             step_failed = ~_finite(delta)
             iters[rows] += ~step_failed
             per_row = (rows.numel(),) + (1,) * (y.dim() - 1)

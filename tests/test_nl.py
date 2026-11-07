@@ -468,3 +468,27 @@ def test_newton_solve_batched_params_gradcheck():
         return newton_solve(step_fn, (x1, x2), init_, params=p_)[0]
 
     assert torch.autograd.gradcheck(func_to_check, (init, *x, *params), eps=1e-6, atol=1e-4)
+
+
+def test_newton_solve_one_step_matches_newton():
+    # One step linearizes f about the initial guess: delta[t] = J[t] delta[t-1] + r[t]
+    B, T = 2, 6
+    torch.manual_seed(0)
+
+    def step_fn(y, x):
+        return torch.tanh(2.0 * y + x)
+
+    x = torch.randn(B, T, dtype=torch.float64)
+    init = torch.randn(B, dtype=torch.float64)
+    # Near the solution, so that the full step is accepted
+    y0 = _sequential(step_fn, x, init) + 0.05 * torch.randn(B, T, dtype=torch.float64)
+    y_prev = torch.cat([init[:, None], y0[:, :-1]], 1)
+    r = step_fn(y_prev, x) - y0
+    jac = 2.0 * (1.0 - step_fn(y_prev, x).square())
+    delta = torch.empty_like(r)
+    delta[:, 0] = r[:, 0]
+    for t in range(1, T):
+        delta[:, t] = jac[:, t] * delta[:, t - 1] + r[:, t]
+    with pytest.warns(RuntimeWarning, match="did not converge in 1 iterations"):
+        y, _ = newton_solve(step_fn, x, init, y0=y0, max_iter=1, max_halvings=0)
+    assert torch.allclose(y, y0 + delta, atol=1e-12, rtol=1e-12)
