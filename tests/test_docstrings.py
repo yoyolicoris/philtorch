@@ -14,6 +14,7 @@ import philtorch.lti.interp
 import philtorch.lti.recur
 import philtorch.lti.ssm
 import philtorch.mat
+import philtorch.nl
 import philtorch.poly
 import philtorch.utils
 
@@ -31,6 +32,7 @@ MODULES = [
     philtorch.lpv.filtering,
     philtorch.lpv.recur,
     philtorch.lpv.ssm,
+    philtorch.nl,
     philtorch.estimation._em,
     philtorch.estimation.kalman,
 ]
