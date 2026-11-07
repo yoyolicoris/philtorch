@@ -108,9 +108,10 @@ class _NewtonSolve(Function):
         step_failed = torch.zeros(B, dtype=torch.bool, device=y.device)
         n_diverged = 0
         res = residual(0)
+        converged = _converged(res, ys[:, 1:], atol, rtol)
         for i in range(max_iter + 1):  # pragma: no branch - the last pass breaks
             diverged = ~_finite(res) | step_failed
-            done = diverged | _converged(res, ys[:, i + 1 :], atol, rtol)
+            done = diverged | converged
             n_diverged += int(diverged.sum())
             if done.any():
                 if ys is not y:
@@ -136,24 +137,28 @@ class _NewtonSolve(Function):
             step_failed = ~_finite(delta)
             iters[rows] += ~step_failed
             per_row = (rows.numel(),) + (1,) * (y.dim() - 1)
-            delta = torch.where(step_failed.view(per_row), 0.0, delta)
+            if step_failed.any():
+                delta = torch.where(step_failed.view(per_row), 0.0, delta)
 
-            # Halve the step of each element until its residual norm decreases
+            # Halve the step of each element until its residual norm decreases;
+            # the norm before the step includes y[i + 1]'s, now 0
             base = ys[:, i + 2 :].clone()
-            norm = _norm(res[:, 1:])
+            norm = _norm(res)
             t = torch.ones(per_row, dtype=y.dtype, device=y.device)
             pending = ~step_failed
             for _ in range(max_halvings + 1):
-                ys[:, i + 2 :] = base + t * delta
+                torch.addcmul(base, t, delta, out=ys[:, i + 2 :])
                 res = residual(i + 1)
-                pending &= ~((_norm(res) < norm) | _converged(res, ys[:, i + 2 :], atol, rtol))
+                converged = _converged(res, ys[:, i + 2 :], atol, rtol)
+                pending &= ~((_norm(res) < norm) | converged)
                 if not pending.any():
                     break
                 t = torch.where(pending.view(per_row), t * 0.5, t)
             else:
                 t = torch.where(pending.view(per_row), 0.0, t)
-                ys[:, i + 2 :] = base + t * delta
+                torch.addcmul(base, t, delta, out=ys[:, i + 2 :])
                 res = residual(i + 1)
+                converged = _converged(res, ys[:, i + 2 :], atol, rtol)
 
         if ys is not y:
             y[rows] = ys
