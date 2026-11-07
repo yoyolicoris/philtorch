@@ -4,7 +4,6 @@ import warnings
 from collections.abc import Callable
 
 import torch
-import torch.nn.functional as F
 from torch import Tensor
 from torch.autograd import Function
 
@@ -25,13 +24,13 @@ def _jacobian(
         return fprime(y, x, *params)
     create_graph = torch.is_grad_enabled()
     with torch.inference_mode(False):
-        y_in = y.clone() if y.is_inference() else y
-        x_in = (
-            tuple(xi.clone() if xi.is_inference() else xi for xi in x)
-            if isinstance(x, tuple)
-            else (x.clone() if x.is_inference() else x)
-        )
-        params_in = tuple(p.clone() if p.is_inference() else p for p in params)
+
+        def usable(t):
+            return t.clone() if t.is_inference() else t
+
+        y_in = usable(y)
+        x_in = tuple(usable(xi) for xi in x) if isinstance(x, tuple) else usable(x)
+        params_in = tuple(usable(p) for p in params)
         if y.dim() == 2:
             with torch.enable_grad():
                 y_diff = y_in if y_in.requires_grad else y_in.detach().requires_grad_()
@@ -195,47 +194,43 @@ class _NewtonSolve(Function):
         y, init, *all_tensors = ctx.saved_tensors
         x = tuple(all_tensors[:num_x]) if is_tuple_x else all_tensors[0]
         params = all_tensors[num_x:]
-        B = init.size(0)
-
         is_scalar = init.dim() == 1
         y_prev = torch.cat([init.unsqueeze(1), y[:, :-1]], dim=1)
 
         jac = _jacobian(func, y_prev, x, params, fprime)
 
-        g_rev = grad_y.flip(1)
-        if is_scalar:
-            a_rev = F.pad(jac.flip(1)[:, :-1], (1, 0))
-            lam = linear_recurrence(a_rev, g_rev.new_zeros(B), g_rev, **recur_kwargs).flip(1)
-            grad_init = (lam[:, 0] * jac[:, 0]).reshape_as(init) if needs_init else None
-        else:
-            jac_rev = jac.flip(1).transpose(-1, -2)
-            M = init.size(-1)
-            a_rev = torch.cat([jac_rev.new_zeros(B, 1, M, M), jac_rev[:, :-1]], dim=1)
-            lam = state_space_recursion(a_rev, g_rev.new_zeros(B, M), g_rev, **recur_kwargs).flip(1)
+        a_rev = jac[:, 1:].flip(1)
+        if not is_scalar:
+            a_rev = a_rev.mT
+        a_rev = torch.cat([torch.zeros_like(jac[:, :1]), a_rev], dim=1)
+        recur = linear_recurrence if is_scalar else state_space_recursion
+        lam = recur(a_rev, torch.zeros_like(init), grad_y.flip(1), **recur_kwargs).flip(1)
+        grad_init = None
+        if needs_init:
             grad_init = (
-                (lam[:, 0].unsqueeze(1) @ jac[:, 0]).squeeze(1).reshape_as(init)
-                if needs_init
-                else None
+                lam[:, 0] * jac[:, 0]
+                if is_scalar
+                else (lam[:, 0].unsqueeze(1) @ jac[:, 0]).squeeze(1)
             )
 
         grads = [None] * len(all_tensors)
         diff_indices = [k for k, need in enumerate(needs_all) if need]
         if diff_indices:
-            diff_inputs = tuple(all_tensors[k] for k in diff_indices)
-
-            def step_eval(*diff_args):
-                full_args = list(all_tensors)
-                for idx, arg in zip(diff_indices, diff_args):
-                    full_args[idx] = arg
-                x_in = tuple(full_args[:num_x]) if is_tuple_x else full_args[0]
-                return func(y_prev, x_in, *full_args[num_x:])
-
-            _, diff_grads = torch.autograd.functional.vjp(
-                step_eval,
-                diff_inputs,
-                v=lam,
-                create_graph=torch.is_grad_enabled(),
-            )
+            create_graph = torch.is_grad_enabled()
+            with torch.enable_grad():
+                # Views, so that only the direct dependence on each input is
+                # differentiated, not the one through y_prev
+                args = list(all_tensors)
+                for k in diff_indices:
+                    args[k] = args[k].view_as(args[k])
+                out = func(y_prev, tuple(args[:num_x]) if is_tuple_x else args[0], *args[num_x:])
+                diff_grads = torch.autograd.grad(
+                    out,
+                    [args[k] for k in diff_indices],
+                    lam,
+                    create_graph=create_graph,
+                    allow_unused=True,
+                )
             for idx, g in zip(diff_indices, diff_grads):
                 grads[idx] = g
 
