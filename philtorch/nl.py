@@ -26,10 +26,17 @@ def _jacobian(
     create_graph = torch.is_grad_enabled()
     if y.dim() == 2:
         with torch.enable_grad():
-            y_in = y.detach().requires_grad_()
-            return torch.autograd.grad(
-                func(y_in, x, *params).sum(), y_in, create_graph=create_graph
-            )[0]
+            y_in = y if y.requires_grad else y.detach().requires_grad_()
+            out = func(y_in, x, *params)
+            if not out.requires_grad:
+                return torch.zeros_like(y)
+            grads = torch.autograd.grad(
+                out.sum(),
+                y_in,
+                create_graph=create_graph,
+                allow_unused=True,
+            )
+            return torch.zeros_like(y) if grads[0] is None else grads[0]
     return torch.autograd.functional.jacobian(
         lambda y_: func(y_, x, *params).sum((0, 1)),
         y,
@@ -49,11 +56,12 @@ class _NewtonSolve(Function):
         atol,
         rtol,
         recur_kwargs,
+        is_tuple_x,
         num_x,
         init,
         *all_tensors,
     ):
-        x = all_tensors[0] if num_x == 1 else all_tensors[:num_x]
+        x = tuple(all_tensors[:num_x]) if is_tuple_x else all_tensors[0]
         params = all_tensors[num_x:]
         x_prim = all_tensors[0]
         B, T = x_prim.size(0), x_prim.size(1)
@@ -75,28 +83,34 @@ class _NewtonSolve(Function):
             else (y0.squeeze(-1) if (is_scalar and y0.dim() == 3) else y0)
         )
 
-        slice_x = (
-            (lambda s: tuple(xi[:, s:] for xi in x))
-            if isinstance(x, tuple)
-            else (lambda s: x[:, s:])
-        )
+        slice_x = (lambda s: tuple(xi[:, s:] for xi in x)) if is_tuple_x else (lambda s: x[:, s:])
 
         for i in range(max_iter):
             y_prev = y[:, i:-1]
             x_curr = slice_x(i)
             next_y = func(y_prev, x_curr, *params)
             res = next_y - y[:, i + 1 :]
-            y[:, i + 1] = next_y[:, 0]
+
+            if not torch.isfinite(res).all():
+                warnings.warn(
+                    "newton_solve diverged (non-finite step or residual)",
+                    RuntimeWarning,
+                    stacklevel=2,
+                )
+                break
 
             if i + 2 > T:
+                y[:, i + 1] = next_y[:, 0]
                 break
 
             if (res.abs() <= atol_eff + rtol_eff * y[:, i + 1 :].abs()).all():
+                y[:, i + 1] = next_y[:, 0]
                 break
 
             jac = _jacobian(func, y_prev, x_curr, params, fprime)
-            delta = recur_fn(jac[:, 1:], res[:, 0], res[:, 1:], **recur_kwargs)
+            y[:, i + 1] = next_y[:, 0]
 
+            delta = recur_fn(jac[:, 1:], res[:, 0], res[:, 1:], **recur_kwargs)
             if not torch.isfinite(delta).all():
                 warnings.warn(
                     "newton_solve diverged (non-finite step or residual)",
@@ -106,7 +120,8 @@ class _NewtonSolve(Function):
                 break
 
             base = y[:, i + 2 :].clone()
-            merit = torch.linalg.vector_norm(res[:, 1:])
+            base_res = func(y[:, i + 1 : -1], slice_x(i + 1), *params) - base
+            merit = torch.linalg.vector_norm(base_res)
             t = 1.0
             for _ in range(max_halvings + 1):
                 cand = base + t * delta
@@ -118,42 +133,48 @@ class _NewtonSolve(Function):
                 ):
                     break
                 t *= 0.5
+            else:
+                y[:, i + 2 :] = base
         else:
-            warnings.warn(
-                f"newton_solve diverged (did not converge in {max_iter} iterations)",
-                RuntimeWarning,
-                stacklevel=2,
-            )
+            final_res = func(y[:, :-1], x, *params) - y[:, 1:]
+            if not (final_res.abs() <= atol_eff + rtol_eff * y[:, 1:].abs()).all():
+                warnings.warn(
+                    f"newton_solve diverged (did not converge in {max_iter} iterations)",
+                    RuntimeWarning,
+                    stacklevel=2,
+                )
 
         return y[:, 1:], i + 1
 
     @staticmethod
     def setup_context(ctx, inputs, outputs):
-        func, fprime, *_, recur_kwargs, num_x, init = inputs[:10]
+        func, fprime, *_, recur_kwargs, is_tuple_x, num_x, init = inputs[:11]
         ctx.set_materialize_grads(False)
         ctx.func = func
         ctx.fprime = fprime
         ctx.recur_kwargs = recur_kwargs
+        ctx.is_tuple_x = is_tuple_x
         ctx.num_x = num_x
-        ctx.save_for_backward(outputs[0], init, *inputs[10:])
+        ctx.save_for_backward(outputs[0], init, *inputs[11:])
 
     @staticmethod
     def backward(ctx, grad_y, _):
         if grad_y is None:
-            return (None,) * (10 + len(ctx.saved_tensors) - 2)
+            return (None,) * (11 + len(ctx.saved_tensors) - 2)
 
-        needs_init = ctx.needs_input_grad[9]
-        needs_all = ctx.needs_input_grad[10:]
+        needs_init = ctx.needs_input_grad[10]
+        needs_all = ctx.needs_input_grad[11:]
         if not (needs_init or any(needs_all)):
-            return (None,) * (10 + len(needs_all))
+            return (None,) * (11 + len(needs_all))
 
         func = ctx.func
         fprime = ctx.fprime
         recur_kwargs = ctx.recur_kwargs
+        is_tuple_x = ctx.is_tuple_x
         num_x = ctx.num_x
 
         y, init, *all_tensors = ctx.saved_tensors
-        x = all_tensors[0] if num_x == 1 else all_tensors[:num_x]
+        x = tuple(all_tensors[:num_x]) if is_tuple_x else all_tensors[0]
         params = all_tensors[num_x:]
         x_prim = all_tensors[0]
         B = x_prim.size(0)
@@ -162,7 +183,7 @@ class _NewtonSolve(Function):
             init.dim() == 2 and init.size(-1) == 1 and x_prim.dim() == 2
         )
         init_in = init.squeeze(-1) if (is_scalar and init.dim() == 2) else init
-        y_prev = torch.cat([init_in.unsqueeze(1), y[:, :-1]], dim=1)
+        y_prev = torch.cat([init_in.unsqueeze(1), y.detach()[:, :-1]], dim=1)
 
         jac = _jacobian(func, y_prev, x, params, fprime)
 
@@ -185,7 +206,7 @@ class _NewtonSolve(Function):
         if any(needs_all):
 
             def step_eval(*diff_all):
-                x_in = diff_all[0] if num_x == 1 else tuple(diff_all[:num_x])
+                x_in = tuple(diff_all[:num_x]) if is_tuple_x else diff_all[0]
                 return func(y_prev, x_in, *diff_all[num_x:])
 
             _, grads = torch.autograd.functional.vjp(
@@ -194,7 +215,7 @@ class _NewtonSolve(Function):
         else:
             grads = (None,) * len(all_tensors)
 
-        return (None,) * 9 + (grad_init,) + tuple(grads)
+        return (None,) * 10 + (grad_init,) + tuple(grads)
 
 
 def newton_solve(
@@ -211,7 +232,7 @@ def newton_solve(
     rtol: float | None = None,
     **recur_kwargs,
 ) -> tuple[Tensor, int]:
-    r"""Solve for the state trajectory of a non-linear recurrence using Newton's method.
+    r"""Solve a non-linear recurrence trajectory using Newton's method.
 
     Computes the solution of the non-linear sequence recursion
 
@@ -264,12 +285,21 @@ def newton_solve(
         >>> y.shape
         torch.Size([2, 4])
     """
+    if max_iter <= 0:
+        raise ValueError(f"max_iter must be positive, got {max_iter}")
+    if max_halvings < 0:
+        raise ValueError(f"max_halvings must be non-negative, got {max_halvings}")
+    if init.dim() not in (1, 2):
+        raise ValueError(f"init must be 1-D (B,) or 2-D (B, M), got {init.dim()}-D")
+
     x_tensors = x if isinstance(x, tuple) else (x,)
     for xi in x_tensors:
         if xi.dim() < 2:
             raise ValueError(
                 f"Input tensor x must have at least 2 dimensions (batch, time), got {xi.shape}"
             )
+        if xi.size(1) == 0:
+            raise ValueError("Sequence length T must be greater than 0")
         if xi.size(0) != x_tensors[0].size(0) or xi.size(1) != x_tensors[0].size(1):
             raise ValueError(
                 "All input tensors in x must have matching (batch, time) dimensions, "
@@ -291,6 +321,7 @@ def newton_solve(
         atol,
         rtol,
         recur_kwargs,
+        isinstance(x, tuple),
         len(x_tensors),
         init,
         *all_tensors,
