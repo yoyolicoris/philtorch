@@ -30,22 +30,41 @@ def bench(fn, warmup=3, reps=10):
         return f"{type(e).__name__[:9]:>9}"
 
 
+def bench_mem(fn):
+    """Peak allocated megabytes during call."""
+    if not torch.cuda.is_available():
+        return f"{'-':>9}"
+    torch.cuda.empty_cache()
+    torch.cuda.reset_peak_memory_stats()
+    try:
+        fn()
+        if torch.cuda.is_available():
+            torch.cuda.synchronize()
+        mb = torch.cuda.max_memory_allocated() / (1024 * 1024)
+        return f"{mb:9.2f}"
+    except RuntimeError as e:
+        return f"{type(e).__name__[:9]:>9}"
+
+
 def main():
     device = "cuda" if torch.cuda.is_available() else "cpu"
     dev_name = torch.cuda.get_device_name() if device == "cuda" else "CPU"
     print(f"Device: {dev_name} ({device})", flush=True)
 
     header = (
-        f"{'Configuration':<24s}"
+        f"{'Configuration':<22s}"
         f"{'scan (fwd)':>12s}"
         f"{'newton (fwd)':>14s}"
         f"{'scan (f+b)':>14s}"
         f"{'newton (f+b)':>14s}"
+        f"{'scan MB(f+b)':>14s}"
+        f"{'newton MB(f+b)':>16s}"
     )
     print(header)
     print("-" * len(header))
 
     torch.manual_seed(0)
+    all_rows = []
 
     # 1. Scalar case
     for B in (4, 16):
@@ -85,10 +104,29 @@ def main():
             t_scan_fb = bench(scan_fb)
             t_newton_fb = bench(newton_fb)
 
+            m_scan_fwd = bench_mem(scan_fwd)
+            m_newton_fwd = bench_mem(newton_fwd)
+            m_scan_fb = bench_mem(scan_fb)
+            m_newton_fb = bench_mem(newton_fb)
+
             cfg = f"M=1, B={B}, T={T}"
             print(
-                f"{cfg:<26s}{t_scan_fwd:>12s}{t_newton_fwd:>14s}{t_scan_fb:>14s}{t_newton_fb:>14s}",
+                f"{cfg:<22s}{t_scan_fwd:>12s}{t_newton_fwd:>14s}{t_scan_fb:>14s}{t_newton_fb:>14s}"
+                f"{m_scan_fb:>14s}{m_newton_fb:>16s}",
                 flush=True,
+            )
+            all_rows.append(
+                (
+                    cfg,
+                    t_scan_fwd,
+                    t_newton_fwd,
+                    t_scan_fb,
+                    t_newton_fb,
+                    m_scan_fwd,
+                    m_newton_fwd,
+                    m_scan_fb,
+                    m_newton_fb,
+                )
             )
 
     # 2. Vector case (M=2)
@@ -131,11 +169,44 @@ def main():
             t_scan_fb = bench(scan_fb)
             t_newton_fb = bench(newton_fb)
 
+            m_scan_fwd = bench_mem(scan_fwd)
+            m_newton_fwd = bench_mem(newton_fwd)
+            m_scan_fb = bench_mem(scan_fb)
+            m_newton_fb = bench_mem(newton_fb)
+
             cfg = f"M={M}, B={B}, T={T}"
             print(
-                f"{cfg:<26s}{t_scan_fwd:>12s}{t_newton_fwd:>14s}{t_scan_fb:>14s}{t_newton_fb:>14s}",
+                f"{cfg:<22s}{t_scan_fwd:>12s}{t_newton_fwd:>14s}{t_scan_fb:>14s}{t_newton_fb:>14s}"
+                f"{m_scan_fb:>14s}{m_newton_fb:>16s}",
                 flush=True,
             )
+            all_rows.append(
+                (
+                    cfg,
+                    t_scan_fwd,
+                    t_newton_fwd,
+                    t_scan_fb,
+                    t_newton_fb,
+                    m_scan_fwd,
+                    m_newton_fwd,
+                    m_scan_fb,
+                    m_newton_fb,
+                )
+            )
+
+    print("\nPeak Memory (MB):")
+    mem_header = (
+        f"{'Configuration':<22s}"
+        f"{'scan (fwd)':>12s}"
+        f"{'newton (fwd)':>14s}"
+        f"{'scan (f+b)':>14s}"
+        f"{'newton (f+b)':>14s}"
+    )
+    print(mem_header)
+    print("-" * len(mem_header))
+    for row in all_rows:
+        cfg, _, _, _, _, ms_fwd, mn_fwd, ms_fb, mn_fb = row
+        print(f"{cfg:<22s}{ms_fwd:>12s}{mn_fwd:>14s}{ms_fb:>14s}{mn_fb:>14s}")
 
 
 if __name__ == "__main__":
