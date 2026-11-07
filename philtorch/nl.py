@@ -2,6 +2,7 @@
 
 import warnings
 from collections.abc import Callable
+from typing import Any, NamedTuple
 
 import torch
 from torch import Tensor
@@ -64,132 +65,126 @@ def _norm(res: Tensor) -> Tensor:
     return torch.linalg.vector_norm(res.flatten(1), dim=1)
 
 
+def _solve(options, init, x, params):
+    func, fprime, y0, max_iter, max_halvings, atol, rtol, recur_kwargs, is_tuple_x, _ = options
+    B, T = init.size(0), (x[0] if is_tuple_x else x).size(1)
+    eps = torch.finfo(init.dtype).eps
+    is_scalar = init.dim() == 1
+    atol = eps if atol is None else atol
+    rtol = 8.0 * eps * (1 if is_scalar else init.size(-1)) if rtol is None else rtol
+    recur_fn = linear_recurrence if is_scalar else state_space_recursion
+
+    y = init.new_empty(B, T + 1, *init.shape[1:])
+    y[:, 0] = init
+    y[:, 1:] = init.unsqueeze(1).expand(B, T, *init.shape[1:]) if y0 is None else y0
+
+    # The batch elements still being solved: their indices, trajectories
+    # (y itself while all are) and inputs
+    rows, ys, xs = torch.arange(B, device=y.device), y, x
+
+    def inputs_from(s):
+        return tuple(xi[:, s:] for xi in xs) if is_tuple_x else xs[:, s:]
+
+    def residual(s):
+        return func(ys[:, s:-1], inputs_from(s), *params) - ys[:, s + 1 :]
+
+    iters = torch.zeros(B, dtype=torch.long, device=y.device)
+    step_failed = torch.zeros(B, dtype=torch.bool, device=y.device)
+    n_diverged = 0
+    res = residual(0)
+    converged = _converged(res, ys[:, 1:], atol, rtol)
+    for i in range(max_iter + 1):  # pragma: no branch - the last pass breaks
+        diverged = ~_finite(res) | step_failed
+        done = diverged | converged
+        n_diverged += int(diverged.sum())
+        if done.any():
+            if ys is not y:
+                y[rows[done]] = ys[done]
+            rows, ys, res = rows[~done], ys[~done], res[~done]
+            xs = tuple(xi[rows] for xi in x) if is_tuple_x else x[rows]
+        n_unconverged = rows.numel()
+        if i == max_iter or n_unconverged == 0:
+            break
+
+        # y[i + 1] follows from the exact y[i]; the last one needs no step
+        if i == T - 1:
+            ys[:, T] += res[:, 0]
+            iters[rows] += 1
+            n_unconverged = 0
+            break
+
+        # Linearize about the current trajectory before y[i + 1] moves
+        jac = _jacobian(func, ys[:, i + 1 : -1], inputs_from(i + 1), params, fprime)
+        delta = recur_fn(jac, res[:, 0], res[:, 1:], **recur_kwargs)
+        ys[:, i + 1] += res[:, 0]
+        step_failed = ~_finite(delta)
+        iters[rows] += ~step_failed
+        per_row = (rows.numel(),) + (1,) * (y.dim() - 1)
+        if step_failed.any():
+            delta = torch.where(step_failed.view(per_row), 0.0, delta)
+
+        # Halve the step of each element until its residual norm decreases;
+        # the norm before the step includes y[i + 1]'s, now 0
+        base = ys[:, i + 2 :].clone()
+        norm = _norm(res)
+        t = torch.ones(per_row, dtype=y.dtype, device=y.device)
+        pending = ~step_failed
+        for _ in range(max_halvings + 1):
+            torch.addcmul(base, t, delta, out=ys[:, i + 2 :])
+            res = residual(i + 1)
+            converged = _converged(res, ys[:, i + 2 :], atol, rtol)
+            pending &= ~((_norm(res) < norm) | converged)
+            if not pending.any():
+                break
+            t = torch.where(pending.view(per_row), t * 0.5, t)
+        else:
+            t = torch.where(pending.view(per_row), 0.0, t)
+            torch.addcmul(base, t, delta, out=ys[:, i + 2 :])
+            res = residual(i + 1)
+            converged = _converged(res, ys[:, i + 2 :], atol, rtol)
+
+    if ys is not y:
+        y[rows] = ys
+    return y[:, 1:], iters, n_diverged, n_unconverged
+
+
+class _Options(NamedTuple):
+    func: Callable[..., Tensor]
+    fprime: Callable[..., Tensor] | None
+    y0: Tensor | None
+    max_iter: int
+    max_halvings: int
+    atol: float | None
+    rtol: float | None
+    recur_kwargs: dict[str, Any]
+    is_tuple_x: bool
+    num_x: int
+
+
 class _NewtonSolve(Function):
     @staticmethod
-    def forward(
-        func,
-        fprime,
-        y0,
-        max_iter,
-        max_halvings,
-        atol,
-        rtol,
-        recur_kwargs,
-        is_tuple_x,
-        num_x,
-        init,
-        *all_tensors,
-    ):
-        x = tuple(all_tensors[:num_x]) if is_tuple_x else all_tensors[0]
-        params = all_tensors[num_x:]
-        B, T = init.size(0), all_tensors[0].size(1)
-        eps = torch.finfo(init.dtype).eps
-        is_scalar = init.dim() == 1
-        atol = eps if atol is None else atol
-        rtol = 8.0 * eps * (1 if is_scalar else init.size(-1)) if rtol is None else rtol
-        recur_fn = linear_recurrence if is_scalar else state_space_recursion
-
-        y = init.new_empty(B, T + 1, *init.shape[1:])
-        y[:, 0] = init
-        y[:, 1:] = init.unsqueeze(1).expand(B, T, *init.shape[1:]) if y0 is None else y0
-
-        # The batch elements still being solved: their indices, trajectories
-        # (y itself while all are), inputs and parameters
-        rows, ys, xs, ps = torch.arange(B, device=y.device), y, x, params
-
-        def inputs_from(s):
-            return tuple(xi[:, s:] for xi in xs) if is_tuple_x else xs[:, s:]
-
-        def residual(s):
-            return func(ys[:, s:-1], inputs_from(s), *ps) - ys[:, s + 1 :]
-
-        iters = torch.zeros(B, dtype=torch.long, device=y.device)
-        step_failed = torch.zeros(B, dtype=torch.bool, device=y.device)
-        n_diverged = 0
-        res = residual(0)
-        converged = _converged(res, ys[:, 1:], atol, rtol)
-        for i in range(max_iter + 1):  # pragma: no branch - the last pass breaks
-            diverged = ~_finite(res) | step_failed
-            done = diverged | converged
-            n_diverged += int(diverged.sum())
-            if done.any():
-                if ys is not y:
-                    y[rows[done]] = ys[done]
-                rows, ys, res = rows[~done], ys[~done], res[~done]
-                xs = tuple(xi[rows] for xi in x) if is_tuple_x else x[rows]
-                ps = tuple(p[rows] if p.dim() and p.size(0) == B else p for p in params)
-            n_unconverged = rows.numel()
-            if i == max_iter or n_unconverged == 0:
-                break
-
-            # y[i + 1] follows from the exact y[i]; the last one needs no step
-            if i == T - 1:
-                ys[:, T] += res[:, 0]
-                iters[rows] += 1
-                n_unconverged = 0
-                break
-
-            # Linearize about the current trajectory before y[i + 1] moves
-            jac = _jacobian(func, ys[:, i + 1 : -1], inputs_from(i + 1), ps, fprime)
-            delta = recur_fn(jac, res[:, 0], res[:, 1:], **recur_kwargs)
-            ys[:, i + 1] += res[:, 0]
-            step_failed = ~_finite(delta)
-            iters[rows] += ~step_failed
-            per_row = (rows.numel(),) + (1,) * (y.dim() - 1)
-            if step_failed.any():
-                delta = torch.where(step_failed.view(per_row), 0.0, delta)
-
-            # Halve the step of each element until its residual norm decreases;
-            # the norm before the step includes y[i + 1]'s, now 0
-            base = ys[:, i + 2 :].clone()
-            norm = _norm(res)
-            t = torch.ones(per_row, dtype=y.dtype, device=y.device)
-            pending = ~step_failed
-            for _ in range(max_halvings + 1):
-                torch.addcmul(base, t, delta, out=ys[:, i + 2 :])
-                res = residual(i + 1)
-                converged = _converged(res, ys[:, i + 2 :], atol, rtol)
-                pending &= ~((_norm(res) < norm) | converged)
-                if not pending.any():
-                    break
-                t = torch.where(pending.view(per_row), t * 0.5, t)
-            else:
-                t = torch.where(pending.view(per_row), 0.0, t)
-                torch.addcmul(base, t, delta, out=ys[:, i + 2 :])
-                res = residual(i + 1)
-                converged = _converged(res, ys[:, i + 2 :], atol, rtol)
-
-        if ys is not y:
-            y[rows] = ys
-        return y[:, 1:], iters, n_diverged, n_unconverged
+    def forward(options, init, *tensors):
+        x = tuple(tensors[: options.num_x]) if options.is_tuple_x else tensors[0]
+        return _solve(options, init, x, tensors[options.num_x :])
 
     @staticmethod
     def setup_context(ctx, inputs, outputs):
-        func, fprime, *_, recur_kwargs, is_tuple_x, num_x, init = inputs[:11]
+        options, init, *tensors = inputs
         ctx.set_materialize_grads(False)
         ctx.mark_non_differentiable(outputs[1])
-        ctx.func = func
-        ctx.fprime = fprime
-        ctx.recur_kwargs = recur_kwargs
-        ctx.is_tuple_x = is_tuple_x
-        ctx.num_x = num_x
-        ctx.save_for_backward(outputs[0], init, *inputs[11:])
+        ctx.options = options
+        ctx.save_for_backward(outputs[0], init, *tensors)
 
     @staticmethod
     def backward(ctx, grad_y, *_):
         if grad_y is None:
             return (None,) * len(ctx.needs_input_grad)
 
-        needs_init = ctx.needs_input_grad[10]
-        needs_all = ctx.needs_input_grad[11:]
-        if not (needs_init or any(needs_all)):
-            return (None,) * len(ctx.needs_input_grad)
+        needs_init = ctx.needs_input_grad[1]
+        needs_all = ctx.needs_input_grad[2:]
 
-        func = ctx.func
-        fprime = ctx.fprime
-        recur_kwargs = ctx.recur_kwargs
-        is_tuple_x = ctx.is_tuple_x
-        num_x = ctx.num_x
+        func, fprime, recur_kwargs = ctx.options.func, ctx.options.fprime, ctx.options.recur_kwargs
+        is_tuple_x, num_x = ctx.options.is_tuple_x, ctx.options.num_x
 
         y, init, *all_tensors = ctx.saved_tensors
         x = tuple(all_tensors[:num_x]) if is_tuple_x else all_tensors[0]
@@ -234,7 +229,7 @@ class _NewtonSolve(Function):
             for idx, g in zip(diff_indices, diff_grads):
                 grads[idx] = g
 
-        return (None,) * 10 + (grad_init,) + tuple(grads)
+        return (None, grad_init, *grads)
 
 
 def newton_solve(
@@ -280,22 +275,26 @@ def newton_solve(
     Args:
         func (Callable): the step :math:`f`, called as
             ``func(y_prev, x_prev, *params)`` on whole sequences or their
-            ends: ``y_prev``, of shape :math:`(B, T', M)` or :math:`(B, T')`,
-            holds :math:`y[t - 1]` and ``x_prev`` the matching
-            :math:`x[t]`, that is :attr:`x` cut to :math:`(B, T', *)` (a
-            tuple stays a tuple). It must act on each sample separately and
-            return a tensor of the shape of ``y_prev``.
+            ends, with ``y_prev`` holding :math:`y[t - 1]` and ``x_prev`` the
+            matching :math:`x[t]`: :attr:`x` cut to :math:`(B, T', *)`, the
+            leading dimensions of ``y_prev`` (a tuple stays a tuple). For a
+            1-D :attr:`init`, it acts elementwise on ``y_prev`` of any shape.
+            Otherwise ``y_prev`` has shape :math:`(*, M)`, with any leading
+            dimensions (:math:`(B, T', M)` here), and it acts on each sample
+            separately and returns the shape of ``y_prev``.
         x (Tensor or tuple of Tensor): the inputs, of shape :math:`(B, T, *)`,
             :math:`*` being any number of dimensions.
         init (Tensor): the initial state :math:`y[-1]`, of shape
             :math:`(B, M)`, or :math:`(B)` for a scalar recurrence.
         params (tuple of Tensor, optional): the parameters :math:`\theta`,
-            the same at every sample. One whose first dimension is :math:`B`
-            is taken as one per batch element. Default: ``()``.
+            passed to :attr:`func` and :attr:`fprime` as they are and shared
+            by every batch element and step. Values that differ per batch
+            element go in :attr:`x`, expanded over time if constant.
+            Default: ``()``.
         fprime (Callable, optional): the Jacobian of :attr:`func` with
             respect to ``y_prev``, called with the same arguments: of shape
-            :math:`(B, T')` for a 1-D :attr:`init`, otherwise
-            :math:`(B, T', M, M)` with entry :math:`(i, j)` equal to
+            :math:`(*)` for a 1-D :attr:`init`, otherwise
+            :math:`(*, M, M)` with entry :math:`(i, j)` equal to
             :math:`\partial f_i / \partial y_j`. ``None`` differentiates
             :attr:`func` with autograd. Default: ``None``.
         y0 (Tensor, optional): the initial guess of the trajectory, of the
@@ -377,7 +376,7 @@ def newton_solve(
         raise ValueError("params must be a tuple of Tensors")
 
     all_tensors = x_tensors + tuple(params)
-    y, iters, n_diverged, n_unconverged = _NewtonSolve.apply(
+    options = _Options(
         func,
         fprime,
         y0,
@@ -388,9 +387,8 @@ def newton_solve(
         recur_kwargs,
         isinstance(x, tuple),
         len(x_tensors),
-        init,
-        *all_tensors,
     )
+    y, iters, n_diverged, n_unconverged = _NewtonSolve.apply(options, init, *all_tensors)
     B = init.size(0)
     if n_diverged:
         warnings.warn(

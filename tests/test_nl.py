@@ -286,12 +286,12 @@ def test_newton_solve_no_gradient_to_y0():
     def step_fn(y, x):
         return torch.tanh(0.5 * y + x)
 
-    x = torch.randn(2, 4, dtype=torch.float64)
+    x = torch.randn(2, 4, dtype=torch.float64, requires_grad=True)
     init = torch.randn(2, dtype=torch.float64)
     y0 = torch.zeros(2, 4, dtype=torch.float64, requires_grad=True)
     y, _ = newton_solve(step_fn, x, init, y0=y0)
     y.sum().backward()
-    assert y0.grad is None
+    assert x.grad is not None and y0.grad is None
 
 
 def test_newton_solve_invalid_arguments():
@@ -335,39 +335,47 @@ def test_newton_solve_rtol_scales_with_state_size():
     assert torch.allclose(y, _sequential(step_fn, x, init), atol=1e-5)
 
 
-def _batched_param_problem():
+def _per_element_problem():
+    # A and g differ per batch element, so they travel in x, expanded over time
     B, T, M = 3, 10, 2
     torch.manual_seed(0)
 
-    def step_fn(y, xs, A, g, c):
-        return y @ A.transpose(-1, -2) + g.view(-1, 1, 1) * torch.sin(y) + xs[0] + 0.5 * xs[1] + c
+    def step_fn(y, xs, c):
+        x1, x2, A_t, g_t = xs
+        Ay = (y.unsqueeze(-2) @ A_t.transpose(-1, -2)).squeeze(-2)
+        return Ay + g_t.unsqueeze(-1) * torch.sin(y) + x1 + 0.5 * x2 + c
+
+    def expand(x1, x2, A, g):
+        return x1, x2, A.unsqueeze(1).expand(B, T, M, M), g.unsqueeze(1).expand(B, T)
 
     x = tuple(torch.randn(B, T, M, dtype=torch.float64, requires_grad=True) for _ in range(2))
     init = torch.randn(B, M, dtype=torch.float64, requires_grad=True)
     A = (0.3 * torch.randn(B, M, M, dtype=torch.float64)).requires_grad_()
     g = torch.tensor([0.0, 0.3, 1.0], dtype=torch.float64, requires_grad=True)
     c = torch.tensor(0.1, dtype=torch.float64, requires_grad=True)
-    return step_fn, x, init, (A, g, c)
+    return step_fn, expand, x, init, A, g, c
 
 
-def test_newton_solve_batched_params_and_counts():
-    step_fn, x, init, params = _batched_param_problem()
+def test_newton_solve_per_element_inputs_and_counts():
+    step_fn, expand, x, init, A, g, c = _per_element_problem()
     with torch.no_grad():
-        y_ref = _sequential(step_fn, x, init, *params)
-        y, iters = newton_solve(step_fn, x, init, params=params)
+        xs = expand(*x, A, g)
+        y_ref = _sequential(step_fn, xs, init, c)
+        y, iters = newton_solve(step_fn, xs, init, params=(c,))
     assert torch.allclose(y, y_ref, atol=1e-10, rtol=1e-10)
     assert iters.dtype == torch.long and not iters.requires_grad
     assert iters[0] == 1
     assert 1 < iters[1] < iters[2]
 
 
-def test_newton_solve_batched_params_gradcheck():
-    step_fn, x, init, params = _batched_param_problem()
+def test_newton_solve_per_element_inputs_gradcheck():
+    step_fn, expand, x, init, A, g, c = _per_element_problem()
 
-    def func_to_check(init_, x1, x2, *p_):
-        return newton_solve(step_fn, (x1, x2), init_, params=p_)[0]
+    def func_to_check(init_, x1, x2, A_, g_, c_):
+        return newton_solve(step_fn, expand(x1, x2, A_, g_), init_, params=(c_,))[0]
 
-    assert torch.autograd.gradcheck(func_to_check, (init, *x, *params), eps=1e-6, atol=1e-4)
+    args = (init, *x, A, g, c)
+    assert torch.autograd.gradcheck(func_to_check, args, eps=1e-6, atol=1e-4)
 
 
 def test_newton_solve_one_step_matches_newton():
