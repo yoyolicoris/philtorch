@@ -7,6 +7,7 @@ from philtorch.poly import polydiv
 
 @pytest.mark.parametrize(("dividend", "divisor"), [(6, 3), (4, 4), (5, 1)])
 def test_polydiv_matches_numpy(dividend: int, divisor: int):
+    torch.manual_seed(0)
     u = torch.randn(3, dividend, dtype=torch.double)
     v = torch.randn(3, divisor, dtype=torch.double)
     q, r = polydiv(u, v)
@@ -15,8 +16,11 @@ def test_polydiv_matches_numpy(dividend: int, divisor: int):
         np.testing.assert_allclose(q[row].numpy(), expected_q)
         # NumPy trims the remainder's leading zeros, but returns [0.] for an
         # empty one; polydiv keeps the zeros and returns no coefficients.
+        # NumPy's remainder can hold rounding error where it is exactly zero.
         remainder = np.concatenate([np.zeros(1), r[row].numpy()])
-        np.testing.assert_allclose(remainder[remainder.size - expected_r.size :], expected_r)
+        np.testing.assert_allclose(
+            remainder[remainder.size - expected_r.size :], expected_r, atol=1e-12
+        )
 
 
 def test_polydiv_gradcheck():
