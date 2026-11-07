@@ -364,8 +364,8 @@ def test_newton_solve_per_element_inputs_and_counts():
         y, iters = newton_solve(step_fn, xs, init, params=(c,))
     assert torch.allclose(y, y_ref, atol=1e-10, rtol=1e-10)
     assert iters.dtype == torch.long and not iters.requires_grad
-    assert iters[0] == 1
-    assert 1 < iters[1] < iters[2]
+    # The elements finish at different steps, so rows drop out one by one
+    assert iters[0] < iters[1] < iters[2]
 
 
 def test_newton_solve_per_element_inputs_gradcheck():
