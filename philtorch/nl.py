@@ -85,12 +85,8 @@ class _NewtonSolve(Function):
 
         slice_x = (lambda s: tuple(xi[:, s:] for xi in x)) if is_tuple_x else (lambda s: x[:, s:])
 
+        res = func(y[:, :-1], x, *params) - y[:, 1:]
         for i in range(max_iter):
-            y_prev = y[:, i:-1]
-            x_curr = slice_x(i)
-            next_y = func(y_prev, x_curr, *params)
-            res = next_y - y[:, i + 1 :]
-
             if not torch.isfinite(res).all():
                 warnings.warn(
                     "newton_solve diverged (non-finite step or residual)",
@@ -99,16 +95,12 @@ class _NewtonSolve(Function):
                 )
                 break
 
-            if i + 2 > T:
-                y[:, i + 1] = next_y[:, 0]
+            if i + 2 > T or (res.abs() <= atol_eff + rtol_eff * y[:, i + 1 :].abs()).all():
+                y[:, i + 1] += res[:, 0]
                 break
 
-            if (res.abs() <= atol_eff + rtol_eff * y[:, i + 1 :].abs()).all():
-                y[:, i + 1] = next_y[:, 0]
-                break
-
-            jac = _jacobian(func, y_prev, x_curr, params, fprime)
-            y[:, i + 1] = next_y[:, 0]
+            jac = _jacobian(func, y[:, i:-1], slice_x(i), params, fprime)
+            y[:, i + 1] += res[:, 0]
 
             delta = recur_fn(jac[:, 1:], res[:, 0], res[:, 1:], **recur_kwargs)
             if not torch.isfinite(delta).all():
@@ -120,24 +112,23 @@ class _NewtonSolve(Function):
                 break
 
             base = y[:, i + 2 :].clone()
-            base_res = func(y[:, i + 1 : -1], slice_x(i + 1), *params) - base
-            merit = torch.linalg.vector_norm(base_res)
+            merit = torch.linalg.vector_norm(res[:, 1:])
             t = 1.0
             for _ in range(max_halvings + 1):
-                cand = base + t * delta
-                y[:, i + 2 :] = cand
-                cand_res = func(y[:, i + 1 : -1], slice_x(i + 1), *params) - cand
+                y[:, i + 2 :] = base + t * delta
+                cand_res = func(y[:, i + 1 : -1], slice_x(i + 1), *params) - y[:, i + 2 :]
                 if (
                     torch.linalg.vector_norm(cand_res) < merit
-                    or (cand_res.abs() <= atol_eff + rtol_eff * cand.abs()).all()
+                    or (cand_res.abs() <= atol_eff + rtol_eff * y[:, i + 2 :].abs()).all()
                 ):
+                    res = cand_res
                     break
                 t *= 0.5
             else:
                 y[:, i + 2 :] = base
+                res = cand_res
         else:
-            final_res = func(y[:, :-1], x, *params) - y[:, 1:]
-            if not (final_res.abs() <= atol_eff + rtol_eff * y[:, 1:].abs()).all():
+            if not (res.abs() <= atol_eff + rtol_eff * y[:, i + 2 :].abs()).all():
                 warnings.warn(
                     f"newton_solve diverged (did not converge in {max_iter} iterations)",
                     RuntimeWarning,
