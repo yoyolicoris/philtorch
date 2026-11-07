@@ -31,9 +31,7 @@ def _jacobian(
             if isinstance(x, tuple)
             else (x.clone() if x.is_inference() else x)
         )
-        params_in = tuple(
-            p.clone() if isinstance(p, Tensor) and p.is_inference() else p for p in params
-        )
+        params_in = tuple(p.clone() if p.is_inference() else p for p in params)
         if y.dim() == 2:
             with torch.enable_grad():
                 y_diff = y_in if y_in.requires_grad else y_in.detach().requires_grad_()
@@ -55,6 +53,18 @@ def _jacobian(
         ).permute(1, 2, 0, 3)
 
 
+def _finite(t: Tensor) -> Tensor:
+    return torch.isfinite(t).flatten(1).all(1)
+
+
+def _converged(res: Tensor, y: Tensor, atol: float, rtol: float) -> Tensor:
+    return (res.abs() <= atol + rtol * y.abs()).flatten(1).all(1)
+
+
+def _norm(res: Tensor) -> Tensor:
+    return torch.linalg.vector_norm(res.flatten(1), dim=1)
+
+
 class _NewtonSolve(Function):
     @staticmethod
     def forward(
@@ -73,81 +83,85 @@ class _NewtonSolve(Function):
     ):
         x = tuple(all_tensors[:num_x]) if is_tuple_x else all_tensors[0]
         params = all_tensors[num_x:]
-        x0 = all_tensors[0]
-        B, T = x0.size(0), x0.size(1)
+        B, T = init.size(0), all_tensors[0].size(1)
         eps = torch.finfo(init.dtype).eps
-        atol = eps if atol is None else atol
-        rtol = 8.0 * eps if rtol is None else rtol
-
         is_scalar = init.dim() == 1
+        atol = eps if atol is None else atol
+        rtol = 8.0 * eps * (1 if is_scalar else init.size(-1)) if rtol is None else rtol
         recur_fn = linear_recurrence if is_scalar else state_space_recursion
 
         y = init.new_empty(B, T + 1, *init.shape[1:])
         y[:, 0] = init
         y[:, 1:] = init.unsqueeze(1).expand(B, T, *init.shape[1:]) if y0 is None else y0
 
-        slice_x = (lambda s: tuple(xi[:, s:] for xi in x)) if is_tuple_x else (lambda s: x[:, s:])
+        # The batch elements still being solved: their indices, trajectories
+        # (y itself while all are), inputs and parameters
+        rows, ys, xs, ps = torch.arange(B, device=y.device), y, x, params
 
-        res = func(y[:, :-1], x, *params) - y[:, 1:]
-        for i in range(max_iter):
-            if not torch.isfinite(res).all():
-                warnings.warn(
-                    "newton_solve diverged (non-finite step or residual)",
-                    RuntimeWarning,
-                    stacklevel=2,
-                )
+        def inputs_from(s):
+            return tuple(xi[:, s:] for xi in xs) if is_tuple_x else xs[:, s:]
+
+        def residual(s):
+            return func(ys[:, s:-1], inputs_from(s), *ps) - ys[:, s + 1 :]
+
+        iters = torch.zeros(B, dtype=torch.long, device=y.device)
+        step_failed = torch.zeros(B, dtype=torch.bool, device=y.device)
+        n_diverged = 0
+        res = residual(0)
+        for i in range(max_iter + 1):  # pragma: no branch - the last pass breaks
+            diverged = ~_finite(res) | step_failed
+            done = diverged | _converged(res, ys[:, i + 1 :], atol, rtol)
+            n_diverged += int(diverged.sum())
+            if done.any():
+                if ys is not y:
+                    y[rows[done]] = ys[done]
+                rows, ys, res = rows[~done], ys[~done], res[~done]
+                xs = tuple(xi[rows] for xi in x) if is_tuple_x else x[rows]
+                ps = tuple(p[rows] if p.dim() and p.size(0) == B else p for p in params)
+            n_unconverged = rows.numel()
+            if i == max_iter or n_unconverged == 0:
                 break
 
-            if (res.abs() <= atol + rtol * y[:, i + 1 :].abs()).all():
+            # y[i + 1] follows from the exact y[i]; the last one needs no step
+            ys[:, i + 1] += res[:, 0]
+            if i == T - 1:
+                iters[rows] += 1
+                n_unconverged = 0
                 break
 
-            if i + 2 > T:
-                y[:, i + 1] += res[:, 0]
-                break
+            jac = _jacobian(func, ys[:, i + 1 : -1], inputs_from(i + 1), ps, fprime)
+            delta = recur_fn(jac, res[:, 0], res[:, 1:], **recur_kwargs)
+            step_failed = ~_finite(delta)
+            iters[rows] += ~step_failed
+            per_row = (rows.numel(),) + (1,) * (y.dim() - 1)
+            delta = torch.where(step_failed.view(per_row), 0.0, delta)
 
-            jac = _jacobian(func, y[:, i:-1], slice_x(i), params, fprime)
-            y[:, i + 1] += res[:, 0]
-
-            delta = recur_fn(jac[:, 1:], res[:, 0], res[:, 1:], **recur_kwargs)
-            if not torch.isfinite(delta).all():
-                warnings.warn(
-                    "newton_solve diverged (non-finite step or residual)",
-                    RuntimeWarning,
-                    stacklevel=2,
-                )
-                break
-
-            base = y[:, i + 2 :].clone()
-            norm = torch.linalg.vector_norm(res[:, 1:])
-            t = 1.0
+            # Halve the step of each element until its residual norm decreases
+            base = ys[:, i + 2 :].clone()
+            norm = _norm(res[:, 1:])
+            t = torch.ones(per_row, dtype=y.dtype, device=y.device)
+            pending = ~step_failed
             for _ in range(max_halvings + 1):
-                y[:, i + 2 :] = base + t * delta
-                new_res = func(y[:, i + 1 : -1], slice_x(i + 1), *params) - y[:, i + 2 :]
-                if (
-                    torch.linalg.vector_norm(new_res) < norm
-                    or (new_res.abs() <= atol + rtol * y[:, i + 2 :].abs()).all()
-                ):
-                    res = new_res
+                ys[:, i + 2 :] = base + t * delta
+                res = residual(i + 1)
+                pending &= ~((_norm(res) < norm) | _converged(res, ys[:, i + 2 :], atol, rtol))
+                if not pending.any():
                     break
-                t *= 0.5
+                t = torch.where(pending.view(per_row), t * 0.5, t)
             else:
-                y[:, i + 2 :] = base
-                res = func(y[:, i + 1 : -1], slice_x(i + 1), *params) - y[:, i + 2 :]
-        else:
-            final_res = func(y[:, :-1], x, *params) - y[:, 1:]
-            if not (final_res.abs() <= atol + rtol * y[:, 1:].abs()).all():
-                warnings.warn(
-                    f"newton_solve diverged (did not converge in {max_iter} iterations)",
-                    RuntimeWarning,
-                    stacklevel=2,
-                )
+                t = torch.where(pending.view(per_row), 0.0, t)
+                ys[:, i + 2 :] = base + t * delta
+                res = residual(i + 1)
 
-        return y[:, 1:], i + 1
+        if ys is not y:
+            y[rows] = ys
+        return y[:, 1:], iters, n_diverged, n_unconverged
 
     @staticmethod
     def setup_context(ctx, inputs, outputs):
         func, fprime, *_, recur_kwargs, is_tuple_x, num_x, init = inputs[:11]
         ctx.set_materialize_grads(False)
+        ctx.mark_non_differentiable(outputs[1])
         ctx.func = func
         ctx.fprime = fprime
         ctx.recur_kwargs = recur_kwargs
@@ -156,7 +170,7 @@ class _NewtonSolve(Function):
         ctx.save_for_backward(outputs[0], init, *inputs[11:])
 
     @staticmethod
-    def backward(ctx, grad_y, _):
+    def backward(ctx, grad_y, *_):
         if grad_y is None:
             return (None,) * len(ctx.needs_input_grad)
 
@@ -174,8 +188,7 @@ class _NewtonSolve(Function):
         y, init, *all_tensors = ctx.saved_tensors
         x = tuple(all_tensors[:num_x]) if is_tuple_x else all_tensors[0]
         params = all_tensors[num_x:]
-        x0 = all_tensors[0]
-        B = x0.size(0)
+        B = init.size(0)
 
         is_scalar = init.dim() == 1
         y_prev = torch.cat([init.unsqueeze(1), y[:, :-1]], dim=1)
@@ -198,6 +211,7 @@ class _NewtonSolve(Function):
                 else None
             )
 
+        grads = [None] * len(all_tensors)
         diff_indices = [k for k, need in enumerate(needs_all) if need]
         if diff_indices:
             diff_inputs = tuple(all_tensors[k] for k in diff_indices)
@@ -215,11 +229,8 @@ class _NewtonSolve(Function):
                 v=lam,
                 create_graph=torch.is_grad_enabled(),
             )
-            grads = [None] * len(all_tensors)
             for idx, g in zip(diff_indices, diff_grads):
                 grads[idx] = g
-        else:
-            grads = [None] * len(all_tensors)
 
         return (None,) * 10 + (grad_init,) + tuple(grads)
 
@@ -237,63 +248,98 @@ def newton_solve(
     atol: float | None = None,
     rtol: float | None = None,
     **recur_kwargs,
-) -> tuple[Tensor, int]:
-    r"""Solve a non-linear recurrence trajectory using Newton's method.
+) -> tuple[Tensor, Tensor]:
+    r"""Solve a non-linear recurrence over a whole sequence by Newton's method.
 
-    Computes the solution of the non-linear sequence recursion
+    This computes
 
     .. math::
-        \mathbf{y}[t] = f(\mathbf{y}[t-1], \mathbf{x}[t]; \theta)
+        y[t] = f(y[t - 1], x[t]; \theta), \quad t = 0, \dots, T - 1,
 
-    in parallel across time using damped Newton-Raphson iterations.
+    starting from :math:`y[-1] = \text{init}`, for all :math:`t` at once, as
+    in `ParaRNN: Unlocking Parallel Training of Nonlinear RNNs for Large
+    Language Models`_ (Danieli et al., 2026): each Newton step linearizes
+    :math:`f` about the current trajectory and solves the linear recurrence
+    that results with :func:`philtorch.lpv.linear_recurrence` or
+    :func:`philtorch.lpv.state_space_recursion`. A step makes one more
+    sample exact, so :math:`T` steps always suffice; a contractive :math:`f`
+    needs far fewer. A step is halved until it decreases the norm of the
+    residual :math:`f(y[t - 1], x[t]; \theta) - y[t]`. The gradients come
+    from one more linear recurrence, backward in time, and are themselves
+    differentiable.
+
+    Batch elements are solved independently. One is done when it converges,
+    once :math:`|f(y[t - 1], x[t]; \theta) - y[t]| \le \text{atol} +
+    \text{rtol}\, |y[t]|` for every :math:`t`, or diverges, when its
+    residual or step is not finite. A ``RuntimeWarning`` reports the
+    elements that diverged or did not converge within :attr:`max_iter`
+    steps; they return their last iterate.
 
     Args:
-        func (Callable): step transition function with signature
-            ``func(y_prev, x_curr, *params) -> Tensor``.
-        x (Tensor or tuple of Tensor): time-varying inputs of shape
-            :math:`(B, T, *)` or :math:`(B, T)`.
-        init (Tensor): boundary condition :math:`\mathbf{y}[-1]` before the
-            sequence starts, of shape :math:`(B, M)` or :math:`(B,)`.
-        params (tuple of Tensor, optional): time-invariant parameters
-            :math:`\theta`. Default: ``()``.
-        fprime (Callable, optional): analytical Jacobian of :attr:`func` w.r.t.
-            ``y_prev``. Default: ``None``.
-        y0 (Tensor, optional): initial guess for the trajectory.
+        func (Callable): the step :math:`f`, called as
+            ``func(y_prev, x_prev, *params)`` on whole sequences or their
+            ends: ``y_prev``, of shape :math:`(B, T', M)` or :math:`(B, T')`,
+            holds :math:`y[t - 1]` and ``x_prev`` the matching
+            :math:`x[t]`, that is :attr:`x` cut to :math:`(B, T', *)` (a
+            tuple stays a tuple). It must act on each sample separately and
+            return a tensor of the shape of ``y_prev``.
+        x (Tensor or tuple of Tensor): the inputs, of shape :math:`(B, T, *)`,
+            :math:`*` being any number of dimensions.
+        init (Tensor): the initial state :math:`y[-1]`, of shape
+            :math:`(B, M)`, or :math:`(B)` for a scalar recurrence.
+        params (tuple of Tensor, optional): the parameters :math:`\theta`,
+            the same at every sample. One whose first dimension is :math:`B`
+            is taken as one per batch element. Default: ``()``.
+        fprime (Callable, optional): the Jacobian of :attr:`func` with
+            respect to ``y_prev``, called with the same arguments: of shape
+            :math:`(B, T')` for a 1-D :attr:`init`, otherwise
+            :math:`(B, T', M, M)` with entry :math:`(i, j)` equal to
+            :math:`\partial f_i / \partial y_j`. ``None`` differentiates
+            :attr:`func` with autograd. Default: ``None``.
+        y0 (Tensor, optional): the initial guess of the trajectory, of the
+            shape of the output. ``None`` repeats :attr:`init`.
             Default: ``None``.
-        max_iter (int, optional): maximum Newton iterations. Default: 100.
-        max_halvings (int, optional): maximum line search step halvings.
-            Default: 8.
-        atol (float, optional): absolute tolerance. Default: ``1.0 * eps``.
-        rtol (float, optional): relative tolerance. Default: ``8.0 * eps``.
-        **recur_kwargs: keyword arguments (e.g. ``unroll_factor``) passed to
-            the underlying linear recurrence.
+        max_iter (int, optional): the maximum number of Newton steps.
+            Default: 100.
+        max_halvings (int, optional): the maximum number of halvings of a
+            step. Default: 8.
+        atol (float, optional): the absolute tolerance. ``None`` takes
+            :math:`\epsilon`, the machine epsilon of :attr:`init`'s dtype.
+            Default: ``None``.
+        rtol (float, optional): the relative tolerance. ``None`` takes
+            :math:`8 M \epsilon`, as the rounding error of :math:`f` grows
+            with the state size :math:`M` (1 for a 1-D :attr:`init`).
+            Default: ``None``.
+        **recur_kwargs: keyword arguments of the linear recurrences, such
+            as ``unroll_factor``.
 
     Returns:
-        tuple of (Tensor, int): the solved trajectory of shape
-        :math:`(B, T, M)` or :math:`(B, T)`, and the number of iterations.
+        tuple of Tensor: the trajectory :math:`y[0], \dots, y[T - 1]`, of
+        shape :math:`(B, T, M)` or :math:`(B, T)`, and the number of Newton
+        steps each batch element took, of shape :math:`(B)` (0 if :attr:`y0`
+        already solves the recurrence). The counts are not differentiable.
 
     Raises:
-        ValueError: if :attr:`max_iter` is not positive, :attr:`max_halvings`
-            is negative, :attr:`init` is not 1-D or 2-D, :attr:`x` has fewer
-            than 2 dimensions, sequence length :math:`T` is 0, batch sizes
-            or sequence lengths do not match, or :attr:`y0` does not match the
-            expected trajectory shape.
-
-    Note:
-        This algorithm is based on ParaRNN:
-
-        Botev et al., *ParaRNN: Unlocking Parallel Training of Nonlinear RNNs
-        for Large Language Models*, 2024.
+        ValueError: if :attr:`max_iter` is not positive,
+            :attr:`max_halvings` is negative, :attr:`params` holds anything
+            but tensors, :attr:`init` is not 1-D or 2-D, a tensor of
+            :attr:`x` has fewer than 2 dimensions or a length :math:`T` of
+            0, the batch sizes or lengths of :attr:`x` and :attr:`init`
+            differ, or :attr:`y0` is not of the shape of the output.
 
     Example::
 
         >>> from philtorch.nl import newton_solve
-        >>> step_fn = lambda y, x: torch.tanh(0.5 * y + x)
-        >>> x = torch.zeros(2, 4)
-        >>> init = torch.zeros(2)
-        >>> y, iters = newton_solve(step_fn, x, init)
-        >>> y.shape
-        torch.Size([2, 4])
+        >>> step = lambda y, x: torch.tanh(0.5 * y + x)
+        >>> x = torch.full((1, 8), 0.5)
+        >>> y, steps = newton_solve(step, x, torch.zeros(1))
+        >>> y
+        tensor([[0.4621, 0.6237, 0.6706, 0.6833, 0.6867, 0.6876, 0.6878, 0.6879]])
+        >>> steps
+        tensor([3])
+
+    .. _ParaRNN\: Unlocking Parallel Training of Nonlinear RNNs for Large Language Models:
+        https://proceedings.iclr.cc/paper_files/paper/2026/file/57d8ebf4c2f050a6485f370d47656a9e-Paper-Conference.pdf
     """
     if max_iter <= 0:
         raise ValueError(f"max_iter must be positive, got {max_iter}")
@@ -325,8 +371,11 @@ def newton_solve(
         if y0.shape != expected_shape:
             raise ValueError(f"y0 must have shape {expected_shape}, got {y0.shape}")
 
+    if not all(isinstance(p, Tensor) for p in params):
+        raise ValueError("params must be a tuple of Tensors")
+
     all_tensors = x_tensors + tuple(params)
-    return _NewtonSolve.apply(
+    y, iters, n_diverged, n_unconverged = _NewtonSolve.apply(
         func,
         fprime,
         y0,
@@ -340,3 +389,19 @@ def newton_solve(
         init,
         *all_tensors,
     )
+    B = init.size(0)
+    if n_diverged:
+        warnings.warn(
+            "newton_solve diverged (non-finite step or residual) in "
+            f"{n_diverged} of {B} batch elements",
+            RuntimeWarning,
+            stacklevel=2,
+        )
+    if n_unconverged:
+        warnings.warn(
+            f"newton_solve did not converge in {max_iter} iterations "
+            f"in {n_unconverged} of {B} batch elements",
+            RuntimeWarning,
+            stacklevel=2,
+        )
+    return y, iters
