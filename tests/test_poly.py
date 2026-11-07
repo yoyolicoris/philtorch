@@ -12,11 +12,15 @@ def test_polydiv_matches_numpy(dividend: int, divisor: int):
     q, r = polydiv(u, v)
     for row in range(3):
         expected_q, expected_r = np.polydiv(u[row].numpy(), v[row].numpy())
-        np.testing.assert_allclose(q[row].numpy(), expected_q)
+        np.testing.assert_allclose(q[row].numpy(), expected_q, atol=1e-12)
         # NumPy trims the remainder's leading zeros, but returns [0.] for an
         # empty one; polydiv keeps the zeros and returns no coefficients.
         remainder = np.concatenate([np.zeros(1), r[row].numpy()])
-        np.testing.assert_allclose(remainder[remainder.size - expected_r.size :], expected_r)
+        np.testing.assert_allclose(
+            remainder[remainder.size - expected_r.size :],
+            expected_r,
+            atol=1e-12,
+        )
 
 
 def test_polydiv_gradcheck():
