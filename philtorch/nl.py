@@ -25,12 +25,9 @@ def _jacobian(
         return fprime(y, x, *params)
     if y.dim() == 2:
         with torch.enable_grad():
-            y_in = y.detach().requires_grad_(True)
-            out = func(y_in, x, *params)
-            (jac,) = torch.autograd.grad(
-                out, y_in, grad_outputs=torch.ones_like(out), create_graph=True
-            )
-            return jac
+            return torch.autograd.grad(
+                func(y.requires_grad_(), x, *params).sum(), y, create_graph=True
+            )[0]
     return torch.autograd.functional.jacobian(
         lambda y_: func(y_, x, *params).sum((0, 1)),
         y,
@@ -39,160 +36,127 @@ def _jacobian(
     ).permute(1, 2, 0, 3)
 
 
-def _newton_solve(
-    func: Callable[..., Tensor],
-    x: Tensor | tuple[Tensor, ...],
-    init: Tensor,
-    *,
-    params: tuple[Tensor, ...] = (),
-    fprime: Callable[..., Tensor] | None = None,
-    y0: Tensor | None = None,
-    max_iter: int = 100,
-    max_halvings: int = 8,
-    atol: float | None = None,
-    rtol: float | None = None,
-    recur_kwargs: dict | None = None,
-) -> tuple[Tensor, int]:
-    recur_kwargs = recur_kwargs or {}
-    x_prim = x[0] if isinstance(x, tuple) else x
-    B, T = x_prim.size(0), x_prim.size(1)
-    eps = torch.finfo(x_prim.dtype).eps
-    atol_eff = eps if atol is None else atol
-    rtol_eff = 8.0 * eps if rtol is None else rtol
+class _NewtonSolve(Function):
+    @staticmethod
+    def forward(config, init, *all_tensors):
+        (
+            func,
+            fprime,
+            y0,
+            max_iter,
+            max_halvings,
+            atol,
+            rtol,
+            recur_kwargs,
+            num_x,
+        ) = config
+        x = all_tensors[0] if num_x == 1 else all_tensors[:num_x]
+        params = all_tensors[num_x:]
+        x_prim = all_tensors[0]
+        B, T = x_prim.size(0), x_prim.size(1)
+        eps = torch.finfo(x_prim.dtype).eps
+        atol_eff = eps if atol is None else atol
+        rtol_eff = 8.0 * eps if rtol is None else rtol
 
-    is_scalar = (init.dim() == 1) or (init.dim() == 2 and init.size(-1) == 1 and x_prim.dim() == 2)
-    recur_fn = linear_recurrence if is_scalar else state_space_recursion
+        is_scalar = (init.dim() == 1) or (
+            init.dim() == 2 and init.size(-1) == 1 and x_prim.dim() == 2
+        )
+        recur_fn = linear_recurrence if is_scalar else state_space_recursion
 
-    init_in = init.squeeze(-1) if (is_scalar and init.dim() == 2) else init
-    y = x_prim.new_empty(B, T + 1, *init_in.shape[1:])
-    y[:, 0] = init_in
-    y[:, 1:] = (
-        init_in.unsqueeze(1).expand(B, T, *init_in.shape[1:])
-        if y0 is None
-        else (y0.squeeze(-1) if (is_scalar and y0.dim() == 3) else y0)
-    )
+        init_in = init.squeeze(-1) if (is_scalar and init.dim() == 2) else init
+        y = x_prim.new_empty(B, T + 1, *init_in.shape[1:])
+        y[:, 0] = init_in
+        y[:, 1:] = (
+            init_in.unsqueeze(1).expand(B, T, *init_in.shape[1:])
+            if y0 is None
+            else (y0.squeeze(-1) if (is_scalar and y0.dim() == 3) else y0)
+        )
 
-    slice_x = (
-        (lambda s: tuple(xi[:, s:] for xi in x)) if isinstance(x, tuple) else (lambda s: x[:, s:])
-    )
+        slice_x = (
+            (lambda s: tuple(xi[:, s:] for xi in x))
+            if isinstance(x, tuple)
+            else (lambda s: x[:, s:])
+        )
 
-    for i in range(max_iter):
-        y_prev = y[:, i:-1]
-        x_curr = slice_x(i)
-        next_y = func(y_prev, x_curr, *params)
-        res = next_y - y[:, i + 1 :]
-        y[:, i + 1] = next_y[:, 0]
+        for i in range(max_iter):
+            y_prev = y[:, i:-1]
+            x_curr = slice_x(i)
+            next_y = func(y_prev, x_curr, *params)
+            res = next_y - y[:, i + 1 :]
+            y[:, i + 1] = next_y[:, 0]
 
-        if i + 2 > T:
-            break
+            if i + 2 > T:
+                break
 
-        if (res.abs() <= atol_eff + rtol_eff * y[:, i + 1 :].abs()).all():
-            break
+            if (res.abs() <= atol_eff + rtol_eff * y[:, i + 1 :].abs()).all():
+                break
 
-        jac = _jacobian(func, y_prev, x_curr, params, fprime)
-        delta = recur_fn(jac[:, 1:], res[:, 0], res[:, 1:], **recur_kwargs)
+            jac = _jacobian(func, y_prev, x_curr, params, fprime)
+            delta = recur_fn(jac[:, 1:], res[:, 0], res[:, 1:], **recur_kwargs)
 
-        if not torch.isfinite(delta).all():
+            if not torch.isfinite(delta).all():
+                warnings.warn(
+                    "newton_solve diverged (non-finite step or residual); "
+                    "the returned state is set to NaN",
+                    RuntimeWarning,
+                    stacklevel=2,
+                )
+                y[:, 1:] = float("nan")
+                break
+
+            base = y[:, i + 2 :].clone()
+            merit = torch.linalg.vector_norm(res[:, 1:])
+            t = 1.0
+            for _ in range(max_halvings + 1):
+                cand = base + t * delta
+                y[:, i + 2 :] = cand
+                cand_res = func(y[:, i + 1 : -1], slice_x(i + 1), *params) - cand
+                if (
+                    torch.linalg.vector_norm(cand_res) < merit
+                    or (cand_res.abs() <= atol_eff + rtol_eff * cand.abs()).all()
+                ):
+                    break
+                t /= 2.0
+        else:
             warnings.warn(
-                "newton_solve diverged (non-finite step or residual); "
+                f"newton_solve diverged (did not converge in {max_iter} iterations); "
                 "the returned state is set to NaN",
                 RuntimeWarning,
                 stacklevel=2,
             )
             y[:, 1:] = float("nan")
-            break
 
-        base = y[:, i + 2 :].clone()
-        merit = torch.linalg.vector_norm(res[:, 1:])
-        t = 1.0
-        for _ in range(max_halvings + 1):
-            cand = base + t * delta
-            y[:, i + 2 :] = cand
-            cand_res = func(y[:, i + 1 : -1], slice_x(i + 1), *params) - cand
-            if (
-                torch.linalg.vector_norm(cand_res) < merit
-                or (cand_res.abs() <= atol_eff + rtol_eff * cand.abs()).all()
-            ):
-                break
-            t /= 2.0
-    else:
-        warnings.warn(
-            f"newton_solve diverged (did not converge in {max_iter} iterations); "
-            "the returned state is set to NaN",
-            RuntimeWarning,
-            stacklevel=2,
-        )
-        y[:, 1:] = float("nan")
-
-    return y[:, 1:], i + 1
-
-
-class _NewtonSolve(Function):
-    @staticmethod
-    def forward(
-        func,
-        fprime,
-        max_iter,
-        max_halvings,
-        atol,
-        rtol,
-        y0,
-        recur_kwargs,
-        num_x,
-        init,
-        *all_tensors,
-    ):
-        x = all_tensors[0] if num_x == 1 else all_tensors[:num_x]
-        return _newton_solve(
-            func,
-            x,
-            init,
-            params=all_tensors[num_x:],
-            fprime=fprime,
-            y0=y0,
-            max_iter=max_iter,
-            max_halvings=max_halvings,
-            atol=atol,
-            rtol=rtol,
-            recur_kwargs=recur_kwargs,
-        )
+        return y[:, 1:], i + 1
 
     @staticmethod
     def setup_context(ctx, inputs, outputs):
-        (
-            func,
-            fprime,
-            max_iter,
-            max_halvings,
-            atol,
-            rtol,
-            y0,
-            recur_kwargs,
-            num_x,
-            init,
-            *all_tensors,
-        ) = inputs
-        y, _ = outputs
-
+        config, init, *all_tensors = inputs
         ctx.set_materialize_grads(False)
-        ctx.func = func
-        ctx.fprime = fprime
-        ctx.recur_kwargs = recur_kwargs
-        ctx.num_x = num_x
-        ctx.save_for_backward(y, init, *all_tensors)
+        ctx.config = config
+        ctx.save_for_backward(outputs[0], init, *all_tensors)
 
     @staticmethod
     def backward(ctx, grad_y, _):
         if grad_y is None:
-            return (None,) * (10 + len(ctx.saved_tensors) - 2)
+            return (None,) * (2 + len(ctx.saved_tensors) - 2)
 
-        needs_init = ctx.needs_input_grad[9]
-        needs_all = ctx.needs_input_grad[10 : 10 + len(ctx.saved_tensors) - 2]
+        needs_init = ctx.needs_input_grad[1]
+        needs_all = ctx.needs_input_grad[2:]
         if not (needs_init or any(needs_all)):
-            return (None,) * (10 + len(needs_all))
+            return (None,) * (2 + len(needs_all))
 
+        (
+            func,
+            fprime,
+            _,
+            _,
+            _,
+            _,
+            _,
+            recur_kwargs,
+            num_x,
+        ) = ctx.config
         y, init, *all_tensors = ctx.saved_tensors
-        num_x = ctx.num_x
         x = all_tensors[0] if num_x == 1 else all_tensors[:num_x]
         params = all_tensors[num_x:]
         x_prim = all_tensors[0]
@@ -204,51 +168,40 @@ class _NewtonSolve(Function):
         init_in = init.squeeze(-1) if (is_scalar and init.dim() == 2) else init
         y_prev = torch.cat([init_in.unsqueeze(1), y[:, :-1]], dim=1)
 
-        jac = _jacobian(ctx.func, y_prev, x, params, ctx.fprime)
+        jac = _jacobian(func, y_prev, x, params, fprime)
 
         g_rev = grad_y.flip(1)
         if is_scalar:
             a_rev = F.pad(jac.flip(1)[:, :-1], (1, 0))
-            lam_rev = linear_recurrence(a_rev, g_rev.new_zeros(B), g_rev, **ctx.recur_kwargs)
+            lam = linear_recurrence(a_rev, g_rev.new_zeros(B), g_rev, **recur_kwargs).flip(1)
+            grad_init = (lam[:, 0] * jac[:, 0]).reshape_as(init) if needs_init else None
         else:
             jac_rev = jac.flip(1).transpose(-1, -2)
             M = init.size(-1)
             a_rev = torch.cat([jac_rev.new_zeros(B, 1, M, M), jac_rev[:, :-1]], dim=1)
-            lam_rev = state_space_recursion(a_rev, g_rev.new_zeros(B, M), g_rev, **ctx.recur_kwargs)
-        lam = lam_rev.flip(1)
-
-        if needs_init:
-            if is_scalar:
-                grad_init = (lam[:, 0] * jac[:, 0]).reshape_as(init)
-            else:
-                grad_init = (lam[:, 0].unsqueeze(1) @ jac[:, 0]).squeeze(1).reshape_as(init)
-        else:
-            grad_init = None
+            lam = state_space_recursion(a_rev, g_rev.new_zeros(B, M), g_rev, **recur_kwargs).flip(1)
+            grad_init = (
+                (lam[:, 0].unsqueeze(1) @ jac[:, 0]).squeeze(1).reshape_as(init)
+                if needs_init
+                else None
+            )
 
         if any(needs_all):
-            diff_tensors = [
-                t.detach().requires_grad_(True) if needs else t
-                for t, needs in zip(all_tensors, needs_all)
-            ]
-            diff_inputs = [t for t, needs in zip(diff_tensors, needs_all) if needs]
+            diff_tensors = [t.detach().requires_grad_() for t in all_tensors]
             x_diff = diff_tensors[0] if num_x == 1 else tuple(diff_tensors[:num_x])
-            params_diff = tuple(diff_tensors[num_x:])
-
             with torch.enable_grad():
-                out = ctx.func(y_prev, x_diff, *params_diff)
+                out = func(y_prev, x_diff, *diff_tensors[num_x:])
                 grads = torch.autograd.grad(
                     out,
-                    diff_inputs,
+                    diff_tensors,
                     grad_outputs=lam,
                     create_graph=True,
                     allow_unused=True,
                 )
-            grad_iter = iter(grads)
-            grad_all = [next(grad_iter) if needs_all[k] else None for k in range(len(all_tensors))]
         else:
-            grad_all = [None] * len(all_tensors)
+            grads = (None,) * len(all_tensors)
 
-        return (None,) * 9 + (grad_init,) + tuple(grad_all)
+        return None, grad_init, *grads
 
 
 def newton_solve(
@@ -335,17 +288,16 @@ def newton_solve(
             f"Batch size of init ({init.size(0)}) must match x ({x_tensors[0].size(0)})"
         )
 
-    all_tensors = x_tensors + tuple(params)
-    return _NewtonSolve.apply(
+    config = (
         func,
         fprime,
+        y0,
         max_iter,
         max_halvings,
         atol,
         rtol,
-        y0,
         recur_kwargs,
         len(x_tensors),
-        init,
-        *all_tensors,
     )
+    all_tensors = x_tensors + tuple(params)
+    return _NewtonSolve.apply(config, init, *all_tensors)
