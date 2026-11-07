@@ -13,6 +13,12 @@ gets its own index, so ``pip install philtorch --index-url
 Wheels of earlier releases, labelled by PyTorch minor and CUDA version, stay
 in their own indexes, e.g. ``whl/torch2.14-cu130/``.
 
+The wheels of the release tagged ``cuda-dev`` are the latest build of the
+``dev`` branch, which ``.github/workflows/build-wheels.yml`` replaces on every
+push. They go only into the development indexes, ``whl/dev/cu13/`` and
+``whl/dev/cu12/``, never into the indexes above, and the landing page lists
+those last.
+
 The input is the repository's release list from the GitHub API::
 
     gh api --paginate --slurp repos/OWNER/REPO/releases > releases.json
@@ -32,12 +38,14 @@ from pathlib import Path
 
 _NORMALIZE_PATTERN = re.compile(r"[-_.]+")
 PROJECT = "philtorch"
+# The pre-release that holds the latest dev build's CUDA wheels.
+DEV_TAG = "cuda-dev"
 # The local label scripts/torch_matrix.py gives CUDA wheels, e.g. "cu13".
 # Earlier releases used "torch2.14.1.cu130", whose index is per torch minor,
 # which those wheels pin.
 _CUDA_LABEL = re.compile(r"cu(\d+)")
 _OLD_CUDA_LABEL = re.compile(r"torch(\d+)\.(\d+)\.\d+\.cu(\d+)")
-_INDEX_NAME = re.compile(r"cu(\d+)|torch(\d+)\.(\d+)-cu(\d+)")
+_INDEX_NAME = re.compile(r"(dev/)?cu(\d+)|torch(\d+)\.(\d+)-cu(\d+)")
 # GitHub reports a digest for every release asset, so the pages can carry
 # hashes without downloading the wheels.
 _ASSET_DIGEST = re.compile(r"sha256:([0-9a-f]{64})")
@@ -65,6 +73,9 @@ def wheel_project_name(filename: str) -> str:
 
 def index_name(filename: str) -> str | None:
     """Return the index a CUDA wheel belongs in, e.g. ``cu13`` or ``torch2.14-cu130``.
+
+    The wheels of the ``cuda-dev`` release are placed in ``dev/cu13`` and the
+    like by ``release_wheels``.
 
     Returns None for a wheel without a CUDA build label, such as a CPU wheel.
     """
@@ -96,6 +107,11 @@ def release_wheels(releases: Iterable[dict]) -> dict[str, dict[str, tuple[str, s
             index = index_name(filename)
             if index is None:
                 continue
+            if release.get("tag_name") == DEV_TAG:
+                # Only a current label has a development index.
+                if not _CUDA_LABEL.fullmatch(index):
+                    continue
+                index = f"dev/{index}"
             digest = _ASSET_DIGEST.fullmatch(asset.get("digest") or "")
             if digest is None:
                 raise ValueError(
@@ -112,9 +128,12 @@ def release_wheels(releases: Iterable[dict]) -> dict[str, dict[str, tuple[str, s
 
 
 def _sort_key(name: str) -> tuple[int, ...]:
-    # The CUDA major indexes come before the per-torch-minor ones.
-    parts = _INDEX_NAME.fullmatch(name).groups()
-    return (1, int(parts[0])) if parts[0] else (0, *map(int, parts[1:]))
+    # Sorted in reverse: the CUDA major indexes come first, then the
+    # per-torch-minor ones, then the development ones.
+    dev, major, *torch = _INDEX_NAME.fullmatch(name).groups()
+    if major:
+        return (-1 if dev else 1, int(major))
+    return (0, *map(int, torch))
 
 
 def _simple_page(title: str, body: str) -> str:
@@ -145,16 +164,18 @@ def _root_page() -> str:
 
 
 def _landing_page(base_url: str, names: list[str]) -> str:
-    def items(group: list[str]) -> str:
+    def items(group: list[str], pre: str = "") -> str:
         return "".join(
             f'      <li><a href="whl/{name}/">{name}</a>: '
-            f"<code>pip install {PROJECT} --index-url {html.escape(base_url)}/whl/{name}/</code>"
+            f"<code>pip install {pre}{PROJECT} "
+            f"--index-url {html.escape(base_url)}/whl/{name}/</code>"
             "</li>\n"
             for name in group
         )
 
     current = [name for name in names if _CUDA_LABEL.fullmatch(name)]
-    earlier = [name for name in names if not _CUDA_LABEL.fullmatch(name)]
+    development = [name for name in names if name.startswith("dev/")]
+    earlier = [name for name in names if name not in current + development]
     if names:
         body = ""
         if current:
@@ -168,6 +189,12 @@ def _landing_page(base_url: str, names: list[str]) -> str:
                 "    <p>Earlier releases have one index per PyTorch minor and CUDA version.\n"
                 "    Install the matching PyTorch build first:</p>\n"
                 f"    <ul>\n{items(earlier)}    </ul>\n"
+            )
+        if development:
+            body += (
+                "    <p>Development builds hold only the latest build of the dev branch, a\n"
+                "    pre-release, so pip needs <code>--pre</code>:</p>\n"
+                f"    <ul>\n{items(development, '--pre ')}    </ul>\n"
             )
     else:
         body = "    <p>No CUDA wheels have been published yet.</p>\n"

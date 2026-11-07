@@ -105,6 +105,37 @@ def test_writes_one_index_per_torch_minor_and_cuda_for_earlier_releases(tmp_path
         assert again.read_text() == path.read_text()
 
 
+def test_dev_release_wheels_go_only_into_the_dev_indexes(tmp_path):
+    stable = asset(CU13, b"stable", "v0.9.0")
+    dev12 = asset(CU13.replace("0.9.0+cu13", "0.9.1.dev7+cu12"), b"dev12", "cuda-dev")
+    dev13 = asset(CU13.replace("0.9.0+cu13", "0.9.1.dev7+cu13"), b"dev13", "cuda-dev")
+    # A wheel without a current CUDA label has no development index.
+    old = asset(CU130, b"old", "cuda-dev")
+    releases = [release("cuda-dev", dev12, dev13, old), release("v0.9.0", stable)]
+
+    counts = INDEX.build_site(releases, tmp_path / "site", BASE_URL)
+
+    assert counts == {"cu13": 1, "dev/cu13": 1, "dev/cu12": 1}
+    stable_page = (tmp_path / "site/whl/cu13/philtorch/index.html").read_text()
+    assert link(stable) in stable_page
+    assert "dev7" not in stable_page
+    assert not (tmp_path / "site/whl/cu12").exists()
+    page = (tmp_path / "site/whl/dev/cu12/philtorch/index.html").read_text()
+    assert link(dev12) in page
+    assert link(dev13) not in page
+    assert (
+        '<a href="philtorch/">philtorch</a>'
+        in (tmp_path / "site/whl/dev/cu13/index.html").read_text()
+    )
+    landing = (tmp_path / "site/index.html").read_text()
+    command = f"pip install --pre philtorch --index-url {BASE_URL}/whl/dev/cu13/"
+    assert command in landing
+    assert landing.index("whl/cu13/") < landing.index("Development builds")
+    assert landing.index("Development builds") < landing.index("whl/dev/cu13/")
+    assert landing.index("whl/dev/cu13/") < landing.index("whl/dev/cu12/")
+    assert "Earlier releases" not in landing
+
+
 def test_keeps_wheels_from_older_releases(tmp_path):
     new = asset(CU130.replace("0.6.0+torch2.14.1", "0.6.1+torch2.14.2"), b"new", "v0.6.1")
     old = asset(CU130, b"old")

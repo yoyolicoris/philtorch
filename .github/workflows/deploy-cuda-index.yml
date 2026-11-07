@@ -3,10 +3,12 @@ name: Deploy CUDA wheel index
 # Rebuilds the PEP 503 index of PhilTorch's CUDA wheels from the assets of
 # every published release (scripts/generate_simple_index.py) and deploys it to
 # GitHub Pages. It runs after "Build wheels" succeeds for a published
-# release, which attaches that release's CUDA wheels and publishes to PyPI, and
-# can be run by hand, e.g. after a release is deleted.
+# release, which attaches that release's CUDA wheels and publishes to PyPI, or
+# for a push to dev, which replaces the wheels of the `cuda-dev` pre-release,
+# the development indexes' only content. It can be run by hand, e.g. after a
+# release is deleted.
 #
-# Pages must be enabled with GitHub Actions as its source. Both triggers run
+# Pages must be enabled with GitHub Actions as its source. Every trigger runs
 # on the default branch, which the github-pages environment allows to deploy
 # by default; a job in the release's own run would run on its tag instead.
 
@@ -28,7 +30,13 @@ jobs:
   build:
     if: >
       github.event_name == 'workflow_dispatch' ||
-      (github.event.workflow_run.event == 'release' && github.event.workflow_run.conclusion == 'success')
+      (
+        github.event.workflow_run.conclusion == 'success' &&
+        (
+          github.event.workflow_run.event == 'release' ||
+          (github.event.workflow_run.event == 'push' && github.event.workflow_run.head_branch == 'dev')
+        )
+      )
     runs-on: ubuntu-latest
     permissions:
       contents: read

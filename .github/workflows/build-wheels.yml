@@ -163,10 +163,11 @@ jobs:
       contents: read
     uses: ./.github/workflows/docs.yml
 
-  # Releases only: the CUDA wheels, built and GPU-tested alongside the CPU
-  # jobs; attach-cuda-wheels attaches them once everything has passed.
+  # Releases and dev pushes: the CUDA wheels, built and GPU-tested alongside
+  # the CPU jobs; attach-cuda-wheels (releases) and publish-dev-cuda-wheels
+  # (dev pushes) publish them once everything has passed.
   cuda-wheels:
-    if: github.event_name == 'release'
+    if: github.event_name == 'release' || github.event_name == 'push'
     permissions:
       contents: read
     uses: ./.github/workflows/build-cuda-wheels.yml
@@ -245,6 +246,89 @@ jobs:
               exit 1
             fi
           done
+
+  # Keeps the CUDA wheels of the latest dev push in the `cuda-dev` pre-release,
+  # once every check has passed, for deploy-cuda-index.yml to list in the
+  # development indexes. Not a tag named `dev`, which would make `dev` an
+  # ambiguous ref. The release holds exactly one wheel per CUDA major.
+  publish-dev-cuda-wheels:
+    needs: [resolve-legs, build, build-newest-torch, build-sdist, docs, test, cuda-wheels]
+    # `!cancelled()` as in `publish`: every required result is checked here.
+    if: >
+      !cancelled() &&
+      github.event_name == 'push' && github.ref == 'refs/heads/dev' &&
+      needs.build.result == 'success' &&
+      needs.build-newest-torch.result == 'success' &&
+      needs.build-sdist.result == 'success' &&
+      needs.docs.result == 'success' &&
+      needs.test.result == 'success' &&
+      needs.cuda-wheels.result == 'success'
+    # One run at a time changes the release, never cancelled halfway.
+    concurrency:
+      group: cuda-dev-release
+      cancel-in-progress: false
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+    steps:
+      - uses: actions/checkout@v7
+        with:
+          fetch-depth: 0
+          # fetch-depth: 0 so setuptools_scm sees the tags.
+
+      - uses: actions/setup-python@v7
+        with:
+          python-version: "3.x"
+
+      - uses: actions/download-artifact@v8
+        with:
+          pattern: cuda-wheels-*
+          merge-multiple: true
+          path: wheels/
+
+      - name: Publish the wheels to the cuda-dev pre-release
+        env:
+          GH_TOKEN: ${{ github.token }}
+          BUILDS: ${{ needs.resolve-legs.outputs.cuda_builds }}
+        run: |
+          EXPECTED=$(echo "$BUILDS" | jq length)
+          FOUND=$(ls wheels/*.whl | wc -l)
+          if [ "$FOUND" -ne "$EXPECTED" ]; then
+            echo "::error::Expected $EXPECTED wheels, found $FOUND"
+            exit 1
+          fi
+          pip install -q "setuptools_scm>=8"
+          SCM_VERSION=$(python -m setuptools_scm)
+          for WHEEL in wheels/*.whl; do
+            NAME=$(basename "$WHEEL")
+            VERSION=$(echo "$NAME" | cut -d- -f2)
+            if [ "${VERSION%%+*}" != "$SCM_VERSION" ]; then
+              echo "::error::$NAME was not built as version $SCM_VERSION"
+              exit 1
+            fi
+          done
+          # A newer push has its own run, which would be overwritten by this
+          # older one if it finished later.
+          LATEST=$(gh api "repos/$GITHUB_REPOSITORY/branches/dev" --jq .commit.sha)
+          if [ "$LATEST" != "$GITHUB_SHA" ]; then
+            echo "::notice::dev has moved on to $LATEST; not publishing the wheels of $GITHUB_SHA"
+            exit 0
+          fi
+          if ! gh release view cuda-dev --repo "$GITHUB_REPOSITORY" > /dev/null 2>&1; then
+            gh release create cuda-dev --repo "$GITHUB_REPOSITORY" --target "$GITHUB_SHA" \
+              --prerelease --latest=false --title "CUDA wheels of dev" \
+              --notes "CUDA wheels of the latest dev build."
+          fi
+          gh release upload cuda-dev wheels/*.whl --repo "$GITHUB_REPOSITORY" --clobber
+          # Keep only the new wheels: those of an earlier build are gone.
+          gh release view cuda-dev --repo "$GITHUB_REPOSITORY" --json assets --jq '.assets[].name' |
+            while read -r ASSET; do
+              if [ ! -e "wheels/$ASSET" ]; then
+                gh release delete-asset cuda-dev "$ASSET" --repo "$GITHUB_REPOSITORY" --yes
+              fi
+            done
+          gh release edit cuda-dev --repo "$GITHUB_REPOSITORY" --prerelease --latest=false \
+            --notes "CUDA wheels of the latest dev build, version $SCM_VERSION, commit $GITHUB_SHA."
 
   # Each OS's wheel on every cpu_tests leg: a torch, maybe a later minor than
   # the wheel's, and a Python. A missing wheel (its build failed) fails the
