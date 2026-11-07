@@ -1,48 +1,85 @@
 import pytest
 import torch
-from torch._higher_order_ops import scan
 
-from philtorch.prototype.nl import newton_solve
-
-
-def feedforward_comp_func(gprev, x, at, rt):
-    attack_mask = x < gprev
-    coeff = torch.where(attack_mask, at, rt)
-    return coeff * x + (1 - coeff) * gprev
+from philtorch.nl import _newton_solve
 
 
-def fprime(gprev, x, at, rt):
-    attack_mask = x < gprev
-    coeff = torch.where(attack_mask, at, rt)
-    return (1 - coeff).unsqueeze(-2)
-
-
+@pytest.mark.parametrize("is_scalar", [True, False])
 @pytest.mark.parametrize("use_fprime", [False, True])
-def test_newton_solve(use_fprime: bool):
-    batch_size = 3
-    g = torch.rand(batch_size, 100, 1)
-    y0 = torch.ones(batch_size, 100, 1)
-    at = torch.rand(batch_size, 1, 1)
-    rt = torch.rand(batch_size, 1, 1)
-    init = torch.ones(batch_size, 1)
-    y, iters = newton_solve(
-        lambda gprev, x: feedforward_comp_func(gprev, x, at=at, rt=rt),
-        g,
-        y0,
-        max_iter=10,
-        init=init,
-        atol=1e-8,
-        rtol=1e-6,
-        fprime=((lambda gprev, x: fprime(gprev, x, at=at, rt=rt)) if use_fprime else None),
+def test_newton_solve_forward_against_sequential_ref(is_scalar: bool, use_fprime: bool):
+    B, T = 2, 8
+    torch.manual_seed(0)
+    if is_scalar:
+        step_fn = lambda y, x, w: torch.tanh(w * y + x)
+        fprime = (
+            (lambda y, x, w: (1.0 - step_fn(y, x, w).square()) * w)
+            if use_fprime
+            else None
+        )
+        x = torch.randn(B, T, dtype=torch.float64)
+        init = torch.randn(B, dtype=torch.float64)
+        w = torch.tensor(0.5, dtype=torch.float64)
+        params = (w,)
+        # Sequential ref
+        y_ref = torch.empty(B, T, dtype=torch.float64)
+        curr = init
+        for t in range(T):
+            curr = step_fn(curr, x[:, t], w)
+            y_ref[:, t] = curr
+    else:
+        M = 2
+        step_fn = lambda y, x, A: torch.tanh(y @ A.T + x)
+        fprime = (
+            (lambda y, x, A: (1.0 - step_fn(y, x, A).square()).unsqueeze(-1) * A)
+            if use_fprime
+            else None
+        )
+        x = torch.randn(B, T, M, dtype=torch.float64)
+        init = torch.randn(B, M, dtype=torch.float64)
+        A = torch.tensor([[0.3, 0.1], [0.0, 0.2]], dtype=torch.float64)
+        params = (A,)
+        y_ref = torch.empty(B, T, M, dtype=torch.float64)
+        curr = init
+        for t in range(T):
+            curr = step_fn(curr, x[:, t], A)
+            y_ref[:, t] = curr
+
+    y_sol, iters = _newton_solve(
+        step_fn,
+        x,
+        init,
+        params=params,
+        fprime=fprime,
+        y0=None,
+        max_iter=100,
+        max_halvings=8,
+        atol=None,
+        rtol=None,
+        recur_kwargs={},
     )
+    assert torch.allclose(y_sol, y_ref, atol=1e-10, rtol=1e-10)
 
-    target = scan(
-        lambda gprev, x: (lambda x: (x, x.clone()))(
-            feedforward_comp_func(gprev, x, at=at.squeeze(-2), rt=rt.squeeze(-2))
-        ),
-        init=init,
-        xs=g.transpose(0, 1),
-        dim=0,
-    )[1].transpose(0, 1)
 
-    assert torch.allclose(y, target), (y - target).abs().max()
+def test_newton_solve_linear_system_convergence():
+    B, T, M = 2, 6, 2
+    torch.manual_seed(1)
+    A = torch.tensor([[0.4, 0.1], [0.0, 0.3]], dtype=torch.float64)
+    x = torch.randn(B, T, M, dtype=torch.float64)
+    init = torch.randn(B, M, dtype=torch.float64)
+    step_fn = lambda y, x, A: y @ A.T + x
+    fprime = lambda y, x, A: A.expand(y.shape[0], y.shape[1], M, M)
+
+    y_sol, iters = _newton_solve(
+        step_fn,
+        x,
+        init,
+        params=(A,),
+        fprime=fprime,
+        y0=None,
+        max_iter=100,
+        max_halvings=8,
+        atol=None,
+        rtol=None,
+        recur_kwargs={},
+    )
+    assert iters <= 2

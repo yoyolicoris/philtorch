@@ -22,4 +22,4 @@ except ImportError:
 check_torch_build(__version__, torch.__version__, torch.version.cuda)
 
 # The compiled extension, then its ops' fake and autograd implementations.
-from . import _C, _ops  # noqa: E402, F401
+from . import _C, _ops, nl  # noqa: E402, F401
