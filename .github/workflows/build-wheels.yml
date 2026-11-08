@@ -253,7 +253,13 @@ jobs:
   # which runs only once every CPU check has passed.
   publish-dev-cuda-wheels:
     needs: [publish, cuda-wheels]
-    if: github.event_name == 'push'
+    # Without `!cancelled()`, the skipped attach-cuda-wheels, which `publish`
+    # needs, would skip this job too.
+    if: >
+      !cancelled() &&
+      github.event_name == 'push' &&
+      needs.publish.result == 'success' &&
+      needs.cuda-wheels.result == 'success'
     # One run at a time changes the release, never cancelled halfway.
     concurrency:
       group: cuda-dev-release
