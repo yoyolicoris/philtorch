@@ -36,18 +36,27 @@ def pull_request_paths(workflow: str) -> list[str]:
         elif state == "pull_request" and line == "    paths:":
             state = "paths"
         elif state == "paths":
+            # The list ends at the next key, indented less than its entries.
+            if line.strip() and len(line) - len(line.lstrip()) < 6:
+                break
             entry = re.fullmatch(r'      - "(.+)"', line)
             if entry:
                 patterns.append(entry[1])
             elif not line.lstrip().startswith("#"):
-                break
+                raise ValueError(f"unexpected line in the pull_request paths: {line!r}")
     if not patterns:
         raise ValueError("no pull_request paths found in the workflow")
     return patterns
 
 
 def pattern_regex(pattern: str) -> re.Pattern[str]:
-    """GitHub's filter: ``*`` matches any characters but ``/``, ``**`` any."""
+    """GitHub's filter: ``*`` matches any characters but ``/``, ``**`` any.
+
+    GitHub's other special characters, ``?+[]!``, raise a ``ValueError``.
+    """
+    special = sorted(set(pattern) & set("?+[]!"))
+    if special:
+        raise ValueError(f"{pattern!r}: unsupported special characters {''.join(special)}")
     regex = ""
     i = 0
     while i < len(pattern):

@@ -32,6 +32,13 @@ def test_parsing_skips_comments_and_stops_at_the_end_of_the_list():
     assert PATHS.pull_request_paths(text) == ["a/**", "b.py"]
 
 
+@pytest.mark.parametrize("line", ["", "      - 'b.py'", "      - b.py"])
+def test_parsing_rejects_an_unexpected_line_in_the_list(line):
+    text = f'on:\n  pull_request:\n    paths:\n      - "a.py"\n{line}\n      - "c.py"\n'
+    with pytest.raises(ValueError, match="unexpected line"):
+        PATHS.pull_request_paths(text)
+
+
 def test_parsing_rejects_a_workflow_without_paths():
     with pytest.raises(ValueError, match="no pull_request paths"):
         PATHS.pull_request_paths("on:\n  pull_request:\n    branches: [dev]\n")
@@ -53,11 +60,17 @@ def test_parsing_rejects_a_workflow_without_paths():
         ("philtorch/**/_*_kernels.py", "philtorch/_recur_kernels.py", True),
         ("philtorch/**/_*_kernels.py", "philtorch/align/dtw.py", False),
         ("tests/test_recur.py", "tests/test_recur_ext.py", False),
-        ("a+b/(c).py", "a+b/(c).py", True),
+        ("a/(b).py", "a/(b).py", True),
     ],
 )
 def test_pattern_matching(pattern, file, matches):
     assert PATHS.touches([pattern], [file]) is matches
+
+
+@pytest.mark.parametrize("pattern", ["a?.py", "a+.py", "[ab].py", "!a.py"])
+def test_pattern_rejects_unsupported_special_characters(pattern):
+    with pytest.raises(ValueError, match="unsupported special characters"):
+        PATHS.touches([pattern], ["a.py"])
 
 
 def test_touches_any_file_and_any_pattern():

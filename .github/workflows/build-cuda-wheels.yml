@@ -72,11 +72,12 @@ on:
 permissions:
   contents: read
 
-# A newer push supersedes the previous run's expensive builds. When
-# build-wheels.yml calls this workflow, github.workflow is its name, so the
-# group is spelled out.
+# A newer push to a pull request supersedes its previous run's expensive
+# builds. Each dev push has a group of its own, as in build-wheels.yml, so its
+# run is never cancelled. When build-wheels.yml calls this workflow,
+# github.workflow is its name, so the group is spelled out.
 concurrency:
-  group: build-cuda-wheels-${{ github.ref }}
+  group: build-cuda-wheels-${{ github.event_name == 'push' && github.run_id || github.ref }}
   cancel-in-progress: true
 
 jobs:
@@ -100,9 +101,11 @@ jobs:
 
       - name: Check whether the GPU test is needed
         id: paths
+        env:
+          BEFORE: ${{ github.event.before }}
         run: >
           python3 scripts/cuda_paths_changed.py --event "$GITHUB_EVENT_NAME"
-          --before "${{ github.event.before }}" --sha "$GITHUB_SHA" >> "$GITHUB_OUTPUT"
+          --before "$BEFORE" --sha "$GITHUB_SHA" >> "$GITHUB_OUTPUT"
 
   build:
     # A name of its own: GitHub would otherwise list every matrix value, the
