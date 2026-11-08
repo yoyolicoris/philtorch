@@ -290,7 +290,14 @@ jobs:
           gh api -X PATCH "repos/$GITHUB_REPOSITORY/git/refs/tags/cuda-dev" \
             -f sha="$GITHUB_SHA" -F force=true > /dev/null ||
             echo "::warning::could not move the cuda-dev tag to $GITHUB_SHA"
-          gh release upload cuda-dev wheels/*.whl --clobber
+          # A re-run rebuilds the same filenames, maybe with other bytes: keep
+          # the uploaded ones, whose hashes the live index lists.
+          UPLOADED=$(gh release view cuda-dev --json assets \
+            --jq '.assets[] | select(.state == "uploaded") | .name')
+          for WHEEL in wheels/*.whl; do
+            echo "$UPLOADED" | grep -qxF "$(basename "$WHEEL")" ||
+              gh release upload cuda-dev "$WHEEL"
+          done
           # Keep this build and the one before it, whose wheels the live index
           # links to until this run's Pages deployment replaces it.
           KEEP=$((2 * $(ls wheels/*.whl | wc -l)))
