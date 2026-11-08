@@ -1,5 +1,7 @@
 #include "recurN_scan.cuh"
 
+#include "recur_checks.h"
+
 #include <cstdint>
 #include <limits>
 
@@ -12,9 +14,13 @@ namespace rn = philtorch::recur_n;
 
 namespace
 {
+    // The largest state size of S, a complex state counting twice.
+    template <class S>
+    constexpr int max_states = rn::is_cx<rn::acc_t<S>> ? rn::MAX_STATES / 2 : rn::MAX_STATES;
+
     // Steps per chunk, a power of 2 (the power's squarings), a complex state
     // counting twice: longer chunks mean fewer look-backs, shorter ones more
-    // blocks. Measured on an RTX 5060 Ti.
+    // blocks.
     int chunk_steps(int BM, bool complex, bool varying)
     {
         const int states = BM * (complex ? 2 : 1);
@@ -29,7 +35,7 @@ namespace
     {
         if (bm == BM)
             f(std::integral_constant<int, BM>{});
-        else if constexpr (BM < (rn::is_cx<rn::acc_t<S>> ? rn::MAX_STATES / 2 : rn::MAX_STATES))
+        else if constexpr (BM < max_states<S>)
             with_bm<S, BM * 2>(bm, f);
     }
 
@@ -70,7 +76,7 @@ namespace
         using Acc = rn::acc_t<S>;
         constexpr bool complex = rn::is_cx<Acc>;
         const int64_t B = x.size(0), T = x.size(1), M = x.size(2);
-        STD_TORCH_CHECK(M <= (complex ? rn::MAX_STATES / 2 : rn::MAX_STATES),
+        STD_TORCH_CHECK(M <= max_states<S>,
                         "the CUDA recurrence takes M up to ", rn::MAX_STATES, " (", rn::MAX_STATES / 2,
                         " complex), got ", M);
         STD_TORCH_CHECK(T <= std::numeric_limits<int>::max(),
@@ -92,20 +98,20 @@ namespace
         // The scratch: each chunk's end state, offset and map; A^chunk and a
         // buffer for the squarings; the flags and the ticket counter.
         size_t bytes = 0;
-        auto reserve = [&](int64_t n)
+        auto reserve = [&](int64_t n_bytes)
         {
             const size_t offset = bytes;
-            bytes += philtorch::ceil_div<size_t>(n * sizeof(Acc), 256) * 256;
+            bytes += philtorch::ceil_div<size_t>(n_bytes, 256) * 256;
             return offset;
         };
         const int64_t BC = B * C;
         const bool scan = C > 1;
-        const size_t o_states = reserve(scan ? BC * M : 0);
-        const size_t o_offsets = reserve(scan ? BC * M : 0);
-        const size_t o_maps = reserve(scan && VARYING ? BC * M * M : 0);
-        const size_t o_power = reserve(scan && !VARYING ? Ba * M * M : 0);
-        const size_t o_tmp = reserve(scan && !VARYING ? Ba * M * M : 0);
-        const size_t o_flags = reserve(((BC + 1) * sizeof(int) + sizeof(Acc) - 1) / sizeof(Acc));
+        const size_t o_states = reserve(scan ? BC * M * sizeof(Acc) : 0);
+        const size_t o_offsets = reserve(scan ? BC * M * sizeof(Acc) : 0);
+        const size_t o_maps = reserve(scan && VARYING ? BC * M * M * sizeof(Acc) : 0);
+        const size_t o_power = reserve(scan && !VARYING ? Ba * M * M * sizeof(Acc) : 0);
+        const size_t o_tmp = reserve(scan && !VARYING ? Ba * M * M * sizeof(Acc) : 0);
+        const size_t o_flags = reserve((BC + 1) * sizeof(int));
         auto work = torch::stable::empty({static_cast<int64_t>(bytes)}, torch::headeronly::ScalarType::Byte,
                                          std::nullopt, x.device());
         char *base = static_cast<char *>(work.mutable_data_ptr());
@@ -140,17 +146,7 @@ namespace
                         "A must have the same scalar type as input");
         STD_TORCH_CHECK(A.device() == x.device() && zi.device() == x.device(),
                         "A and zi must be on the same device as input");
-        STD_TORCH_CHECK(VARYING ? (A.dim() == 3 || A.dim() == 4) : (A.dim() == 2 || A.dim() == 3),
-                        VARYING ? "A must be a 3D or 4D tensor" : "A must be a 2D or 3D tensor");
-        STD_TORCH_CHECK(x.dim() == 3 && zi.dim() == 2 && zi.size(0) == x.size(0) &&
-                            zi.size(1) == A.size(-1),
-                        "x must be (B, T, M) and zi (B, M)");
-        STD_TORCH_CHECK(x.size(2) == A.size(-1), "Last dimension of x must match last dimension of A");
-        STD_TORCH_CHECK(A.size(-1) == A.size(-2), "Last two dimensions of A must be equal");
-        if constexpr (VARYING)
-            STD_TORCH_CHECK(A.size(-3) == x.size(1), "A must have one matrix per time step of x");
-        STD_TORCH_CHECK(A.dim() == (VARYING ? 3 : 2) || A.size(0) == x.size(0),
-                        "A must have the batch size of x");
+        check_recurN_shapes(A, zi, x, VARYING);
         const auto A_contiguous = torch::stable::contiguous(A);
         const auto zi_contiguous = torch::stable::contiguous(zi);
         const auto x_contiguous = torch::stable::contiguous(x);
@@ -167,20 +163,10 @@ namespace
             AT_FLOATING_TYPES, AT_COMPLEX_TYPES, S::Long, S::Half, S::BFloat16);
         return out;
     }
-
-    Tensor recurN_cuda(const Tensor &A, const Tensor &zi, const Tensor &x)
-    {
-        return recur_cuda<true>(A, zi, x);
-    }
-
-    Tensor lti_recurN_cuda(const Tensor &A, const Tensor &zi, const Tensor &x)
-    {
-        return recur_cuda<false>(A, zi, x);
-    }
 } // namespace
 
 STABLE_TORCH_LIBRARY_IMPL(philtorch, CUDA, m)
 {
-    m.impl("recurN", TORCH_BOX(&recurN_cuda));
-    m.impl("lti_recurN", TORCH_BOX(&lti_recurN_cuda));
+    m.impl("recurN", TORCH_BOX(&recur_cuda<true>));
+    m.impl("lti_recurN", TORCH_BOX(&recur_cuda<false>));
 }

@@ -5,6 +5,7 @@
 #include <vector>
 
 #include "host_dot.h"
+#include "recur_checks.h"
 
 using torch::stable::Tensor;
 
@@ -277,16 +278,7 @@ Tensor lti_recur_cpu(const Tensor &a, const Tensor &zi,
 Tensor lti_recurN_cpu(const Tensor &A, const Tensor &zi,
                       const Tensor &x)
 {
-    STD_TORCH_CHECK(A.dim() == 2 || A.dim() == 3, "A must be a 2D or 3D tensor");
-    STD_TORCH_CHECK(x.dim() == 3 && zi.dim() == 2 && zi.size(0) == x.size(0) &&
-                        zi.size(1) == A.size(-1),
-                    "x must be (B, T, M) and zi (B, M)");
-    STD_TORCH_CHECK(x.size(2) == A.size(-1),
-                    "Last dimension of x must match last dimension of A");
-    STD_TORCH_CHECK(A.size(-1) == A.size(-2),
-                    "Last two dimensions of A must be equal");
-    STD_TORCH_CHECK(A.dim() == 2 || A.size(0) == x.size(0),
-                    "A must have the batch size of x");
+    check_recurN_shapes(A, zi, x, false);
     auto order = A.size(-1);
     return recur_cpu_launch(A, zi, x, order, A.dim() == 3 ? order * order : 0, 0);
 }
@@ -294,18 +286,7 @@ Tensor lti_recurN_cpu(const Tensor &A, const Tensor &zi,
 Tensor recurN_cpu(const Tensor &A, const Tensor &zi,
                   const Tensor &x)
 {
-    STD_TORCH_CHECK(A.dim() == 3 || A.dim() == 4, "A must be a 3D or 4D tensor");
-    STD_TORCH_CHECK(x.dim() == 3 && zi.dim() == 2 && zi.size(0) == x.size(0) &&
-                        zi.size(1) == A.size(-1),
-                    "x must be (B, T, M) and zi (B, M)");
-    STD_TORCH_CHECK(x.size(2) == A.size(-1),
-                    "Last dimension of x must match last dimension of A");
-    STD_TORCH_CHECK(A.size(-1) == A.size(-2),
-                    "Last two dimensions of A must be equal");
-    STD_TORCH_CHECK(A.size(-3) == x.size(1),
-                    "A must have one matrix per time step of x");
-    STD_TORCH_CHECK(A.dim() == 3 || A.size(0) == x.size(0),
-                    "A must have the batch size of x");
+    check_recurN_shapes(A, zi, x, true);
     auto order = A.size(-1);
     return recur_cpu_launch(A, zi, x, order,
                             A.dim() == 4 ? x.size(1) * order * order : 0,

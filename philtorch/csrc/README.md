@@ -19,6 +19,7 @@ One three-pass design serves every input: reduce each tile, scan the tile totals
 | --- | --- |
 | [`ops.cpp`](ops.cpp) | Creates the `philtorch._C` module and defines the dispatcher schemas of the recurrence ops, `philtorch::lti_recur` among them. |
 | [`host_recur.cpp`](host_recur.cpp) | CPU kernels of the recurrence ops, `philtorch::scan` included, split over time when a batch has fewer sequences than threads, long enough for the split to pay. |
+| [`recur_checks.h`](recur_checks.h) | The shape checks shared by the CPU and CUDA kernels of `lti_recurN` and `recurN`. |
 | [`stable_support.h`](stable_support.h) | What every source needs beyond torch's stable C++ API, which they use alone (`torch/csrc/stable`, `torch/headeronly`): the target version, `build_support.MIN_TORCH`, `opmath_type`, `ceil_div`, dtype predicates, `current_cuda_stream`, and, for CUDA sources, the `USE_CUDA` definition. |
 | [`host_dot.h`](host_dot.h) | The dot product of the CPU kernels of the recurrence ops and of `lpc`, vectorized for float and double from size 8. |
 | [`torchlpc_shim.cpp`](torchlpc_shim.cpp) | Defines the schemas of `philtorch::scan` and `philtorch::lpc`, and the CPU kernel of `lpc`, one sequence per thread. |
@@ -261,7 +262,7 @@ for M up to 128 (64 for complex64), the CUDA kernels' limit, in the same four dt
 
 ### Algorithm
 
-The design follows the CUDA kernels of [`recurN_scan.cuh`](recurN_scan.cuh), without their decoupled look-back, which needs a forward-progress guarantee Apple GPUs don't give.
+The design shares the chunk-map scan of [`recurN_scan.cuh`](recurN_scan.cuh), without its decoupled look-back, which needs a forward-progress guarantee Apple GPUs don't give; the layout of the kernels differs.
 Every sequence longer than one chunk of 64 steps is split into chunks, whatever the batch: one behaviour for every input.
 The state at a chunk's end is the affine map `h -> P h + o` of the state at its start, with `P` the product of the chunk's matrices and `o` its end state from a zero start.
 Chunk 0 starts from `zi` instead, as step 0 does in the CUDA `recur2` and `recur3`, so the scan of the maps starts from zero: chunk 0's `P` is then irrelevant, zero for time-varying `A`, and `A^64`, shared, for time-invariant `A`.

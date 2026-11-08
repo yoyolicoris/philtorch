@@ -19,9 +19,10 @@ The forward pass runs the first kernel of ``_KERNELS`` that takes the input:
 * CPU: the C++ kernels, ``lti_recur`` (M = 1) and ``lti_recurN`` for
   time-invariant A, ``recurN`` otherwise;
 * CUDA: CUB scans for M <= 3: ``lti_recur`` and ``scan`` for M = 1;
-  ``lti_recur2``, and ``recur2`` for real time-varying A, for M = 2; for
-  M = 3, ``recur3`` when time-varying in float32, float16, bfloat16 and
-  complex64, and ``lti_recur3`` when time-invariant in float32. Those of
+  ``lti_recur2``, and ``recur2`` for time-varying A but complex128, for
+  M = 2; for M = 3, ``recur3`` when time-varying in float32, float16,
+  bfloat16 and complex64, and ``lti_recur3`` when time-invariant in float32,
+  float16 and bfloat16. Those of
   M = 2 and 3 apply only while B * (T + 1) fits in an int. ``lti_recurN``
   and ``recurN`` take the rest, and the inputs past that size, for M up to
   128 (64 complex);
@@ -160,12 +161,12 @@ def _scan(A: Tensor, zi: Tensor, x: Tensor) -> Tensor:
 
 
 def _recur2_applies(A: Tensor, x: Tensor) -> bool:
-    # Complex inputs ran faster in the Triton kernel recurN replaced.
+    # complex128 runs faster in recurN from batch 32 on.
     return (
         x.is_cuda
         and not _time_invariant(A)
         and x.size(-1) == 2
-        and not x.is_complex()
+        and x.dtype != torch.complex128
         and _floating_or_int64(x)
         and _fits_cub_scan(x)
     )
@@ -175,8 +176,7 @@ def _recur2(A: Tensor, zi: Tensor, x: Tensor) -> Tensor:
     return torch.ops.philtorch.recur2(to_lpv(A), zi, x)
 
 
-# The dtypes recur3 runs faster than recurN; float64 and int64 ran faster in
-# the Triton kernel recurN replaced.
+# The dtypes recur3 is compiled for; float64 and int64 are left to recurN.
 _RECUR3_DTYPES = (torch.float32, torch.float16, torch.bfloat16, torch.complex64)
 
 
@@ -194,13 +194,16 @@ def _recur3(A: Tensor, zi: Tensor, x: Tensor) -> Tensor:
     return torch.ops.philtorch.recur3(to_lpv(A), zi, x)
 
 
+_LTI_RECUR3_DTYPES = (torch.float32, torch.float16, torch.bfloat16)
+
+
 def _lti_recur3_applies(A: Tensor, x: Tensor) -> bool:
-    # The other dtypes ran faster in the Triton kernel lti_recurN replaced.
+    # complex64 runs faster in lti_recurN from batch 32 on.
     return (
         x.is_cuda
         and _time_invariant(A)
         and x.size(-1) == 3
-        and x.dtype == torch.float32
+        and x.dtype in _LTI_RECUR3_DTYPES
         and _fits_cub_scan(x)
     )
 

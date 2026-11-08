@@ -257,7 +257,7 @@ With the default `unroll_factor=None`, the state-space paths (`lfilter`, `state_
 | CUDA (source builds) | ✓ | ✓ | ✓¹ | ✓ | ✓ | ✓ | ✓¹ |
 | MPS | ✓² | ✓² | ✓¹² | ✓² | ✓² | ✓² | ✓¹² |
 
-✓ native kernel · ✗ raises `NotImplementedError`, since no kernel takes the input; pass `unroll_factor=1` for the sequential loop, or 2 up to one less than the sequence length for a block-unrolled recursion, or use CPU.
+✓ native kernel. An input no kernel takes raises `NotImplementedError`; pass `unroll_factor=1` for the sequential loop, or 2 up to one less than the sequence length for a block-unrolled recursion, or use CPU.
 ¹ Up to M = 128 (64 for complex dtypes); larger M raises. ² float32, float16, bfloat16 and complex64.
 
 The CPU and CUDA kernels take floating-point and complex dtypes, and int64, exactly; the MPS kernels take the dtypes of ²; other dtypes raise.

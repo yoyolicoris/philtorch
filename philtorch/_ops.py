@@ -14,13 +14,11 @@ import torch
 import torch.nn.functional as F
 
 from . import _ssm
+from ._recur import _forward, _gradients
 from ._torchlpc import _lpc_gradients
 
 
 def _recurrence_gradients(A, zi, h, grad, needs_A, needs_zi):
-    # Imported here, so that importing philtorch doesn't load Triton.
-    from ._recur import _forward, _gradients
-
     return _gradients(_forward, A, zi, h, grad, needs_A, needs_zi)
 
 

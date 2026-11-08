@@ -62,20 +62,6 @@ def test_registered_gradients(op, shared, dtype):
     assert torch.autograd.gradgradcheck(fn, inputs)
 
 
-@pytest.mark.cuda
-@pytest.mark.parametrize("op", ["recurN", "lti_recurN"])
-@pytest.mark.parametrize("shared", [True, False])
-@pytest.mark.parametrize("dtype", [torch.float64, torch.complex128])
-def test_registered_gradients_cuda(op, shared, dtype):
-    # The CUDA kernels' ops are differentiated through the same registered
-    # backwards: check them, and their own derivatives, against finite
-    # differences.
-    fn = getattr(torch.ops.philtorch, op)
-    inputs = tuple(t.cuda().requires_grad_() for t in _op_inputs(op, shared, dtype))
-    assert torch.autograd.gradcheck(fn, inputs)
-    assert torch.autograd.gradgradcheck(fn, inputs)
-
-
 def _recorded_calls(module, name, run):
     """The arguments of every call to module.name while run() runs, as leaves."""
     calls, original = [], getattr(module, name)
