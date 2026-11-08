@@ -320,16 +320,25 @@ jobs:
               --notes "CUDA wheels of the latest dev build."
           fi
           # The tag follows the wheels, so that the release's source archives
-          # match them. GITHUB_TOKEN may move a tag only to a commit whose
+          # match them and build-cuda-wheels.yml GPU-tests every CUDA change
+          # since the published commit. GITHUB_TOKEN may move a tag only to a commit whose
           # workflows match a branch tip: dev's, unless dev has just moved on.
           gh api -X PATCH "repos/$GITHUB_REPOSITORY/git/refs/tags/cuda-dev" \
             -f sha="$GITHUB_SHA" -F force=true > /dev/null ||
             echo "::warning::could not move the cuda-dev tag to $GITHUB_SHA"
           gh release upload cuda-dev wheels/*.whl --repo "$GITHUB_REPOSITORY" --clobber
-          # Keep only the new wheels: those of an earlier build are gone.
+          # Keep the build before this one too: the live index links to its
+          # wheels until this run's Pages deployment replaces it, and lists
+          # only the newest build. Every earlier build is deleted.
+          export SCM_VERSION
+          PREVIOUS=$(gh release view cuda-dev --repo "$GITHUB_REPOSITORY" --json assets --jq '
+            [.assets[] | {version: (.name | split("-")[1] | split("+")[0]), created: .createdAt}
+              | select(.version != $ENV.SCM_VERSION)] | max_by(.created) | .version // ""')
           gh release view cuda-dev --repo "$GITHUB_REPOSITORY" --json assets --jq '.assets[].name' |
             while read -r ASSET; do
-              if [ ! -e "wheels/$ASSET" ]; then
+              VERSION=$(echo "$ASSET" | cut -d- -f2)
+              VERSION=${VERSION%%+*}
+              if [ "$VERSION" != "$SCM_VERSION" ] && [ "$VERSION" != "$PREVIOUS" ]; then
                 gh release delete-asset cuda-dev "$ASSET" --repo "$GITHUB_REPOSITORY" --yes
               fi
             done

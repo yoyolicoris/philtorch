@@ -14,8 +14,6 @@ assert spec is not None and spec.loader is not None
 PATHS = importlib.util.module_from_spec(spec)
 spec.loader.exec_module(PATHS)
 
-ZEROS = "0" * 40
-
 
 def test_parsed_patterns_are_the_workflows_entries():
     text = PATHS.WORKFLOW.read_text()
@@ -80,11 +78,11 @@ def test_touches_any_file_and_any_pattern():
 
 
 @pytest.mark.parametrize(
-    ("event", "before"),
-    [("pull_request", "abc"), ("release", ""), ("push", ""), ("push", ZEROS)],
+    ("event", "base"),
+    [("pull_request", "abc"), ("release", ""), ("push", "")],
 )
-def test_runs_the_test_without_a_commit_to_compare(event, before):
-    assert PATHS.gpu_test(event, before, "HEAD")
+def test_runs_the_test_without_a_commit_to_compare(event, base):
+    assert PATHS.gpu_test(event, base, "HEAD")
 
 
 def test_runs_the_test_when_the_diff_fails(capsys):

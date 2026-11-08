@@ -17,7 +17,9 @@ The wheels of the release tagged ``cuda-dev`` are the latest build of the
 ``dev`` branch, which ``.github/workflows/build-wheels.yml`` replaces on every
 push. They go only into the development indexes, ``whl/dev/cu13/`` and
 ``whl/dev/cu12/``, never into the indexes above, and the landing page lists
-those last.
+those last. The release also keeps the previous build, which the live site
+links to until the new one is deployed: each development index lists only its
+newest build, the one uploaded last.
 
 The input is the repository's release list from the GitHub API::
 
@@ -93,6 +95,8 @@ def index_name(filename: str) -> str | None:
 def release_wheels(releases: Iterable[dict]) -> dict[str, dict[str, tuple[str, str]]]:
     """Map each index name to ``{filename: (url, sha256)}`` for the CUDA wheels."""
     indexes: dict[str, dict[str, tuple[str, str]]] = {}
+    # Each development index's versions, with the time of their last upload.
+    dev_builds: dict[str, dict[str, str]] = {}
     for release in releases:
         # A draft's assets are not public, so pip could not download them.
         if release.get("draft"):
@@ -112,6 +116,9 @@ def release_wheels(releases: Iterable[dict]) -> dict[str, dict[str, tuple[str, s
                 if not _CUDA_LABEL.fullmatch(index):
                     continue
                 index = f"dev/{index}"
+                version = filename.split("-")[1]
+                builds = dev_builds.setdefault(index, {})
+                builds[version] = max(builds.get(version, ""), asset["created_at"])
             digest = _ASSET_DIGEST.fullmatch(asset.get("digest") or "")
             if digest is None:
                 raise ValueError(
@@ -124,6 +131,13 @@ def release_wheels(releases: Iterable[dict]) -> dict[str, dict[str, tuple[str, s
                 raise ValueError(f"conflicting duplicate wheel filename: {filename}")
             # Identical copies in two releases: keep one, whatever the release order.
             wheels[filename] = min(previous, entry) if previous else entry
+    for index, builds in dev_builds.items():
+        newest = max(builds, key=builds.__getitem__)
+        indexes[index] = {
+            filename: entry
+            for filename, entry in indexes[index].items()
+            if filename.split("-")[1] == newest
+        }
     return indexes
 
 

@@ -92,7 +92,7 @@ jobs:
     steps:
       - uses: actions/checkout@v7
         with:
-          # The history of a push, to diff it against the commit it replaced.
+          # The history and tags, to diff a push against the cuda-dev tag.
           fetch-depth: 0
 
       - name: Resolve the legs
@@ -101,11 +101,12 @@ jobs:
 
       - name: Check whether the GPU test is needed
         id: paths
-        env:
-          BEFORE: ${{ github.event.before }}
-        run: >
-          python3 scripts/cuda_paths_changed.py --event "$GITHUB_EVENT_NAME"
-          --before "$BEFORE" --sha "$GITHUB_SHA" >> "$GITHUB_OUTPUT"
+        # Against the commit whose wheels the cuda-dev pre-release holds,
+        # which build-wheels.yml moves the tag to when it publishes them.
+        run: |
+          BASE=$(git rev-parse -q --verify "refs/tags/cuda-dev^{commit}" || true)
+          python3 scripts/cuda_paths_changed.py --event "$GITHUB_EVENT_NAME" \
+            --base "$BASE" --sha "$GITHUB_SHA" >> "$GITHUB_OUTPUT"
 
   build:
     # A name of its own: GitHub would otherwise list every matrix value, the

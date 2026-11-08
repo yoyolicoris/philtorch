@@ -1,17 +1,20 @@
 #!/usr/bin/env python3
-"""Tell whether a push changed a file that build-cuda-wheels.yml GPU-tests on.
+"""Tell whether a dev push needs the GPU test of build-cuda-wheels.yml.
 
 A pull request runs the CUDA workflow only when it changes a file of the
 ``pull_request`` ``paths:`` list in that workflow. A push to ``dev`` builds
-the wheels every time, but needs the Modal GPU only for such a change. This
-script reads the list from the workflow itself, so that it stays in one place,
-and prints ``gpu_test=true`` or ``gpu_test=false`` for ``$GITHUB_OUTPUT``::
+the wheels every time, but needs the Modal GPU only when such a file changed
+since ``--base``, the commit whose wheels the ``cuda-dev`` pre-release holds.
+A push whose GPU test fails publishes nothing, so the next push still tests
+its change. This script reads the list from the workflow itself, so that it
+stays in one place, and prints ``gpu_test=true`` or ``gpu_test=false`` for
+``$GITHUB_OUTPUT``::
 
     python scripts/cuda_paths_changed.py --event "$GITHUB_EVENT_NAME" \\
-        --before "$BEFORE" --sha "$GITHUB_SHA" >> "$GITHUB_OUTPUT"
+        --base "$BASE" --sha "$GITHUB_SHA" >> "$GITHUB_OUTPUT"
 
-Every other event, a new branch (``--before`` all zeros or empty) and a diff
-that can't be computed, such as after a force push, print ``true``.
+Every other event, an empty ``--base`` (nothing published yet) and a diff
+that can't be computed print ``true``.
 """
 
 from __future__ import annotations
@@ -82,12 +85,12 @@ def touches(patterns: list[str], files: list[str]) -> bool:
     return any(regex.fullmatch(file) for file in files for regex in regexes)
 
 
-def gpu_test(event: str, before: str, sha: str) -> bool:
-    if event != "push" or not before.strip("0"):
+def gpu_test(event: str, base: str, sha: str) -> bool:
+    if event != "push" or not base:
         return True
     try:
         diff = subprocess.run(
-            ["git", "diff", "--name-only", before, sha],
+            ["git", "diff", "--name-only", base, sha],
             check=True,
             capture_output=True,
             text=True,
@@ -105,10 +108,12 @@ def gpu_test(event: str, before: str, sha: str) -> bool:
 def main() -> None:
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--event", required=True, help="the GitHub event name")
-    parser.add_argument("--before", default="", help="the commit the push replaced")
+    parser.add_argument(
+        "--base", default="", help="the commit whose wheels the cuda-dev pre-release holds"
+    )
     parser.add_argument("--sha", required=True, help="the commit pushed")
     arguments = parser.parse_args()
-    print(f"gpu_test={str(gpu_test(arguments.event, arguments.before, arguments.sha)).lower()}")
+    print(f"gpu_test={str(gpu_test(arguments.event, arguments.base, arguments.sha)).lower()}")
 
 
 if __name__ == "__main__":
