@@ -1,8 +1,4 @@
-"""Non-linear operators.
-
-:func:`newton_solve` solves a non-linear recurrence over a whole sequence in
-parallel.
-"""
+"""Non-linear operators."""
 
 import warnings
 from collections.abc import Callable
@@ -12,8 +8,8 @@ import torch
 from torch import Tensor
 from torch.autograd import Function
 
-from philtorch.lpv.recur import linear_recurrence
-from philtorch.lpv.ssm import state_space_recursion
+from .lpv.recur import linear_recurrence
+from .lpv.ssm import state_space_recursion
 
 __all__ = ["newton_solve"]
 
