@@ -22,9 +22,9 @@ The forward pass runs the first kernel of ``_KERNELS`` that takes the input:
   ``lti_recur2``, and ``recur2`` for real time-varying A, for M = 2; for
   M = 3, ``recur3`` when time-varying in float32, float16, bfloat16 and
   complex64, and ``lti_recur3`` when time-invariant in float32. Those of
-  M = 2 and 3 apply only while B * (T + 1) fits in an int. The Triton
-  kernels of :mod:`philtorch._recur_kernels` take the rest, where they are
-  faster, and the inputs past that size;
+  M = 2 and 3 apply only while B * (T + 1) fits in an int. ``lti_recurN``
+  and ``recurN`` take the rest, and the inputs past that size, for M up to
+  128 (64 complex);
 * MPS: the Metal kernels, in float32, float16, bfloat16 and complex64:
   ``lti_recur`` and ``scan`` for M = 1, ``lti_recurN`` and ``recurN`` for M
   up to 128 (64 complex).
@@ -39,23 +39,6 @@ import torch.nn.functional as F
 from torch import Tensor
 
 from ._ssm import to_lpv, to_lti
-
-try:
-    from . import _recur_kernels
-except ImportError:  # pragma: no cover - Triton comes with PyTorch's CUDA builds for Linux
-    _recur_kernels = None
-
-
-@torch.library.custom_op("philtorch::recur_triton", mutates_args=())
-def recur_triton(A: Tensor, zi: Tensor, x: Tensor) -> Tensor:
-    """The recurrence by the Triton kernels: A (B or 1, T or 1, M, M), zi (B, M), x (B, T, M)."""
-    return _recur_kernels.recurrence(A, zi, x)
-
-
-@recur_triton.register_fake
-def _(A, zi, x):
-    return torch.empty_like(x, memory_format=torch.contiguous_format)
-
 
 # Each kernel is a condition on the input, (A, x), and a launch, (A, zi, x),
 # listed in _KERNELS in order of preference. The native kernels take A as one
@@ -85,15 +68,28 @@ _NATIVE_DTYPES = (
 )
 
 
-# The dtypes the Metal kernels take, and their largest M, half that for
-# complex, as the Triton kernels'.
+# The largest M of the Metal and CUDA kernels of order M, half that for complex.
+_MAX_STATES = 128
+
+
+def _fits_states(x: Tensor) -> bool:
+    return x.size(-1) <= (_MAX_STATES // 2 if x.is_complex() else _MAX_STATES)
+
+
+# The dtypes the Metal kernels take.
 _MPS_DTYPES = (torch.float32, torch.float16, torch.bfloat16, torch.complex64)
-_MPS_MAX_STATES = 128
 
 
 def _mps_takes(x: Tensor) -> bool:
-    most = _MPS_MAX_STATES // 2 if x.is_complex() else _MPS_MAX_STATES
-    return x.device.type == "mps" and x.dtype in _MPS_DTYPES and x.size(-1) <= most
+    return x.device.type == "mps" and x.dtype in _MPS_DTYPES and _fits_states(x)
+
+
+def _recurN_takes(x: Tensor) -> bool:
+    """The kernels of order M take x: any M on CPU, up to _MAX_STATES on CUDA,
+    and on MPS the Metal dtypes up to that size."""
+    if x.is_cpu or x.is_cuda and _fits_states(x):
+        return _floating_or_int64(x)
+    return _mps_takes(x)
 
 
 def _lti_recur_applies(A: Tensor, x: Tensor) -> bool:
@@ -110,7 +106,7 @@ def _lti_recur(A: Tensor, zi: Tensor, x: Tensor) -> Tensor:
 
 
 def _lti_recurN_applies(A: Tensor, x: Tensor) -> bool:
-    return _time_invariant(A) and (x.is_cpu and _floating_or_int64(x) or _mps_takes(x))
+    return _time_invariant(A) and _recurN_takes(x)
 
 
 def _lti_recurN(A: Tensor, zi: Tensor, x: Tensor) -> Tensor:
@@ -118,7 +114,7 @@ def _lti_recurN(A: Tensor, zi: Tensor, x: Tensor) -> Tensor:
 
 
 def _recurN_applies(A: Tensor, x: Tensor) -> bool:
-    return not _time_invariant(A) and (x.is_cpu and _floating_or_int64(x) or _mps_takes(x))
+    return not _time_invariant(A) and _recurN_takes(x)
 
 
 def _recurN(A: Tensor, zi: Tensor, x: Tensor) -> Tensor:
@@ -164,7 +160,7 @@ def _scan(A: Tensor, zi: Tensor, x: Tensor) -> Tensor:
 
 
 def _recur2_applies(A: Tensor, x: Tensor) -> bool:
-    # Complex inputs run faster in the Triton kernels.
+    # Complex inputs ran faster in the Triton kernel recurN replaced.
     return (
         x.is_cuda
         and not _time_invariant(A)
@@ -179,7 +175,8 @@ def _recur2(A: Tensor, zi: Tensor, x: Tensor) -> Tensor:
     return torch.ops.philtorch.recur2(to_lpv(A), zi, x)
 
 
-# The dtypes recur3 runs faster than the Triton kernels.
+# The dtypes recur3 runs faster than recurN; float64 and int64 ran faster in
+# the Triton kernel recurN replaced.
 _RECUR3_DTYPES = (torch.float32, torch.float16, torch.bfloat16, torch.complex64)
 
 
@@ -198,7 +195,7 @@ def _recur3(A: Tensor, zi: Tensor, x: Tensor) -> Tensor:
 
 
 def _lti_recur3_applies(A: Tensor, x: Tensor) -> bool:
-    # Triton's power kernel is faster in the other dtypes.
+    # The other dtypes ran faster in the Triton kernel lti_recurN replaced.
     return (
         x.is_cuda
         and _time_invariant(A)
@@ -212,20 +209,17 @@ def _lti_recur3(A: Tensor, zi: Tensor, x: Tensor) -> Tensor:
     return torch.ops.philtorch.lti_recur3(to_lti(A), zi, x)
 
 
-def _triton_applies(A: Tensor, x: Tensor) -> bool:
-    return _recur_kernels is not None and x.is_cuda and _recur_kernels.fits(x, x.size(-1))
-
-
+# On CUDA, the CUB scans come before lti_recurN and recurN, which take what
+# they leave.
 _KERNELS = (
     (_lti_recur_applies, _lti_recur),
-    (_lti_recurN_applies, _lti_recurN),
     (_scan_applies, _scan),
-    (_recurN_applies, _recurN),
     (_lti_recur2_applies, _lti_recur2),
     (_recur3_applies, _recur3),
     (_lti_recur3_applies, _lti_recur3),
     (_recur2_applies, _recur2),
-    (_triton_applies, recur_triton),
+    (_lti_recurN_applies, _lti_recurN),
+    (_recurN_applies, _recurN),
 )
 
 
@@ -238,7 +232,7 @@ def _forward(A: Tensor, zi: Tensor, x: Tensor) -> Tensor:
         return x + zi[:, :0].sum(-1)[:, None, None] + A[..., :0].sum()
     for applies, run in _KERNELS:
         if applies(A, x):
-            if run is not recur_triton and x.dtype not in _NATIVE_DTYPES:
+            if x.dtype not in _NATIVE_DTYPES:
                 raise NotImplementedError(
                     "the native kernels take float16, bfloat16, float32, float64, "
                     f"complex64, complex128 and int64, got {x.dtype}"
@@ -247,16 +241,13 @@ def _forward(A: Tensor, zi: Tensor, x: Tensor) -> Tensor:
     kind = "time-invariant" if _time_invariant(A) else "time-varying"
     reason = ""
     if x.is_cuda:
-        if _recur_kernels is None:
-            reason = ": Triton is not installed"
-        elif not _floating_or_int64(x):
-            reason = "; the Triton kernels take floating-point, complex and int64 dtypes"
+        if not _floating_or_int64(x):
+            reason = "; the CUDA kernels take floating-point, complex and int64 dtypes"
         else:
-            most = _recur_kernels.MAX_STATES
-            reason = f"; the Triton kernels take M up to {most} ({most // 2} complex)"
+            reason = f"; the CUDA kernels take M up to {_MAX_STATES} ({_MAX_STATES // 2} complex)"
     elif x.device.type == "mps":  # pragma: no cover - MPS-only
         reason = (
-            f"; the Metal kernels take M up to {_MPS_MAX_STATES} ({_MPS_MAX_STATES // 2} "
+            f"; the Metal kernels take M up to {_MAX_STATES} ({_MAX_STATES // 2} "
             "complex) in float32, float16, bfloat16 and complex64"
         )
     raise NotImplementedError(
@@ -412,22 +403,6 @@ class Recurrence(torch.autograd.Function):
         if tangent is None:
             tangent = torch.zeros_like(h)
         return Recurrence.apply(A, dzi if dzi is not None else torch.zeros_like(zi), tangent)
-
-
-# Compiled code runs the kernels' ops directly (see recurrence), so the
-# Triton op carries the same gradients; the native ops' are registered in
-# philtorch/_ops.py.
-def _recur_triton_setup_context(ctx, inputs, output):
-    A, zi, _ = inputs
-    ctx.save_for_backward(A, zi, output)
-
-
-def _recur_triton_backward(ctx, grad):
-    A, zi, h = ctx.saved_tensors
-    return _gradients(_forward, A, zi, h, grad, *ctx.needs_input_grad[:2])
-
-
-recur_triton.register_autograd(_recur_triton_backward, setup_context=_recur_triton_setup_context)
 
 
 def recurrence(A: Tensor, zi: Tensor, x: Tensor) -> Tensor:

@@ -46,9 +46,9 @@ on:
       - "philtorch/csrc/**"
       - "third_party/**"
       # The Triton kernels, named _*_kernels.py, the recurrence operator that
-      # launches them, the native ops' registered backwards, the alignment
-      # and HMM modules, which run only on CUDA, and every test module the
-      # GPU job runs (-m cuda), which tests/test_ci_paths.py checks.
+      # dispatches the native kernels, the native ops' registered backwards,
+      # the alignment and HMM modules, which run only on CUDA, and every test
+      # module the GPU job runs (-m cuda), which tests/test_ci_paths.py checks.
       - "philtorch/**/_*_kernels.py"
       - "philtorch/_recur.py"
       - "philtorch/_ops.py"

@@ -2,7 +2,7 @@ import pytest
 import torch
 
 from philtorch import _recur
-from philtorch._recur import _forward, recur_triton, recurrence
+from philtorch._recur import _forward, recurrence
 
 DEVICES = ["cpu", pytest.param("cuda", marks=pytest.mark.cuda)]
 MPS = pytest.mark.skipif(not torch.backends.mps.is_available(), reason="MPS not available")
@@ -38,8 +38,8 @@ def _problem(B, T, M, sharing, dtype=torch.float64, device="cpu", seed=0):
 @pytest.mark.parametrize("dtype", [torch.float64, torch.complex128])
 def test_recurrence_matches_sequential(device, sharing, M, dtype):
     if device == "cuda" and dtype.is_complex and M > 64:
-        pytest.skip("past the Triton kernels' complex states")
-    # 150 steps: three chunks of the Triton scan, the last one partial.
+        pytest.skip("past the CUDA kernels' complex states")
+    # 150 steps: more than one chunk of the scans, the last one partial.
     A, zi, x = _problem(3, 150, M, sharing, dtype, device)
     torch.testing.assert_close(recurrence(A, zi, x), _sequential(A, zi, x))
 
@@ -70,8 +70,8 @@ def test_recurrence_many_chunks_repeatedly(sharing, M):
 @pytest.mark.cuda
 @pytest.mark.parametrize("dtype, M", [(torch.float64, 40), (torch.complex128, 24)])
 def test_recurrence_maps_in_scratch(dtype, M):
-    # Time-varying maps too large for registers: their products through
-    # scratch memory, across chunks whose look-backs race.
+    # Time-varying chunk maps at BM = 64 and 32, composed column by column in
+    # passes over a shared slab, across chunks whose look-backs race.
     A, zi, x = _problem(2, 1500, M, "both", dtype, "cuda")
     expected = _sequential(A, zi, x)
     for _ in range(3):
@@ -81,8 +81,9 @@ def test_recurrence_maps_in_scratch(dtype, M):
 @pytest.mark.cuda
 @pytest.mark.parametrize("dtype", [torch.float32, torch.complex64])
 def test_recurrence_ignores_memory_past_the_states(dtype):
-    # The scratch tiles' rows from M on are never written: NaN left in freed
-    # memory, where the allocator places them, must not reach the states.
+    # Entries past M, padded in the kernel's layout, are never loaded: NaN left
+    # in freed memory, where the allocator places them, must not reach the
+    # states.
     A, zi, x = _problem(2, 1500, 40 if dtype == torch.float32 else 24, "both", dtype, "cuda")
     for _ in range(4):
         torch.full((2**24,), float("nan"), device="cuda")
@@ -101,14 +102,19 @@ def test_recurrence_ignores_memory_past_the_states(dtype):
 @pytest.mark.parametrize("sharing", SHARING)
 @pytest.mark.parametrize(
     "device, M, T",
-    # 12 states take the products of 16 x 16 blocks as dots (a complex one as
-    # four). The Metal kernels take M = 1 in tiles of 1024 steps, and M > 1 in
-    # chunks of 64: 301 and 2049 steps end mid-tile and mid-chunk. 6 and 20
-    # states leave lanes idle, and 64 is complex64's most.
-    [pytest.param("cuda", M, 300, marks=pytest.mark.cuda) for M in (1, 2, 3, 6, 12)]
+    # On CUDA, 24 and 40 states are padded to 32 and 64, above the 16 at which
+    # 16-bit inputs are held as stored in the kernel's ring, and 100, to 128,
+    # takes the most passes over the columns of a chunk's maps (complex64
+    # takes 64 at most); 300 steps are several chunks. The Metal kernels take
+    # M = 1 in tiles of 1024 steps, and M > 1 in chunks of 64: 301 and 2049
+    # steps end mid-tile and mid-chunk. 6 and 20 states leave lanes idle, and
+    # 64 is complex64's most.
+    [pytest.param("cuda", M, 300, marks=pytest.mark.cuda) for M in (1, 2, 3, 6, 12, 24, 40, 100)]
     + [pytest.param("mps", M, T, marks=MPS) for M in (1, 2, 3, 6, 20, 32, 64) for T in (301, 2049)],
 )
 def test_recurrence_low_precision(dtype, tolerance, sharing, device, M, T):
+    if dtype == torch.complex64 and device == "cuda" and M > 64:
+        pytest.skip("past the CUDA kernels' complex states")
     A, zi, x = _problem(4, T, M, sharing, dtype, device)
     # The reference on CPU, as MPS has no float64.
     expected = _sequential(*(t.cpu().to(torch.complex128 if dtype.is_complex else torch.float64)
@@ -163,8 +169,8 @@ def test_recurrence_mps_deep_recursion(sharing, M, T, identity):
 @pytest.mark.cuda
 @pytest.mark.parametrize("sharing", SHARING)
 def test_recurrence_float32_chunk_maps(sharing):
-    # Near rotations, whose chunk maps keep their size: at 16 states, Triton
-    # would compute the maps' products in TF32, of 10-bit mantissas.
+    # Near rotations, whose chunk maps keep their size: at 16 states,
+    # products in TF32 would round the maps to 10-bit mantissas.
     A, zi, x = _problem(4, 300, 16, sharing, device="cuda")
     A = torch.linalg.qr(A)[0] * 0.999
     expected = _sequential(A, zi, x)
@@ -172,12 +178,41 @@ def test_recurrence_float32_chunk_maps(sharing):
     assert (actual.double() - expected).abs().max() / expected.abs().max() < 1e-5
 
 
+@pytest.mark.cuda
+@pytest.mark.parametrize("sharing", ["one", "per_step"])
+def test_recurrence_of_matrices_off_the_vector_alignment(sharing):
+    # recurN and lti_recurN load A in vectors of 16 bytes where it is aligned
+    # to them and M is a multiple of the vector width: a view one element past
+    # an aligned address takes the scalar loads, to the same states.
+    A, zi, x = _problem(3, 300, 8, sharing, torch.float32, "cuda")
+    storage = torch.empty(A.numel() + 1, device="cuda")
+    shifted = storage[1:].view_as(A)
+    shifted.copy_(A)
+    assert A.data_ptr() % 16 == 0 and shifted.data_ptr() % 16 != 0
+    torch.testing.assert_close(recurrence(shifted, zi, x), recurrence(A, zi, x))
+
+
+@pytest.mark.cuda
+def test_recurrence_of_more_items_than_grid_blocks_in_one_dimension():
+    # Per-item time-invariant A of 4 states, which lti_recurN takes, for 65537
+    # items, past the 65535 blocks a grid dimension holds, each of several
+    # chunks.
+    B, T, M = 65537, 300, 4
+    gen = torch.Generator().manual_seed(0)
+    A = torch.randn(B, 1, M, M, generator=gen)
+    A = A / torch.linalg.matrix_norm(A, ord=2, keepdim=True) * 0.97
+    zi, x = torch.randn(B, M, generator=gen), torch.randn(B, T, M, generator=gen)
+    assert _kernel(True, M, torch.float32, "cuda") is _recur._lti_recurN
+    actual = recurrence(*(t.cuda() for t in (A, zi, x)))
+    torch.testing.assert_close(actual.cpu(), recurrence(A, zi, x), rtol=1e-4, atol=1e-4)
+
+
 @pytest.mark.parametrize("device", DEVICES)
 @pytest.mark.parametrize("sharing", SHARING)
 @pytest.mark.parametrize("M", [1, 2, 3, 5])
 @pytest.mark.parametrize("dtype", [torch.float64, torch.complex128])
 def test_recurrence_derivatives(device, sharing, M, dtype):
-    # Across a chunk boundary of the Triton scan, in both modes, to second order.
+    # Across a chunk boundary of the scans, in both modes, to second order.
     A, zi, x = _problem(2, 70, M, sharing, dtype, device)
     inputs = tuple(t.requires_grad_() for t in (A, zi, x))
     assert torch.autograd.gradcheck(recurrence, inputs, check_forward_ad=True, fast_mode=True)
@@ -294,29 +329,20 @@ def test_recurrence_tangent_of_the_initial_state_alone(device):
 
 
 @pytest.mark.cuda
-def test_chunk_lengths_are_powers_of_two():
-    # The time-invariant maps' power squares its way to the chunk length, and
-    # the scratch maps' product ends in their second buffer after an even
-    # number of steps: both need a power of 2.
-    from philtorch import _recur_kernels
+@pytest.mark.parametrize("applies", [_recur._lti_recurN_applies, _recur._recurN_applies])
+def test_cuda_state_limits(applies):
+    time_invariant = applies is _recur._lti_recurN_applies
 
-    for BM in (2, 4, 8, 16, 32, 64, 128):
-        for complex_ in (False, True):
-            for varying in (False, True):
-                chunk = _recur_kernels._chunk(BM, complex_, varying)
-                assert chunk >= 2 and chunk & (chunk - 1) == 0
+    def takes(M, dtype=torch.float32, device="cuda"):
+        A = torch.zeros(1, 1, M, M, dtype=dtype, device=device).expand(
+            1, 1 if time_invariant else 2, M, M
+        )
+        return applies(A, torch.zeros(1, 2, M, dtype=dtype, device=device))
 
-
-@pytest.mark.cuda
-def test_triton_state_limits():
-    def applies(M, dtype=torch.float32, device="cuda"):
-        A = torch.zeros(1, 1, M, M, dtype=dtype, device=device)
-        return _recur._triton_applies(A, torch.zeros(1, 1, M, dtype=dtype, device=device))
-
-    assert applies(128) and not applies(129)
-    assert applies(64, torch.complex64) and not applies(65, torch.complex64)
-    assert applies(4, torch.int64) and not applies(4, torch.int32)
-    assert not applies(4, device="cpu")
+    assert takes(128) and not takes(129)
+    assert takes(64, torch.complex64) and not takes(65, torch.complex64)
+    assert takes(4, torch.int64) and not takes(4, torch.int32)
+    assert not takes(4, device="meta")
 
 
 def _kernel(time_invariant, M, dtype, device):
@@ -340,13 +366,13 @@ DISPATCH = [
             (True, 1, torch.float16, "cuda", "_lti_recur"),
             (True, 2, torch.complex64, "cuda", "_lti_recur2"),
             (True, 3, torch.float32, "cuda", "_lti_recur3"),
-            (True, 3, torch.float16, "cuda", "recur_triton"),
+            (True, 3, torch.float16, "cuda", "_lti_recurN"),
             (False, 1, torch.complex64, "cuda", "_scan"),
-            (False, 1, torch.float16, "cuda", "recur_triton"),
+            (False, 1, torch.float16, "cuda", "_recurN"),
             (False, 2, torch.float16, "cuda", "_recur2"),
-            (False, 2, torch.complex64, "cuda", "recur_triton"),
+            (False, 2, torch.complex64, "cuda", "_recurN"),
             (False, 3, torch.float16, "cuda", "_recur3"),
-            (False, 3, torch.complex128, "cuda", "recur_triton"),
+            (False, 3, torch.complex128, "cuda", "_recurN"),
         ]
     ),
 ]
@@ -362,9 +388,9 @@ INTEGER_DISPATCH = [
         for case in [
             (True, 1, torch.int64, "cuda", "_lti_recur"),
             (True, 2, torch.int64, "cuda", "_lti_recur2"),
-            (False, 1, torch.int64, "cuda", "recur_triton"),
+            (False, 1, torch.int64, "cuda", "_recurN"),
             (False, 2, torch.int64, "cuda", "_recur2"),
-            (False, 3, torch.int64, "cuda", "recur_triton"),
+            (False, 3, torch.int64, "cuda", "_recurN"),
         ]
     ),
 ]
@@ -398,21 +424,13 @@ def test_dispatch(time_invariant, M, dtype, device, kernel):
 @pytest.mark.parametrize("time_invariant", [False, True])
 def test_cub_scans_fall_through_past_int_steps(time_invariant, M):
     # The CUB scans (recur2, lti_recur2, recur3, lti_recur3) index B (T + 1)
-    # steps as int: past that, the Triton kernels take the input. Expanded, so
-    # nothing is allocated.
+    # steps as int: past that, recurN and lti_recurN take the input. Expanded,
+    # so nothing is allocated.
     B, T = 1024, 2**21
     A = torch.zeros(1, 1, M, M, device="cuda").expand(1, 1 if time_invariant else T, M, M)
     x = torch.zeros(1, 1, M, device="cuda").expand(B, T, M)
-    assert next(run for applies, run in _recur._KERNELS if applies(A, x)) is recur_triton
-
-
-@pytest.mark.cuda
-@pytest.mark.parametrize("sharing", SHARING)
-def test_recur_triton_custom_op(sharing):
-    # The fake implementation and the op's gradients, for torch.compile.
-    A, zi, x = _problem(2, 70, 3, sharing, torch.float32, "cuda")
-    torch.library.opcheck(recur_triton, (A, zi, x))
-    torch.library.opcheck(recur_triton, tuple(t.requires_grad_() for t in (A, zi, x)))
+    kernel = _recur._lti_recurN if time_invariant else _recur._recurN
+    assert next(run for applies, run in _recur._KERNELS if applies(A, x)) is kernel
 
 
 @pytest.mark.parametrize("per_item", [False, True])
@@ -634,15 +652,15 @@ def test_recurrence_raises_where_no_kernel_applies():
 
 
 @pytest.mark.cuda
-def test_recurrence_raises_past_the_largest_triton_state():
+def test_recurrence_raises_past_the_largest_cuda_state():
     A, zi, x = _problem(2, 7, 129, "one", device="cuda")
     with pytest.raises(NotImplementedError, match="take M up to 128"):
         recurrence(A, zi, x)
 
 
 def _near_unit_problem(B, T, M, sharing, dtype, device):
-    """Poles at radius ~0.99 (M = 2: rotated by small angles; M = 3: those and a
-    real one) and x ~ 0.01 N(0, 1)."""
+    """Poles at radius ~0.99 (M = 2: rotated by small angles; M > 2: those and
+    real ones) and x ~ 0.01 N(0, 1)."""
     gen = torch.Generator().manual_seed(0)
     Ba = B if sharing in ("per_item", "both") else 1
     Ta = T if sharing in ("per_step", "both") else 1
@@ -650,9 +668,9 @@ def _near_unit_problem(B, T, M, sharing, dtype, device):
     angle = 0.3 * torch.rand(Ba, Ta, 1, 1, dtype=torch.float64, generator=gen)
     rotation = torch.cat([angle.cos(), -angle.sin(), angle.sin(), angle.cos()], -1)
     block = rotation.view(Ba, Ta, 2, 2) if M >= 2 else torch.ones(Ba, Ta, 1, 1)
-    if M == 3:
-        block = torch.nn.functional.pad(block, (0, 1, 0, 1))
-        block[..., 2, 2] = 1
+    if M > 2:
+        block = torch.nn.functional.pad(block, (0, M - 2, 0, M - 2))
+        block[..., range(2, M), range(2, M)] = 1
     A = radius * block
     x = 0.01 * torch.randn(B, T, M, dtype=torch.float64, generator=gen)
     zi = 0.01 * torch.randn(B, M, dtype=torch.float64, generator=gen)
@@ -670,8 +688,10 @@ LOW_PRECISION_OPERATORS = [
         for case in [
             (True, 1, "cuda", "_lti_recur"),
             (True, 2, "cuda", "_lti_recur2"),
+            (True, 4, "cuda", "_lti_recurN"),
             (False, 2, "cuda", "_recur2"),
             (False, 3, "cuda", "_recur3"),
+            (False, 4, "cuda", "_recurN"),
         ]
     ),
 ]

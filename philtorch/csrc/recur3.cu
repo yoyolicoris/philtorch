@@ -1,6 +1,6 @@
 #include "recur_scan.cuh"
 
-// float64 and int64 run faster in the Triton kernels on GPUs measured, and
+// float64 and int64 ran faster in the Triton kernel recurN replaced, and
 // complex128's 24 values overflow CUB's default shared memory.
 struct recur3_dispatch
 {

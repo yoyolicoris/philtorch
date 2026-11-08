@@ -248,7 +248,7 @@ Coefficients are normalized so that `a0 = 1`: divide SciPy's `b` and `a` by `a[0
 
 ## Performance
 
-Recursive filters are hard to parallelize, so PhilTorch implements custom C++, CUDA and Triton kernels.
+Recursive filters are hard to parallelize, so PhilTorch implements custom C++ and CUDA kernels, with Metal ones for MPS.
 With the default `unroll_factor=None`, the state-space paths (`lfilter`, `state_space`, and `state_space_recursion`) choose a kernel from the device, the dtype and the filter order, which is the state size `M`:
 
 | Device | LTI, M = 1 | LTI, M = 2 | LTI, M ≥ 3 | LPV, M = 1 | LPV, M = 2 | LPV, M = 3 | LPV, M ≥ 4 |
@@ -257,8 +257,8 @@ With the default `unroll_factor=None`, the state-space paths (`lfilter`, `state_
 | CUDA (source builds) | ✓ | ✓ | ✓¹ | ✓ | ✓ | ✓ | ✓¹ |
 | MPS | ✓² | ✓² | ✓¹² | ✓² | ✓² | ✓² | ✓¹² |
 
-✓ native or Triton kernel · ✗ raises `NotImplementedError`, since no kernel takes the input; pass `unroll_factor=1` for the sequential loop, or 2 up to one less than the sequence length for a block-unrolled recursion, or use CPU.
-¹ Up to M = 128 (64 for complex dtypes); larger M raises. On CUDA, Triton; a native kernel takes M = 3 in float32. ² float32, float16, bfloat16 and complex64.
+✓ native kernel · ✗ raises `NotImplementedError`, since no kernel takes the input; pass `unroll_factor=1` for the sequential loop, or 2 up to one less than the sequence length for a block-unrolled recursion, or use CPU.
+¹ Up to M = 128 (64 for complex dtypes); larger M raises. ² float32, float16, bfloat16 and complex64.
 
 The CPU and CUDA kernels take floating-point and complex dtypes, and int64, exactly; the MPS kernels take the dtypes of ²; other dtypes raise.
 

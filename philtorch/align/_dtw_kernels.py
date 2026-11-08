@@ -119,10 +119,10 @@ tile columns, each a grid of its own (:func:`_strip_gradients`), and second
 derivatives are those of :func:`shares`, :func:`_strip_cost` and
 :func:`accumulate` (with ``strip``) in the same skew.
 
-Half and bfloat16 inputs accumulate in float32, as in
-:mod:`philtorch._recur_kernels`: the kernels convert the costs and frames as
-they load them, and the buffers they keep (D, the cost scratch, the
-frontier's rows, the gradients) are float32 (see :func:`_acc`).
+Half and bfloat16 inputs accumulate in float32, as in the native recurrence
+kernels: the kernels convert the costs and frames as they load them, and the
+buffers they keep (D, the cost scratch, the frontier's rows, the gradients)
+are float32 (see :func:`_acc`).
 """
 
 

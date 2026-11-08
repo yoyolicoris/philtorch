@@ -4,7 +4,6 @@ from unittest import mock
 import pytest
 import torch
 
-from philtorch._recur import recur_triton
 from philtorch.align import ctc_loss, dtw, dtw_path, forced_align, soft_dtw_divergence
 from philtorch.estimation import hmm_filter, hmm_smoother, hmm_viterbi
 
@@ -64,19 +63,17 @@ def test_registered_gradients(op, shared, dtype):
 
 
 @pytest.mark.cuda
-@pytest.mark.parametrize("time_invariant", [True, False])
-def test_recur_triton_registered_gradients(time_invariant):
-    # Compiled code differentiates the Triton op through its registered
-    # backward: check it, and its own derivatives, against finite differences.
-    gen = torch.Generator().manual_seed(0)
-    A = torch.randn(2, 1 if time_invariant else 7, 3, 3, generator=gen, dtype=torch.float64) * 0.2
-    zi, x = (
-        torch.randn(2, 3, generator=gen, dtype=torch.float64),
-        torch.randn(2, 7, 3, generator=gen, dtype=torch.float64),
-    )
-    inputs = tuple(t.cuda().requires_grad_() for t in (A, zi, x))
-    assert torch.autograd.gradcheck(recur_triton, inputs)
-    assert torch.autograd.gradgradcheck(recur_triton, inputs)
+@pytest.mark.parametrize("op", ["recurN", "lti_recurN"])
+@pytest.mark.parametrize("shared", [True, False])
+@pytest.mark.parametrize("dtype", [torch.float64, torch.complex128])
+def test_registered_gradients_cuda(op, shared, dtype):
+    # The CUDA kernels' ops are differentiated through the same registered
+    # backwards: check them, and their own derivatives, against finite
+    # differences.
+    fn = getattr(torch.ops.philtorch, op)
+    inputs = tuple(t.cuda().requires_grad_() for t in _op_inputs(op, shared, dtype))
+    assert torch.autograd.gradcheck(fn, inputs)
+    assert torch.autograd.gradgradcheck(fn, inputs)
 
 
 def _recorded_calls(module, name, run):
@@ -497,9 +494,9 @@ def test_dtw_path_search_reduce_overhead():
         torch.testing.assert_close(actual, expected)
 
 
-# The ops with a CUDA kernel in float64 and complex128 too; recurN and lti_recurN
-# run on CPU only, and recur3 and lti_recur3 have their own CUDA test.
-_CUDA_OPS = {"recur2", "lti_recur2", "lti_recur", "scan", "lpc"}
+# The ops with a CUDA kernel in float64 and complex128 too; recur3 and
+# lti_recur3 have their own CUDA test.
+_CUDA_OPS = {"recur2", "lti_recur2", "recurN", "lti_recurN", "lti_recur", "scan", "lpc"}
 
 
 def _opcheck_cases():
