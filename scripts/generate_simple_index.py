@@ -76,9 +76,6 @@ def wheel_project_name(filename: str) -> str:
 def index_name(filename: str) -> str | None:
     """Return the index a CUDA wheel belongs in, e.g. ``cu13`` or ``torch2.14-cu130``.
 
-    The wheels of the ``cuda-dev`` release are placed in ``dev/cu13`` and the
-    like by ``release_wheels``.
-
     Returns None for a wheel without a CUDA build label, such as a CPU wheel.
     """
     version = filename.removesuffix(".whl").split("-")[1]
@@ -95,8 +92,8 @@ def index_name(filename: str) -> str | None:
 def release_wheels(releases: Iterable[dict]) -> dict[str, dict[str, tuple[str, str]]]:
     """Map each index name to ``{filename: (url, sha256)}`` for the CUDA wheels."""
     indexes: dict[str, dict[str, tuple[str, str]]] = {}
-    # Each development index's versions, with the time of their last upload.
-    dev_builds: dict[str, dict[str, str]] = {}
+    # Each development index's newest build: (upload time, version).
+    newest: dict[str, tuple[str, str]] = {}
     for release in releases:
         # A draft's assets are not public, so pip could not download them.
         if release.get("draft"):
@@ -116,9 +113,8 @@ def release_wheels(releases: Iterable[dict]) -> dict[str, dict[str, tuple[str, s
                 if not _CUDA_LABEL.fullmatch(index):
                     continue
                 index = f"dev/{index}"
-                version = filename.split("-")[1]
-                builds = dev_builds.setdefault(index, {})
-                builds[version] = max(builds.get(version, ""), asset["created_at"])
+                build = (asset["created_at"], filename.split("-")[1])
+                newest[index] = max(newest.get(index, build), build)
             digest = _ASSET_DIGEST.fullmatch(asset.get("digest") or "")
             if digest is None:
                 raise ValueError(
@@ -131,12 +127,11 @@ def release_wheels(releases: Iterable[dict]) -> dict[str, dict[str, tuple[str, s
                 raise ValueError(f"conflicting duplicate wheel filename: {filename}")
             # Identical copies in two releases: keep one, whatever the release order.
             wheels[filename] = min(previous, entry) if previous else entry
-    for index, builds in dev_builds.items():
-        newest = max(builds, key=builds.__getitem__)
+    for index, (_, version) in newest.items():
         indexes[index] = {
             filename: entry
             for filename, entry in indexes[index].items()
-            if filename.split("-")[1] == newest
+            if filename.split("-")[1] == version
         }
     return indexes
 

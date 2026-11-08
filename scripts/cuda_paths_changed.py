@@ -7,7 +7,8 @@ the wheels every time, but needs the Modal GPU only when such a file changed
 since ``--base``, the commit whose wheels the ``cuda-dev`` pre-release holds.
 A push whose GPU test fails publishes nothing, so the next push still tests
 its change. This script reads the list from the workflow itself, so that it
-stays in one place, and prints ``gpu_test=true`` or ``gpu_test=false`` for
+stays in one place, matches it with git's glob pathspecs, which follow
+GitHub's filter for the patterns it allows, and prints ``gpu_test=true`` or ``gpu_test=false`` for
 ``$GITHUB_OUTPUT``::
 
     python scripts/cuda_paths_changed.py --event "$GITHUB_EVENT_NAME" \\
@@ -30,7 +31,11 @@ WORKFLOW = REPO_ROOT / ".github/workflows/build-cuda-wheels.yml"
 
 
 def pull_request_paths(workflow: str) -> list[str]:
-    """The entries of the ``paths:`` list under ``pull_request:``."""
+    """The entries of the ``paths:`` list under ``pull_request:``.
+
+    GitHub's special characters ``?+[]!`` mean something else to git, so they
+    raise a ``ValueError``.
+    """
     patterns = []
     state = "search"
     for line in workflow.splitlines():
@@ -44,6 +49,11 @@ def pull_request_paths(workflow: str) -> list[str]:
                 break
             entry = re.fullmatch(r'      - "(.+)"', line)
             if entry:
+                special = sorted(set(entry[1]) & set("?+[]!"))
+                if special:
+                    raise ValueError(
+                        f"{entry[1]!r}: unsupported special characters {''.join(special)}"
+                    )
                 patterns.append(entry[1])
             elif not line.lstrip().startswith("#"):
                 raise ValueError(f"unexpected line in the pull_request paths: {line!r}")
@@ -52,49 +62,25 @@ def pull_request_paths(workflow: str) -> list[str]:
     return patterns
 
 
-def pattern_regex(pattern: str) -> re.Pattern[str]:
-    """GitHub's filter: ``*`` matches any characters but ``/``, ``**`` any.
-
-    GitHub's other special characters, ``?+[]!``, raise a ``ValueError``.
-    """
-    special = sorted(set(pattern) & set("?+[]!"))
-    if special:
-        raise ValueError(f"{pattern!r}: unsupported special characters {''.join(special)}")
-    regex = ""
-    i = 0
-    while i < len(pattern):
-        if pattern.startswith("**/", i):
-            # Zero directories too, as in philtorch/**/_*_kernels.py for
-            # philtorch/_recur_kernels.py. At worst this runs the test too often.
-            regex += "(?:.*/)?"
-            i += 3
-        elif pattern.startswith("**", i):
-            regex += ".*"
-            i += 2
-        elif pattern[i] == "*":
-            regex += "[^/]*"
-            i += 1
-        else:
-            regex += re.escape(pattern[i])
-            i += 1
-    return re.compile(regex)
-
-
-def touches(patterns: list[str], files: list[str]) -> bool:
-    regexes = [pattern_regex(pattern) for pattern in patterns]
-    return any(regex.fullmatch(file) for file in files for regex in regexes)
-
-
-def gpu_test(event: str, base: str, sha: str) -> bool:
+def gpu_test(
+    event: str,
+    base: str,
+    sha: str,
+    patterns: list[str] | None = None,
+    cwd: Path = REPO_ROOT,
+) -> bool:
     if event != "push" or not base:
         return True
+    if patterns is None:
+        patterns = pull_request_paths(WORKFLOW.read_text())
     try:
         diff = subprocess.run(
-            ["git", "diff", "--name-only", base, sha],
+            ["git", "diff", "--name-only", base, sha, "--"]
+            + [f":(glob){pattern}" for pattern in patterns],
             check=True,
             capture_output=True,
             text=True,
-            cwd=REPO_ROOT,
+            cwd=cwd,
         )
     except subprocess.CalledProcessError as error:
         print(
@@ -102,7 +88,7 @@ def gpu_test(event: str, base: str, sha: str) -> bool:
             file=sys.stderr,
         )
         return True
-    return touches(pull_request_paths(WORKFLOW.read_text()), diff.stdout.splitlines())
+    return bool(diff.stdout)
 
 
 def main() -> None:

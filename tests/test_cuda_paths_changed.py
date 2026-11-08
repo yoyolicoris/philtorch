@@ -42,39 +42,35 @@ def test_parsing_rejects_a_workflow_without_paths():
         PATHS.pull_request_paths("on:\n  pull_request:\n    branches: [dev]\n")
 
 
+@pytest.mark.parametrize("pattern", ["a?.py", "a+.py", "[ab].py", "!a.py"])
+def test_parsing_rejects_unsupported_special_characters(pattern):
+    text = f'on:\n  pull_request:\n    paths:\n      - "{pattern}"\n'
+    with pytest.raises(ValueError, match="unsupported special characters"):
+        PATHS.pull_request_paths(text)
+
+
 @pytest.mark.parametrize(
-    ("pattern", "file", "matches"),
+    ("patterns", "changed"),
     [
-        ("setup.py", "setup.py", True),
-        ("setup.py", "xsetup.py", False),
-        ("setup.py", "setupxpy", False),
-        ("philtorch/csrc/**", "philtorch/csrc/a.cu", True),
-        ("philtorch/csrc/**", "philtorch/csrc/sub/dir/a.cu", True),
-        ("philtorch/csrc/**", "philtorch/other.py", False),
-        ("philtorch/align/*.py", "philtorch/align/dtw.py", True),
-        ("philtorch/align/*.py", "philtorch/align/sub/dtw.py", False),
-        ("philtorch/**/_*_kernels.py", "philtorch/align/_dtw_kernels.py", True),
-        ("philtorch/**/_*_kernels.py", "philtorch/a/b/_x_kernels.py", True),
-        ("philtorch/**/_*_kernels.py", "philtorch/_recur_kernels.py", True),
-        ("philtorch/**/_*_kernels.py", "philtorch/align/dtw.py", False),
-        ("tests/test_recur.py", "tests/test_recur_ext.py", False),
-        ("a/(b).py", "a/(b).py", True),
+        (["philtorch/**/_*_kernels.py"], True),
+        (["philtorch/*.py"], True),
+        (["philtorch/align/**"], True),
+        (["docs/x.rst"], True),
+        (["philtorch/*/dtw.py"], False),
+        (["philtorch/align/*.py"], False),
+        (["docs/y.rst", "tests/**"], False),
     ],
 )
-def test_pattern_matching(pattern, file, matches):
-    assert PATHS.touches([pattern], [file]) is matches
-
-
-@pytest.mark.parametrize("pattern", ["a?.py", "a+.py", "[ab].py", "!a.py"])
-def test_pattern_rejects_unsupported_special_characters(pattern):
-    with pytest.raises(ValueError, match="unsupported special characters"):
-        PATHS.touches([pattern], ["a.py"])
-
-
-def test_touches_any_file_and_any_pattern():
-    assert PATHS.touches(["a.py", "b/**"], ["docs/x.rst", "b/c/d.py"])
-    assert not PATHS.touches(["a.py", "b/**"], ["docs/x.rst"])
-    assert not PATHS.touches(["a.py"], [])
+def test_git_matches_the_patterns(tmp_path, patterns, changed):
+    git = ["git", "-c", "user.name=t", "-c", "user.email=t@t", "-c", "commit.gpgsign=false"]
+    for command in (["init", "-q"], ["commit", "-q", "--allow-empty", "-m", "base"]):
+        subprocess.run(git + command, check=True, cwd=tmp_path)
+    for name in ("philtorch/_recur_kernels.py", "philtorch/align/sub/dtw.py", "docs/x.rst"):
+        (tmp_path / name).parent.mkdir(parents=True, exist_ok=True)
+        (tmp_path / name).touch()
+    for command in (["add", "."], ["commit", "-q", "-m", "files"]):
+        subprocess.run(git + command, check=True, cwd=tmp_path)
+    assert PATHS.gpu_test("push", "HEAD~", "HEAD", patterns, tmp_path) is changed
 
 
 @pytest.mark.parametrize(
