@@ -48,7 +48,6 @@
 #include "stable_support.h"
 
 #include <cstdint>
-#include <cstring>
 #include <type_traits>
 
 namespace philtorch::recur_n
@@ -673,7 +672,10 @@ namespace philtorch::recur_n
                             {
                                 Acc ov[CS];
                                 blk.slice(o, s_ov[cur], ov);
-                                o = plus(blk.dot(a, ov), xv);
+                                // Every lane takes part in dot's shuffles; then zero in the
+                                // padding rows, as matvec's: 0 inf there would be NaN.
+                                const Acc d = plus(blk.dot(a, ov), xv);
+                                o = blk.valid ? d : zero;
                                 if constexpr (!Cf::SHFL)
                                     blk.put(o, s_ov[cur ^ 1]);
                             }

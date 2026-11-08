@@ -92,6 +92,19 @@ def test_recurrence_ignores_memory_past_the_states(dtype, sharing):
     assert not recurrence(A, zi, x).isnan().any()
 
 
+@pytest.mark.cuda
+@pytest.mark.parametrize("M", [5, 40])
+def test_recurrence_overflows_to_inf_not_nan(M):
+    # A positive A overflows the states to inf with no 0 inf among the real
+    # states; the padding states (to 8 and 64) must not turn it into NaN.
+    T = 300
+    A = torch.full((1, T, M, M), 0.6)
+    zi, x = torch.zeros(1, M), torch.ones(1, T, M)
+    expected = recurrence(A, zi, x)
+    assert expected.isinf().any() and not expected.isnan().any()
+    torch.testing.assert_close(recurrence(A.cuda(), zi.cuda(), x.cuda()).cpu(), expected)
+
+
 @pytest.mark.parametrize(
     "dtype, tolerance",
     [
