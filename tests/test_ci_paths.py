@@ -12,7 +12,7 @@ def test_cuda_workflow_runs_on_every_cuda_test_module():
     workflow = (REPO_ROOT / ".github/workflows/build-cuda-wheels.yml").read_text()
     for module in sorted((REPO_ROOT / "tests").glob("test_*.py")):
         if CUDA_MARK.search(module.read_text()):
-            # Once: the push and pull request filters share one list.
+            # Once: the list is both the pull request filter and a dev push's GPU-test check.
             entry = f'- "tests/{module.name}"'
             assert workflow.count(entry) == 1, f"{module.name} is missing from the path filter"
 

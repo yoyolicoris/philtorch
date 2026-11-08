@@ -3,7 +3,6 @@
 [![PyPI version](https://img.shields.io/pypi/v/philtorch.svg)](https://pypi.org/project/philtorch/)
 [![Python versions](https://img.shields.io/pypi/pyversions/philtorch.svg)](https://pypi.org/project/philtorch/)
 [![Build wheels](https://github.com/yoyolicoris/philtorch/actions/workflows/build-wheels.yml/badge.svg?branch=dev)](https://github.com/yoyolicoris/philtorch/actions/workflows/build-wheels.yml)
-[![Build CUDA wheels](https://github.com/yoyolicoris/philtorch/actions/workflows/build-cuda-wheels.yml/badge.svg?branch=dev)](https://github.com/yoyolicoris/philtorch/actions/workflows/build-cuda-wheels.yml)
 [![codecov](https://codecov.io/gh/yoyolicoris/philtorch/branch/dev/graph/badge.svg?token=288BR3PYIX)](https://codecov.io/gh/yoyolicoris/philtorch)
 [![Documentation](https://readthedocs.org/projects/philtorch/badge/?version=stable)](https://philtorch.readthedocs.io/en/stable/)
 [![OpenReview](https://img.shields.io/badge/OpenReview-ZhwIyvtBNB-8c1b13.svg)](https://openreview.net/forum?id=ZhwIyvtBNB)
@@ -76,6 +75,12 @@ The index URLs are relative to `https://yoyolicoris.github.io/philtorch/`, which
 - **Requirements:** a Python your PyTorch has wheels for, an NVIDIA GPU with compute capability 7.5, 8.x, 9.0, 10.x or 12.x, and a PyTorch built for CUDA 12.9 or newer, with a driver that supports its CUDA version.
 - **PyTorch:** each wheel requires `torch >= 2.12.0`, so pip keeps the PyTorch you installed.
 - **Mismatches:** `import philtorch` raises an `ImportError` if the installed PyTorch has no CUDA support, uses a different CUDA major version, or uses a CUDA older than 12.9, such as PyTorch's `cu126` builds.
+- **Development builds:** every push to `dev` that passes CI replaces the wheels of a development index, which holds only the latest `dev` build. After installing PyTorch as above, install from it with `--pre`:
+
+  ```bash
+  python -m pip install --pre philtorch --index-url https://yoyolicoris.github.io/philtorch/whl/dev/cu13/
+  ```
+
 - **Use `--index-url`, not `--extra-index-url`:** with PyPI also searched, pip installs PyPI's CPU-only wheel whenever it is a newer release than the CUDA build in the index, without warning.
 
 ### Source builds

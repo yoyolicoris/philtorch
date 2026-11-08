@@ -1,9 +1,10 @@
 name: Build CUDA wheels
 
 # Builds one Linux CUDA wheel, abi3, per CUDA major (cu12, cu13), uploads them
-# as CI artifacts and GPU-tests them. A release runs it as a job of
-# build-wheels.yml (github.event_name is then `release`), which attaches the
-# wheels to the release once every CPU and CUDA check has passed.
+# as CI artifacts and GPU-tests them. A release or a dev push runs it as a job
+# of build-wheels.yml (github.event_name is then `release` or `push`), which
+# attaches the wheels to the release, or to the rolling `cuda-dev` pre-release,
+# once every CPU and CUDA check has passed.
 #
 # Design notes:
 # - `scripts/torch_matrix.py legs` resolves the legs from torch_matrix.json,
@@ -21,17 +22,21 @@ name: Build CUDA wheels
 #   and the wheel of its CUDA major with --no-deps, on that leg's Python, on a
 #   Modal GPU, and runs the CUDA tests against it (scripts/modal_smoke_test.py).
 # - Pull requests and dev pushes build every wheel and GPU-test one: the wheel
-#   of the newest torch's newest CUDA, on that torch. They run only when the
-#   build inputs change. Releases and manual dispatches GPU-test every (torch,
-#   CUDA) pair in the matrix.
+#   of the newest torch's newest CUDA, on that torch. A pull request runs only
+#   when a file of the `paths` list below changes. A dev push always builds
+#   the wheels, which build-wheels.yml publishes as the development index, but
+#   GPU-tests only if it changed such a file (scripts/cuda_paths_changed.py
+#   reads the list from this file). Releases and manual dispatches GPU-test
+#   every (torch, CUDA) pair in the matrix.
 
 on:
-  push:
+  pull_request:
     branches: ["dev"]
-    paths: &cuda_paths
+    paths:
       - ".github/workflows/build-cuda-wheels.yml"
       - "torch_matrix.json"
       - "scripts/torch_matrix.py"
+      - "scripts/cuda_paths_changed.py"
       - "philtorch/_build_check.py"
       - "scripts/modal_smoke_test.py"
       - "setup.py"
@@ -61,20 +66,18 @@ on:
       - "tests/test_recur.py"
       - "tests/test_recur_ext.py"
       - "tests/test_torchlpc_vendored.py"
-  pull_request:
-    branches: ["dev"]
-    paths: *cuda_paths
   workflow_call:
   workflow_dispatch:
 
 permissions:
   contents: read
 
-# A newer push supersedes the previous run's expensive builds. When
-# build-wheels.yml calls this workflow, github.workflow is its name, so the
-# group is spelled out.
+# A newer push to a pull request supersedes its previous run's expensive
+# builds. Each dev push has a group of its own, as in build-wheels.yml, so its
+# run is never cancelled. When build-wheels.yml calls this workflow,
+# github.workflow is its name, so the group is spelled out.
 concurrency:
-  group: build-cuda-wheels-${{ github.ref }}
+  group: build-cuda-wheels-${{ github.event_name == 'push' && github.run_id || github.ref }}
   cancel-in-progress: true
 
 jobs:
@@ -85,12 +88,25 @@ jobs:
       platform: ${{ steps.legs.outputs.platform }}
       cuda_builds: ${{ steps.legs.outputs.cuda_builds }}
       cuda_tests: ${{ steps.legs.outputs.cuda_tests }}
+      gpu_test: ${{ steps.paths.outputs.gpu_test }}
     steps:
       - uses: actions/checkout@v7
+        with:
+          # The history and tags, to diff a push against the cuda-dev tag.
+          fetch-depth: 0
 
       - name: Resolve the legs
         id: legs
         run: python3 scripts/torch_matrix.py legs --event "$GITHUB_EVENT_NAME" >> "$GITHUB_OUTPUT"
+
+      - name: Check whether the GPU test is needed
+        id: paths
+        # Against the commit whose wheels the cuda-dev pre-release holds,
+        # which build-wheels.yml moves the tag to when it publishes them.
+        run: |
+          BASE=$(git rev-parse -q --verify "refs/tags/cuda-dev^{commit}" || true)
+          python3 scripts/cuda_paths_changed.py --event "$GITHUB_EVENT_NAME" \
+            --base "$BASE" --sha "$GITHUB_SHA" >> "$GITHUB_OUTPUT"
 
   build:
     # A name of its own: GitHub would otherwise list every matrix value, the
@@ -210,8 +226,11 @@ jobs:
     # CUDA major, on a Modal GPU.
     name: GPU test ${{ matrix.label }}, torch ${{ matrix.torch }}, CUDA ${{ matrix.cuda }}
     needs: [resolve-legs, build]
-    # Repository secrets are not available to pull requests from forks.
-    if: github.event_name != 'pull_request' || github.event.pull_request.head.repo.full_name == github.repository
+    # Repository secrets are not available to pull requests from forks. A dev
+    # push that changed none of the `paths` above builds only.
+    if: >
+      needs.resolve-legs.outputs.gpu_test == 'true' &&
+      (github.event_name != 'pull_request' || github.event.pull_request.head.repo.full_name == github.repository)
     runs-on: ubuntu-latest
     timeout-minutes: 60
     strategy:

@@ -31,9 +31,10 @@ CU13 = "philtorch-0.9.0+cu13-cp311-abi3-manylinux_2_28_x86_64.whl"
 CU130 = "philtorch-0.6.0+torch2.14.1.cu130-cp313-cp313-manylinux_2_28_x86_64.whl"
 
 
-def asset(name, content=b"wheel", tag="v0.6.0"):
+def asset(name, content=b"wheel", tag="v0.6.0", created_at="2026-11-01T00:00:00Z"):
     return {
         "name": name,
+        "created_at": created_at,
         "browser_download_url": (
             f"https://github.com/example/philtorch/releases/download/{tag}/{quote(name)}"
         ),
@@ -103,6 +104,57 @@ def test_writes_one_index_per_torch_minor_and_cuda_for_earlier_releases(tmp_path
     for path in sorted((tmp_path / "site").rglob("*.html")):
         again = tmp_path / "again" / path.relative_to(tmp_path / "site")
         assert again.read_text() == path.read_text()
+
+
+def test_dev_release_wheels_go_only_into_the_dev_indexes(tmp_path):
+    stable = asset(CU13, b"stable", "v0.9.0")
+    dev12 = asset(CU13.replace("0.9.0+cu13", "0.9.1.dev7+cu12"), b"dev12", "cuda-dev")
+    dev13 = asset(CU13.replace("0.9.0+cu13", "0.9.1.dev7+cu13"), b"dev13", "cuda-dev")
+    # A wheel without a current CUDA label has no development index.
+    old = asset(CU130, b"old", "cuda-dev")
+    releases = [release("cuda-dev", dev12, dev13, old), release("v0.9.0", stable)]
+
+    counts = INDEX.build_site(releases, tmp_path / "site", BASE_URL)
+
+    assert counts == {"cu13": 1, "dev/cu13": 1, "dev/cu12": 1}
+    stable_page = (tmp_path / "site/whl/cu13/philtorch/index.html").read_text()
+    assert link(stable) in stable_page
+    assert "dev7" not in stable_page
+    assert not (tmp_path / "site/whl/cu12").exists()
+    page = (tmp_path / "site/whl/dev/cu12/philtorch/index.html").read_text()
+    assert link(dev12) in page
+    assert link(dev13) not in page
+    assert (
+        '<a href="philtorch/">philtorch</a>'
+        in (tmp_path / "site/whl/dev/cu13/index.html").read_text()
+    )
+    landing = (tmp_path / "site/index.html").read_text()
+    command = f"pip install --pre philtorch --index-url {BASE_URL}/whl/dev/cu13/"
+    assert command in landing
+    assert landing.index("whl/cu13/") < landing.index("Development builds")
+    assert landing.index("Development builds") < landing.index("whl/dev/cu13/")
+    assert landing.index("whl/dev/cu13/") < landing.index("whl/dev/cu12/")
+    assert "Earlier releases" not in landing
+
+
+def test_dev_indexes_list_only_the_newest_build(tmp_path):
+    def dev(version, cuda, created_at):
+        name = CU13.replace("0.9.0+cu13", f"{version}+{cuda}")
+        return asset(name, name.encode(), "cuda-dev", created_at)
+
+    # The previous build stays in the release until the next publish, and the
+    # newer one's cu12 wheel is not uploaded yet.
+    previous = [dev("0.9.1.dev7", cuda, "2026-11-01T00:00:00Z") for cuda in ("cu12", "cu13")]
+    newest = dev("0.9.1.dev10", "cu13", "2026-11-02T00:00:00Z")
+    releases = [release("cuda-dev", newest, *previous)]
+
+    INDEX.build_site(releases, tmp_path / "site", BASE_URL)
+
+    cu13 = (tmp_path / "site/whl/dev/cu13/philtorch/index.html").read_text()
+    assert link(newest) in cu13
+    assert "dev7" not in cu13
+    cu12 = (tmp_path / "site/whl/dev/cu12/philtorch/index.html").read_text()
+    assert link(previous[0]) in cu12
 
 
 def test_keeps_wheels_from_older_releases(tmp_path):

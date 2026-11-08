@@ -163,10 +163,11 @@ jobs:
       contents: read
     uses: ./.github/workflows/docs.yml
 
-  # Releases only: the CUDA wheels, built and GPU-tested alongside the CPU
-  # jobs; attach-cuda-wheels attaches them once everything has passed.
+  # Releases and dev pushes: the CUDA wheels, built and GPU-tested alongside
+  # the CPU jobs; attach-cuda-wheels (releases) and publish-dev-cuda-wheels
+  # (dev pushes) publish them once everything has passed.
   cuda-wheels:
-    if: github.event_name == 'release'
+    if: github.event_name == 'release' || github.event_name == 'push'
     permissions:
       contents: read
     uses: ./.github/workflows/build-cuda-wheels.yml
@@ -245,6 +246,66 @@ jobs:
               exit 1
             fi
           done
+
+  # Keeps the CUDA wheels of the latest dev push in the `cuda-dev` pre-release,
+  # for deploy-cuda-index.yml to list in the development indexes. Not a tag
+  # named `dev`, which would make `dev` an ambiguous ref. It follows `publish`,
+  # which runs only once every CPU check has passed.
+  publish-dev-cuda-wheels:
+    needs: [publish, cuda-wheels]
+    if: github.event_name == 'push'
+    # One run at a time changes the release, never cancelled halfway.
+    concurrency:
+      group: cuda-dev-release
+      cancel-in-progress: false
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+    steps:
+      - uses: actions/download-artifact@v8
+        with:
+          pattern: cuda-wheels-*
+          merge-multiple: true
+          path: wheels/
+
+      - name: Publish the wheels to the cuda-dev pre-release
+        env:
+          GH_TOKEN: ${{ github.token }}
+          GH_REPO: ${{ github.repository }}
+        run: |
+          # A newer push has its own run, which this older one would overwrite
+          # if it finished later.
+          LATEST=$(gh api "repos/$GITHUB_REPOSITORY/branches/dev" --jq .commit.sha)
+          if [ "$LATEST" != "$GITHUB_SHA" ]; then
+            echo "::notice::dev has moved on to $LATEST; not publishing the wheels of $GITHUB_SHA"
+            exit 0
+          fi
+          gh release view cuda-dev > /dev/null 2>&1 ||
+            gh release create cuda-dev --target "$GITHUB_SHA" --prerelease --latest=false \
+              --title "CUDA wheels of dev" \
+              --notes "CUDA wheels of the latest dev build, the commit tagged cuda-dev."
+          # The tag follows the wheels: build-cuda-wheels.yml GPU-tests the CUDA
+          # changes since it. GITHUB_TOKEN may move a tag only to a commit whose
+          # workflows match a branch tip: dev's, unless dev has just moved on.
+          gh api -X PATCH "repos/$GITHUB_REPOSITORY/git/refs/tags/cuda-dev" \
+            -f sha="$GITHUB_SHA" -F force=true > /dev/null ||
+            echo "::warning::could not move the cuda-dev tag to $GITHUB_SHA"
+          # A re-run rebuilds the same filenames, maybe with other bytes: keep
+          # the uploaded ones, whose hashes the live index lists.
+          UPLOADED=$(gh release view cuda-dev --json assets \
+            --jq '.assets[] | select(.state == "uploaded") | .name')
+          for WHEEL in wheels/*.whl; do
+            echo "$UPLOADED" | grep -qxF "$(basename "$WHEEL")" ||
+              gh release upload cuda-dev "$WHEEL"
+          done
+          # Keep this build and the one before it, whose wheels the live index
+          # links to until this run's Pages deployment replaces it.
+          KEEP=$((2 * $(ls wheels/*.whl | wc -l)))
+          gh release view cuda-dev --json assets \
+            --jq ".assets | sort_by(.createdAt) | reverse | .[$KEEP:] | .[].name" |
+            while read -r ASSET; do
+              gh release delete-asset cuda-dev "$ASSET" --yes
+            done
 
   # Each OS's wheel on every cpu_tests leg: a torch, maybe a later minor than
   # the wheel's, and a Python. A missing wheel (its build failed) fails the
