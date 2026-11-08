@@ -87,25 +87,29 @@ namespace philtorch::recur_n
 
     // ---- arithmetic in Acc: float, double, int64_t, cx<float>, cx<double>
 
-    __device__ __forceinline__ float to_acc(c10::Half v) { return static_cast<float>(v); }
-    __device__ __forceinline__ float to_acc(c10::BFloat16 v) { return static_cast<float>(v); }
-    template <class R>
-    __device__ __forceinline__ cx<R> to_acc(c10::complex<R> v)
-    {
-        return {v.real(), v.imag()};
-    }
     template <class T>
-    __device__ __forceinline__ T to_acc(T v) { return v; }
+    constexpr bool is_c10_complex = false;
+    template <class R>
+    constexpr bool is_c10_complex<c10::complex<R>> = true;
 
-    __device__ __forceinline__ void store(c10::Half *p, float v) { *p = c10::Half(v); }
-    __device__ __forceinline__ void store(c10::BFloat16 *p, float v) { *p = c10::BFloat16(v); }
-    template <class R>
-    __device__ __forceinline__ void store(c10::complex<R> *p, cx<R> v)
-    {
-        *p = c10::complex<R>(v.re, v.im);
-    }
+    // A stored value in the accumulation type, and back.
     template <class T>
-    __device__ __forceinline__ void store(T *p, T v) { *p = v; }
+    __device__ __forceinline__ auto to_acc(T v)
+    {
+        if constexpr (is_c10_complex<T>)
+            return cx<typename T::value_type>{v.real(), v.imag()};
+        else
+            return static_cast<philtorch::opmath_type<T>>(v);
+    }
+
+    template <class S>
+    __device__ __forceinline__ void store(S *p, acc_t<S> v)
+    {
+        if constexpr (is_c10_complex<S>)
+            *p = S(v.re, v.im);
+        else
+            *p = static_cast<S>(v);
+    }
 
     template <class A>
     __device__ __forceinline__ A num(int v)
@@ -156,8 +160,6 @@ namespace philtorch::recur_n
     {
         if constexpr (is_cx<A>)
             return {shfl(v.re, lane), shfl(v.im, lane)};
-        else if constexpr (std::is_integral_v<A>)
-            return static_cast<A>(__shfl_sync(FULL, static_cast<long long>(v), lane));
         else
             return __shfl_sync(FULL, v, lane);
     }
@@ -167,8 +169,6 @@ namespace philtorch::recur_n
     {
         if constexpr (is_cx<A>)
             return {shfl_xor(v.re, mask), shfl_xor(v.im, mask)};
-        else if constexpr (std::is_integral_v<A>)
-            return static_cast<A>(__shfl_xor_sync(FULL, static_cast<long long>(v), mask));
         else
             return __shfl_xor_sync(FULL, v, mask);
     }
@@ -183,8 +183,6 @@ namespace philtorch::recur_n
             const V v = __ldcg(reinterpret_cast<const V *>(p));
             return {v.x, v.y};
         }
-        else if constexpr (std::is_integral_v<A>)
-            return static_cast<A>(__ldcg(reinterpret_cast<const long long *>(p)));
         else
             return __ldcg(p);
     }
@@ -197,8 +195,6 @@ namespace philtorch::recur_n
             using V = std::conditional_t<sizeof(A) == 8, float2, double2>;
             __stcg(reinterpret_cast<V *>(p), V{v.re, v.im});
         }
-        else if constexpr (std::is_integral_v<A>)
-            __stcg(reinterpret_cast<long long *>(p), static_cast<long long>(v));
         else
             __stcg(p, v);
     }
@@ -215,27 +211,18 @@ namespace philtorch::recur_n
         asm volatile("st.release.gpu.global.b32 [%0], %1;" ::"l"(p), "r"(v) : "memory");
     }
 
-    // V elements of T at p, V * sizeof(T) being 4, 8 or 16 bytes, aligned.
+    // V elements of T at p, aligned for V * sizeof(T) bytes: one wide load.
     template <int V, class T>
     __device__ __forceinline__ void load_vec(const T *p, T (&v)[V])
     {
-        constexpr int BYTES = V * sizeof(T);
-        static_assert(BYTES == 4 || BYTES == 8 || BYTES == 16, "");
-        if constexpr (BYTES == 16)
+        struct alignas(V * sizeof(T)) Vec
         {
-            const uint4 u = *reinterpret_cast<const uint4 *>(p);
-            memcpy(v, &u, 16);
-        }
-        else if constexpr (BYTES == 8)
-        {
-            const uint2 u = *reinterpret_cast<const uint2 *>(p);
-            memcpy(v, &u, 8);
-        }
-        else
-        {
-            const unsigned u = *reinterpret_cast<const unsigned *>(p);
-            memcpy(v, &u, 4);
-        }
+            T v[V];
+        };
+        const Vec u = *reinterpret_cast<const Vec *>(p);
+#pragma unroll
+        for (int q = 0; q < V; ++q)
+            v[q] = u.v[q];
     }
 
     // The largest power of 2 up to cap that divides n.
@@ -511,7 +498,7 @@ namespace philtorch::recur_n
         const int steps = rest < chunk ? rest : chunk;
         const int64_t xb = static_cast<int64_t>(b) * T * M;
         const int MM = M * M;
-        const bool last = c == C - 1;
+        const bool publish = c < C - 1; // the last chunk's map and end state are read by no one
         // Thread's slice of its row of A[n]: arow + n MM; its entry of x[n]: xrow + n M.
         const S *arow = A + b * stride_ab + static_cast<int64_t>(blk.row) * M + blk.k * CS;
         const S *xrow = x + xb + blk.row;
@@ -519,11 +506,25 @@ namespace philtorch::recur_n
         const bool vec = aligned && M % VG == 0;
         const bool vec_p = M % vec_width(CS, 16 / (int)sizeof(Acc)) == 0; // P, from the scratch: aligned
 
-        Acc y = zero;
-        if (blk.valid)
-            y = to_acc(zi[static_cast<int64_t>(b) * M + blk.row]);
+        Acc y = blk.valid ? to_acc(zi[static_cast<int64_t>(b) * M + blk.row]) : zero;
         Acc o = zero;
         Acc ma[CS]; // time-invariant: the matrix in registers, A or P
+
+        // Publishes this chunk's vector (its offset: flag 1, or its end state: flag 2):
+        // stores, a fence, a barrier, then the flag. Offsets are published by every
+        // unit's threads, so the barrier is the block's; end states by unit 0's.
+        auto announce = [&](Acc *dst, Acc v, int flag)
+        {
+            if (blk.writer)
+                stcg(dst + static_cast<int64_t>(index) * M + blk.row, v);
+            __threadfence();
+            if (flag == 1)
+                __syncthreads();
+            else
+                blk.usync();
+            if (tid == 0)
+                st_release(flags + index, flag);
+        };
 
         // body(a, xv) for the chunk's steps in turn, a and xv read RING - 1
         // steps ahead (the last step's again past the end), through pointers
@@ -593,7 +594,6 @@ namespace philtorch::recur_n
 
         if (c > 0)
         {
-            const bool publish = !last;
             // 1. The chunk's map: o from a zero start, and P.
             // The last chunk composes its map too, unread: skipping it, its
             // look-back spins on predecessors still composing, up to 28% slower.
@@ -626,12 +626,7 @@ namespace philtorch::recur_n
                             for (int q = 0; q < nq; ++q)
                             {
                                 const int j0 = (q * NG + blk.g) * (RB * KS); // first column of this group
-                                Acc pa[RB][KS];
-#pragma unroll
-                                for (int r = 0; r < RB; ++r)
-#pragma unroll
-                                    for (int kk = 0; kk < KS; ++kk)
-                                        pa[r][kk] = zero;
+                                Acc pa[RB][KS] = {};
 #pragma unroll
                                 for (int r = 0; r < RB; ++r)
 #pragma unroll
@@ -701,14 +696,7 @@ namespace philtorch::recur_n
                     { o = plus(blk.matvec(a, o), xv); });
             }
             if (publish)
-            {
-                if (blk.writer)
-                    stcg(offsets + static_cast<int64_t>(index) * M + blk.row, o);
-                __threadfence();
-                __syncthreads();
-                if (tid == 0)
-                    st_release(flags + index, 1);
-            }
+                announce(offsets, o, 1);
             if constexpr (!VARYING)
                 load_slice(ma, P + b * stride_pb + static_cast<int64_t>(blk.row) * M + blk.k * CS, blk.nvalid, vec_p);
             // 2. Back to the latest predecessor with its end state.
@@ -738,37 +726,24 @@ namespace philtorch::recur_n
 #pragma unroll
                         for (int q = 0; q < CS; ++q)
                         {
-                            Acc w = zero;
-                            if (q < blk.nvalid)
-                                w = ldcg(map + static_cast<int64_t>(blk.k * CS + q) * M + blk.row);
-                            a[q] = w;
+                            a[q] = q < blk.nvalid ? ldcg(map + static_cast<int64_t>(blk.k * CS + q) * M + blk.row) : zero;
                         }
                         return blk.matvec(a, v);
                     }
                     else
                         return blk.matvec(ma, v);
                 };
-                y = zero;
-                if (blk.valid)
-                    y = ldcg(states + (static_cast<int64_t>(b) * C + j) * M + blk.row);
+                y = blk.valid ? ldcg(states + (static_cast<int64_t>(b) * C + j) * M + blk.row) : zero;
 #pragma unroll 1
                 for (int i = j + 1; i < c; ++i)
                 {
-                    Acc a = zero;
-                    if (blk.valid)
-                        a = ldcg(offsets + (static_cast<int64_t>(b) * C + i) * M + blk.row);
+                    const Acc a = blk.valid ? ldcg(offsets + (static_cast<int64_t>(b) * C + i) * M + blk.row) : zero;
                     y = plus(apply(b * C + i, y), a);
                 }
                 if (publish)
                 {
                     // 3. The chunk's end state.
-                    const Acc e = plus(apply(index, y), o);
-                    if (blk.writer)
-                        stcg(states + static_cast<int64_t>(index) * M + blk.row, e);
-                    __threadfence();
-                    blk.usync();
-                    if (tid == 0)
-                        st_release(flags + index, 2);
+                    announce(states, plus(apply(index, y), o), 2);
                 }
             }
             if constexpr (!VARYING)
@@ -788,12 +763,7 @@ namespace philtorch::recur_n
             if (C > 1 && c == 0)
             {
                 // Chunk 0 starts from zi: its steps give its end state, no map needed.
-                if (blk.writer)
-                    stcg(states + static_cast<int64_t>(index) * M + blk.row, y);
-                __threadfence();
-                blk.usync();
-                if (tid == 0)
-                    st_release(flags + index, 2);
+                announce(states, y, 2);
             }
         }
     }

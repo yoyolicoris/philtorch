@@ -18,15 +18,15 @@ namespace
     template <class S>
     constexpr int max_states = rn::is_cx<rn::acc_t<S>> ? rn::MAX_STATES / 2 : rn::MAX_STATES;
 
-    // Steps per chunk, a power of 2 (the power's squarings), a complex state
-    // counting twice: longer chunks mean fewer look-backs, shorter ones more
-    // blocks.
-    int chunk_steps(int BM, bool complex, bool varying)
+    // log2 of the steps per chunk, a power of 2 (the power's squarings: its
+    // log2), a complex state counting twice: longer chunks mean fewer
+    // look-backs, shorter ones more blocks.
+    int chunk_log2(int BM, bool complex, bool varying)
     {
         const int states = BM * (complex ? 2 : 1);
         if (varying)
-            return states <= 16 ? 128 : 64;
-        return states <= 16 ? 256 : 128;
+            return states <= 16 ? 7 : 6;
+        return states <= 16 ? 8 : 7;
     }
 
     // f(std::integral_constant<int, BM>) for the BM of the padded size bm.
@@ -84,16 +84,14 @@ namespace
         int BM = 2;
         while (BM < M)
             BM *= 2;
-        const int chunk = chunk_steps(BM, complex, VARYING);
+        const int squarings = chunk_log2(BM, complex, VARYING);
+        const int chunk = 1 << squarings;
         const int64_t C = philtorch::ceil_div<int64_t>(T, chunk);
         STD_TORCH_CHECK(B * C < std::numeric_limits<int>::max(),
                         "the input is too large for the CUDA recurrence");
         const int64_t Ba = A.dim() == (VARYING ? 4 : 3) ? A.size(0) : 1;
         const int64_t stride_ab = Ba > 1 ? (VARYING ? T : 1) * M * M : 0;
         const int64_t stride_pb = Ba > 1 ? M * M : 0;
-        int squarings = 0;
-        for (int n = chunk; n > 1; n >>= 1)
-            ++squarings;
 
         // The scratch: each chunk's end state, offset and map; A^chunk and a
         // buffer for the squarings; the flags and the ticket counter.
@@ -106,11 +104,11 @@ namespace
         };
         const int64_t BC = B * C;
         const bool scan = C > 1;
-        const size_t o_states = reserve(scan ? BC * M * sizeof(Acc) : 0);
-        const size_t o_offsets = reserve(scan ? BC * M * sizeof(Acc) : 0);
-        const size_t o_maps = reserve(scan && VARYING ? BC * M * M * sizeof(Acc) : 0);
-        const size_t o_power = reserve(scan && !VARYING ? Ba * M * M * sizeof(Acc) : 0);
-        const size_t o_tmp = reserve(scan && !VARYING ? Ba * M * M * sizeof(Acc) : 0);
+        const size_t o_states = reserve(BC * M * sizeof(Acc));
+        const size_t o_offsets = reserve(BC * M * sizeof(Acc));
+        const size_t o_maps = reserve(VARYING ? BC * M * M * sizeof(Acc) : 0);
+        const size_t o_power = reserve(VARYING ? 0 : Ba * M * M * sizeof(Acc));
+        const size_t o_tmp = reserve(VARYING ? 0 : Ba * M * M * sizeof(Acc));
         const size_t o_flags = reserve((BC + 1) * sizeof(int));
         auto work = torch::stable::empty({static_cast<int64_t>(bytes)}, torch::headeronly::ScalarType::Byte,
                                          std::nullopt, x.device());
