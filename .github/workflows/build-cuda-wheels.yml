@@ -48,18 +48,19 @@ on:
       # The Triton kernels, named _*_kernels.py, the recurrence operator that
       # dispatches the native kernels, the native ops' registered backwards,
       # the alignment and HMM modules, which run only on CUDA, and every test
-      # module the GPU job runs (-m cuda), which tests/test_ci_paths.py checks.
+      # module the GPU job runs (-m cuda), with the tests/ modules they import,
+      # which tests/test_ci_paths.py checks.
       - "philtorch/**/_*_kernels.py"
       - "philtorch/_recur.py"
       - "philtorch/_ops.py"
       - "philtorch/align/*.py"
       - "philtorch/estimation/hmm.py"
+      - "tests/_cases.py"
       - "tests/conftest.py"
       - "tests/test_align_ctc.py"
       - "tests/test_align_dtw.py"
       - "tests/test_docstrings_cuda.py"
       - "tests/test_estimation_hmm.py"
-      - "tests/test_estimation_kalman.py"
       - "tests/test_interp.py"
       - "tests/test_pt2_comp.py"
       - "tests/test_pt2_vendored_compile.py"

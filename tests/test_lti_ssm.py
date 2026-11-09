@@ -9,17 +9,8 @@ from philtorch.lti import diag_state_space, state_space, state_space_recursion
 from philtorch.lti.ssm import _ssm_B, _ssm_C_D
 from philtorch.mat import companion
 
-from ._cases import each_choice
+from ._cases import each_choice, stable_denominators
 from .test_lti_lfilter import _generate_random_signal
-
-
-def _generate_random_filter_coeffs(order: int, B: int) -> np.ndarray:
-    """Generate random filter coefficients"""
-
-    a = np.random.randn(B, order)
-    a = a / np.abs(a).sum(axis=-1, keepdims=True)
-
-    return a
 
 
 def _generate_diagonalizable_matrix(shape: tuple[int, ...]) -> torch.Tensor:
@@ -45,7 +36,7 @@ def test_time_invariant_ssm(
     """Test time-invariant filters against scipy.signal.lfilter"""
 
     # Generate test data
-    a = _generate_random_filter_coeffs(order, B)
+    a = stable_denominators(order, B)
     x = _generate_random_signal(B, T)
 
     # Convert to torch tensors
@@ -73,7 +64,7 @@ def test_out_idx(order: int, out_idx: int):
 
     # Generate test data
     B, T = 2, 10
-    a = _generate_random_filter_coeffs(order, B)
+    a = stable_denominators(order, B)
     x = _generate_random_signal(B, T)
 
     # Convert to torch tensors

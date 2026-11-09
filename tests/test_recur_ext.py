@@ -5,8 +5,7 @@ from philtorch._recur import recurrence
 from philtorch.lpv import state_space_recursion as lpv_state_space
 from philtorch.mat import companion
 
-from .test_lpv_filters import _generate_time_varying_coeffs
-from .test_lti_ssm import _generate_random_filter_coeffs
+from ._cases import stable_denominators, time_varying_coeffs
 
 _REQUIRES_GRAD_CASES = [
     (True, False, False),
@@ -35,7 +34,7 @@ def test_lti_recur2_equiv(device: str, batch: bool):
     T = 101
     order = 2
 
-    a = _generate_random_filter_coeffs(order, B if batch else 1)
+    a = stable_denominators(order, B if batch else 1)
 
     # Convert to torch tensors
     a_torch = torch.from_numpy(a).to(device)
@@ -69,7 +68,7 @@ def test_lti_recurN_equiv(device: str, batch: bool, order: int):
     B = 4
     T = 101
 
-    a = _generate_random_filter_coeffs(order, B if batch else 1)
+    a = stable_denominators(order, B if batch else 1)
 
     # Convert to torch tensors
     a_torch = torch.from_numpy(a).to(device)
@@ -334,7 +333,7 @@ def test_recurN_extension_matches_unrolled(order: int):
     batch_size = 2
     N = 37
 
-    _, a = _generate_time_varying_coeffs(batch_size, N, order, order)
+    _, a = time_varying_coeffs(batch_size, N, order, order)
     x = torch.randn(batch_size, N, order).double()
     A = companion(a).double()
     zi = torch.randn(batch_size, order).double()
@@ -361,7 +360,7 @@ def test_recur2_extension_matches_unrolled(device):
     N = 17
     order = 2
 
-    _, a = _generate_time_varying_coeffs(batch_size, N, order, order)
+    _, a = time_varying_coeffs(batch_size, N, order, order)
     x = torch.randn(batch_size, N, 2).to(device).double()
     A = companion(a).to(device).double()
     zi = torch.randn(batch_size, order).to(device).double()
