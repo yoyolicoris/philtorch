@@ -616,12 +616,16 @@ def test_cub_scans_add_the_input_after_cancelling_products():
     torch.testing.assert_close(actual.cpu(), expected)
 
 
-@pytest.mark.parametrize("op, A_shape", [("recur3", (4, 2, 2)), ("lti_recur3", (2, 2))])
-def test_cpu_order_3_ops_reject_other_orders(op, A_shape):
-    # As their fakes and CUDA kernels do, though the CPU kernel takes any order.
-    A = torch.zeros(A_shape, dtype=torch.float64)
-    zi, x = torch.zeros(1, 2, dtype=torch.float64), torch.zeros(1, 4, 2, dtype=torch.float64)
-    with pytest.raises(RuntimeError, match=r"\(B, T, 3\)"):
+@pytest.mark.parametrize(
+    "op, M",
+    [("recur2", 3), ("lti_recur2", 3), ("recur3", 2), ("lti_recur3", 2)],
+)
+def test_cpu_order_ops_reject_other_orders(op, M):
+    # As their fakes, CUDA and MPS kernels do, though the CPU kernel takes any order.
+    A = torch.zeros((4, M, M) if op.startswith("recur") else (M, M), dtype=torch.float64)
+    zi, x = torch.zeros(1, M, dtype=torch.float64), torch.zeros(1, 4, M, dtype=torch.float64)
+    order = op[-1]
+    with pytest.raises(RuntimeError, match=rf"\(B, T, {order}\)"):
         getattr(torch.ops.philtorch, op)(A, zi, x)
 
 

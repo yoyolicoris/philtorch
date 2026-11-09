@@ -313,17 +313,19 @@ Tensor scan_cpu(const Tensor &impulse, const Tensor &decay,
     return recur_cpu_launch(decay, init, impulse, 1, impulse.size(1), 1);
 }
 
-// recur3's and lti_recur3's CPU kernels: those of any order, taking 3 states
-// only, as their fakes and CUDA kernels do.
-Tensor recur3_cpu(const Tensor &A, const Tensor &zi, const Tensor &x)
+// The ops of one order M (recur2, recur3 and their lti_ forms): the kernels of
+// any order, for x of shape (B, T, M) only, as their fakes, CUDA and MPS take.
+template <int M>
+Tensor recur_of_order(const Tensor &A, const Tensor &zi, const Tensor &x)
 {
-    STD_TORCH_CHECK(x.dim() == 3 && x.size(2) == 3, "x must be of shape (B, T, 3)");
+    STD_TORCH_CHECK(x.dim() == 3 && x.size(2) == M, "x must be of shape (B, T, ", M, ")");
     return recurN_cpu(A, zi, x);
 }
 
-Tensor lti_recur3_cpu(const Tensor &A, const Tensor &zi, const Tensor &x)
+template <int M>
+Tensor lti_recur_of_order(const Tensor &A, const Tensor &zi, const Tensor &x)
 {
-    STD_TORCH_CHECK(x.dim() == 3 && x.size(2) == 3, "x must be of shape (B, T, 3)");
+    STD_TORCH_CHECK(x.dim() == 3 && x.size(2) == M, "x must be of shape (B, T, ", M, ")");
     return lti_recurN_cpu(A, zi, x);
 }
 
@@ -332,9 +334,9 @@ STABLE_TORCH_LIBRARY_IMPL(philtorch, CPU, m)
     m.impl("scan", TORCH_BOX(&scan_cpu));
     m.impl("lti_recur", TORCH_BOX(&lti_recur_cpu));
     m.impl("lti_recurN", TORCH_BOX(&lti_recurN_cpu));
-    m.impl("lti_recur2", TORCH_BOX(&lti_recurN_cpu));
-    m.impl("lti_recur3", TORCH_BOX(&lti_recur3_cpu));
+    m.impl("lti_recur2", TORCH_BOX(&lti_recur_of_order<2>));
+    m.impl("lti_recur3", TORCH_BOX(&lti_recur_of_order<3>));
     m.impl("recurN", TORCH_BOX(&recurN_cpu));
-    m.impl("recur2", TORCH_BOX(&recurN_cpu));
-    m.impl("recur3", TORCH_BOX(&recur3_cpu));
+    m.impl("recur2", TORCH_BOX(&recur_of_order<2>));
+    m.impl("recur3", TORCH_BOX(&recur_of_order<3>));
 }

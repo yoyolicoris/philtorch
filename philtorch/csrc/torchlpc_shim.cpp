@@ -3,6 +3,7 @@
 #include <algorithm>
 
 #include "host_dot.h"
+#include "recur_checks.h"
 
 using torch::stable::Tensor;
 
@@ -42,15 +43,7 @@ void allpole_kernel(const scalar_t *x, const scalar_t *a, const scalar_t *zi,
 
 Tensor allpole_cpu(const Tensor &x, const Tensor &a, const Tensor &zi)
 {
-    STD_TORCH_CHECK(philtorch::is_floating(x.scalar_type()) || philtorch::is_complex(x.scalar_type()), "Input must be floating point or complex");
-    STD_TORCH_CHECK(a.scalar_type() == x.scalar_type(), "Coefficients must have the same scalar type as input");
-    STD_TORCH_CHECK(zi.scalar_type() == x.scalar_type(), "Initial conditions must have the same scalar type as input");
-    STD_TORCH_CHECK(x.dim() == 2, "Input must be 2D");
-    STD_TORCH_CHECK(zi.dim() == 2, "Initial conditions must be 2D");
-    STD_TORCH_CHECK(x.size(0) == zi.size(0), "Batch size of input and initial conditions must match");
-    STD_TORCH_CHECK(a.dim() == 3, "a must be 3-dimensional");
-    STD_TORCH_CHECK(a.size(0) == x.size(0) && a.size(1) == x.size(1), "Batch and time dimensions of a and x must match");
-    STD_TORCH_CHECK(zi.size(1) == a.size(2), "Initial conditions must have one state per coefficient of a");
+    check_lpc_inputs(x, a, zi);
     auto x_contiguous = torch::stable::contiguous(x);
     auto a_contiguous = torch::stable::contiguous(a);
     auto zi_contiguous = torch::stable::contiguous(zi);

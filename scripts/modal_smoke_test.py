@@ -40,8 +40,11 @@ CUDA_OPS = (
     "philtorch::lti_recur3",
     "philtorch::recur2",
     "philtorch::recur3",
+    "philtorch::recurN",
+    "philtorch::lti_recurN",
     "philtorch::scan",
     "philtorch::lpc",
+    "philtorch::resample",
 )
 
 # Fail before the tests if they could only be skipped or would test the wrong

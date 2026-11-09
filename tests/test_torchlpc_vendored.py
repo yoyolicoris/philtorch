@@ -161,6 +161,17 @@ def test_lpc_rejects_initial_conditions_on_another_device():
 
 
 @pytest.mark.parametrize("device", _DEVICES)
+@pytest.mark.parametrize(
+    "a_shape, match",
+    [((2, 8), "3-dimensional"), ((1, 8, 2), "Batch and time"), ((2, 4, 2), "Batch and time")],
+)
+def test_lpc_rejects_coefficients_of_another_shape(device: str, a_shape, match: str):
+    x, zi = torch.ones(2, 8, device=device), torch.zeros(2, 2, device=device)
+    with pytest.raises(RuntimeError, match=match):
+        torch.ops.philtorch.lpc(x, torch.zeros(a_shape, device=device), zi)
+
+
+@pytest.mark.parametrize("device", _DEVICES)
 def test_scan_rejects_dtype(device: str):
     # The recurrence kernels it runs take float16; scan keeps torchlpc's dtypes.
     impulse = torch.ones(2, 8, dtype=torch.float16, device=device)
