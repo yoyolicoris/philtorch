@@ -163,3 +163,14 @@ def test_ssm_D_shape_handling(x_shape, A_shape, B_shape, C_shape, D_shape, zi_sh
         y = result
 
     assert y.shape[:2] == x.shape[:2]
+
+
+def test_state_space_compiles_once_for_every_length():
+    # Its shape checks must not specialize on the sizes, as formatting them would.
+    import torch._dynamo.testing
+
+    counter = torch._dynamo.testing.CompileCounter()
+    compiled = torch.compile(state_space, backend=counter, fullgraph=True, dynamic=True)
+    for N in (5, 7):
+        compiled(torch.rand(N, 2, 2) * 0.5, torch.randn(3, N), C=torch.ones(2))
+    assert counter.frame_count == 1

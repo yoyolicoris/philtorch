@@ -112,6 +112,13 @@ def state_space_recursion(
     return _ssm.recursion(_ssm.from_lpv(A), zi, x, unroll_factor=unroll_factor, out_idx=out_idx)
 
 
+def _prefixes(batch_size: int, N: int) -> str:
+    # The prefixes every base shape of state_space's B, C and D takes: time-varying,
+    # per signal, or both. Built only for an error: formatting the sizes on every
+    # call would make torch.compile specialize on them.
+    return f", optionally prefixed with ({N},), ({batch_size},) or ({batch_size}, {N})"
+
+
 def state_space(
     A: Tensor,
     x: Tensor,
@@ -224,8 +231,6 @@ def state_space(
         features = -1
     else:
         features = x.size(-1)
-    # The prefixes every base shape below takes: time-varying, per signal, or both.
-    prefixes = f", optionally prefixed with ({N},), ({batch_size},) or ({batch_size}, {N})"
 
     if B is not None:
         match B.shape:
@@ -271,7 +276,7 @@ def state_space(
             case _:
                 base = f"({M},)" if x.dim() == 2 else f"({M}, {features})"
                 raise ValueError(
-                    f"Input matrix B must be of base shape {base}{prefixes} "
+                    f"Input matrix B must be of base shape {base}{_prefixes(batch_size, N)} "
                     f"for {x.dim()}D input x, got {tuple(B.shape)}"
                 )
     else:
@@ -353,10 +358,10 @@ def state_space(
                 Dx = torch.linalg.vecdot(D.conj(), x.unsqueeze(-2))
             case _:
                 shapes = (
-                    f"base shape () or (P,){prefixes}"
+                    f"base shape () or (P,){_prefixes(batch_size, N)}"
                     if x.dim() == 2
                     else f"shape () or (1,), or base shape ({features},) or "
-                    f"(P, {features}){prefixes}"
+                    f"(P, {features}){_prefixes(batch_size, N)}"
                 )
                 raise ValueError(
                     f"Input matrix D must be of {shapes} for {x.dim()}D input x, "
@@ -385,7 +390,8 @@ def state_space(
                 Ch = torch.linalg.vecdot(C.conj(), h.unsqueeze(-2))
             case _:
                 raise ValueError(
-                    f"Output matrix C must be of base shape ({M},) or (P, {M}){prefixes}, "
+                    f"Output matrix C must be of base shape ({M},) or (P, {M})"
+                    f"{_prefixes(batch_size, N)}, "
                     f"got {tuple(C.shape)}"
                 )
     else:

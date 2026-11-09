@@ -335,8 +335,13 @@ _LPV_X3 = _ones(3, 4, 2)
             id="D-unsupported-with-2d-x",
         ),
         pytest.param(
-            lambda: lpv.state_space(_LPV_A, _LPV_X3, D=_ones(5, 5, 5)),
-            r"D must be of shape \(\) or \(1,\), or base shape \(2,\) or \(P, 2\), "
+            lambda: lpv.state_space(_LPV_A, _ones(3, 4, 5), B=_ones(6)),
+            r"B must be of base shape \(2, 5\), optionally prefixed .* for 3D input x",
+            id="B-unsupported-with-3d-x",
+        ),
+        pytest.param(
+            lambda: lpv.state_space(_LPV_A, _ones(3, 4, 5), B=_ones(2, 5), D=_ones(6, 6, 6)),
+            r"D must be of shape \(\) or \(1,\), or base shape \(5,\) or \(P, 5\), "
             r"optionally prefixed .* for 3D input x",
             id="D-unsupported-with-3d-x",
         ),
