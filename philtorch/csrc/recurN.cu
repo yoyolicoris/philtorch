@@ -102,13 +102,16 @@ namespace
             bytes += philtorch::ceil_div<size_t>(n_bytes, 256) * 256;
             return offset;
         };
+        // A single chunk (C = 1) reads none but the flags.
         const int64_t BC = B * C;
         const bool scan = C > 1;
-        const size_t o_states = reserve(BC * M * sizeof(Acc));
-        const size_t o_offsets = reserve(BC * M * sizeof(Acc));
-        const size_t o_maps = reserve(VARYING ? BC * M * M * sizeof(Acc) : 0);
-        const size_t o_power = reserve(VARYING ? 0 : Ba * M * M * sizeof(Acc));
-        const size_t o_tmp = reserve(VARYING ? 0 : Ba * M * M * sizeof(Acc));
+        const int64_t vecs = scan ? BC * M * sizeof(Acc) : 0;
+        const int64_t mats = scan ? M * M * sizeof(Acc) : 0;
+        const size_t o_states = reserve(vecs);
+        const size_t o_offsets = reserve(vecs);
+        const size_t o_maps = reserve(VARYING ? BC * mats : 0);
+        const size_t o_power = reserve(VARYING ? 0 : Ba * mats);
+        const size_t o_tmp = reserve(VARYING ? 0 : Ba * mats);
         const size_t o_flags = reserve((BC + 1) * sizeof(int));
         auto work = torch::stable::empty({static_cast<int64_t>(bytes)}, torch::headeronly::ScalarType::Byte,
                                          std::nullopt, x.device());
