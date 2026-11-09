@@ -318,6 +318,33 @@ _LPV_X3 = _ones(3, 4, 2)
             "x must be 2D when D is of shape",
             id="D-batch-NP-with-3d-x",
         ),
+        pytest.param(
+            lambda: lpv.state_space(_LPV_A, _LPV_X2, B=_ones(5)),
+            r"B must be of base shape \(2,\), optionally prefixed with \(4,\), \(3,\) "
+            r"or \(3, 4\) for 2D input x, got \(5,\)",
+            id="B-unsupported",
+        ),
+        pytest.param(
+            lambda: lpv.state_space(_LPV_A, _LPV_X2, C=_ones(5)),
+            r"C must be of base shape \(2,\) or \(P, 2\), optionally prefixed",
+            id="C-unsupported",
+        ),
+        pytest.param(
+            lambda: lpv.state_space(_LPV_A, _LPV_X2, D=_ones(5, 5, 5, 5)),
+            r"D must be of base shape \(\) or \(P,\), optionally prefixed .* for 2D input x",
+            id="D-unsupported-with-2d-x",
+        ),
+        pytest.param(
+            lambda: lpv.state_space(_LPV_A, _ones(3, 4, 5), B=_ones(6)),
+            r"B must be of base shape \(2, 5\), optionally prefixed .* for 3D input x",
+            id="B-unsupported-with-3d-x",
+        ),
+        pytest.param(
+            lambda: lpv.state_space(_LPV_A, _ones(3, 4, 5), B=_ones(2, 5), D=_ones(6, 6, 6)),
+            r"D must be of shape \(\) or \(1,\), or base shape \(5,\) or \(P, 5\), "
+            r"optionally prefixed .* for 3D input x",
+            id="D-unsupported-with-3d-x",
+        ),
     ],
 )
 def test_lpv_ssm_rejects_bad_arguments(call, match):
@@ -464,6 +491,22 @@ def test_lti_filtering_rejects_bad_arguments(call, match):
 def test_lti_interp_rejects_bad_arguments(call, match):
     with pytest.raises(ValueError, match=match):
         call()
+
+
+def test_cubic_spline_rejects_unknown_keywords():
+    with pytest.raises(TypeError, match="parralel_form"):
+        lti.cubic_spline(_ones(1, 4), 2, parralel_form=False)
+
+
+def test_cubic_spline_of_factor_one_is_the_input():
+    x = _ones(2, 5)
+    assert lti.cubic_spline(x, 1) is x
+
+
+@pytest.mark.parametrize("m", [1, 2])
+def test_cubic_spline_rejects_smoothing(m):
+    with pytest.raises(NotImplementedError, match="Regularization"):
+        lti.cubic_spline(_ones(1, 4), m, lamb=1.0)
 
 
 @pytest.mark.parametrize(
