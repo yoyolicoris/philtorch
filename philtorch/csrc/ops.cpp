@@ -34,6 +34,6 @@ STABLE_TORCH_LIBRARY(philtorch, m)
     m.def("philtorch::lti_recur(Tensor A, Tensor zi, Tensor x) -> Tensor", {torch::headeronly::Tag::pt2_compliant_tag});
 
     // torchlpc's ops, vendored, without the tag.
-    m.def("scan(Tensor a, Tensor b, Tensor c) -> Tensor");
-    m.def("lpc(Tensor a, Tensor b, Tensor c) -> Tensor");
+    m.def("philtorch::scan(Tensor a, Tensor b, Tensor c) -> Tensor");
+    m.def("philtorch::lpc(Tensor a, Tensor b, Tensor c) -> Tensor");
 }

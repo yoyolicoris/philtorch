@@ -32,7 +32,7 @@ inline bool lti_recur_per_item(const torch::stable::Tensor &a,
 }
 
 // The checks of scan: impulse and decay (B, T) and init (B,), in torchlpc's
-// dtypes, which the recurrence kernels it runs exceed.
+// dtypes; the recurrence kernels it runs also take integers and half precision.
 inline void check_scan_inputs(const torch::stable::Tensor &impulse,
                               const torch::stable::Tensor &decay,
                               const torch::stable::Tensor &init)
