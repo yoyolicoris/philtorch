@@ -75,14 +75,7 @@ def _as_param(value: Any, name: str) -> float | Tensor:
     return float(value)
 
 
-def _first_order_filt(
-    x: Tensor, a: Tensor, zi: Tensor, b: Tensor | None = None, **kwargs
-) -> Tensor:
-    xb = x if b is None else x * b
-    return linear_recurrence(a, zi, xb)
-
-
-def _cubic_coeff(x: Tensor, parallel_form: bool, scipy_padding: bool, **kwargs) -> Tensor:
+def _cubic_coeff(x: Tensor, parallel_form: bool, scipy_padding: bool) -> Tensor:
     r = torch.tensor(3**0.5 - 2, device=x.device, dtype=x.dtype)
     # k_0 = min(14, x.shape[-1] - 1)
 
@@ -98,19 +91,19 @@ def _cubic_coeff(x: Tensor, parallel_form: bool, scipy_padding: bool, **kwargs) 
     if parallel_form:
         mirrored_x = torch.cat([x, x.flip(-1) if scipy_padding else x[..., :-1].flip(-1)], dim=-1)
 
-        h = _first_order_filt(mirrored_x, r, causal_zi, **kwargs)
+        h = linear_recurrence(r, causal_zi, mirrored_x)
         causal_h, anticausal_h = h[..., : x.shape[-1]], h[..., -x.shape[-1] :].flip(-1)
         c = -6 * r / (1 - r * r) * (causal_h + anticausal_h - x)
     else:
         # causal inverse filtering
-        h = _first_order_filt(x, r, causal_zi, **kwargs)
+        h = linear_recurrence(r, causal_zi, x)
         if scipy_padding:
             zi = r / (r - 1) * h[..., -1]
         else:
             zi = -r / (1 - r * r) * (2 * h[..., -1] - x[..., -1])
 
         # anticausal inverse filtering
-        c_flip = _first_order_filt(h[..., :-1].flip(-1), r, zi, -r, **kwargs).flip(-1)
+        c_flip = linear_recurrence(r, zi, h[..., :-1].flip(-1) * -r).flip(-1)
         c = torch.cat([c_flip, zi.unsqueeze(-1)], dim=-1) * 6
     return c
 
@@ -135,7 +128,6 @@ def cspline(
     parallel_form: bool = True,
     scipy_padding: bool = False,
     lamb: float = 0.0,
-    **kwargs,
 ) -> Tensor:
     """Compute the cubic B-spline coefficients of signals.
 
@@ -152,7 +144,6 @@ def cspline(
             Default: ``False``.
         lamb (float, optional): the smoothing coefficient; only ``0.0`` is
             implemented. Default: ``0.0``.
-        **kwargs: unused.
 
     Returns:
         Tensor: the coefficients, of shape :math:`(B, L)`.
@@ -164,10 +155,17 @@ def cspline(
         raise NotImplementedError(
             "Regularization for cubic spline interpolation is not implemented."
         )
-    return _cubic_coeff(x, parallel_form, scipy_padding, **kwargs)
+    return _cubic_coeff(x, parallel_form, scipy_padding)
 
 
-def cubic_spline(x: Tensor, m: int, scipy_padding: bool = False, **kwargs) -> Tensor:
+def cubic_spline(
+    x: Tensor,
+    m: int,
+    scipy_padding: bool = False,
+    *,
+    parallel_form: bool = True,
+    lamb: float = 0.0,
+) -> Tensor:
     """Upsample signals by an integer factor with cubic B-spline interpolation.
 
     This computes the cubic B-spline coefficients of :attr:`x` by recursive
@@ -186,10 +184,11 @@ def cubic_spline(x: Tensor, m: int, scipy_padding: bool = False, **kwargs) -> Te
             :func:`scipy.signal.cspline1d_eval` on the upsampled grid. If
             ``False``, it is extended like the ``"reflect"`` mode of
             :func:`torch.nn.functional.pad`. Default: ``False``.
-        **kwargs: options for the coefficients: ``parallel_form`` (bool)
-            sums a causal and an anticausal filter if ``True``, the default,
-            or cascades them if ``False``, with the same result; ``lamb``
-            (float), the smoothing coefficient, must be ``0.0``.
+        parallel_form (bool, optional): sum a causal and an anticausal filter
+            for the coefficients if ``True``, or cascade them if ``False``;
+            both give the same result. Default: ``True``.
+        lamb (float, optional): the smoothing coefficient; only ``0.0`` is
+            implemented. Default: ``0.0``.
 
     Returns:
         Tensor: the upsampled signals, of shape :math:`(B, (L - 1) m + 1)`.
@@ -198,7 +197,7 @@ def cubic_spline(x: Tensor, m: int, scipy_padding: bool = False, **kwargs) -> Te
     Raises:
         ValueError: if :attr:`m` is not an integer of at least 1, or
             :attr:`x` is not 2-D.
-        NotImplementedError: if ``lamb`` is not zero.
+        NotImplementedError: if :attr:`lamb` is not zero.
 
     Example::
 
@@ -217,7 +216,7 @@ def cubic_spline(x: Tensor, m: int, scipy_padding: bool = False, **kwargs) -> Te
     if m == 1:
         return x
 
-    c = cspline(x, scipy_padding=scipy_padding, **kwargs)
+    c = cspline(x, parallel_form=parallel_form, scipy_padding=scipy_padding, lamb=lamb)
 
     kernel_idx = torch.arange(-2, 2, 1 / m, device=x.device, dtype=x.dtype).reshape(4, m)
     kernel = _cubic_spline_kernel(kernel_idx).flip(0).T
