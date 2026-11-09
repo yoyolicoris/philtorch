@@ -498,6 +498,12 @@ def test_cubic_spline_rejects_unknown_keywords():
         lti.cubic_spline(_ones(1, 4), 2, parralel_form=False)
 
 
+@pytest.mark.parametrize("m", [1, 2])
+def test_cubic_spline_rejects_smoothing(m):
+    with pytest.raises(NotImplementedError, match="Regularization"):
+        lti.cubic_spline(_ones(1, 4), m, lamb=1.0)
+
+
 @pytest.mark.parametrize(
     "call, match",
     [

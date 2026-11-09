@@ -213,7 +213,7 @@ def cubic_spline(
         raise ValueError("Interpolation factor m must be an integer >= 1.")
     if x.dim() != 2:
         raise ValueError(f"Input signal x must be 2D (batch, time), got {x.shape}")
-    if m == 1:
+    if m == 1 and lamb == 0.0:  # cspline below raises for another lamb
         return x
 
     c = cspline(x, parallel_form=parallel_form, scipy_padding=scipy_padding, lamb=lamb)
