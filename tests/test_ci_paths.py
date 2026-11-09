@@ -35,7 +35,11 @@ def test_cuda_workflow_runs_on_what_cuda_test_modules_import():
         text = module.read_text()
         if CUDA_MARK.search(text):
             for name in re.findall(r"^from \.(\w+) import", text, re.MULTILINE):
-                entry = f'- "tests/{name}.py"'
-                assert entry in workflow, (
+                # The filter can't list a test module without cuda tests.
+                assert not name.startswith("test_"), (
+                    f"{module.name} imports from tests/{name}.py: "
+                    "move the helper to tests/_cases.py"
+                )
+                assert workflow.count(f'- "tests/{name}.py"') == 1, (
                     f"{module.name} imports tests/{name}.py, which the path filter misses"
                 )

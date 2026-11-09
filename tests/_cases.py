@@ -17,15 +17,20 @@ def each_choice(*factors):
 
 
 def stable_denominators(order: int, B: int) -> np.ndarray:
-    """B random denominators of the given order, a (B, order) array whose rows
-    have an absolute sum of 1, so that their filters are stable."""
+    """B random stable denominators of the given order, a (B, order) array.
+
+    Each row has an absolute sum of 1.
+    """
     a = np.random.randn(B, order)
     return a / np.abs(a).sum(axis=-1, keepdims=True)
 
 
 def time_varying_coeffs(B: int, T: int, num_order: int, den_order: int):
-    """Random time-varying coefficients b (B, T, num_order + 1) and a
-    (B, T, den_order), each step's a of absolute sum at most 1, so stable."""
+    """Random stable time-varying coefficients b and a.
+
+    b is (B, T, num_order + 1) and a (B, T, den_order), each step's a of
+    absolute sum at most 1.
+    """
     b = torch.randn(B, T, num_order + 1)
     a = torch.randn(B, T, den_order)
     a = a / a.abs().sum(dim=-1, keepdim=True).clamp(min=1e-6)
