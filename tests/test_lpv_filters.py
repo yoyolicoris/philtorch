@@ -7,6 +7,7 @@ from philtorch.lpv import allpole as lpv_allpole
 from philtorch.lpv import fir as lpv_fir
 from philtorch.lpv import lfilter
 
+from ._cases import time_varying_coeffs
 from .test_lpv_lfilter import _generate_random_signal
 
 
@@ -60,23 +61,6 @@ def test_fir_inverse(B: int, T: int, order: int):
     assert torch.allclose(x, x_reconstructed), "Reconstructed signal mismatch"
 
 
-def _generate_time_varying_coeffs(
-    B: int,
-    T: int,
-    num_order: int,
-    den_order: int,
-) -> tuple[torch.Tensor, torch.Tensor]:
-    """Generate time-varying filter coefficients"""
-    # Generate smooth time-varying coefficients
-    b = torch.randn(B, T, num_order + 1)
-    a = torch.randn(B, T, den_order)
-
-    # Ensure stability by keeping denominator coefficients small
-    a = a / a.abs().sum(dim=-1, keepdim=True).clamp(min=1e-6)
-
-    return b, a
-
-
 def _generate_test_signal(B: int, T: int, signal_type: str = "white_noise") -> torch.Tensor:
     """Generate different types of test signals"""
     if signal_type == "white_noise":
@@ -103,7 +87,7 @@ def test_time_varying_basic_functionality(
     B: int, T: int, num_order: int, den_order: int, form: str
 ):
     """Test basic functionality with time-varying coefficients"""
-    b, a = _generate_time_varying_coeffs(B, T, num_order, den_order)
+    b, a = time_varying_coeffs(B, T, num_order, den_order)
     x = _generate_test_signal(B, T, "white_noise")
 
     y = lfilter(b, a, x, form=form)
@@ -121,7 +105,7 @@ def test_time_varying_basic_functionality(
 def test_different_input_signals(signal_type: str):
     """Test filter response to different input signal types"""
     B, T = 2, 100
-    b, a = _generate_time_varying_coeffs(B, T, 3, 2)
+    b, a = time_varying_coeffs(B, T, 3, 2)
     x = _generate_test_signal(B, T, signal_type)
 
     y = lfilter(b, a, x, form="df1")
@@ -141,7 +125,7 @@ def test_different_input_signals(signal_type: str):
 def test_linearity_property():
     """Test linearity: filter(a*x1 + b*x2) = a*filter(x1) + b*filter(x2)"""
     B, T = 2, 50
-    b, a = _generate_time_varying_coeffs(B, T, 2, 1)
+    b, a = time_varying_coeffs(B, T, 2, 1)
     b, a = b.double(), a.double()
 
     x1 = _generate_test_signal(B, T, "white_noise").double()
@@ -171,7 +155,7 @@ def test_linearity_property():
 def test_zero_input_zero_output():
     """Test that zero input produces zero output (assuming zero initial conditions)"""
     B, T = 2, 50
-    b, a = _generate_time_varying_coeffs(B, T, 2, 1)
+    b, a = time_varying_coeffs(B, T, 2, 1)
     x = torch.zeros(B, T)
 
     y = lfilter(b, a, x, form="df1")
@@ -217,7 +201,7 @@ def test_initial_conditions_df2():
     """Test filter with initial conditions in DF2 form"""
     B, T = 2, 50
     order = 3
-    b, a = _generate_time_varying_coeffs(B, T, order, order)
+    b, a = time_varying_coeffs(B, T, order, order)
     x = _generate_test_signal(B, T, "white_noise")
 
     # Test with random initial conditions
@@ -385,7 +369,7 @@ def test_tdf_allpole(include_zi: bool):
 def test_zi_continuation(filt, transpose: bool):
     """Test that final state can be used to continue filtering"""
     B, T = 2, 27
-    b, a = _generate_time_varying_coeffs(B, T, 3, 3)
+    b, a = time_varying_coeffs(B, T, 3, 3)
     b, a = b.double(), a.double()
     if filt == lpv_fir:
         coef = b

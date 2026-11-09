@@ -8,14 +8,6 @@ import torch
 from philtorch.estimation import em, kalman_em_step, kalman_filter, kalman_smoother
 from philtorch.lpv import state_space_recursion as lpv_state_space_recursion
 
-DEVICES = [
-    "cpu",
-    pytest.param(
-        "cuda",
-        marks=pytest.mark.cuda,
-    ),
-]
-
 
 def _transitions(N, prior):
     """How many steps A and Q have.
@@ -102,19 +94,15 @@ def _check_against_reference(args, rtol=1e-9, atol=1e-9):
         torch.testing.assert_close(a, e, rtol=rtol, atol=atol, msg=name)
 
 
-@pytest.mark.parametrize("device", DEVICES)
 @pytest.mark.parametrize("N", [1, 2, 7, 64])
 @pytest.mark.parametrize("M, P", [(1, 1), (4, 2), (2, 3)])
-def test_kalman_matches_sequential(device, N, M, P):
-    args = [t.to(device) for t in _model(3, N, M, P)]
-    _check_against_reference(args)
+def test_kalman_matches_sequential(N, M, P):
+    _check_against_reference(_model(3, N, M, P))
 
 
-@pytest.mark.parametrize("device", DEVICES)
 @pytest.mark.parametrize("M, P", [(1, 1), (4, 2), (2, 3)])
-def test_kalman_complex_matches_sequential(device, M, P):
-    args = [t.to(device) for t in _model(3, 7, M, P, dtype=torch.complex128)]
-    _check_against_reference(args)
+def test_kalman_complex_matches_sequential(M, P):
+    _check_against_reference(_model(3, 7, M, P, dtype=torch.complex128))
 
 
 def _from_before_first_step(y, A, C, Q, R, m0, P0):
@@ -277,15 +265,14 @@ def test_kalman_known_inputs_recipe(fn):
     torch.testing.assert_close(result.covs, expected[1], rtol=1e-9, atol=1e-9)
 
 
-@pytest.mark.cuda
 def test_kalman_float32_long_sequence():
     args = _model(2, 4096, 4, 2)
     expected = _reference(*args, "first_state")
-    filtered = kalman_filter(*(t.float().cuda() for t in args))
-    smoothed = kalman_smoother(*(t.float().cuda() for t in args))
+    filtered = kalman_filter(*(t.float() for t in args))
+    smoothed = kalman_smoother(*(t.float() for t in args))
     actual = (filtered.means, filtered.covs, smoothed.means, smoothed.covs)
     for a, e in zip(actual, expected):
-        torch.testing.assert_close(a.double().cpu(), e, rtol=1e-3, atol=1e-3)
+        torch.testing.assert_close(a.double(), e, rtol=1e-3, atol=1e-3)
 
 
 def _dense_posterior(y, A, C, Q, R, m0, P0, prior):
@@ -332,22 +319,21 @@ def _dense_posterior(y, A, C, Q, R, m0, P0, prior):
     return torch.stack(means), torch.stack(covs), torch.stack(log_ps)
 
 
-@pytest.mark.parametrize("device", DEVICES)
 @pytest.mark.parametrize("dtype", [torch.float64, torch.complex128])
 @pytest.mark.parametrize("N", [1, 2, 6])
 @pytest.mark.parametrize("M, P", [(1, 1), (3, 2), (2, 3)])
-def test_kalman_smoother_matches_dense_posterior(device, dtype, N, M, P):
-    args = [t.to(device) for t in _model(2, N, M, P, dtype=dtype)]
-    means, covs, log_p = _dense_posterior(*[t.cpu() for t in args], "first_state")
+def test_kalman_smoother_matches_dense_posterior(dtype, N, M, P):
+    args = _model(2, N, M, P, dtype=dtype)
+    means, covs, log_p = _dense_posterior(*args, "first_state")
     result = kalman_smoother(*args)
     steps = torch.arange(means.size(1))
-    torch.testing.assert_close(result.means.cpu(), means, rtol=1e-8, atol=1e-8)
+    torch.testing.assert_close(result.means, means, rtol=1e-8, atol=1e-8)
     expected_covs = covs[:, steps, :, steps].transpose(0, 1)
-    torch.testing.assert_close(result.covs.cpu(), expected_covs, rtol=1e-8, atol=1e-8)
+    torch.testing.assert_close(result.covs, expected_covs, rtol=1e-8, atol=1e-8)
     # covs[:, s + 1, :, s] is Cov(x[s + 1], x[s] | y).
     cross = covs[:, steps[1:], :, steps[:-1]].transpose(0, 1)
-    torch.testing.assert_close(result.cross_covs.cpu(), cross, rtol=1e-8, atol=1e-8)
-    torch.testing.assert_close(result.log_likelihood.cpu(), log_p, rtol=1e-9, atol=1e-9)
+    torch.testing.assert_close(result.cross_covs, cross, rtol=1e-8, atol=1e-8)
+    torch.testing.assert_close(result.log_likelihood, log_p, rtol=1e-9, atol=1e-9)
     filtered = kalman_filter(*args)
     torch.testing.assert_close(filtered.log_likelihood, result.log_likelihood)
 

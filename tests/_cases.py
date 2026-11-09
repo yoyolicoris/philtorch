@@ -1,5 +1,8 @@
 """Test-case generators shared by the test modules."""
 
+import numpy as np
+import torch
+
 
 def each_choice(*factors):
     """Cases in which every option of every factor appears at least once.
@@ -11,3 +14,19 @@ def each_choice(*factors):
     """
     n = max(len(factor) for factor in factors)
     return [tuple(factor[i % len(factor)] for factor in factors) for i in range(n)]
+
+
+def stable_denominators(order: int, B: int) -> np.ndarray:
+    """B random denominators of the given order, a (B, order) array whose rows
+    have an absolute sum of 1, so that their filters are stable."""
+    a = np.random.randn(B, order)
+    return a / np.abs(a).sum(axis=-1, keepdims=True)
+
+
+def time_varying_coeffs(B: int, T: int, num_order: int, den_order: int):
+    """Random time-varying coefficients b (B, T, num_order + 1) and a
+    (B, T, den_order), each step's a of absolute sum at most 1, so stable."""
+    b = torch.randn(B, T, num_order + 1)
+    a = torch.randn(B, T, den_order)
+    a = a / a.abs().sum(dim=-1, keepdim=True).clamp(min=1e-6)
+    return b, a

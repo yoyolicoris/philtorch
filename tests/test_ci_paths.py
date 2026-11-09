@@ -1,4 +1,5 @@
-"""The CUDA workflow runs on changes to exactly the test modules the GPU job runs."""
+"""The CUDA workflow runs on changes to exactly the test modules the GPU job runs,
+and to the tests/ modules they import."""
 
 import re
 from pathlib import Path
@@ -25,3 +26,16 @@ def test_cuda_workflow_runs_on_no_other_test_module():
         assert module.exists() and CUDA_MARK.search(module.read_text()), (
             f"{name} has no cuda-marked tests: remove it from the path filter"
         )
+
+
+def test_cuda_workflow_runs_on_what_cuda_test_modules_import():
+    # A change to a helper the GPU tests use must rerun them.
+    workflow = (REPO_ROOT / ".github/workflows/build-cuda-wheels.yml").read_text()
+    for module in sorted((REPO_ROOT / "tests").glob("test_*.py")):
+        text = module.read_text()
+        if CUDA_MARK.search(text):
+            for name in re.findall(r"^from \.(\w+) import", text, re.MULTILINE):
+                entry = f'- "tests/{name}.py"'
+                assert entry in workflow, (
+                    f"{module.name} imports tests/{name}.py, which the path filter misses"
+                )

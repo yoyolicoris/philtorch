@@ -7,8 +7,8 @@ from philtorch.lpv import state_space
 from philtorch.lpv import state_space_recursion as lpv_state_space
 from philtorch.mat import companion
 
-from ._cases import each_choice
-from .test_lpv_filters import _generate_test_signal, _generate_time_varying_coeffs
+from ._cases import each_choice, time_varying_coeffs
+from .test_lpv_filters import _generate_test_signal
 
 
 # Each block multiplies unroll_factor - 1 matrices with matrices_cumdot, so
@@ -21,7 +21,7 @@ def test_ssm_unrolling(unroll_factor):
     N = 17
     order = 2
 
-    _, a = _generate_time_varying_coeffs(batch_size, N, order, order)
+    _, a = time_varying_coeffs(batch_size, N, order, order)
     x = _generate_test_signal(batch_size, N, "white_noise").double()
     A = companion(a).double()
     zi = torch.randn(batch_size, order).double()
