@@ -98,8 +98,8 @@ _DTYPES = (torch.float32, torch.float64, torch.complex64, torch.complex128)
 
 
 def lpc(x: torch.Tensor, A: torch.Tensor, zi: torch.Tensor) -> torch.Tensor:
-    # The op's dispatch would raise RuntimeError for another floating or complex
-    # dtype; integers reach the op's own check.
+    # The op's dispatch raises RuntimeError for any other dtype: other floating
+    # and complex dtypes get NotImplementedError here instead, integers don't.
     if (x.is_floating_point() or x.is_complex()) and x.dtype not in _DTYPES:
         raise NotImplementedError(
             f"lpc takes float32, float64, complex64 and complex128, got {x.dtype}"
