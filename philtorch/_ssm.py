@@ -85,7 +85,7 @@ _NO_KERNEL_HINT = (
 def _recurrence(A: Tensor, zi: Tensor, x: Tensor) -> Tensor:
     """:func:`philtorch._recur.recurrence`, its error for want of a kernel saying
     how to run PyTorch ops instead."""
-    # Imported here, so that importing philtorch doesn't load Triton.
+    # Imported here: _recur imports this module.
     from ._recur import recurrence
 
     try:

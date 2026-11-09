@@ -33,7 +33,7 @@ constexpr int64_t SIMD_WIDTH = 32;
 // run (see sequence_chunk in recur_mps.metal).
 constexpr int64_t CHUNK = 64;
 constexpr int64_t RUN = 32;
-// The largest state size, half that for complex, as the Triton kernels':
+// The largest state size, half that for complex, as the CUDA kernels':
 // a lane holds up to MAX_STATES / SIMD_WIDTH states of a vector, and a SIMD
 // group a block of 8 columns of a map, in registers.
 constexpr int64_t MAX_STATES = 128;

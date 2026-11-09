@@ -65,7 +65,7 @@ def test_git_matches_the_patterns(tmp_path, patterns, changed):
     git = ["git", "-c", "user.name=t", "-c", "user.email=t@t", "-c", "commit.gpgsign=false"]
     for command in (["init", "-q"], ["commit", "-q", "--allow-empty", "-m", "base"]):
         subprocess.run(git + command, check=True, cwd=tmp_path)
-    for name in ("philtorch/_recur_kernels.py", "philtorch/align/sub/dtw.py", "docs/x.rst"):
+    for name in ("philtorch/_trace_kernels.py", "philtorch/align/sub/dtw.py", "docs/x.rst"):
         (tmp_path / name).parent.mkdir(parents=True, exist_ok=True)
         (tmp_path / name).touch()
     for command in (["add", "."], ["commit", "-q", "-m", "files"]):

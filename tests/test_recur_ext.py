@@ -53,7 +53,16 @@ def test_lti_recur2_equiv(device: str, batch: bool):
     assert torch.allclose(lti_y, ltv_y), torch.max(torch.abs(lti_y - ltv_y))
 
 
-@pytest.mark.parametrize("device", ["cpu"])
+@pytest.mark.parametrize(
+    "device",
+    [
+        "cpu",
+        pytest.param(
+            "cuda",
+            marks=pytest.mark.cuda,
+        ),
+    ],
+)
 @pytest.mark.parametrize("batch", [True, False])
 @pytest.mark.parametrize("order", [3, 5])
 def test_lti_recurN_equiv(device: str, batch: bool, order: int):
@@ -393,6 +402,10 @@ def _cuda_scan_case(name: str):
             "recur3-shared": (torch.ops.philtorch.recur3, (T, 3, 3)),
             "lti_recur3-batched": (torch.ops.philtorch.lti_recur3, (B, 3, 3)),
             "lti_recur3-shared": (torch.ops.philtorch.lti_recur3, (3, 3)),
+            "recurN-batched": (torch.ops.philtorch.recurN, (B, T, 5, 5)),
+            "recurN-shared": (torch.ops.philtorch.recurN, (T, 5, 5)),
+            "lti_recurN-batched": (torch.ops.philtorch.lti_recurN, (B, 5, 5)),
+            "lti_recurN-shared": (torch.ops.philtorch.lti_recurN, (5, 5)),
         }[name]
         if op is torch.ops.philtorch.lti_recur:
             args = (stable(randn(*a_shape)), randn(B), randn(B, T))
@@ -418,6 +431,10 @@ def _cuda_scan_case(name: str):
         "recur3-shared",
         "lti_recur3-batched",
         "lti_recur3-shared",
+        "recurN-batched",
+        "recurN-shared",
+        "lti_recurN-batched",
+        "lti_recurN-shared",
         "lpc",
         "scan",
     ],
@@ -457,6 +474,8 @@ def test_cuda_scan_runs_on_the_current_stream(case: str):
         ("recur2-batched", 0),
         ("recur3-shared", 1),
         ("lti_recur3-batched", 0),
+        ("recurN-shared", 0),
+        ("lti_recurN-batched", 1),
         ("lpc", 1),
         ("scan", 1),
         ("lti_recur-shared", 1),

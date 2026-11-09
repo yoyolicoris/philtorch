@@ -19,6 +19,7 @@ One three-pass design serves every input: reduce each tile, scan the tile totals
 | --- | --- |
 | [`ops.cpp`](ops.cpp) | Creates the `philtorch._C` module and defines the dispatcher schemas of the recurrence ops, `philtorch::lti_recur` among them. |
 | [`host_recur.cpp`](host_recur.cpp) | CPU kernels of the recurrence ops, `philtorch::scan` included, split over time when a batch has fewer sequences than threads, long enough for the split to pay. |
+| [`recur_checks.h`](recur_checks.h) | The shape checks shared by the CPU and CUDA kernels of `lti_recurN` and `recurN`. |
 | [`stable_support.h`](stable_support.h) | What every source needs beyond torch's stable C++ API, which they use alone (`torch/csrc/stable`, `torch/headeronly`): the target version, `build_support.MIN_TORCH`, `opmath_type`, `ceil_div`, dtype predicates, `current_cuda_stream`, and, for CUDA sources, the `USE_CUDA` definition. |
 | [`host_dot.h`](host_dot.h) | The dot product of the CPU kernels of the recurrence ops and of `lpc`, vectorized for float and double from size 8. |
 | [`torchlpc_shim.cpp`](torchlpc_shim.cpp) | Defines the schemas of `philtorch::scan` and `philtorch::lpc`, and the CPU kernel of `lpc`, one sequence per thread. |
@@ -28,6 +29,8 @@ One three-pass design serves every input: reduce each tile, scan the tile totals
 | [`scalar_recur_mps.metal`](scalar_recur_mps.metal) | Their Metal kernels, embedded in the extension at build time. |
 | [`recur_mps.mm`](recur_mps.mm) | MPS host code of `lti_recurN` and `recurN`, which `lti_recur2`, `recur2`, `lti_recur3` and `recur3` run too. |
 | [`recur_mps.metal`](recur_mps.metal) | Their Metal kernels, compiled once per state size and dtype. |
+| [`recurN.cu`](recurN.cu) | CUDA kernels of `lti_recurN` and `recurN`, for M up to 128 (64 for complex). |
+| [`recurN_scan.cuh`](recurN_scan.cuh) | Their chunked scan, with a decoupled look-back. |
 | [`../_ops.py`](../_ops.py) | Registers fake implementations and autograd for the recurrence ops. |
 | [`../_recur.py`](../_recur.py) | Sends recurrences on MPS to `lti_recur` or `scan` for M = 1, and to `lti_recurN` or `recurN` above. |
 | [`../../tests/test_recur.py`](../../tests/test_recur.py) | `test_recurrence_low_precision` and the `test_recurrence_mps*` tests check MPS against a double-precision reference; others, its gradients and dispatch. |
@@ -254,12 +257,12 @@ They run 301 and 2049 steps, one tile and three, each ending mid-vector, and `T 
 h[b, t] = A[b, t] h[b, t - 1] + x[b, t],   h[b, -1] = zi[b],
 ```
 
-for M up to 128 (64 for complex64), the Triton kernels' limit, in the same four dtypes as the scalar kernels, accumulating in float32 (complex64 for complex64).
+for M up to 128 (64 for complex64), the CUDA kernels' limit, in the same four dtypes as the scalar kernels, accumulating in float32 (complex64 for complex64).
 `_recur.py` sends M = 1 to the scalar kernels, which are faster, and M from 2 on here.
 
 ### Algorithm
 
-The design follows the Triton kernels of [`../_recur_kernels.py`](../_recur_kernels.py), without their decoupled look-back, which needs a forward-progress guarantee Apple GPUs don't give.
+The design shares the chunk-map scan of [`recurN_scan.cuh`](recurN_scan.cuh), without its decoupled look-back, which needs a forward-progress guarantee Apple GPUs don't give; the layout of the kernels differs.
 Every sequence longer than one chunk of 64 steps is split into chunks, whatever the batch: one behaviour for every input.
 The state at a chunk's end is the affine map `h -> P h + o` of the state at its start, with `P` the product of the chunk's matrices and `o` its end state from a zero start.
 Chunk 0 starts from `zi` instead, as step 0 does in the CUDA `recur2` and `recur3`, so the scan of the maps starts from zero: chunk 0's `P` is then irrelevant, zero for time-varying `A`, and `A^64`, shared, for time-invariant `A`.
@@ -283,7 +286,7 @@ Lane `j` holds state `j` and reads column `j` of each step's matrix, so that a v
 A step forms each lane's share of every row, the products of its columns by its states, and a butterfly of `log2(LANES)` rounds of `simd_shuffle_xor` sums the shares over the lanes, a block of `LANES` rows at a time: each round, a lane keeps the half of the rows its lane's bit selects and adds its partner's other half, until it holds its own row's sum.
 The first round is taken as the shares are formed, so that a lane holds half a block's at most, and every shuffle exchanges lanes by a mask shared by all lanes.
 
-**Maps.** A map's `P` runs 8 columns at a time on a SIMD group, as the product of the chunk's matrices by those columns of the identity: the `M x 8` block `X <- A[t] X`, in tiles of 8 x 8, by `simdgroup_multiply_accumulate`, the Metal counterpart of Triton's `tl.dot`, in float32, complex64 as four real products; maps of up to 4 states share a tile, 8 / M of them.
+**Maps.** A map's `P` runs 8 columns at a time on a SIMD group, as the product of the chunk's matrices by those columns of the identity: the `M x 8` block `X <- A[t] X`, in tiles of 8 x 8, by `simdgroup_multiply_accumulate`, the Metal counterpart of a tensor-core product, in float32, complex64 as four real products; maps of up to 4 states share a tile, 8 / M of them.
 The tiles of `A[t]` are read entry by entry into `thread_elements()`, converted to the accumulation type.
 A block's columns evolve apart from the others', so it needs only its own `2 ceil(M / 8)` floats a lane, in registers whatever `M`.
 
