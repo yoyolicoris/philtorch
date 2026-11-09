@@ -53,6 +53,11 @@ def test_cubic_spline(n, m, device, pfe, scipy_padding):
     )
 
 
+def test_cubic_spline_of_factor_one_is_the_input():
+    x = torch.randn(2, 5)
+    assert cubic_spline(x, 1) is x
+
+
 @pytest.mark.parametrize("n", [20])
 @pytest.mark.parametrize(
     "device",
