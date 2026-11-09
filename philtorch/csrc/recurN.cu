@@ -141,12 +141,7 @@ namespace
     template <bool VARYING>
     Tensor recur_cuda(const Tensor &A, const Tensor &zi, const Tensor &x)
     {
-        STD_TORCH_CHECK(zi.scalar_type() == x.scalar_type(),
-                        "zi must have the same scalar type as input");
-        STD_TORCH_CHECK(A.scalar_type() == x.scalar_type(),
-                        "A must have the same scalar type as input");
-        STD_TORCH_CHECK(A.device() == x.device() && zi.device() == x.device(),
-                        "A and zi must be on the same device as input");
+        check_types_devices(A, zi, x);
         check_recurN_shapes(A, zi, x, VARYING);
         const auto A_contiguous = torch::stable::contiguous(A);
         const auto zi_contiguous = torch::stable::contiguous(zi);

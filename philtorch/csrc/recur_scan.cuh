@@ -2,6 +2,8 @@
 
 #include "stable_support.h"
 
+#include "recur_checks.h"
+
 #include <cub/device/device_scan.cuh>
 #include <cuda/std/functional>
 #include <thrust/iterator/counting_iterator.h>
@@ -143,22 +145,6 @@ void scan_by_key_on_current_stream(KeysIt keys, InputIt input, OutputIt output,
         output, scan_op, static_cast<int>(num_items), equality_op, stream));
 }
 
-template <int M>
-void check_recur_inputs(const Tensor &A, const Tensor &zi, const Tensor &x)
-{
-    STD_TORCH_CHECK(zi.scalar_type() == x.scalar_type(),
-                    "zi must have the same scalar type as input");
-    STD_TORCH_CHECK(A.scalar_type() == x.scalar_type(),
-                    "A must have the same scalar type as input");
-    STD_TORCH_CHECK(A.device() == x.device() && zi.device() == x.device(),
-                    "A and zi must be on the same device as input");
-    STD_TORCH_CHECK(x.dim() == 3 && x.size(2) == M, "x must be of shape (B, T, ", M, ")");
-    STD_TORCH_CHECK(A.size(-1) == M && A.size(-2) == M,
-                    "Last two dimensions of A must be of size ", M);
-    STD_TORCH_CHECK(zi.dim() == 2 && zi.size(0) == x.size(0) && zi.size(1) == M,
-                    "zi must be of shape (B, ", M, ")");
-}
-
 // The recurrence of M states, A read with these strides; the caller checks the inputs.
 // dispatch(type, f) calls f(scalar_t{}) for a scalar type of the dtypes the op
 // supports: a macro needs its name as a literal, so the caller dispatches.
@@ -193,4 +179,18 @@ Tensor recur_small_launch(const Tensor &A, const Tensor &zi,
             affine_binary_op<M, acc_t>(), x.size(0) * n_steps, x);
     });
     return out;
+}
+
+// recur2 and recur3 (VARYING: A is (T, M, M) or (B, T, M, M)) and their lti_
+// forms (A is (M, M) or (B, M, M)): the checks, then the scan with A's strides,
+// in the dtypes Dispatch takes.
+template <int M, bool VARYING, typename Dispatch>
+Tensor recur_small(const Tensor &A, const Tensor &zi, const Tensor &x)
+{
+    check_types_devices(A, zi, x);
+    check_order(x, M);
+    check_recurN_shapes(A, zi, x, VARYING);
+    const bool batched = A.dim() == (VARYING ? 4 : 3);
+    const int64_t stride_b = batched ? (VARYING ? x.size(1) : 1) * M * M : 0;
+    return recur_small_launch<M>(A, zi, x, stride_b, VARYING ? M * M : 0, Dispatch{});
 }

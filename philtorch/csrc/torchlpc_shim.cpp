@@ -61,13 +61,7 @@ Tensor allpole_cpu(const Tensor &x, const Tensor &a, const Tensor &zi)
     return out;
 }
 
-// The CPU scan is in host_recur.cpp.
-STABLE_TORCH_LIBRARY_FRAGMENT(philtorch, m)
-{
-    m.def("scan(Tensor a, Tensor b, Tensor c) -> Tensor");
-    m.def("lpc(Tensor a, Tensor b, Tensor c) -> Tensor");
-}
-
+// The CPU scan is in host_recur.cpp; the schemas of scan and lpc in ops.cpp.
 STABLE_TORCH_LIBRARY_IMPL(philtorch, CPU, m)
 {
     m.impl("lpc", TORCH_BOX(&allpole_cpu));

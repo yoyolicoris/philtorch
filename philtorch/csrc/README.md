@@ -17,12 +17,12 @@ One three-pass design serves every input: reduce each tile, scan the tile totals
 
 | File | Role |
 | --- | --- |
-| [`ops.cpp`](ops.cpp) | Creates the `philtorch._C` module and defines the dispatcher schemas of the recurrence ops, `philtorch::lti_recur` among them. |
+| [`ops.cpp`](ops.cpp) | Creates the `philtorch._C` module and defines the dispatcher schemas of the recurrence ops, `philtorch::lti_recur`, `philtorch::scan` and `philtorch::lpc` among them. |
 | [`host_recur.cpp`](host_recur.cpp) | CPU kernels of the recurrence ops, `philtorch::scan` included, split over time when a batch has fewer sequences than threads, long enough for the split to pay. |
-| [`recur_checks.h`](recur_checks.h) | The shape checks shared by the CPU and CUDA kernels of `lti_recurN` and `recurN`. |
+| [`recur_checks.h`](recur_checks.h) | The input checks the CPU and CUDA kernels of the recurrence ops share, and those of `lpc`. |
 | [`stable_support.h`](stable_support.h) | What every source needs beyond torch's stable C++ API, which they use alone (`torch/csrc/stable`, `torch/headeronly`): the target version, `build_support.MIN_TORCH`, `opmath_type`, `ceil_div`, dtype predicates, `current_cuda_stream`, and, for CUDA sources, the `USE_CUDA` definition. |
 | [`host_dot.h`](host_dot.h) | The dot product of the CPU kernels of the recurrence ops and of `lpc`, vectorized for float and double from size 8. |
-| [`torchlpc_shim.cpp`](torchlpc_shim.cpp) | Defines the schemas of `philtorch::scan` and `philtorch::lpc`, and the CPU kernel of `lpc`, one sequence per thread. |
+| [`torchlpc_shim.cpp`](torchlpc_shim.cpp) | The CPU kernel of `lpc`, one sequence per thread. |
 | [`mps_shim.h`](mps_shim.h) | What the Metal host sources share of torch's Metal C shim: compiling a shader after `mps_common.metal`, looking up and launching kernels, and the Metal type and accumulation type of each dtype. |
 | [`mps_common.metal`](mps_common.metal) | What the Metal kernels share, compiled at the head of each shader: the SIMD width, the accumulation types and complex products. |
 | [`scalar_recur_mps.mm`](scalar_recur_mps.mm) | MPS host code of `lti_recur` and `scan`, on torch's stable ABI and Metal C shim. |
@@ -190,7 +190,7 @@ PyTorch's stable-ABI notes promise its C shim, `shim.h`, and the generated `c_sh
 
 ## Dispatcher and autograd
 
-`ops.cpp` and `torchlpc_shim.cpp` define the schemas.
+`ops.cpp` defines the schemas.
 The MPS registration at the end of `scalar_recur_mps.mm` maps
 
 ```text

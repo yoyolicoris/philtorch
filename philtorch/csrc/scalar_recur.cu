@@ -80,12 +80,7 @@ Tensor scalar_recur_cuda_launch(const Tensor &decays, int64_t stride_b,
                                 int64_t stride_t, const Tensor &zi,
                                 const Tensor &x)
 {
-    STD_TORCH_CHECK(zi.scalar_type() == x.scalar_type(),
-                    "zi must have the same scalar type as input");
-    STD_TORCH_CHECK(decays.scalar_type() == x.scalar_type(),
-                    "A must have the same scalar type as input");
-    STD_TORCH_CHECK(decays.device() == x.device() && zi.device() == x.device(),
-                    "A and zi must be on the same device as input");
+    check_types_devices(decays, zi, x);
     const torch::stable::accelerator::DeviceGuard device_guard(
         x.get_device_index());
 
@@ -114,13 +109,7 @@ Tensor scalar_recur_cuda_launch(const Tensor &decays, int64_t stride_b,
 Tensor lti_recur_cuda_impl(const Tensor &a,
                            const Tensor &zi, const Tensor &x)
 {
-    STD_TORCH_CHECK(a.dim() <= 1, "A must be a vector or a scalar");
-    STD_TORCH_CHECK(x.dim() == 2 && zi.dim() == 1 && zi.size(0) == x.size(0),
-                    "x must be (B, T) and zi (B,)");
-    STD_TORCH_CHECK(x.size(1) > 0, "x must contain at least one time step");
-    bool per_item = a.dim() == 1 && a.numel() == x.size(0);
-    STD_TORCH_CHECK(per_item || a.numel() == 1, "A must be a scalar or (B,)");
-    return scalar_recur_cuda_launch(a, per_item ? 1 : 0, 0, zi, x);
+    return scalar_recur_cuda_launch(a, lti_recur_per_item(a, zi, x) ? 1 : 0, 0, zi, x);
 }
 
 // h[t] = decay[t] h[t - 1] + impulse[t]: the scalar recurrence with a
@@ -128,17 +117,7 @@ Tensor lti_recur_cuda_impl(const Tensor &a,
 Tensor scan_cuda(const Tensor &impulse, const Tensor &decay,
                  const Tensor &init)
 {
-    STD_TORCH_CHECK(impulse.dim() == 2 && decay.dim() == 2 &&
-                        decay.size(0) == impulse.size(0) &&
-                        decay.size(1) == impulse.size(1) &&
-                        init.dim() == 1 && init.size(0) == impulse.size(0),
-                    "impulse and decay must be (B, T) and init (B,)");
-    using S = torch::headeronly::ScalarType;
-    STD_TORCH_CHECK(impulse.scalar_type() == S::Float ||
-                        impulse.scalar_type() == S::Double ||
-                        impulse.scalar_type() == S::ComplexFloat ||
-                        impulse.scalar_type() == S::ComplexDouble,
-                    "Input must be float32, float64, complex64 or complex128");
+    check_scan_inputs(impulse, decay, init);
     return scalar_recur_cuda_launch(decay, impulse.size(1), 1, init, impulse);
 }
 
