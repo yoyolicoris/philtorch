@@ -498,6 +498,11 @@ def test_cubic_spline_rejects_unknown_keywords():
         lti.cubic_spline(_ones(1, 4), 2, parralel_form=False)
 
 
+def test_cubic_spline_of_factor_one_is_the_input():
+    x = _ones(2, 5)
+    assert lti.cubic_spline(x, 1) is x
+
+
 @pytest.mark.parametrize("m", [1, 2])
 def test_cubic_spline_rejects_smoothing(m):
     with pytest.raises(NotImplementedError, match="Regularization"):
