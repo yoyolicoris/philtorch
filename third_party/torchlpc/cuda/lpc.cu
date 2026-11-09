@@ -1,5 +1,5 @@
 // The includer, philtorch/csrc/torchlpc_cuda.cu, includes stable_support.h
-// first, which holds the torch headers this file uses.
+// first, which holds the torch headers this file uses, and recur_checks.h.
 
 using torch::stable::Tensor;
 
@@ -82,22 +82,11 @@ void lpc_launch(Tensor& y, const Tensor& x, const Tensor& zi, const Tensor& a,
 
 Tensor lpc_cuda_wrapper(const Tensor& x, const Tensor& a, const Tensor& zi) {
     namespace ph = philtorch;
-    STD_TORCH_CHECK(
-        ph::is_floating(x.scalar_type()) || ph::is_complex(x.scalar_type()),
-        "Input must be floating point or complex");
-    STD_TORCH_CHECK(a.scalar_type() == x.scalar_type(),
-                    "Coefficients must have the same scalar type as input");
+    check_lpc_inputs(x, a, zi);
     STD_TORCH_CHECK(a.device() == x.device(),
                     "Coefficients must be on the same device as input");
     STD_TORCH_CHECK(zi.device() == x.device(),
                     "Initial conditions must be on the same device as input");
-    STD_TORCH_CHECK(zi.scalar_type() == x.scalar_type(),
-                    "Initial conditions must have the same scalar type as input");
-
-    STD_TORCH_CHECK(x.dim() == 2, "Input must be 2D");
-    STD_TORCH_CHECK(zi.dim() == 2, "Initial conditions must be 2D");
-    STD_TORCH_CHECK(x.size(0) == zi.size(0),
-                    "Batch size of input and initial conditions must match");
 
     const torch::stable::accelerator::DeviceGuard device_guard(
         x.get_device_index());
@@ -108,8 +97,6 @@ Tensor lpc_cuda_wrapper(const Tensor& x, const Tensor& a, const Tensor& zi) {
 
     auto order = a_contiguous.size(2);
     STD_TORCH_CHECK(order <= 1024, "LPC order must be less than or equal to 1024");
-    STD_TORCH_CHECK(zi.size(1) == order,
-                    "Initial conditions must have one state per coefficient of a");
     auto stream = ph::current_cuda_stream(x.get_device_index());
 
     auto out = torch::stable::empty_like(x_contiguous);

@@ -62,13 +62,6 @@ namespace philtorch
                t == S::BFloat16;
     }
 
-    inline bool is_complex(torch::headeronly::ScalarType t)
-    {
-        using S = torch::headeronly::ScalarType;
-        return t == S::ComplexDouble || t == S::ComplexFloat ||
-               t == S::ComplexHalf;
-    }
-
 #ifdef __CUDACC__
     // The current CUDA stream of the device.
     inline cudaStream_t current_cuda_stream(torch::stable::DeviceIndex device)

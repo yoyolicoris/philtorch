@@ -37,4 +37,5 @@ results.
     padded copy;
   - has one kernel templated on `c10::complex`, in place of the kernels on split
     real and imaginary parts;
-  - requires `zi` to have one state per coefficient, as on the CPU.
+  - checks the dtypes and shapes of its inputs as the CPU op does, with the
+    shared `check_lpc_inputs` (`philtorch/csrc/recur_checks.h`).
