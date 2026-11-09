@@ -241,10 +241,7 @@ Tensor recur_cpu_launch(const Tensor &A, const Tensor &zi,
                         const Tensor &x, int64_t M, int64_t stride_b,
                         int64_t stride_t)
 {
-    STD_TORCH_CHECK(zi.scalar_type() == x.scalar_type(),
-                    "zi must have the same scalar type as input");
-    STD_TORCH_CHECK(A.scalar_type() == x.scalar_type(),
-                    "A must have the same scalar type as input");
+    check_types_devices(A, zi, x);
     auto A_contiguous = torch::stable::contiguous(A);
     auto x_contiguous = torch::stable::contiguous(x);
     auto zi_contiguous = torch::stable::contiguous(zi);
@@ -266,13 +263,7 @@ Tensor recur_cpu_launch(const Tensor &A, const Tensor &zi,
 Tensor lti_recur_cpu(const Tensor &a, const Tensor &zi,
                      const Tensor &x)
 {
-    STD_TORCH_CHECK(a.dim() <= 1, "A must be a vector or a scalar");
-    STD_TORCH_CHECK(x.dim() == 2 && zi.dim() == 1 && zi.size(0) == x.size(0),
-                    "x must be (B, T) and zi (B,)");
-    STD_TORCH_CHECK(x.size(1) > 0, "x must contain at least one time step");
-    bool per_item = a.dim() == 1 && a.numel() == x.size(0);
-    STD_TORCH_CHECK(per_item || a.numel() == 1, "A must be a scalar or (B,)");
-    return recur_cpu_launch(a, zi, x, 1, per_item ? 1 : 0, 0);
+    return recur_cpu_launch(a, zi, x, 1, lti_recur_per_item(a, zi, x) ? 1 : 0, 0);
 }
 
 Tensor lti_recurN_cpu(const Tensor &A, const Tensor &zi,
@@ -298,18 +289,7 @@ Tensor recurN_cpu(const Tensor &A, const Tensor &zi,
 Tensor scan_cpu(const Tensor &impulse, const Tensor &decay,
                 const Tensor &init)
 {
-    STD_TORCH_CHECK(impulse.dim() == 2 && decay.dim() == 2 &&
-                        decay.size(0) == impulse.size(0) &&
-                        decay.size(1) == impulse.size(1) &&
-                        init.dim() == 1 && init.size(0) == impulse.size(0),
-                    "impulse and decay must be (B, T) and init (B,)");
-    // recur_cpu_launch also takes integers and half precision.
-    using S = torch::headeronly::ScalarType;
-    STD_TORCH_CHECK(impulse.scalar_type() == S::Float ||
-                        impulse.scalar_type() == S::Double ||
-                        impulse.scalar_type() == S::ComplexFloat ||
-                        impulse.scalar_type() == S::ComplexDouble,
-                    "Input must be float32, float64, complex64 or complex128");
+    check_scan_inputs(impulse, decay, init);
     return recur_cpu_launch(decay, init, impulse, 1, impulse.size(1), 1);
 }
 
@@ -318,14 +298,14 @@ Tensor scan_cpu(const Tensor &impulse, const Tensor &decay,
 template <int M>
 Tensor recur_of_order(const Tensor &A, const Tensor &zi, const Tensor &x)
 {
-    STD_TORCH_CHECK(x.dim() == 3 && x.size(2) == M, "x must be of shape (B, T, ", M, ")");
+    check_order(x, M);
     return recurN_cpu(A, zi, x);
 }
 
 template <int M>
 Tensor lti_recur_of_order(const Tensor &A, const Tensor &zi, const Tensor &x)
 {
-    STD_TORCH_CHECK(x.dim() == 3 && x.size(2) == M, "x must be of shape (B, T, ", M, ")");
+    check_order(x, M);
     return lti_recurN_cpu(A, zi, x);
 }
 
