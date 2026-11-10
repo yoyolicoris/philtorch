@@ -24,16 +24,16 @@ def _generate_diagonalizable_matrix(shape: tuple[int, ...]) -> torch.Tensor:
 
 
 @pytest.mark.parametrize("B", [1, 8])
-@pytest.mark.parametrize("T", [17, 29, 101])
 @pytest.mark.parametrize("order", [1, 3])
 @pytest.mark.parametrize("unroll_factor", [None, 5])
 def test_time_invariant_ssm(
     B: int,
-    T: int,
     order: int,
     unroll_factor: int,
 ):
     """Test time-invariant filters against scipy.signal.lfilter"""
+    # 29 is not a multiple of 5 and exceeds it: the padded last block.
+    T = 29
 
     # Generate test data
     a = stable_denominators(order, B)

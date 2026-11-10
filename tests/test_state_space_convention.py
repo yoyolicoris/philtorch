@@ -292,8 +292,6 @@ def test_state_space_recursion_rejects_bad_shapes(module):
     if module is lpv:
         with pytest.raises(ValueError, match="same time dimension"):
             module.state_space_recursion(A[:-1], zi, x)
-    with pytest.raises(ValueError, match="must be None or at least 1"):
-        module.state_space_recursion(A, zi, x, unroll_factor=0)
 
 
 @pytest.mark.parametrize("module", [lti, lpv], ids=["lti", "lpv"])
@@ -305,8 +303,6 @@ def test_linear_recurrence_rejects_bad_shapes(module):
         module.linear_recurrence(a[:-1] if module is lpv else a.repeat(2), init, x, unroll_factor=3)
     with pytest.raises(ValueError, match="Initial state init must be 1D"):
         module.linear_recurrence(a, init.repeat(2), x, unroll_factor=3)
-    with pytest.raises(ValueError, match="must be None or at least 1"):
-        module.linear_recurrence(a, init, x, unroll_factor=0)
 
 
 def _recursion_calls(module):

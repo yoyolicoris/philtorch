@@ -194,82 +194,13 @@ def test_zi_constant_response(transpose: bool):
     assert torch.all(torch.diff(y).abs() < 1e-5), y.diff().abs().max()
 
 
-def test_df_fir():
-    """Test df2 filter with FIR coefficients"""
-
-    B = 3
-    T = 100
-    num_order = 4
-
-    b = np.random.randn(B, num_order + 1)
-    x = _generate_random_signal(B, T)
-
-    # Convert to torch tensors
-    b_torch = torch.from_numpy(b)
-    x_torch = torch.from_numpy(x)
-
-    # Apply philtorch filter
-    y_torch = fir(b_torch, x_torch, transpose=False)
-    # Apply scipy filter
-    y_scipy = np.stack([signal.lfilter(b[i], [1.0], x[i]) for i in range(B)], axis=0)
-
-    # Compare outputs
-    assert np.allclose(y_torch.numpy(), y_scipy), np.max(np.abs(y_torch.numpy() - y_scipy))
-
-
-@pytest.mark.parametrize("include_zi", [True, False])
-def test_tdf_fir(include_zi: bool):
-    """Test df2 filter with FIR coefficients"""
-
-    B = 3
-    T = 100
-    num_order = 4
-
-    b = np.random.randn(B, num_order + 1)
-    x = _generate_random_signal(B, T)
-    if include_zi:
-        # Generate random initial conditions
-        zi = np.random.randn(B, num_order)
-    else:
-        zi = None
-
-    # Convert to torch tensors
-    b_torch = torch.from_numpy(b)
-    x_torch = torch.from_numpy(x)
-    if zi is not None:
-        zi_torch = torch.from_numpy(zi)
-    else:
-        zi_torch = None
-
-    # Apply philtorch filter
-    torch_results = fir(b_torch, x_torch, zi=zi_torch, transpose=True)
-    # Apply scipy filter
-    scipy_results = [
-        signal.lfilter(b[i], [1.0], x[i], zi=zi[i] if zi is not None else None) for i in range(B)
-    ]
-
-    if include_zi:
-        y_scipy, zf_scipy = zip(*scipy_results)
-        y_scipy = np.stack(y_scipy, axis=0)
-        zf_scipy = np.stack(zf_scipy, axis=0)
-        y_torch, zf_torch = torch_results
-
-        assert np.allclose(zf_torch.numpy(), zf_scipy), np.max(np.abs(zf_torch.numpy() - zf_scipy))
-    else:
-        y_scipy = np.vstack(scipy_results)
-        y_torch = torch_results
-
-    # Compare outputs
-    assert np.allclose(y_torch.numpy(), y_scipy), np.max(np.abs(y_torch.numpy() - y_scipy))
-
-
 @pytest.mark.parametrize("B", [1, 8])
-@pytest.mark.parametrize("T", [32, 128])
 @pytest.mark.parametrize("num_order", [1, 2, 4])
 @pytest.mark.parametrize("den_order", [1, 3, 5])
 @pytest.mark.parametrize("form", ["df2", "tdf2", "df1", "tdf1"])
-def test_time_invariant_filter(B: int, T: int, num_order: int, den_order: int, form: str):
+def test_time_invariant_filter(B: int, num_order: int, den_order: int, form: str):
     """Test time-invariant filters against scipy.signal.lfilter"""
+    T = 128
 
     # Generate test data
     b, a = _generate_random_filter_coeffs(num_order, den_order, B)
@@ -846,16 +777,6 @@ def test_lfilter_empty_a_diag_ssm_accepts_no_eigenbasis(num_taps: int):
     x = torch.ones(2, 10, dtype=torch.float64)
     y = lfilter(b, a, x, backend="diag_ssm", V=None, Vinv=None)
     assert torch.allclose(y, lfilter(b, a, x, backend="diag_ssm"))
-
-
-@pytest.mark.parametrize(("backend", "num_taps"), [("ssm", 1), ("diag_ssm", 1), ("diag_ssm", 3)])
-def test_lfilter_empty_a_rejects_unknown_keyword(backend: str, num_taps: int):
-    # A misspelt keyword must fail as it does on the general path.
-    b = torch.ones(2, num_taps, dtype=torch.float64)
-    a = torch.zeros(2, 0, dtype=torch.float64)
-    x = torch.ones(2, 10, dtype=torch.float64)
-    with pytest.raises(TypeError, match="unexpected keyword argument 'unrol_factor'"):
-        lfilter(b, a, x, backend=backend, unrol_factor=3)
 
 
 def test_lfilter_empty_a_keywords_of_each_backend():

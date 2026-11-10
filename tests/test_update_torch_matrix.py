@@ -8,31 +8,20 @@ releases, aarch64 and Windows wheels, CUDA 12.6, Python 3.10).
 """
 
 import datetime
-import importlib.util
 import json
 import urllib.error
-from pathlib import Path
 
 import pytest
 
-SCRIPTS = Path(__file__).parents[1] / "scripts"
-REPO_ROOT = Path(__file__).parents[1]
-SPEC = importlib.util.spec_from_file_location(
-    "update_torch_matrix", SCRIPTS / "update_torch_matrix.py"
-)
-assert SPEC is not None and SPEC.loader is not None
-UPDATE = importlib.util.module_from_spec(SPEC)
-SPEC.loader.exec_module(UPDATE)
+from ._cases import REPO_ROOT, entry, load_script
+
+UPDATE = load_script("scripts/update_torch_matrix.py")
 TM = UPDATE.tm
 
 TODAY = datetime.date(2026, 10, 29)
 ARCHS = "7.5 8.0 8.6 9.0 10.0 12.0"
 FILES = ("torch_matrix.json", "pyproject.toml", "README.md")
 EOL = {f"3.{n}": f"{2026 + n - 10}-10" for n in range(10, 18)}  # 3.10 ends 2026-10, ...
-
-
-def entry(version, cuda, python="3.14"):
-    return {"version": version, "cuda": cuda, "python": python}
 
 
 BASE = [

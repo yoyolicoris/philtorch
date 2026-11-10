@@ -1,7 +1,35 @@
-"""Test-case generators shared by the test modules."""
+"""Test-case generators and helpers shared by the test modules."""
+
+import importlib.util
+from pathlib import Path
 
 import numpy as np
+import pytest
 import torch
+
+REPO_ROOT = Path(__file__).parents[1]
+
+# The devices of a test that runs on CPU and, on a CUDA machine, on CUDA. A
+# module that has cuda cases only through DEVICES must still spell out
+# pytest.mark.cuda somewhere: tests/test_ci_paths.py and the GPU job find the
+# cuda modules by that text.
+DEVICES = ["cpu", pytest.param("cuda", marks=pytest.mark.cuda)]
+MPS = pytest.mark.skipif(not torch.backends.mps.is_available(), reason="MPS not available")
+
+
+def load_script(path: str):
+    """The module of a file outside the package, given relative to the repository."""
+    path = REPO_ROOT / path
+    spec = importlib.util.spec_from_file_location(path.stem, path)
+    assert spec is not None and spec.loader is not None
+    module = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(module)
+    return module
+
+
+def entry(version: str, cuda: list[str], python: str = "3.14") -> dict:
+    """A torch entry of torch_matrix.json."""
+    return {"version": version, "cuda": cuda, "python": python}
 
 
 def each_choice(*factors):

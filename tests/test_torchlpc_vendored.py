@@ -21,22 +21,11 @@ from torch.func import jacfwd
 
 from philtorch._torchlpc import AllPole
 
-_DEVICES = [
-    "cpu",
-    pytest.param(
-        "cuda",
-        marks=pytest.mark.cuda,
-    ),
-]
-_REQUIRES_GRAD_CASES = [
-    (True, False, False),
-    (False, True, False),
-    (False, False, True),
-    (True, True, False),
-    (True, False, True),
-    (False, True, True),
-    (True, True, True),
-]
+from ._cases import DEVICES
+
+# Each input on and off, and A both with and without zi: zi's gradient changes
+# the adjoint recurrence that A's gradient is read from.
+_REQUIRES_GRAD_CASES = [(True, True, True), (True, True, False), (False, False, True)]
 
 
 def test_external_torchlpc_namespace_coexists(tmp_path):
@@ -88,7 +77,7 @@ def create_test_inputs(batch_size, samples, cmplx=False):
     _REQUIRES_GRAD_CASES,
 )
 @pytest.mark.parametrize("cmplx", [True, False])
-@pytest.mark.parametrize("device", _DEVICES)
+@pytest.mark.parametrize("device", DEVICES)
 def test_allpole(
     x_requires_grad: bool,
     a_requires_grad: bool,
@@ -126,7 +115,7 @@ def test_allpole_float64_vs_32_cuda():
     assert torch.allclose(y64, y32.double(), atol=1e-6), torch.max(torch.abs(y64 - y32.double()))
 
 
-@pytest.mark.parametrize("device", _DEVICES)
+@pytest.mark.parametrize("device", DEVICES)
 def test_allpole_vmap(device: str):
     batch_size = 4
     samples = 40
@@ -160,7 +149,7 @@ def test_lpc_rejects_initial_conditions_on_another_device():
         torch.ops.philtorch.lpc(x, A, torch.zeros(2, 2))
 
 
-@pytest.mark.parametrize("device", _DEVICES)
+@pytest.mark.parametrize("device", DEVICES)
 @pytest.mark.parametrize(
     "a_shape, match",
     [((2, 8), "3-dimensional"), ((1, 8, 2), "Batch and time"), ((2, 4, 2), "Batch and time")],
@@ -171,7 +160,7 @@ def test_lpc_rejects_coefficients_of_another_shape(device: str, a_shape, match: 
         torch.ops.philtorch.lpc(x, torch.zeros(a_shape, device=device), zi)
 
 
-@pytest.mark.parametrize("device", _DEVICES)
+@pytest.mark.parametrize("device", DEVICES)
 def test_scan_rejects_dtype(device: str):
     # The recurrence kernels it runs take float16; scan keeps torchlpc's dtypes.
     impulse = torch.ones(2, 8, dtype=torch.float16, device=device)

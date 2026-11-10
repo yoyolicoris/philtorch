@@ -1,46 +1,33 @@
 """Tests for scripts/torch_matrix.py and torch_matrix.json."""
 
-import importlib.util
 import json
 import re
 import subprocess
 import sys
-from pathlib import Path
 
 import pytest
 
-REPO_ROOT = Path(__file__).parents[1]
+from ._cases import REPO_ROOT, entry, load_script
+
 SCRIPT = REPO_ROOT / "scripts" / "torch_matrix.py"
 MATRIX_PATH = REPO_ROOT / "torch_matrix.json"
 
 
-def _load(name, path):
-    spec = importlib.util.spec_from_file_location(name, path)
-    assert spec is not None and spec.loader is not None
-    module = importlib.util.module_from_spec(spec)
-    spec.loader.exec_module(module)
-    return module
-
-
-TM = _load("torch_matrix", SCRIPT)
-MIN_TORCH = _load("build_support", REPO_ROOT / "build_support.py").MIN_TORCH
+TM = load_script("scripts/torch_matrix.py")
+MIN_TORCH = load_script("build_support.py").MIN_TORCH
 PYPROJECT = (REPO_ROOT / "pyproject.toml").read_text(encoding="utf-8")
 OLDEST = TM.oldest_python(PYPROJECT)
 ARCHS = "7.5 8.0 8.6 9.0 10.0 12.0+PTX"
 IMAGE = "quay.io/pypa/manylinux_2_28_x86_64:2026.10.26-1"
 
 
-def _entry(version, cuda, python="3.14"):
-    return {"version": version, "cuda": cuda, "python": python}
-
-
 # The values of the matrix when this was written, so that the tests of the
 # legs don't change when scripts/update_torch_matrix.py updates the file.
 TORCH = [
-    _entry("2.12.1", ["12.9", "13.0", "13.2"]),
-    _entry("2.13.0", ["12.9", "13.0", "13.2"]),
-    _entry("2.14.1", ["13.0", "13.2"]),
-    _entry("2.15.0", ["13.2", "13.4"], "3.15"),
+    entry("2.12.1", ["12.9", "13.0", "13.2"]),
+    entry("2.13.0", ["12.9", "13.0", "13.2"]),
+    entry("2.14.1", ["13.0", "13.2"]),
+    entry("2.15.0", ["13.2", "13.4"], "3.15"),
 ]
 
 
@@ -94,28 +81,28 @@ def test_validate_matrix_accepts_the_example_matrix():
     [
         # PyTorch still publishes cu126, but the CUDA sources don't build with it.
         pytest.param(
-            {"torch": [_entry("2.14.1", ["12.6", "13.0"])]},
+            {"torch": [entry("2.14.1", ["12.6", "13.0"])]},
             "CUDA 12.6 is older than 12.9",
             id="cuda-too-old",
         ),
         # 12.10 is newer than 12.9, so a string sort would get this wrong.
         pytest.param(
-            {"torch": [_entry("2.14.1", ["12.10", "12.9"])]}, "must be ascending", id="cuda-order"
+            {"torch": [entry("2.14.1", ["12.10", "12.9"])]}, "must be ascending", id="cuda-order"
         ),
         pytest.param(
-            {"torch": [_entry("2.14.1", ["13.0", "13.0"])]},
+            {"torch": [entry("2.14.1", ["13.0", "13.0"])]},
             "without duplicates",
             id="cuda-dup",
         ),
-        pytest.param({"torch": [_entry("2.14.1", ["13.0"], "3.9")]}, "older than requires-python"),
+        pytest.param({"torch": [entry("2.14.1", ["13.0"], "3.9")]}, "older than requires-python"),
         # Two patches of one minor would test it twice.
         pytest.param(
-            {"torch": [_entry("2.14.0", ["13.0"]), _entry("2.14.1", ["13.0"])]},
+            {"torch": [entry("2.14.0", ["13.0"]), entry("2.14.1", ["13.0"])]},
             "ascending, with one entry per minor",
             id="torch-minor-dup",
         ),
         pytest.param(
-            {"torch": [_entry("2.15.0", ["13.0"]), _entry("2.14.1", ["13.0"])]},
+            {"torch": [entry("2.15.0", ["13.0"]), entry("2.14.1", ["13.0"])]},
             "ascending, with one entry per minor",
             id="torch-order",
         ),
@@ -225,9 +212,9 @@ def test_legs_carry_what_the_workflow_needs():
 
 def test_a_cuda_major_only_in_a_newer_torch_builds_from_that_torch():
     torch = [
-        _entry("2.12.1", ["12.9"]),
-        _entry("2.13.0", ["12.9", "13.0"]),
-        _entry("2.14.1", ["13.0", "13.2"]),
+        entry("2.12.1", ["12.9"]),
+        entry("2.13.0", ["12.9", "13.0"]),
+        entry("2.14.1", ["13.0", "13.2"]),
     ]
     legs = _legs("pull_request", torch=torch)
     # The oldest torch that has CUDA 13, on the build Python, not the floor.
@@ -239,7 +226,7 @@ def test_a_cuda_major_only_in_a_newer_torch_builds_from_that_torch():
 
 
 def test_legs_of_a_single_torch_have_no_duplicate():
-    legs = _legs("pull_request", torch=[_entry("2.12.1", ["12.9"], "3.11")])
+    legs = _legs("pull_request", torch=[entry("2.12.1", ["12.9"], "3.11")])
     assert legs["cpu_tests"] == [{"torch": "2.12.1", "python": "3.11"}]
     assert len(legs["cuda_tests"]) == 1
 

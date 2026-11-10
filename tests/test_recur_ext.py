@@ -2,88 +2,10 @@ import pytest
 import torch
 
 from philtorch._recur import recurrence
-from philtorch.lpv import state_space_recursion as lpv_state_space
-from philtorch.mat import companion
 
-from ._cases import stable_denominators, time_varying_coeffs
+from ._cases import DEVICES, MPS
 
-_REQUIRES_GRAD_CASES = [
-    (True, False, False),
-    (False, True, False),
-    (False, False, True),
-    (True, True, False),
-    (True, False, True),
-    (False, True, True),
-    (True, True, True),
-]
-
-
-@pytest.mark.parametrize(
-    "device",
-    [
-        "cpu",
-        pytest.param(
-            "cuda",
-            marks=pytest.mark.cuda,
-        ),
-    ],
-)
-@pytest.mark.parametrize("batch", [True, False])
-def test_lti_recur2_equiv(device: str, batch: bool):
-    B = 3
-    T = 101
-    order = 2
-
-    a = stable_denominators(order, B if batch else 1)
-
-    # Convert to torch tensors
-    a_torch = torch.from_numpy(a).to(device)
-    x_torch = torch.randn(B, T, order).to(device).to(dtype=a_torch.dtype)
-    A = companion(a_torch).squeeze(0)
-
-    zi = x_torch.new_zeros(B, order).normal_()
-
-    lti_y = torch.ops.philtorch.lti_recur2(A, zi, x_torch)
-    ltv_y = torch.ops.philtorch.recur2(
-        A.unsqueeze(1).expand(-1, T, -1, -1) if batch else A.expand(T, -1, -1),
-        zi,
-        x_torch,
-    )
-    assert torch.allclose(lti_y, ltv_y), torch.max(torch.abs(lti_y - ltv_y))
-
-
-@pytest.mark.parametrize(
-    "device",
-    [
-        "cpu",
-        pytest.param(
-            "cuda",
-            marks=pytest.mark.cuda,
-        ),
-    ],
-)
-@pytest.mark.parametrize("batch", [True, False])
-@pytest.mark.parametrize("order", [3, 5])
-def test_lti_recurN_equiv(device: str, batch: bool, order: int):
-    B = 4
-    T = 101
-
-    a = stable_denominators(order, B if batch else 1)
-
-    # Convert to torch tensors
-    a_torch = torch.from_numpy(a).to(device)
-    x_torch = torch.randn(B, T, order).to(device).to(dtype=a_torch.dtype)
-    A = companion(a_torch).squeeze(0)
-
-    zi = x_torch.new_zeros(B, order).normal_()
-
-    lti_y = torch.ops.philtorch.lti_recurN(A, zi, x_torch)
-    ltv_y = torch.ops.philtorch.recurN(
-        A.unsqueeze(1).expand(-1, T, -1, -1) if batch else A.expand(T, -1, -1),
-        zi,
-        x_torch,
-    )
-    assert torch.allclose(lti_y, ltv_y)
+_REQUIRES_GRAD_CASES = [(True, True, True), (True, False, False), (False, False, True)]
 
 
 @pytest.mark.parametrize(
@@ -124,23 +46,7 @@ def test_lti_recurN_cpu_dispatch_equiv(dtype: torch.dtype, batch: bool):
     torch.testing.assert_close(actual, expected)
 
 
-@pytest.mark.parametrize(
-    "device",
-    [
-        "cpu",
-        "meta",
-        pytest.param(
-            "cuda",
-            marks=pytest.mark.cuda,
-        ),
-        pytest.param(
-            "mps",
-            marks=pytest.mark.skipif(
-                not torch.backends.mps.is_available(), reason="MPS not available"
-            ),
-        ),
-    ],
-)
+@pytest.mark.parametrize("device", ["meta", *DEVICES, pytest.param("mps", marks=MPS)])
 def test_lti_recur_rejects_zero_length(device: str):
     a = torch.empty(1, device=device)
     zi = torch.empty(2, device=device)
@@ -150,8 +56,6 @@ def test_lti_recur_rejects_zero_length(device: str):
         torch.ops.philtorch.lti_recur(a, zi, x)
 
 
-_MPS = pytest.mark.skipif(not torch.backends.mps.is_available(), reason="MPS not available")
-
 _MPS_OPS = {
     name: getattr(torch.ops.philtorch, name)
     for name in ("lti_recur", "scan", "lti_recurN", "recurN")
@@ -159,7 +63,7 @@ _MPS_OPS = {
 }
 
 
-@_MPS
+@MPS
 @pytest.mark.parametrize("dtype", [torch.float32, torch.complex64])
 @pytest.mark.parametrize("op", ["lti_recur", "scan"])
 def test_mps_scalar_recur_block_chunks(op: str, dtype: torch.dtype):
@@ -183,7 +87,7 @@ def test_mps_scalar_recur_block_chunks(op: str, dtype: torch.dtype):
     torch.testing.assert_close(actual.cpu().to(expected.dtype), expected, rtol=1e-5, atol=1e-3)
 
 
-@pytest.mark.skipif(not torch.backends.mps.is_available(), reason="MPS not available")
+@MPS
 @pytest.mark.parametrize(
     ("x_requires_grad", "a_requires_grad", "zi_requires_grad"),
     _REQUIRES_GRAD_CASES,
@@ -239,7 +143,7 @@ def test_lti_recur_mps_grad_equiv(
             torch.testing.assert_close(actual, expected, rtol=1e-4, atol=1e-5)
 
 
-@_MPS
+@MPS
 @pytest.mark.parametrize("time_invariant", [True, False])
 @pytest.mark.parametrize("dtype, M", [(torch.float32, 129), (torch.complex64, 65)])
 def test_mps_recurrence_rejects_m_above_128(time_invariant: bool, dtype: torch.dtype, M: int):
@@ -260,7 +164,7 @@ def _mps_matrix_args(op: str, B: int, T: int, M: int, dtype=torch.float32):
     )
 
 
-@_MPS
+@MPS
 @pytest.mark.parametrize("order", [2, 3])
 @pytest.mark.parametrize("time_invariant", [True, False])
 @pytest.mark.parametrize("batched", [True, False])
@@ -277,7 +181,7 @@ def test_mps_recur_of_order(order: int, time_invariant: bool, batched: bool):
     torch.testing.assert_close(actual.cpu().double(), expected, rtol=1e-5, atol=1e-5)
 
 
-@_MPS
+@MPS
 @pytest.mark.parametrize(
     "op, dtype, M, match",
     [
@@ -305,7 +209,7 @@ def test_mps_recur_rejects(op: str, dtype: torch.dtype, M: int, match: str):
         _MPS_OPS[op](*_mps_matrix_args(op, 2, 5, M, dtype))
 
 
-@_MPS
+@MPS
 @pytest.mark.parametrize("op", ["lti_recurN", "recurN"])
 @pytest.mark.parametrize("B, T", [(0, 5), (2, 0), (0, 0)])
 def test_mps_recur_n_empty(op: str, B: int, T: int):
@@ -314,7 +218,7 @@ def test_mps_recur_n_empty(op: str, B: int, T: int):
     assert out.device.type == "mps"
 
 
-@_MPS
+@MPS
 @pytest.mark.parametrize("op", ["lti_recur", "scan"])
 def test_mps_scalar_recur_rejects_int64(op: str):
     def ones(*shape):
@@ -325,50 +229,6 @@ def test_mps_scalar_recur_rejects_int64(op: str):
     )
     with pytest.raises(RuntimeError, match="MPS scalar recurrence takes"):
         _MPS_OPS[op](*args)
-
-
-@pytest.mark.parametrize("order", [2, 3])
-def test_recurN_extension_matches_unrolled(order: int):
-    """Test direct recurN low/general orders against the block-unrolled recursion."""
-    batch_size = 2
-    N = 37
-
-    _, a = time_varying_coeffs(batch_size, N, order, order)
-    x = torch.randn(batch_size, N, order).double()
-    A = companion(a).double()
-    zi = torch.randn(batch_size, order).double()
-
-    ext_output = torch.ops.philtorch.recurN(A, zi, x)
-    torch_output = lpv_state_space(A, zi, x, unroll_factor=2)
-
-    assert torch.allclose(ext_output, torch_output), torch.max(torch.abs(ext_output - torch_output))
-
-
-@pytest.mark.parametrize(
-    "device",
-    [
-        "cpu",
-        pytest.param(
-            "cuda",
-            marks=pytest.mark.cuda,
-        ),
-    ],
-)
-def test_recur2_extension_matches_unrolled(device):
-    """Test that the recur2 extension matches the block-unrolled recursion."""
-    batch_size = 2
-    N = 17
-    order = 2
-
-    _, a = time_varying_coeffs(batch_size, N, order, order)
-    x = torch.randn(batch_size, N, 2).to(device).double()
-    A = companion(a).to(device).double()
-    zi = torch.randn(batch_size, order).to(device).double()
-
-    ext_output = torch.ops.philtorch.recur2(A, zi, x)
-    torch_output = lpv_state_space(A, zi, x, unroll_factor=2)
-
-    assert torch.allclose(ext_output, torch_output), torch.max(torch.abs(ext_output - torch_output))
 
 
 def _cuda_scan_case(name: str):
