@@ -3,6 +3,7 @@
 from torch import Tensor
 
 from .. import _ssm
+from ..utils import _check_scalar_batch
 
 
 def linear_recurrence(
@@ -55,35 +56,13 @@ def linear_recurrence(
     if x.dim() != 2:
         raise ValueError(f"Input x must be 2D, got {x.shape}")
     if unroll_factor is None:
-        batch_size = x.shape[0]
-        return _ssm.scalar_recursion(
-            a.broadcast_to(batch_size)[:, None], init.broadcast_to(batch_size), x
-        )
+        return _ssm.scalar_recursion(a.broadcast_to(x.shape[0])[:, None], init, x)
 
-    if a.dim() not in (0, 1):
-        raise ValueError(f"State matrix a must be 1D or 0D, got {a.shape}")
-    if a.dim() == 1 and a.size(0) > 1 and a.size(0) != x.size(0):
-        raise ValueError(
-            f"State matrix a must be 1D with the same batch size as x, "
-            f"got a: {a.size(0)}, x: {x.size(0)}"
-        )
+    _check_scalar_batch(a, "State matrix", "a", x)
+    _check_scalar_batch(init, "Initial state", "init", x)
 
     if a.dim() == 0:
         a = a.expand(1)
-
-    batch_size = x.size(0)
-
-    if init.dim() not in (
-        0,
-        1,
-    ):
-        raise ValueError(f"Initial state init must be 1D or 0D, got {init.shape}")
-    if init.dim() == 1 and init.size(0) > 1 and init.size(0) != batch_size:
-        raise ValueError(
-            f"Initial state init must be 1D with the same batch size as x, "
-            f"got init: {init.size(0)}, x: {batch_size}"
-        )
-
     if init.dim() == 0:
         init = init.expand(1)
 

@@ -6,8 +6,6 @@ import torch
 import torch.nn.functional as F
 from torch.autograd import Function
 
-from . import _C  # noqa: F401
-
 
 def _lpc_gradients(run, A, zi, y, grad_y, needs_input_grad):
     """The gradients of x, A and zi from ``grad_y``; ``run`` is lpc: the op or

@@ -76,19 +76,7 @@ def state_space_recursion(
     """
     if x.dim() not in (2, 3):
         raise ValueError(f"Input signal must be 2D or 3D (batch, time, [features]), got {x.shape}")
-    if A.dim() not in (3, 4):
-        raise ValueError(f"State matrix A must be 3D or 4D, got {A.shape}")
-    if A.size(-2) != A.size(-1):
-        raise ValueError(f"State matrix A must be square, got {A.shape}")
-    if A.size(-3) != x.size(1):
-        raise ValueError(
-            f"State matrix A must have the same time dimension as x, "
-            f"got A: {A.size(-3)}, x: {x.size(1)}"
-        )
-    if A.dim() == 4 and x.size(0) != A.size(0):
-        raise ValueError(
-            f"Batch size of A must match batch size of x, got A: {A.size(0)}, x: {x.size(0)}"
-        )
+    _check_A(A, x)
     if x.dim() == 3 and A.size(-1) != x.size(-1):
         raise ValueError(
             f"Last dimension of A must match last dimension of x, "
@@ -119,6 +107,23 @@ def _prefixes(batch_size: int, N: int) -> str:
     return f", optionally prefixed with ({N},), ({batch_size},) or ({batch_size}, {N})"
 
 
+def _check_A(A: Tensor, x: Tensor) -> None:
+    """The checks of A, (N, M, M) or (B, N, M, M), against x."""
+    if A.dim() not in (3, 4):
+        raise ValueError(f"State matrix A must be 3D or 4D, got {A.shape}")
+    if A.size(-2) != A.size(-1):
+        raise ValueError(f"State matrix A must be square, got {A.shape}")
+    if A.size(-3) != x.size(1):
+        raise ValueError(
+            f"State matrix A must have the same time dimension as x, "
+            f"got A: {A.size(-3)}, x: {x.size(1)}"
+        )
+    if A.dim() == 4 and x.size(0) != A.size(0):
+        raise ValueError(
+            f"Batch size of A must match batch size of x, got A: {A.size(0)}, x: {x.size(0)}"
+        )
+
+
 def state_space(
     A: Tensor,
     x: Tensor,
@@ -128,7 +133,6 @@ def state_space(
     zi: Tensor | None = None,
     unroll_factor: int | None = None,
     out_idx: int | None = None,
-    # **kwargs,
 ):
     r"""Compute the outputs of a linear time-varying state-space model.
 
@@ -198,80 +202,37 @@ def state_space(
         >>> state_space(A, torch.ones(1, 4), B=B, C=torch.tensor([1.0]))
         tensor([[0., 1., 3., 6.]])
     """
-    if x.dim() not in (
-        2,
-        3,
-    ):
-        raise ValueError(f"Input signal must be 2D or 3D (batch, time, [features]), got {x.shape}")
+    _ssm.check_arguments(x, C, out_idx)
+    # A first, so that a fault in A isn't reported as one in B, sized by A.
+    _check_A(A, x)
 
-    if A.dim() not in (3, 4):
-        raise ValueError(f"State matrix A must be 3D or 4D, got {A.shape}")
-    if A.size(-2) != A.size(-1):
-        raise ValueError(f"State matrix A must be square, got {A.shape}")
-    if A.size(-3) != x.size(1):
-        raise ValueError(
-            f"State matrix A must have the same time dimension as x, "
-            f"got A: {A.size(-3)}, x: {x.size(1)}"
-        )
-
-    if not (C is None or out_idx is None):
-        raise ValueError("C and out_idx cannot be used together. Use either C or out_idx.")
-
-    batch_size, N, *_ = x.shape
+    batch_size, N = x.size(0), x.size(1)
     M = A.size(-1)
+    zi, return_zf = _ssm.initial_state(x, zi, M)
 
-    return_zf = True
-    if zi is None:
-        return_zf = False
-        zi = x.new_zeros(batch_size, M)
-    elif zi.dim() == 1:
-        zi = zi.unsqueeze(0).expand(batch_size, -1)
-
-    if x.dim() == 2:
-        features = -1
+    if B is None:
+        Bx = x
     else:
+        # Matching on x.dim() first, as lti's _ssm_B does, leaves only the readings
+        # for the x at hand, tried in order. Sizes are formatted only for an error:
+        # doing it on every call would make torch.compile specialize on them.
         features = x.size(-1)
-
-    if B is not None:
-        match B.shape:
-            case (BM,) if BM == M:
-                if x.dim() != 2:
-                    raise ValueError(
-                        f"Input signal x must be 2D when B is of shape {(M,)}, got {x.shape}"
-                    )
+        match x.dim(), tuple(B.shape):
+            case 2, (m,) if m == M:
                 Bx = x.unsqueeze(-1) * B
-            case (BM, F) if BM == M and F == features:
+            case 3, (m, f) if (m, f) == (M, features):
                 Bx = x @ B.T
-            case (BN, BM) if BN == N and BM == M:
-                if x.dim() != 2:
-                    raise ValueError(
-                        f"Input signal x must be 2D when B is of shape {tuple(B.shape)}, "
-                        f"got {x.shape}"
-                    )
+            case 2, (n, m) if (n, m) == (N, M):
                 Bx = x.unsqueeze(-1) * B
-            case (B_batch, BM) if B_batch == batch_size and BM == M:
-                if x.dim() != 2:
-                    raise ValueError(
-                        f"Input signal x must be 2D when B is of shape {batch_size, M}, "
-                        f"got {x.shape}"
-                    )
+            case 2, (b, m) if (b, m) == (batch_size, M):
                 Bx = x.unsqueeze(-1) * B.unsqueeze(1)
-            case (BN, BM, F) if BN == N and BM == M and F == features:
+            case 3, (n, m, f) if (n, m, f) == (N, M, features):
                 Bx = torch.linalg.vecdot(B.conj(), x.unsqueeze(-2))
-            case (B_batch, BN, BM) if B_batch == batch_size and BM == M and BN == N:
-                if x.dim() != 2:
-                    raise ValueError(
-                        f"Input signal x must be 2D when B is of shape "
-                        f"{batch_size, N, M}, got {x.shape}"
-                    )
+            case 2, (b, n, m) if (b, n, m) == (batch_size, N, M):
                 Bx = x.unsqueeze(-1) * B
-            case (B_batch, BM, F) if B_batch == batch_size and BM == M and F == features:
-                Bx = torch.linalg.vecdot(
-                    B.unsqueeze(1).conj(), x.unsqueeze(-2)
-                )  # (batch_size, N, M)
-            case (B_batch, BN, BM, F) if (
-                B_batch == batch_size and BM == M and BN == N and F == features
-            ):
+            case 3, (b, m, f) if (b, m, f) == (batch_size, M, features):
+                Bx = torch.linalg.vecdot(B.unsqueeze(1).conj(), x.unsqueeze(-2))
+            case 3, (b, n, m, f) if (b, n, m, f) == (batch_size, N, M, features):
                 Bx = torch.linalg.vecdot(B.conj(), x.unsqueeze(-2))
             case _:
                 base = f"({M},)" if x.dim() == 2 else f"({M}, {features})"
@@ -279,8 +240,6 @@ def state_space(
                     f"Input matrix B must be of base shape {base}{_prefixes(batch_size, N)} "
                     f"for {x.dim()}D input x, got {tuple(B.shape)}"
                 )
-    else:
-        Bx = x
 
     h, zf = _ssm.states(
         partial(state_space_recursion, A, zi, Bx, unroll_factor=unroll_factor),
@@ -289,72 +248,42 @@ def state_space(
         final_state=return_zf,
     )
 
-    if D is not None:
-        match D.shape:
-            case (F,) if F == features:
+    if D is None:
+        Dx = None
+    else:
+        features = x.size(-1)
+        match x.dim(), tuple(D.shape):
+            case 3, (f,) if f == features:
                 Dx = x @ D
-            case (DN,) if DN == N:
-                if x.dim() != 2:
-                    raise ValueError(
-                        f"Input signal x must be 2D when D is of shape {(N,)}, got {x.shape}"
-                    )
+            case 2, (n,) if n == N:
                 Dx = D * x
-            case (D_batch,) if D_batch == batch_size:
-                if x.dim() != 2:
-                    raise ValueError(
-                        f"Input signal x must be 2D when D is of shape {(batch_size,)}, "
-                        f"got {x.shape}"
-                    )
+            case 2, (b,) if b == batch_size:
                 Dx = D.unsqueeze(1) * x
-            case (1,) | ():
+            case _, (1,) | ():
                 Dx = x * D
-            case (_,):
-                if x.dim() != 2:
-                    raise ValueError(
-                        f"Input signal x must be 2D when D is of shape {D.shape}, got {x.shape}"
-                    )
+            case 2, (_,):
                 Dx = x.unsqueeze(-1) * D
-            case (DN, F) if DN == N and F == features:
+            case 3, (n, f) if (n, f) == (N, features):
                 Dx = torch.linalg.vecdot(D.conj(), x)
-            case (D_batch, F) if D_batch == batch_size and F == features:
+            case 3, (b, f) if (b, f) == (batch_size, features):
                 Dx = torch.linalg.vecdot(D.conj().unsqueeze(1), x)
-            case (DN, _) if DN == N:
-                if x.dim() != 2:
-                    raise ValueError(
-                        f"Input signal x must be 2D when D is of shape {tuple(D.shape)}, "
-                        f"got {x.shape}"
-                    )
+            case 2, (n, _) if n == N:
                 Dx = D * x.unsqueeze(-1)
-            case (D_batch, DN) if D_batch == batch_size and DN == N:
-                if x.dim() != 2:
-                    raise ValueError(
-                        f"Input signal x must be 2D when D is of shape {batch_size, N}, "
-                        f"got {x.shape}"
-                    )
+            case 2, (b, n) if (b, n) == (batch_size, N):
                 Dx = D * x
-            case (D_batch, _) if D_batch == batch_size:
-                if x.dim() != 2:
-                    raise ValueError(
-                        f"Input signal x must be 2D when D is of shape {tuple(D.shape)}, "
-                        f"got {x.shape}"
-                    )
+            case 2, (b, _) if b == batch_size:
                 Dx = D.unsqueeze(1) * x.unsqueeze(-1)
-            case (_, F) if F == features:  # x is 3-D: features is -1 for 2-D x
+            case 3, (_, f) if f == features:
                 Dx = x @ D.T
-            case (D_batch, DN, F) if D_batch == batch_size and DN == N and F == features:
+            case 3, (b, n, f) if (b, n, f) == (batch_size, N, features):
                 Dx = torch.linalg.vecdot(D.conj(), x)
-            case (D_batch, DN, _) if D_batch == batch_size and DN == N:
-                if x.dim() != 2:
-                    raise ValueError(
-                        f"Input signal x must be 2D when D is of shape {tuple(D.shape)}, "
-                        f"got {x.shape}"
-                    )
+            case 2, (b, n, _) if (b, n) == (batch_size, N):
                 Dx = D * x.unsqueeze(-1)
-            case (DN, _, F) if DN == N and F == features:
+            case 3, (n, _, f) if (n, f) == (N, features):
                 Dx = torch.linalg.vecdot(D.conj(), x.unsqueeze(-2))
-            case (D_batch, _, F) if D_batch == batch_size and F == features:
+            case 3, (b, _, f) if (b, f) == (batch_size, features):
                 Dx = x @ D.mT
-            case (D_batch, DN, _, F) if D_batch == batch_size and DN == N and F == features:
+            case 3, (b, n, _, f) if (b, n, f) == (batch_size, N, features):
                 Dx = torch.linalg.vecdot(D.conj(), x.unsqueeze(-2))
             case _:
                 shapes = (
@@ -367,8 +296,6 @@ def state_space(
                     f"Input matrix D must be of {shapes} for {x.dim()}D input x, "
                     f"got {tuple(D.shape)}"
                 )
-    else:
-        Dx = None
 
     if C is not None:
         match C.shape:

@@ -7,9 +7,10 @@ import torch
 import torch.nn.functional as F
 from torch import Tensor
 
+from .. import _ssm
 from ..mat import companion
 from ..poly import polydiv
-from ..utils import chain_functions
+from ..utils import _squeeze_first_result, chain_functions
 from .recur import linear_recurrence
 from .ssm import diag_state_space, state_space, state_space_recursion
 
@@ -218,13 +219,9 @@ def lfilter_zi(a: Tensor, b: Tensor | None = None, transpose: bool = True) -> Te
     elif b is not None:
         if b.dim() < 1:
             raise ValueError("Numerator coefficients b must be at least 1D.")
-        n = max(b.size(-1), a.size(-1) + 1)
-        if b.size(-1) < n:
-            b = F.pad(b, (0, n - b.size(-1)), value=0.0)
-        if a.size(-1) < n - 1:
-            a = F.pad(a, (0, n - 1 - a.size(-1)), value=0.0)
+        b, a, B, _ = _ssm.direct_form(b, a)
+        n = a.size(-1) + 1
         A = companion(a).mT
-        B = b[..., 1:] - b[..., :1] * a
     else:
         raise ValueError("Numerator coefficients b must be provided for transpose=True.")
 
@@ -470,13 +467,7 @@ def lfilter(
         case _:
             raise ValueError(f"Unknown backend: {backend}")
 
-    if isinstance(y, tuple):
-        y, zf = y
-        if squeeze_first:
-            y = y.squeeze(0)
-            zf = zf.squeeze(0)
-        return y, zf
-    return y.squeeze(0) if squeeze_first else y
+    return _squeeze_first_result(y, squeeze_first)
 
 
 # The keyword arguments the general path forwards: ``state_space`` and
@@ -519,10 +510,7 @@ def _ssm_lfilter(
     **kwargs,
 ) -> Tensor | tuple[Tensor, Tensor]:
     """Run :func:`lfilter` with the ``"ssm"`` backend."""
-    if b.size(-1) < a.size(-1) + 1:
-        b = F.pad(b, (0, a.size(-1) + 1 - b.size(-1)))
-    elif b.size(-1) > a.size(-1) + 1:
-        a = F.pad(a, (0, b.size(-1) - a.size(-1) - 1))
+    b, a = _ssm.pad_coefficients(b, a)
 
     if zi is not None and form in ("df1", "tdf1"):
         raise ValueError(f"form={form!r} does not take zi; use 'df2' or 'tdf2'.")
@@ -545,34 +533,8 @@ def _ssm_lfilter(
     A = companion(a)
 
     match form:
-        case "df2":
-            b0 = b[..., :1]  # First coefficient of the FIR filter
-            C = b[..., 1:] - b0 * a
-            D = b[..., 0]
-            filt = partial(
-                state_space,
-                A,
-                B=None,
-                C=C,
-                D=D,
-                zi=zi,
-                out_idx=None,
-                **kwargs,
-            )
-        case "tdf2":
-            b0 = b[..., :1]  # First coefficient of the FIR filter
-            B = b[..., 1:] - b0 * a
-            D = b[..., 0]
-            filt = partial(
-                state_space,
-                A.mT,
-                B=B,
-                C=None,
-                D=D,
-                zi=zi,
-                out_idx=0,
-                **kwargs,
-            )
+        case "df2" | "tdf2":
+            filt = _ssm.form2_state_space(state_space, form, A, b, a, zi, **kwargs)
         case "df1":
             zi = x.new_zeros((x.size(0), A.size(-1)))
             filt = chain_functions(
@@ -650,38 +612,15 @@ def _diag_ssm_lfilter(
         direct_filt = None
         delay = 0
 
-    if b.size(-1) < a.size(-1) + 1:
-        b = F.pad(b, (0, a.size(-1) + 1 - b.size(-1)))
-
+    b, a, terms, D = _ssm.direct_form(b, a)
     A = companion(a)
 
     match form:
         case "df2":
-            b0 = b[..., :1]  # First coefficient of the FIR filter
-            C = b[..., 1:] - b0 * a
-            D = b[..., 0]
-            filt = partial(
-                diag_state_space,
-                A=A,
-                B=None,
-                C=C,
-                D=D,
-                zi=zi,
-                **kwargs,
-            )
+            filt = partial(diag_state_space, A=A, B=None, C=terms, D=D, zi=zi, **kwargs)
         case "tdf2":
-            b0 = b[..., :1]  # First coefficient of the FIR filter
-            B = b[..., 1:] - b0 * a
-            D = b[..., 0]
             filt = partial(
-                diag_state_space,
-                A=A.mT,
-                B=B,
-                C=None,
-                D=D,
-                zi=zi,
-                out_idx=0,
-                **kwargs,
+                diag_state_space, A=A.mT, B=terms, C=None, D=D, zi=zi, out_idx=0, **kwargs
             )
 
     results = filt(x)
@@ -787,7 +726,7 @@ def filtfilt(
             f"Input signal length {x.size(-1)} must be greater than pad length {edge}."
         )
 
-    if edge > 0 and padmode is not None:
+    if edge > 0:
         ext = F.pad(
             x.view(-1, x.size(-1)),
             (edge, edge),

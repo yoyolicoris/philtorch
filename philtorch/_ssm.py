@@ -18,6 +18,7 @@ the inputs' mapping, B x, and the outputs', C h + D x.
 """
 
 from collections.abc import Callable
+from functools import partial
 
 import torch
 import torch.nn.functional as F
@@ -110,7 +111,6 @@ def _unrolled_time_invariant(
     remainder = N % block_size
     if remainder != 0:
         x = F.pad(x, (0, 0) * (x.dim() - 2) + (0, block_size - remainder))
-        N = x.size(1)  # Update T after padding
 
     unrolled_x = x.unflatten(1, (-1, block_size)).flatten(2, -1)
 
@@ -211,10 +211,8 @@ def _unrolled_time_invariant(
         output = torch.cat([output, initials[:, 1:, :]], dim=2).unflatten(2, (-1, M)).flatten(1, 2)
     else:
         output = torch.cat([output, initials[:, 1:, out_idx, None]], dim=2).flatten(1, 2)
-    if remainder != 0:
-        # if we padded the input, we need to remove the padding from the output
-        output = output[:, : -(block_size - remainder)]
-    return output
+    # if we padded the input, we need to remove the padding from the output
+    return output[:, :N]
 
 
 def _unrolled_time_varying(
@@ -226,8 +224,7 @@ def _unrolled_time_varying(
     remainder = N % block_size
     if remainder != 0:
         x = F.pad(x, (0, 0) * (x.dim() - 2) + (0, block_size - remainder))
-        A = F.pad(A, (0,) * 4 + (0, block_size - remainder))  # pad
-        N = x.size(1)  # Update T after padding
+        A = F.pad(A, (0,) * 4 + (0, block_size - remainder))
 
     unrolled_x = x.unflatten(1, (-1, block_size))
     unrolled_x_flatten = unrolled_x.flatten(2, -1)
@@ -276,10 +273,8 @@ def _unrolled_time_varying(
         output = torch.cat([output, initials[:, 1:, None, :]], dim=2).flatten(1, 2)
     else:
         output = torch.cat([output, initials[:, 1:, out_idx, None]], dim=2).flatten(1, 2)
-    if remainder != 0:
-        # if we padded the input, we need to remove the padding from the output
-        output = output[:, : -(block_size - remainder)]
-    return output
+    # if we padded the input, we need to remove the padding from the output
+    return output[:, :N]
 
 
 def recursion(
@@ -346,6 +341,86 @@ def states(
     return torch.cat([zi[:, None, out_idx], h[:, :-1]], dim=1)[:, : h.size(1)], None
 
 
+def check_arguments(x: Tensor, C: Tensor | None, out_idx: int | None) -> None:
+    """The checks every state_space starts with, on its x, C and out_idx.
+
+    Raises:
+        ValueError: if ``x`` is not 2-D or 3-D, or both ``C`` and ``out_idx``
+            are given.
+    """
+    if x.dim() not in (2, 3):
+        raise ValueError(f"Input signal must be 2D or 3D (batch, time, [features]), got {x.shape}")
+    if not (C is None or out_idx is None):
+        raise ValueError("C and out_idx cannot be used together. Use either C or out_idx.")
+
+
+def initial_state(x: Tensor, zi: Tensor | None, M: int) -> tuple[Tensor, bool]:
+    """state_space's initial state, (B, M): zeros by default, or ``zi`` expanded
+    over the batch when it is (M,). Also whether ``zi`` was given, that is,
+    whether state_space returns the final state."""
+    if zi is None:
+        return x.new_zeros(x.size(0), M), False
+    if zi.dim() == 1:
+        zi = zi.unsqueeze(0).expand(x.size(0), -1)
+    return zi, True
+
+
+def pad_coefficients(b: Tensor, a: Tensor) -> tuple[Tensor, Tensor]:
+    """Pad b and a along their last axis to the order of the filter, n =
+    max(len(b), len(a) + 1): b to n coefficients and a to n - 1."""
+    n = max(b.size(-1), a.size(-1) + 1)
+    if b.size(-1) < n:
+        b = F.pad(b, (0, n - b.size(-1)))
+    if a.size(-1) < n - 1:
+        a = F.pad(a, (0, n - 1 - a.size(-1)))
+    return b, a
+
+
+def direct_form(b: Tensor, a: Tensor) -> tuple[Tensor, Tensor, Tensor, Tensor]:
+    """The state-space terms of the direct forms II of b and a, for any leading
+    axes, such as (B, T) for time-varying coefficients.
+
+    Args:
+        b: numerators, (..., len(b)).
+        a: denominators without a0, (..., len(a)).
+
+    Returns:
+        b and a, padded by :func:`pad_coefficients` to (..., n) and
+        (..., n - 1); the terms b[..., 1:] - b[..., :1] * a, (..., n - 1),
+        which are C of the direct form II and B of the transposed one; and
+        D = b[..., 0].
+    """
+    b, a = pad_coefficients(b, a)
+    return b, a, b[..., 1:] - b[..., :1] * a, b[..., 0]
+
+
+def form2_state_space(
+    state_space: Callable[..., Tensor | tuple[Tensor, Tensor]],
+    form: str,
+    A: Tensor,
+    b: Tensor,
+    a: Tensor,
+    zi: Tensor | None,
+    **kwargs,
+) -> Callable[[Tensor], Tensor | tuple[Tensor, Tensor]]:
+    """A filter of x, as the module's ``state_space`` runs it for lfilter's
+    ``form`` "df2" or "tdf2".
+
+    Args:
+        state_space: the module's state_space.
+        form: "df2" or "tdf2".
+        A: the companion matrix of ``a``, as the module lays it out.
+        b: numerators.
+        a: denominators without a0.
+        zi: the initial state, as for ``state_space``.
+        **kwargs: more arguments of ``state_space``.
+    """
+    _, _, terms, D = direct_form(b, a)
+    if form == "df2":
+        return partial(state_space, A, B=None, C=terms, D=D, zi=zi, out_idx=None, **kwargs)
+    return partial(state_space, A.mT, B=terms, C=None, D=D, zi=zi, out_idx=0, **kwargs)
+
+
 def outputs(Ch: Tensor, Dx: Tensor | None) -> Tensor:
     """state_space's outputs, C h + D x, each (B, N) for one output or (B, N, P) for P.
 
@@ -395,7 +470,6 @@ def _scalar_unrolled_time_invariant(a: Tensor, init: Tensor, x: Tensor, block_si
     remainder = N % block_size
     if remainder != 0:
         x = F.pad(x, (0, block_size - remainder))
-        N = x.size(1)  # Update T after padding
 
     unrolled_x = x.unflatten(1, (-1, block_size))
 
@@ -430,10 +504,8 @@ def _scalar_unrolled_time_invariant(a: Tensor, init: Tensor, x: Tensor, block_si
 
     # concat the first M - 1 outputs with the last one
     output = torch.cat([output, initials[:, 1:, None]], dim=2).flatten(1, 2)
-    if remainder != 0:
-        # if we padded the input, we need to remove the padding from the output
-        output = output[:, : -(block_size - remainder)]
-    return output
+    # if we padded the input, we need to remove the padding from the output
+    return output[:, :N]
 
 
 def _scalar_unrolled_time_varying(a: Tensor, init: Tensor, x: Tensor, block_size: int) -> Tensor:
@@ -443,7 +515,6 @@ def _scalar_unrolled_time_varying(a: Tensor, init: Tensor, x: Tensor, block_size
     if remainder != 0:
         x = F.pad(x, (0, block_size - remainder))
         a = F.pad(a, (0, block_size - remainder))
-        N = x.size(1)  # Update N after padding
 
     unrolled_x = x.unflatten(1, (-1, block_size))
     unrolled_a = a.unflatten(-1, (-1, block_size))
@@ -472,10 +543,8 @@ def _scalar_unrolled_time_varying(a: Tensor, init: Tensor, x: Tensor, block_size
 
     # concat the first M - 1 outputs with the last one
     output = torch.cat([output, initials[:, 1:, None]], dim=2).flatten(1, 2)
-    if remainder != 0:
-        # if we padded the input, we need to remove the padding from the output
-        output = output[:, : -(block_size - remainder)]
-    return output
+    # if we padded the input, we need to remove the padding from the output
+    return output[:, :N]
 
 
 def scalar_recursion(

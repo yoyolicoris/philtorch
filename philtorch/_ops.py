@@ -8,6 +8,7 @@ defines the gradients once; torchlpc's ``lpc``, an all-pole filter, has its
 own, in :mod:`philtorch._torchlpc`, which its ``AllPole`` shares.
 """
 
+from collections.abc import Callable
 from typing import Any
 
 import torch
@@ -27,27 +28,25 @@ def _setup_context(ctx: Any, inputs: list[Any], output: Any) -> Any:
     ctx.save_for_backward(A, zi, output)
 
 
-def _recurN_backward(ctx: Any, grad: torch.Tensor):
-    """recur2's, recur3's and recurN's: A (T, M, M), shared, or (B, T, M, M)."""
-    A, zi, y = ctx.saved_tensors
-    grad_A, grad_zi, grad_x = _recurrence_gradients(
-        _ssm.from_lpv(A), zi, y, grad, *ctx.needs_input_grad[:2]
-    )
-    if grad_A is not None:
-        grad_A = grad_A.reshape(A.shape)
-    return grad_A, grad_zi, grad_x
+def _recurrence_backward(to_operator: Callable[[torch.Tensor], torch.Tensor]):
+    """The backward of an order-M recurrence op.
 
+    ``to_operator`` converts the op's A to the operator's (B or 1, T or 1, M,
+    M): ``_ssm.from_lpv`` for recur2's, recur3's and recurN's, A (T, M, M),
+    shared, or (B, T, M, M), and ``_ssm.from_lti`` for lti_recur2's,
+    lti_recur3's and lti_recurN's, A (M, M), shared, or (B, M, M).
+    """
 
-def _lti_recurN_backward(ctx: Any, grad: torch.Tensor):
-    """lti_recur2's, lti_recur3's and lti_recurN's: A (M, M), shared, or
-    (B, M, M)."""
-    A, zi, y = ctx.saved_tensors
-    grad_A, grad_zi, grad_x = _recurrence_gradients(
-        _ssm.from_lti(A), zi, y, grad, *ctx.needs_input_grad[:2]
-    )
-    if grad_A is not None:
-        grad_A = grad_A.reshape(A.shape)
-    return grad_A, grad_zi, grad_x
+    def backward(ctx: Any, grad: torch.Tensor):
+        A, zi, y = ctx.saved_tensors
+        grad_A, grad_zi, grad_x = _recurrence_gradients(
+            to_operator(A), zi, y, grad, *ctx.needs_input_grad[:2]
+        )
+        if grad_A is not None:
+            grad_A = grad_A.reshape(A.shape)
+        return grad_A, grad_zi, grad_x
+
+    return backward
 
 
 def _lti_recur_backward(ctx: Any, grad: torch.Tensor):
@@ -264,7 +263,7 @@ for name, order, time_invariant in [
     torch.library.register_fake(f"philtorch::{name}", _recurrence_fake(order, time_invariant))
     torch.library.register_autograd(
         f"philtorch::{name}",
-        _lti_recurN_backward if time_invariant else _recurN_backward,
+        _recurrence_backward(_ssm.from_lti if time_invariant else _ssm.from_lpv),
         setup_context=_setup_context,
     )
 torch.library.register_autograd(

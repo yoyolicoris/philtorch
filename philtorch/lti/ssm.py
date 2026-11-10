@@ -78,14 +78,7 @@ def state_space_recursion(
     """
     if x.dim() not in (2, 3):
         raise ValueError(f"Input signal must be 2D or 3D (batch, time, [features]), got {x.shape}")
-    if A.dim() not in (2, 3):
-        raise ValueError(f"State matrix A must be 2D or 3D, got {A.shape}")
-    if A.size(-2) != A.size(-1):
-        raise ValueError(f"State matrix A must be square, got {A.shape}")
-    if A.dim() == 3 and x.size(0) != A.size(0):
-        raise ValueError(
-            f"Batch size of A must match batch size of x, got A: {A.size(0)}, x: {x.size(0)}"
-        )
+    _check_A(A, x)
     if x.dim() == 3 and A.size(-1) != x.size(-1):
         raise ValueError(
             f"Last dimension of A must match last dimension of x, "
@@ -118,7 +111,6 @@ def state_space(
     zi: Tensor | None = None,
     unroll_factor: int | None = None,
     out_idx: int | None = None,
-    # **kwargs,
 ):
     r"""Compute the outputs of a linear time-invariant state-space model.
 
@@ -183,34 +175,13 @@ def state_space(
         >>> state_space(A, x, C=torch.tensor([1.0, 0.0]))
         tensor([[0., 1., 1., 2., 3., 5., 8.]])
     """
-    if x.dim() not in (
-        2,
-        3,
-    ):
-        raise ValueError(f"Input signal must be 2D or 3D (batch, time, [features]), got {x.shape}")
+    _ssm.check_arguments(x, C, out_idx)
+    # A first, so that a fault in A isn't reported as one in B, sized by A.
+    _check_A(A, x)
 
-    if A.dim() not in (2, 3):
-        raise ValueError(f"State matrix A must be 2D or 3D, got {A.shape}")
-    if A.size(-2) != A.size(-1):
-        raise ValueError(f"State matrix A must be square, got {A.shape}")
-    if A.dim() == 3:
-        if x.size(0) != A.size(0):
-            raise ValueError(
-                f"Batch size of A must match batch size of x, got A: {A.size(0)}, x: {x.size(0)}"
-            )
-
-    if not (C is None or out_idx is None):
-        raise ValueError("C and out_idx cannot be used together. Use either C or out_idx.")
-
-    batch_size, N, *_ = x.shape
+    batch_size = x.size(0)
     M = A.size(-1)
-
-    return_zf = True
-    if zi is None:
-        return_zf = False
-        zi = x.new_zeros(batch_size, M)
-    elif zi.dim() == 1:
-        zi = zi.unsqueeze(0).expand(batch_size, -1)
+    zi, return_zf = _ssm.initial_state(x, zi, M)
 
     Bx = _ssm_B(B, x, batch_size, M)
 
@@ -226,6 +197,18 @@ def state_space(
     if return_zf:
         return y, zf
     return y
+
+
+def _check_A(A: Tensor, x: Tensor) -> None:
+    """The checks of A, (M, M) or (B, M, M), against x."""
+    if A.dim() not in (2, 3):
+        raise ValueError(f"State matrix A must be 2D or 3D, got {A.shape}")
+    if A.size(-2) != A.size(-1):
+        raise ValueError(f"State matrix A must be square, got {A.shape}")
+    if A.dim() == 3 and x.size(0) != A.size(0):
+        raise ValueError(
+            f"Batch size of A must match batch size of x, got A: {A.size(0)}, x: {x.size(0)}"
+        )
 
 
 def _ssm_B(B, x, batch_size, M):
@@ -406,29 +389,14 @@ def diag_state_space(
         >>> torch.allclose(y, state_space(A, x, C=C), atol=1e-6)
         True
     """
-    if x.dim() not in (
-        2,
-        3,
-    ):
-        raise ValueError(f"Input signal must be 2D or 3D (batch, time, [features]), got {x.shape}")
-    if not (C is None or out_idx is None):
-        raise ValueError("C and out_idx cannot be used together. Use either C or out_idx.")
+    _ssm.check_arguments(x, C, out_idx)
 
     batch_size = x.size(0)
 
     if L is None:
         if A is None:
             raise ValueError("Either L or A must be provided")
-        if A.dim() not in (2, 3):
-            raise ValueError(f"State matrix A must be 2D or 3D, got {A.shape}")
-        if A.size(-2) != A.size(-1):
-            raise ValueError(f"State matrix A must be square, got {A.shape}")
-        if A.dim() == 3:
-            if x.size(0) != A.size(0):
-                raise ValueError(
-                    f"Batch size of A must match batch size of x, "
-                    f"got A: {A.size(0)}, x: {x.size(0)}"
-                )
+        _check_A(A, x)
         L = torch.linalg.eigvals(A)
         V = Vinv = None
         M = A.size(-1)
@@ -497,15 +465,8 @@ def diag_state_space(
             Vinv = torch.linalg.inv(V)
         case (_, _, _):
             pass
-        case _:
-            raise ValueError("Only one of V, Vinv, or A can be provided at a time.")
 
-    return_zf = True
-    if zi is None:
-        return_zf = False
-        zi = x.new_zeros(batch_size, M)
-    elif zi.dim() == 1:
-        zi = zi.unsqueeze(0).expand(batch_size, -1)
+    zi, return_zf = _ssm.initial_state(x, zi, M)
 
     x_orig = x
     if Vinv.is_complex():
@@ -554,28 +515,13 @@ def diag_state_space(
         Vinvzi.flatten(),
         VinvBx.mT.flatten(0, 1),
     ).unflatten(0, (batch_size, M))
-    # h[0], ..., h[N - 1], and h[N] with zi: none and zi itself when N = 0.
-    N = Vinvh.size(-1)
-    if not return_zf and out_idx is not None:
-        h = torch.cat(
-            [
-                zi[:, None, out_idx],
-                (V[..., out_idx, None, :] @ Vinvh[..., :-1]).squeeze(-2),
-            ],
-            dim=1,
-        )[:, :N]
-        zf = None
-    else:
-        h = (V @ Vinvh).mT
-        zf = (h[:, -1, :] if N else zi) if return_zf else None
-        h = torch.cat(
-            (
-                [zi.unsqueeze(1), h[:, :-1]]
-                if out_idx is None
-                else [zi[:, None, out_idx], h[:, :-1, out_idx]]
-            ),
-            dim=1,
-        )[:, :N]
+
+    def run(out_idx):
+        if out_idx is None:
+            return (V @ Vinvh).mT
+        return (V[..., out_idx, None, :] @ Vinvh).squeeze(-2)
+
+    h, zf = _ssm.states(run, zi, out_idx=out_idx, final_state=return_zf)
 
     if C is not None and not C.is_complex():
         h = h.real
