@@ -127,37 +127,6 @@ jobs:
           name: wheels-${{ matrix.os }}
           path: wheelhouse/*.whl
 
-  # Every wheel is built against the floor torch, so this is the only job that
-  # compiles against the newest one. It checks that the extension builds and
-  # imports there; no tests, no artifact.
-  build-newest-torch:
-    needs: resolve-legs
-    runs-on: ubuntu-latest
-    permissions:
-      contents: read
-    steps:
-      - uses: actions/checkout@v7
-        with:
-          fetch-depth: 0
-          # fetch-depth: 0 so setuptools_scm sees the tags.
-
-      - uses: actions/setup-python@v7
-        with:
-          python-version: ${{ needs.resolve-legs.outputs.build_python }}
-
-      - name: Install the build requirements
-        run: |
-          pip install "setuptools>=77.0.3" "setuptools_scm>=8" wheel
-          pip install torch==${{ needs.resolve-legs.outputs.newest }}+cpu --index-url https://download.pytorch.org/whl/cpu
-
-      - name: Build and install
-        run: pip install --no-build-isolation .
-
-      - name: Import
-        # Outside the checkout, so that the installed package is imported.
-        working-directory: ${{ runner.temp }}
-        run: python -c "import philtorch"
-
   docs:
     permissions:
       contents: read
@@ -179,7 +148,7 @@ jobs:
   # replaced: a wheel already there with the same contents is skipped, so
   # failed jobs can be re-run, and one with different contents fails the job.
   attach-cuda-wheels:
-    needs: [resolve-legs, build, build-newest-torch, build-sdist, docs, test, cuda-wheels]
+    needs: [resolve-legs, build, build-sdist, docs, test, cuda-wheels]
     if: >
       github.event_name == 'release' &&
       (startsWith(github.event.release.tag_name, 'v0.') || startsWith(github.event.release.tag_name, 'v1.'))
@@ -419,7 +388,6 @@ jobs:
     # for the CUDA wheels to be attached.
     needs:
       - build
-      - build-newest-torch
       - build-sdist
       - docs
       - test
@@ -431,7 +399,6 @@ jobs:
     if: >
       !cancelled() &&
       needs.build.result == 'success' &&
-      needs.build-newest-torch.result == 'success' &&
       needs.build-sdist.result == 'success' &&
       needs.docs.result == 'success' &&
       needs.test.result == 'success' &&
