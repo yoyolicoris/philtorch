@@ -8553,13 +8553,8 @@ packages:
 - pypi: ./
   name: philtorch
   requires_dist:
-  - torch>=2.4.0
-  - pytest>=6.0 ; extra == 'dev'
-  - scipy ; extra == 'dev'
-  - numpy ; extra == 'dev'
-  - pytest-cov ; extra == 'dev'
-  - helion>=1.0.0,<2 ; extra == 'extra'
-  requires_python: '>=3.10'
+  - torch>=2.12.0
+  requires_python: '>=3.11'
 - pypi: https://files.pythonhosted.org/packages/00/b7/6924c4a40bc74f643dc74d274344b737adceb574bcd6ec46819ce4567f80/kazane-1.0.4-py3-none-any.whl
   name: kazane
   version: 1.0.4
