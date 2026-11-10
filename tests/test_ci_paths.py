@@ -2,9 +2,9 @@
 and to the tests/ modules they import."""
 
 import re
-from pathlib import Path
 
-REPO_ROOT = Path(__file__).resolve().parents[1]
+from ._cases import REPO_ROOT
+
 # The cuda mark applied, on a test or on a parameter.
 CUDA_MARK = re.compile(r"(@|marks=)pytest\.mark\.cuda\b")
 

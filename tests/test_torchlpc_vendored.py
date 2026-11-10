@@ -23,7 +23,9 @@ from philtorch._torchlpc import AllPole
 
 from ._cases import DEVICES
 
-_REQUIRES_GRAD_CASES = [(True, True, True), (True, False, False), (False, False, True)]
+# Each input on and off, and A both with and without zi: zi's gradient changes
+# the adjoint recurrence that A's gradient is read from.
+_REQUIRES_GRAD_CASES = [(True, True, True), (True, True, False), (False, False, True)]
 
 
 def test_external_torchlpc_namespace_coexists(tmp_path):

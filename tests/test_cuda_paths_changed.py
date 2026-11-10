@@ -8,8 +8,8 @@ import pytest
 
 from ._cases import REPO_ROOT, load_script
 
-SCRIPT = REPO_ROOT / "scripts" / "cuda_paths_changed.py"
-PATHS = load_script("scripts/cuda_paths_changed.py")
+SCRIPT = "scripts/cuda_paths_changed.py"
+PATHS = load_script(SCRIPT)
 
 
 def test_parsed_patterns_are_the_workflows_entries():
@@ -30,17 +30,27 @@ def test_parsing_skips_comments_and_stops_at_the_end_of_the_list():
 @pytest.mark.parametrize(
     ("text", "message"),
     [
-        (
+        pytest.param(
             f'on:\n  pull_request:\n    paths:\n      - "a.py"\n{line}\n      - "c.py"\n',
             "unexpected line",
+            id=f"line-{name}",
         )
-        for line in ["", "      - 'b.py'", "      - b.py"]
+        for name, line in [
+            ("blank", ""),
+            ("single-quoted", "      - 'b.py'"),
+            ("bare", "      - b.py"),
+        ]
     ]
-    + [("on:\n  pull_request:\n    branches: [dev]\n", "no pull_request paths")]
     + [
-        (
+        pytest.param(
+            "on:\n  pull_request:\n    branches: [dev]\n", "no pull_request paths", id="no-paths"
+        )
+    ]
+    + [
+        pytest.param(
             f'on:\n  pull_request:\n    paths:\n      - "{pattern}"\n',
             "unsupported special characters",
+            id=f"pattern-{pattern}",
         )
         for pattern in ["a?.py", "a+.py", "[ab].py", "!a.py"]
     ],
@@ -89,7 +99,7 @@ def test_runs_the_test_when_the_diff_fails(capsys):
 
 def test_command_prints_the_output_line():
     result = subprocess.run(
-        [sys.executable, str(SCRIPT), "--event", "workflow_dispatch", "--sha", "HEAD"],
+        [sys.executable, str(REPO_ROOT / SCRIPT), "--event", "workflow_dispatch", "--sha", "HEAD"],
         check=True,
         capture_output=True,
         text=True,

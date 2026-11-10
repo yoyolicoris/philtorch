@@ -9,7 +9,10 @@ import torch
 
 REPO_ROOT = Path(__file__).parents[1]
 
-# The devices of a test that runs on CPU and, on a CUDA machine, on CUDA.
+# The devices of a test that runs on CPU and, on a CUDA machine, on CUDA. A
+# module that has cuda cases only through DEVICES must still spell out
+# pytest.mark.cuda somewhere: tests/test_ci_paths.py and the GPU job find the
+# cuda modules by that text.
 DEVICES = ["cpu", pytest.param("cuda", marks=pytest.mark.cuda)]
 MPS = pytest.mark.skipif(not torch.backends.mps.is_available(), reason="MPS not available")
 

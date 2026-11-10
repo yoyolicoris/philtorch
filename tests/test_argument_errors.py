@@ -674,7 +674,7 @@ _POLY_CASES = [
 
 def _group(name, cases):
     """The cases of one function, their ids prefixed with its group name."""
-    return [pytest.param(*case.values, id=f"{name}-{case.id}") for case in cases]
+    return [pytest.param(*case.values, id=f"{name}-{case.id}", marks=case.marks) for case in cases]
 
 
 @pytest.mark.parametrize(
