@@ -18,7 +18,7 @@ build:
       # can't build it from source there.
       - python -m pip install --upgrade pip
       # The newest torch of torch_matrix.json, as the docs job on CI uses.
-      - python -m pip install "torch==$(python scripts/torch_matrix.py legs --event push | sed -n 's/^newest=//p')+cpu" --index-url https://download.pytorch.org/whl/cpu
+      - newest=$(python scripts/torch_matrix.py legs --event push | sed -n 's/^newest=//p') && python -m pip install "torch==${newest:?}+cpu" --index-url https://download.pytorch.org/whl/cpu
       - python -m pip install "setuptools>=77.0.3" "setuptools_scm>=8" wheel ninja
       - MAX_JOBS=2 python -m pip install --no-build-isolation --editable .
       - python -m pip install -r docs/requirements.txt

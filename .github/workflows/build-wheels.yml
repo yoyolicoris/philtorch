@@ -24,7 +24,6 @@ jobs:
       contents: read
     outputs:
       floor: ${{ steps.legs.outputs.floor }}
-      newest: ${{ steps.legs.outputs.newest }}
       build_python: ${{ steps.legs.outputs.build_python }}
       build_os: ${{ steps.legs.outputs.build_os }}
       test_os: ${{ steps.legs.outputs.test_os }}
