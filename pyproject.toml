@@ -1,15 +1,10 @@
 [build-system]
-requires = ["setuptools >= 77.0.3", "setuptools_scm >= 8", "wheel"]
+requires = ["setuptools >= 77.0.3", "setuptools_scm >= 8"]
 build-backend = "setuptools.build_meta:__legacy__"
 
 [tool.setuptools_scm]
-fallback_version = "0.4"
-version_scheme = "guess-next-dev"
 local_scheme = "no-local-version"
 write_to = "philtorch/_version.py"
-
-[tool.setuptools.package-data]
-philtorch = ["VERSION.txt"]
 
 [tool.setuptools.packages.find]
 where = ["."]
@@ -20,10 +15,9 @@ include = ["philtorch", "philtorch.*"]
 exclude = ["philtorch.csrc"]
 
 [tool.setuptools]
-zip-safe = false
-# Ship only the package data listed above. The extension sources under csrc/
-# are compiled into _C, and with automatic inclusion setuptools would also
-# warn that philtorch.csrc looks importable but is not packaged.
+# Ship no package data. The extension sources under csrc/ are compiled into
+# _C, and with automatic inclusion setuptools would also warn that
+# philtorch.csrc looks importable but is not packaged.
 include-package-data = false
 
 [project]
@@ -55,13 +49,9 @@ classifiers = [
 [project.urls]
 Documentation = "https://philtorch.readthedocs.io/en/stable/"
 
-[project.optional-dependencies]
-dev = ["pytest >= 6.0", "scipy", "numpy", "pytest-cov"]
-
 [tool.pytest.ini_options]
 testpaths = ["tests"]
 python_files = ["test_*.py"]
-python_classes = ["Test*"]
 python_functions = ["test_*"]
 addopts = [
     "--tb=short",
@@ -74,11 +64,6 @@ addopts = [
     # measures the imported philtorch package instead of the ./philtorch dir.
     "--cov",
     "--cov-report=term-missing:skip-covered",
-]
-markers = [
-    "slow: marks tests as slow (deselect with '-m \"not slow\"')",
-    "integration: marks tests as integration tests",
-    "unit: marks tests as unit tests",
 ]
 
 [tool.coverage.run]

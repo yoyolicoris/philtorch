@@ -88,7 +88,7 @@ The index URLs are relative to `https://yoyolicoris.github.io/philtorch/`, which
 Install PyTorch first with the [PyTorch installation selector](https://pytorch.org/get-started/locally/), then build PhilTorch against it without build isolation:
 
 ```bash
-python -m pip install "setuptools>=77.0.3" "setuptools_scm>=8" wheel
+python -m pip install "setuptools>=77.0.3" "setuptools_scm>=8"
 python -m pip install --no-binary=philtorch --no-build-isolation philtorch
 ```
 
@@ -104,7 +104,7 @@ For an editable install from Git:
 git clone --branch main https://github.com/yoyolicoris/philtorch.git
 cd philtorch
 python -m pip install torch  # Choose the correct CPU or CUDA build first.
-python -m pip install "setuptools>=77.0.3" "setuptools_scm>=8" wheel
+python -m pip install "setuptools>=77.0.3" "setuptools_scm>=8"
 python -m pip install --editable . --no-build-isolation
 ```
 

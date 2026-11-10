@@ -2,7 +2,7 @@
 # sources under third_party/. This file adds the package's build inputs and
 # drops what neither building nor testing from the sdist needs.
 
-recursive-include philtorch *.txt *.h *.cpp *.cuh *.cu *.mm *.metal
+recursive-include philtorch *.h *.cpp *.cuh *.cu *.mm *.metal
 include README.md build_support.py
 
 # Development-only files. tests/ stays, along with the scripts and matrix file
