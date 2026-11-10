@@ -173,3 +173,25 @@ def test_state_space_compiles_once_for_every_length():
     for N in (5, 7):
         compiled(torch.rand(N, 2, 2) * 0.5, torch.randn(3, N), C=torch.ones(2))
     assert counter.frame_count == 1
+
+
+def test_state_space_scalar_D_of_one_with_a_single_signal():
+    # D of shape (1,) is a shared scalar for a 3-D x, as () is: it used to be
+    # read as one value per signal, which a batch of 1 matches.
+    A = torch.rand(1, 8, 2, 2) * 0.1
+    x = torch.randn(1, 8, 3)
+    B = torch.randn(2, 3)
+    C = torch.randn(3, 2)
+    expected = state_space(A, x, B=B, C=C, D=torch.tensor(0.5))
+    result = state_space(A, x, B=B, C=C, D=torch.tensor([0.5]))
+    torch.testing.assert_close(result, expected)
+
+
+def test_state_space_per_signal_B_when_time_states_and_features_agree():
+    # With N = M = F, B of shape (batch, M, F) is one input matrix per signal,
+    # for a 3-D x: it used to be read as (batch, N, M), a 2-D x's layout.
+    A = torch.rand(2, 3, 3, 3) * 0.1
+    x = torch.randn(2, 3, 3)
+    B = torch.randn(2, 3, 3)
+    expected = torch.cat([state_space(A[i : i + 1], x[i : i + 1], B=B[i]) for i in range(2)])
+    torch.testing.assert_close(state_space(A, x, B=B), expected)

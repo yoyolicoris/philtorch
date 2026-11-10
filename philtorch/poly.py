@@ -49,7 +49,6 @@ def polydiv(u: Tensor, v: Tensor) -> tuple[Tensor, Tensor]:
     if u.ndim < 1 or v.ndim < 1:
         raise ValueError(f"u and v must be at least 1D, got {tuple(u.shape)} and {tuple(v.shape)}")
 
-    # w has the common type
     m = u.size(-1) - 1
     n = v.size(-1) - 1
     scale = v[..., 0].reciprocal()

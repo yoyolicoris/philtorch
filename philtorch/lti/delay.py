@@ -8,6 +8,7 @@ import torch
 import torch.nn.functional as F
 from torch import Tensor
 
+from .. import _ssm
 from ..mat import companion
 from .ssm import _ssm_B, _ssm_C_D, state_space
 
@@ -115,10 +116,9 @@ def _absorption_filters(
         )
     else:
         state = absorption_zi.expand(batch_size, M, K).reshape(batch_size * M, K)
-    b = F.pad(b, (0, K + 1 - b.size(-1)))
-    a = F.pad(a, (0, K - a.size(-1)))
+    _, a, B, D = _ssm.direct_form(b, a)
     A = companion(a).mT if K else None
-    return A, b[:, 1:] - b[:, :1] * a, b[:, 0], K, state
+    return A, B, D, K, state
 
 
 def delay_state_space(
@@ -263,14 +263,11 @@ def delay_state_space(
         ... ).squeeze(-1)
         tensor([[0.0000, 0.0000, 0.0000, 0.5000, 0.2500, 0.1250, 0.1875]])
     """
-    if x.dim() not in (2, 3):
-        raise ValueError(f"Input signal must be 2D or 3D (batch, time, [features]), got {x.shape}")
+    _ssm.check_arguments(x, C, out_idx)
     if A.dim() not in (2, 3):
         raise ValueError(f"State matrix A must be 2D or 3D, got {A.shape}")
     if A.size(-2) != A.size(-1):
         raise ValueError(f"State matrix A must be square, got {A.shape}")
-    if not (C is None or out_idx is None):
-        raise ValueError("C and out_idx cannot be used together. Use either C or out_idx.")
     absorb = absorption is not None
     if not absorb:
         if absorption_zi is not None:

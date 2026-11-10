@@ -77,7 +77,6 @@ def _as_param(value: Any, name: str) -> float | Tensor:
 
 def _cubic_coeff(x: Tensor, parallel_form: bool, scipy_padding: bool) -> Tensor:
     r = torch.tensor(3**0.5 - 2, device=x.device, dtype=x.dtype)
-    # k_0 = min(14, x.shape[-1] - 1)
 
     if scipy_padding:
         # in scipy, a sequence [1, 2, 3] is mirrored to [3, 2, 1, 1, 2, 3, 3, 2, 1]

@@ -6,9 +6,10 @@ import torch
 import torch.nn.functional as F
 from torch import Tensor
 
+from .. import _ssm
 from .._torchlpc import lpc
 from ..mat import companion
-from ..utils import chain_functions
+from ..utils import _squeeze_first_result, chain_functions
 from .ssm import state_space, state_space_recursion
 from .utils import diag_shift
 
@@ -340,16 +341,7 @@ def lfilter(
                 f"Unknown backend: {backend}. Supported backends are 'ssm', 'torchlpc'."
             )
 
-    if isinstance(y, tuple):
-        y, zf = y
-        if squeeze_first:
-            y = y.squeeze(0)
-            zf = zf.squeeze(0)
-        return y, zf
-
-    if squeeze_first:
-        y = y.squeeze(0)
-    return y
+    return _squeeze_first_result(y, squeeze_first)
 
 
 def _torchlpc_lfilter(
@@ -375,7 +367,7 @@ def _torchlpc_lfilter(
 
     B = max(b.size(0), a.size(0), x.size(0))
 
-    return_zf = (zi is not None) and (form in ("df2", "tdf2"))
+    return_zf = zi is not None
     if zi is None:
         zi = x.new_zeros((B, order))
     elif zi.dim() == 1:
@@ -451,42 +443,12 @@ def _ssm_lfilter(
     **kwargs,
 ) -> Tensor | tuple[Tensor, Tensor]:
     """Run :func:`lfilter` with the ``"ssm"`` backend."""
-    if b.size(-1) < a.size(-1) + 1:
-        b = F.pad(b, (0, a.size(-1) + 1 - b.size(-1)))
-    elif b.size(-1) > a.size(-1) + 1:
-        a = F.pad(a, (0, b.size(-1) - a.size(-1) - 1))
-
+    b, a = _ssm.pad_coefficients(b, a)
     A = companion(a)
 
     match form:
-        case "df2":
-            b0 = b[..., :1]  # First coefficient of the FIR filter
-            C = b[..., 1:] - b0 * a
-            D = b[..., 0]
-            filt = partial(
-                state_space,
-                A,
-                B=None,
-                C=C,
-                D=D,
-                zi=zi,
-                out_idx=None,
-                **kwargs,
-            )
-        case "tdf2":
-            b0 = b[..., :1]  # First coefficient of the FIR filter
-            B = b[..., 1:] - b0 * a
-            D = b[..., 0]
-            filt = partial(
-                state_space,
-                A.mT,
-                B=B,
-                C=None,
-                D=D,
-                zi=zi,
-                out_idx=0,
-                **kwargs,
-            )
+        case "df2" | "tdf2":
+            filt = _ssm.form2_state_space(state_space, form, A, b, a, zi, **kwargs)
         case "df1":
             zi = x.new_zeros((x.size(0), A.size(-1)))
             filt = chain_functions(

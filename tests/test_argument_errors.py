@@ -4,8 +4,6 @@ Each case makes one call with exactly one bad argument, every other argument
 valid, so that the check under test is the one that fires.
 """
 
-import re
-
 import pytest
 import torch
 
@@ -232,61 +230,73 @@ _LPV_SSM_CASES = [
         "C and out_idx cannot be used together",
         id="C-and-out_idx",
     ),
-    # B of a shape that only takes a 2-D x, given a 3-D x (F = 5).
+    # B of a shape that only takes a 2-D x, given a 3-D x (F = 5): the message
+    # lists the shapes a 3-D x takes.
     pytest.param(
         lambda: lpv.state_space(_LPV_A, _ones(3, 4, 5), B=_ones(2)),
-        "x must be 2D when B is of shape",
+        r"B must be of base shape \(2, 5\), optionally prefixed .* for 3D input x, "
+        r"got \(2,\)",
         id="B-M-with-3d-x",
     ),
     pytest.param(
         lambda: lpv.state_space(_LPV_A, _ones(3, 4, 5), B=_ones(4, 2)),
-        "x must be 2D when B is of shape",
+        r"B must be of base shape \(2, 5\), optionally prefixed .* for 3D input x, "
+        r"got \(4, 2\)",
         id="B-NM-with-3d-x",
     ),
     pytest.param(
         lambda: lpv.state_space(_LPV_A, _ones(3, 4, 5), B=_ones(3, 2)),
-        "x must be 2D when B is of shape",
+        r"B must be of base shape \(2, 5\), optionally prefixed .* for 3D input x, "
+        r"got \(3, 2\)",
         id="B-batch-M-with-3d-x",
     ),
     pytest.param(
         lambda: lpv.state_space(_LPV_A, _ones(3, 4, 5), B=_ones(3, 4, 2)),
-        "x must be 2D when B is of shape",
+        r"B must be of base shape \(2, 5\), optionally prefixed .* for 3D input x, "
+        r"got \(3, 4, 2\)",
         id="B-batch-NM-with-3d-x",
     ),
-    # D of a shape that only takes a 2-D x, given a 3-D x (F = 2).
+    # D of a shape that only takes a 2-D x, given a 3-D x (F = 2): likewise.
     pytest.param(
         lambda: lpv.state_space(_LPV_A, _LPV_X3, D=_ones(4)),
-        re.escape("x must be 2D when D is of shape (4,)"),
+        r"D must be of shape \(\) or \(1,\), or base shape \(2,\) or \(P, 2\), "
+        r"optionally prefixed .* for 3D input x, got \(4,\)",
         id="D-N-with-3d-x",
     ),
     pytest.param(
         lambda: lpv.state_space(_LPV_A, _LPV_X3, D=_ones(3)),
-        re.escape("x must be 2D when D is of shape (3,)"),
+        r"D must be of shape \(\) or \(1,\), or base shape \(2,\) or \(P, 2\), "
+        r"optionally prefixed .* for 3D input x, got \(3,\)",
         id="D-batch-with-3d-x",
     ),
     pytest.param(
         lambda: lpv.state_space(_LPV_A, _LPV_X3, D=_ones(7)),
-        "x must be 2D when D is of shape",
+        r"D must be of shape \(\) or \(1,\), or base shape \(2,\) or \(P, 2\), "
+        r"optionally prefixed .* for 3D input x, got \(7,\)",
         id="D-P-with-3d-x",
     ),
     pytest.param(
         lambda: lpv.state_space(_LPV_A, _LPV_X3, D=_ones(4, 7)),
-        "x must be 2D when D is of shape",
+        r"D must be of shape \(\) or \(1,\), or base shape \(2,\) or \(P, 2\), "
+        r"optionally prefixed .* for 3D input x, got \(4, 7\)",
         id="D-NP-with-3d-x",
     ),
     pytest.param(
         lambda: lpv.state_space(_LPV_A, _LPV_X3, D=_ones(3, 4)),
-        "x must be 2D when D is of shape",
+        r"D must be of shape \(\) or \(1,\), or base shape \(2,\) or \(P, 2\), "
+        r"optionally prefixed .* for 3D input x, got \(3, 4\)",
         id="D-batch-N-with-3d-x",
     ),
     pytest.param(
         lambda: lpv.state_space(_LPV_A, _LPV_X3, D=_ones(3, 7)),
-        "x must be 2D when D is of shape",
+        r"D must be of shape \(\) or \(1,\), or base shape \(2,\) or \(P, 2\), "
+        r"optionally prefixed .* for 3D input x, got \(3, 7\)",
         id="D-batch-P-with-3d-x",
     ),
     pytest.param(
         lambda: lpv.state_space(_LPV_A, _LPV_X3, D=_ones(3, 4, 7)),
-        "x must be 2D when D is of shape",
+        r"D must be of shape \(\) or \(1,\), or base shape \(2,\) or \(P, 2\), "
+        r"optionally prefixed .* for 3D input x, got \(3, 4, 7\)",
         id="D-batch-NP-with-3d-x",
     ),
     pytest.param(
