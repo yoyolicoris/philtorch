@@ -29,11 +29,13 @@ def _setup_context(ctx: Any, inputs: list[Any], output: Any) -> Any:
 
 
 def _recurrence_backward(to_operator: Callable[[torch.Tensor], torch.Tensor]):
-    """The backward of the order-M recurrence ops, given the conversion of their
-    A to the operator's (B or 1, T or 1, M, M): ``_ssm.from_lpv`` for recur2's,
-    recur3's and recurN's, A (T, M, M), shared, or (B, T, M, M), and
-    ``_ssm.from_lti`` for lti_recur2's, lti_recur3's and lti_recurN's, A
-    (M, M), shared, or (B, M, M)."""
+    """The backward of an order-M recurrence op.
+
+    ``to_operator`` converts the op's A to the operator's (B or 1, T or 1, M,
+    M): ``_ssm.from_lpv`` for recur2's, recur3's and recurN's, A (T, M, M),
+    shared, or (B, T, M, M), and ``_ssm.from_lti`` for lti_recur2's,
+    lti_recur3's and lti_recurN's, A (M, M), shared, or (B, M, M).
+    """
 
     def backward(ctx: Any, grad: torch.Tensor):
         A, zi, y = ctx.saved_tensors

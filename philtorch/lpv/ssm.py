@@ -76,19 +76,7 @@ def state_space_recursion(
     """
     if x.dim() not in (2, 3):
         raise ValueError(f"Input signal must be 2D or 3D (batch, time, [features]), got {x.shape}")
-    if A.dim() not in (3, 4):
-        raise ValueError(f"State matrix A must be 3D or 4D, got {A.shape}")
-    if A.size(-2) != A.size(-1):
-        raise ValueError(f"State matrix A must be square, got {A.shape}")
-    if A.size(-3) != x.size(1):
-        raise ValueError(
-            f"State matrix A must have the same time dimension as x, "
-            f"got A: {A.size(-3)}, x: {x.size(1)}"
-        )
-    if A.dim() == 4 and x.size(0) != A.size(0):
-        raise ValueError(
-            f"Batch size of A must match batch size of x, got A: {A.size(0)}, x: {x.size(0)}"
-        )
+    _check_A(A, x)
     if x.dim() == 3 and A.size(-1) != x.size(-1):
         raise ValueError(
             f"Last dimension of A must match last dimension of x, "
@@ -117,6 +105,23 @@ def _prefixes(batch_size: int, N: int) -> str:
     # per signal, or both. Built only for an error: formatting the sizes on every
     # call would make torch.compile specialize on them.
     return f", optionally prefixed with ({N},), ({batch_size},) or ({batch_size}, {N})"
+
+
+def _check_A(A: Tensor, x: Tensor) -> None:
+    """The checks of A, (N, M, M) or (B, N, M, M), against x."""
+    if A.dim() not in (3, 4):
+        raise ValueError(f"State matrix A must be 3D or 4D, got {A.shape}")
+    if A.size(-2) != A.size(-1):
+        raise ValueError(f"State matrix A must be square, got {A.shape}")
+    if A.size(-3) != x.size(1):
+        raise ValueError(
+            f"State matrix A must have the same time dimension as x, "
+            f"got A: {A.size(-3)}, x: {x.size(1)}"
+        )
+    if A.dim() == 4 and x.size(0) != A.size(0):
+        raise ValueError(
+            f"Batch size of A must match batch size of x, got A: {A.size(0)}, x: {x.size(0)}"
+        )
 
 
 def state_space(
@@ -198,9 +203,8 @@ def state_space(
         tensor([[0., 1., 3., 6.]])
     """
     _ssm.check_arguments(x, C, out_idx)
-    # The recursion checks the rest of A, but M comes first.
-    if A.dim() not in (3, 4):
-        raise ValueError(f"State matrix A must be 3D or 4D, got {A.shape}")
+    # A first, so that a fault in A isn't reported as one in B, sized by A.
+    _check_A(A, x)
 
     batch_size, N = x.size(0), x.size(1)
     M = A.size(-1)
@@ -209,8 +213,8 @@ def state_space(
     if B is None:
         Bx = x
     else:
-        # Matching on x.dim() first, as lti's _ssm_B does, leaves one reading of
-        # each shape for the x at hand. Sizes are formatted only for an error:
+        # Matching on x.dim() first, as lti's _ssm_B does, leaves only the readings
+        # for the x at hand, tried in order. Sizes are formatted only for an error:
         # doing it on every call would make torch.compile specialize on them.
         features = x.size(-1)
         match x.dim(), tuple(B.shape):

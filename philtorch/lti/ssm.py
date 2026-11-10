@@ -78,14 +78,7 @@ def state_space_recursion(
     """
     if x.dim() not in (2, 3):
         raise ValueError(f"Input signal must be 2D or 3D (batch, time, [features]), got {x.shape}")
-    if A.dim() not in (2, 3):
-        raise ValueError(f"State matrix A must be 2D or 3D, got {A.shape}")
-    if A.size(-2) != A.size(-1):
-        raise ValueError(f"State matrix A must be square, got {A.shape}")
-    if A.dim() == 3 and x.size(0) != A.size(0):
-        raise ValueError(
-            f"Batch size of A must match batch size of x, got A: {A.size(0)}, x: {x.size(0)}"
-        )
+    _check_A(A, x)
     if x.dim() == 3 and A.size(-1) != x.size(-1):
         raise ValueError(
             f"Last dimension of A must match last dimension of x, "
@@ -183,9 +176,8 @@ def state_space(
         tensor([[0., 1., 1., 2., 3., 5., 8.]])
     """
     _ssm.check_arguments(x, C, out_idx)
-    # The recursion checks the rest of A, but M comes first.
-    if A.dim() not in (2, 3):
-        raise ValueError(f"State matrix A must be 2D or 3D, got {A.shape}")
+    # A first, so that a fault in A isn't reported as one in B, sized by A.
+    _check_A(A, x)
 
     batch_size = x.size(0)
     M = A.size(-1)
@@ -205,6 +197,18 @@ def state_space(
     if return_zf:
         return y, zf
     return y
+
+
+def _check_A(A: Tensor, x: Tensor) -> None:
+    """The checks of A, (M, M) or (B, M, M), against x."""
+    if A.dim() not in (2, 3):
+        raise ValueError(f"State matrix A must be 2D or 3D, got {A.shape}")
+    if A.size(-2) != A.size(-1):
+        raise ValueError(f"State matrix A must be square, got {A.shape}")
+    if A.dim() == 3 and x.size(0) != A.size(0):
+        raise ValueError(
+            f"Batch size of A must match batch size of x, got A: {A.size(0)}, x: {x.size(0)}"
+        )
 
 
 def _ssm_B(B, x, batch_size, M):
@@ -392,16 +396,7 @@ def diag_state_space(
     if L is None:
         if A is None:
             raise ValueError("Either L or A must be provided")
-        if A.dim() not in (2, 3):
-            raise ValueError(f"State matrix A must be 2D or 3D, got {A.shape}")
-        if A.size(-2) != A.size(-1):
-            raise ValueError(f"State matrix A must be square, got {A.shape}")
-        if A.dim() == 3:
-            if x.size(0) != A.size(0):
-                raise ValueError(
-                    f"Batch size of A must match batch size of x, "
-                    f"got A: {A.size(0)}, x: {x.size(0)}"
-                )
+        _check_A(A, x)
         L = torch.linalg.eigvals(A)
         V = Vinv = None
         M = A.size(-1)
