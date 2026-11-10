@@ -1,9 +1,6 @@
-# setuptools_scm already adds every git-tracked file, including the vendored
-# sources under third_party/. This file adds the package's build inputs and
+# setuptools_scm adds every git-tracked file to the sdist, the extension
+# sources and the vendored ones under third_party/ included. This file only
 # drops what neither building nor testing from the sdist needs.
-
-recursive-include philtorch *.txt *.h *.cpp *.cuh *.cu *.mm *.metal
-include README.md build_support.py
 
 # Development-only files. tests/ stays, along with the scripts and matrix file
 # that the build-tooling tests load.

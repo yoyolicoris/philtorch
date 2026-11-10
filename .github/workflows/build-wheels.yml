@@ -103,9 +103,8 @@ jobs:
           # macOS CPU wheels on the PyTorch index aren't `+cpu`-suffixed, so
           # add the suffix only off-macOS (resolved via runner.os).
           CIBW_BEFORE_BUILD: >-
-            pip install "setuptools>=77.0.3" "setuptools_scm>=8" wheel &&
+            pip install "setuptools>=77.0.3" "setuptools_scm>=8" &&
             pip install torch==${{ needs.resolve-legs.outputs.floor }}${{ runner.os != 'macOS' && '+cpu' || '' }} --index-url https://download.pytorch.org/whl/cpu
-          CIBW_TEST_SKIP: "*"
           # torch's libs are excluded from repair: torch is a separate runtime
           # dep (never vendored), and `import torch` loads them globally before
           # philtorch._C, so the extension resolves them at runtime. Without
@@ -370,7 +369,7 @@ jobs:
           cache: "pip"
 
       - name: Install build dependencies
-        run: python -m pip install "setuptools_scm>=8" build
+        run: python -m pip install build
 
       - name: Build sdist
         run: python -m build --sdist
@@ -394,7 +393,8 @@ jobs:
     # `!cancelled()` lets this job run after a failed or skipped dependency, so
     # every required result is checked here. The build and test matrices hold
     # only the OSes that ran for the event, and attach-cuda-wheels runs only
-    # for a release.
+    # for a supported release (a v0 or v1 tag), so its success admits one;
+    # pushes run on dev only.
     if: >
       !cancelled() &&
       needs.build.result == 'success' &&
@@ -402,13 +402,8 @@ jobs:
       needs.docs.result == 'success' &&
       needs.test.result == 'success' &&
       (
-        (github.event_name == 'push' && github.ref == 'refs/heads/dev') ||
-        (
-          github.event_name == 'release' &&
-          github.event.action == 'published' &&
-          (startsWith(github.event.release.tag_name, 'v0.') || startsWith(github.event.release.tag_name, 'v1.')) &&
-          needs.attach-cuda-wheels.result == 'success'
-        )
+        github.event_name == 'push' ||
+        (github.event_name == 'release' && needs.attach-cuda-wheels.result == 'success')
       )
     permissions:
       id-token: write
@@ -428,7 +423,7 @@ jobs:
           path: dist/
 
       - name: Publish to TestPyPI
-        if: github.event_name == 'push' && github.ref == 'refs/heads/dev'
+        if: github.event_name == 'push'
         uses: pypa/gh-action-pypi-publish@release/v1
         with:
           packages-dir: dist/
@@ -436,9 +431,7 @@ jobs:
           skip-existing: true
 
       - name: Publish to PyPI
-        if: >
-          github.event_name == 'release' &&
-          (startsWith(github.event.release.tag_name, 'v0.') || startsWith(github.event.release.tag_name, 'v1.'))
+        if: github.event_name == 'release'
         uses: pypa/gh-action-pypi-publish@release/v1
         with:
           packages-dir: dist/

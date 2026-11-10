@@ -162,7 +162,7 @@ jobs:
         # ninja lets torch's extension build compile MAX_JOBS files at once.
         run: |
           pip install -q -U pip
-          pip install -q "setuptools>=77.0.3" "setuptools_scm>=8" wheel packaging ninja
+          pip install -q "setuptools>=77.0.3" "setuptools_scm>=8" ninja
           pip install -q "torch==${{ matrix.torch }}" --index-url "$TORCH_INDEX_URL"
 
       - name: Compute wheel version

@@ -17,7 +17,7 @@ Without pixi, from a checkout, install a CPU build of PyTorch, then PhilTorch in
 ```bash
 python -m pip install --upgrade pip
 python -m pip install torch --index-url https://download.pytorch.org/whl/cpu
-python -m pip install "setuptools>=77.0.3" "setuptools_scm>=8" wheel ninja
+python -m pip install "setuptools>=77.0.3" "setuptools_scm>=8" ninja
 python -m pip install --no-build-isolation --editable .
 python -m pip install -r docs/requirements.txt
 sphinx-build -W --keep-going -b html docs docs/_build/html

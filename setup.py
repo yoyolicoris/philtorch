@@ -72,10 +72,6 @@ def get_extensions():
     extensions_dir = os.path.join(this_dir, library_name, "csrc")
     sources = list(glob.glob(os.path.join(extensions_dir, "*.cpp")))
     cuda_sources = list(glob.glob(os.path.join(extensions_dir, "*.cu")))
-    if use_cuda and not cuda_sources:
-        raise RuntimeError(
-            f"CUDA compilation was selected, but no .cu sources were found in {extensions_dir}."
-        )
 
     # torch.__version__ is a TorchVersion, which compares as a version.
     if torch.__version__ < MIN_TORCH:
@@ -97,14 +93,10 @@ def get_extensions():
 
     if use_cuda:
         sources += cuda_sources
-        extra_compile_args.setdefault("nvcc", []).append("--extended-lambda")
         # Store the GPU code (one copy per target architecture) compressed in
         # the binary, as PyTorch does for its own wheels. It is otherwise most
         # of the extension's size, and is decompressed once at load.
-        extra_compile_args.setdefault("nvcc", []).extend(["-Xfatbin", "-compress-all"])
-
-    if len(sources) == 0:
-        return []
+        extra_compile_args["nvcc"] = ["-Xfatbin", "-compress-all"]
 
     ext_modules = [
         extension(

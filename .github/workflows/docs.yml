@@ -31,7 +31,7 @@ jobs:
         run: |
           newest=$(python scripts/torch_matrix.py legs --event "$GITHUB_EVENT_NAME" | sed -n 's/^newest=//p')
           python -m pip install "torch==${newest:?}+cpu" --index-url https://download.pytorch.org/whl/cpu
-          python -m pip install "setuptools>=77.0.3" "setuptools_scm>=8" wheel ninja
+          python -m pip install "setuptools>=77.0.3" "setuptools_scm>=8" ninja
           python -m pip install --no-build-isolation --editable .
           python -m pip install -r docs/requirements.txt
 
