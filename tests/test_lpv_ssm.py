@@ -8,13 +8,12 @@ from philtorch.lpv import state_space_recursion as lpv_state_space
 from philtorch.mat import companion
 
 from ._cases import each_choice, time_varying_coeffs
-from .test_lpv_filters import _generate_test_signal
 
 
 # Each block multiplies unroll_factor - 1 matrices with matrices_cumdot, so
 # 5, 9 and 13 cover products over 4 = 2 * 2, 8 = 2 * 2 * 2 and 12 = 2 * 2 * 3
 # matrices, which it used to multiply in the wrong order.
-@pytest.mark.parametrize("unroll_factor", [3, 5, 9, 13])
+@pytest.mark.parametrize("unroll_factor", [2, 3, 5, 9, 13])
 def test_ssm_unrolling(unroll_factor):
     """Test that unrolling works correctly in LPV state_space."""
     batch_size = 2
@@ -22,7 +21,7 @@ def test_ssm_unrolling(unroll_factor):
     order = 2
 
     _, a = time_varying_coeffs(batch_size, N, order, order)
-    x = _generate_test_signal(batch_size, N, "white_noise").double()
+    x = torch.randn(batch_size, N).double()
     A = companion(a).double()
     zi = torch.randn(batch_size, order).double()
 

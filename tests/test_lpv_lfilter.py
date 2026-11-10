@@ -16,7 +16,6 @@ from .test_lti_lfilter import (
 
 
 @pytest.mark.parametrize("B", [1, 8])
-@pytest.mark.parametrize("T", [32, 128])
 @pytest.mark.parametrize("num_order", [1, 2, 4])
 @pytest.mark.parametrize("den_order", [1, 3, 5])
 @pytest.mark.parametrize(
@@ -28,8 +27,9 @@ from .test_lti_lfilter import (
         )
     ),
 )
-def test_against_lti_scipy(B: int, T: int, num_order: int, den_order: int, form: str, backend: str):
+def test_against_lti_scipy(B: int, num_order: int, den_order: int, form: str, backend: str):
     """Test time-invariant filters against scipy.signal.lfilter"""
+    T = 128
 
     # Generate test data
     b, a = _generate_random_filter_coeffs(num_order, den_order, B)

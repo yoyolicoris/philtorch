@@ -1,17 +1,12 @@
 """Tests for scripts/pytorch_release_impact.py: its deterministic parts, offline."""
 
-import importlib.util
 import json
-import sys
-from pathlib import Path
 
 import pytest
 
-SCRIPT = Path(__file__).resolve().parents[1] / "scripts" / "pytorch_release_impact.py"
-spec = importlib.util.spec_from_file_location("pytorch_release_impact", SCRIPT)
-impact = importlib.util.module_from_spec(spec)
-sys.modules[spec.name] = impact
-spec.loader.exec_module(impact)
+from ._cases import load_script
+
+impact = load_script("scripts/pytorch_release_impact.py")
 
 
 def release(tag, **kw):

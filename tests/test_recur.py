@@ -4,8 +4,8 @@ import torch
 from philtorch import _recur
 from philtorch._recur import _forward, recurrence
 
-DEVICES = ["cpu", pytest.param("cuda", marks=pytest.mark.cuda)]
-MPS = pytest.mark.skipif(not torch.backends.mps.is_available(), reason="MPS not available")
+from ._cases import DEVICES, MPS
+
 # How A is shared: (batch items, steps) it has, of B and T.
 SHARING = ["one", "per_item", "per_step", "both"]
 
@@ -487,10 +487,7 @@ def test_recurrence_rejects_bad_shapes():
         recurrence(A.float(), zi, x)
 
 
-@pytest.mark.parametrize(
-    "device",
-    ["cpu", pytest.param("cuda", marks=pytest.mark.cuda)],
-)
+@pytest.mark.parametrize("device", DEVICES)
 def test_recurrence_in_integers(device):
     # The Fibonacci numbers, exact past 2^53, through the native kernels'
     # int64; time-invariant M = 2 is lti_recur2's on CUDA.
@@ -516,10 +513,7 @@ def _integer_problem(B, T, M, sharing, dtype, device):
     return [t.to(device, dtype) for t in (A, zi, x)]
 
 
-@pytest.mark.parametrize(
-    "device",
-    ["cpu", pytest.param("cuda", marks=pytest.mark.cuda)],
-)
+@pytest.mark.parametrize("device", DEVICES)
 @pytest.mark.parametrize("per_item", [False, True])
 def test_recurrence_in_integers_of_order_one(device, per_item):
     # Powers of 3, exact up to 3^39 < 2^63, through lti_recur's int64.

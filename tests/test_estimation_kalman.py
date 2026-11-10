@@ -8,6 +8,8 @@ import torch
 from philtorch.estimation import em, kalman_em_step, kalman_filter, kalman_smoother
 from philtorch.lpv import state_space_recursion as lpv_state_space_recursion
 
+from ._cases import each_choice
+
 
 def _transitions(N, prior):
     """How many steps A and Q have.
@@ -94,15 +96,9 @@ def _check_against_reference(args, rtol=1e-9, atol=1e-9):
         torch.testing.assert_close(a, e, rtol=rtol, atol=atol, msg=name)
 
 
-@pytest.mark.parametrize("N", [1, 2, 7, 64])
-@pytest.mark.parametrize("M, P", [(1, 1), (4, 2), (2, 3)])
-def test_kalman_matches_sequential(N, M, P):
-    _check_against_reference(_model(3, N, M, P))
-
-
-@pytest.mark.parametrize("M, P", [(1, 1), (4, 2), (2, 3)])
-def test_kalman_complex_matches_sequential(M, P):
-    _check_against_reference(_model(3, 7, M, P, dtype=torch.complex128))
+@pytest.mark.parametrize("N, MP", each_choice([1, 2, 7, 64], [(1, 1), (4, 2), (2, 3)]))
+def test_kalman_matches_sequential(N, MP):
+    _check_against_reference(_model(3, N, *MP))
 
 
 def _from_before_first_step(y, A, C, Q, R, m0, P0):
@@ -319,11 +315,12 @@ def _dense_posterior(y, A, C, Q, R, m0, P0, prior):
     return torch.stack(means), torch.stack(covs), torch.stack(log_ps)
 
 
-@pytest.mark.parametrize("dtype", [torch.float64, torch.complex128])
-@pytest.mark.parametrize("N", [1, 2, 6])
-@pytest.mark.parametrize("M, P", [(1, 1), (3, 2), (2, 3)])
-def test_kalman_smoother_matches_dense_posterior(dtype, N, M, P):
-    args = _model(2, N, M, P, dtype=dtype)
+@pytest.mark.parametrize(
+    "dtype, N, MP",
+    each_choice([torch.float64, torch.complex128], [1, 2, 6], [(1, 1), (3, 2), (2, 3)]),
+)
+def test_kalman_smoother_matches_dense_posterior(dtype, N, MP):
+    args = _model(2, N, *MP, dtype=dtype)
     means, covs, log_p = _dense_posterior(*args, "first_state")
     result = kalman_smoother(*args)
     steps = torch.arange(means.size(1))
@@ -338,18 +335,23 @@ def test_kalman_smoother_matches_dense_posterior(dtype, N, M, P):
     torch.testing.assert_close(filtered.log_likelihood, result.log_likelihood)
 
 
+def _simulate_ar2(B, N, seed, dtype):
+    """B noisy observations, (B, N, 2), of a noisy 2-D rotation, the state of an AR(2) process."""
+    gen = torch.Generator().manual_seed(seed)
+    true_A = torch.tensor([[0.9, 0.2], [-0.2, 0.9]], dtype=dtype)
+    x = torch.zeros(B, 2, dtype=dtype)
+    ys = []
+    for _ in range(N):
+        x = x @ true_A.mT + 0.3 * torch.randn(B, 2, generator=gen, dtype=dtype)
+        ys.append(x + 0.5 * torch.randn(B, 2, generator=gen, dtype=dtype))
+    return torch.stack(ys, 1)
+
+
 @pytest.mark.parametrize("dtype", [torch.float64, torch.complex128])
 def test_kalman_em_increases_likelihood(dtype):
     # Data from a known model, fitted from a poor initial guess.
-    B, N, M, P = 4, 50, 2, 2
-    gen = torch.Generator().manual_seed(3)
-    true_A = torch.tensor([[0.9, 0.2], [-0.2, 0.9]], dtype=dtype)
-    x = torch.zeros(B, M, dtype=dtype)
-    ys = []
-    for _ in range(N):
-        x = x @ true_A.mT + 0.3 * torch.randn(B, M, generator=gen, dtype=dtype)
-        ys.append(x + 0.5 * torch.randn(B, P, generator=gen, dtype=dtype))
-    y = torch.stack(ys, 1)
+    M = 2
+    y = _simulate_ar2(4, 50, 3, dtype)
     eye = torch.eye(M, dtype=dtype)
     params = (0.5 * eye, eye.clone(), eye.clone(), eye.clone(), torch.zeros(M, dtype=dtype), eye)
     _, history = em(partial(kalman_em_step, y), params, max_iter=20, tol=-math.inf)
@@ -424,13 +426,7 @@ def test_kalman_em_step_regressions_survive_large_means(per_signal):
     # rationals, from the same smoother outputs.
     B, N, M = 4, 200, 2
     dtype = torch.float64
-    gen = torch.Generator().manual_seed(0)
-    true_A = torch.tensor([[0.9, 0.2], [-0.2, 0.9]], dtype=dtype)
-    x, ys = torch.zeros(B, M, dtype=dtype), []
-    for _ in range(N):
-        x = x @ true_A.mT + 0.3 * torch.randn(B, M, generator=gen, dtype=dtype)
-        ys.append(x + 0.5 * torch.randn(B, M, generator=gen, dtype=dtype))
-    y = torch.stack(ys, 1) + 1e8
+    y = _simulate_ar2(B, N, 0, dtype) + 1e8
     eye = torch.eye(M, dtype=dtype)
     A, C, Q, R, m0, P0 = eye, eye, 0.1 * eye, 0.25 * eye, torch.full((M,), 1e8, dtype=dtype), eye
     if per_signal:

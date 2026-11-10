@@ -14,21 +14,16 @@ def test_matching_cuda_major_passes():
     check_torch_build(CUDA_WHEEL, "2.13.0+cu130", "13.0")
 
 
-def test_cpu_only_torch_is_rejected():
-    with pytest.raises(ImportError, match="built for CUDA 13, .* no CUDA support"):
-        check_torch_build(CUDA_WHEEL, "2.14.1+cpu", None)
-
-
-def test_cuda_older_than_the_build_is_rejected():
-    with pytest.raises(ImportError, match="needs CUDA 12.9 or newer, .* uses CUDA 12.6"):
-        check_torch_build("0.9.0+cu12", "2.13.0+cu126", "12.6")
-
-
-def test_other_cuda_major_is_rejected():
-    with pytest.raises(ImportError, match="built for CUDA 13, .* uses CUDA 12.9"):
-        check_torch_build(CUDA_WHEEL, "2.14.1+cu129", "12.9")
-
-
-def test_torch_older_than_the_extension_targets_is_rejected():
-    with pytest.raises(ImportError, match=r"needs PyTorch 2\.12 or newer, .* PyTorch 2\.11\.0"):
-        check_torch_build("0.5.1", "2.11.0+cpu", None)
+@pytest.mark.parametrize(
+    ("version", "torch_version", "cuda", "message"),
+    [
+        (CUDA_WHEEL, "2.14.1+cpu", None, "built for CUDA 13, .* no CUDA support"),
+        ("0.9.0+cu12", "2.13.0+cu126", "12.6", "needs CUDA 12.9 or newer, .* uses CUDA 12.6"),
+        (CUDA_WHEEL, "2.14.1+cu129", "12.9", "built for CUDA 13, .* uses CUDA 12.9"),
+        ("0.5.1", "2.11.0+cpu", None, r"needs PyTorch 2\.12 or newer, .* PyTorch 2\.11\.0"),
+    ],
+    ids=["cpu_only_torch", "cuda_older_than_build", "other_cuda_major", "torch_older_than_floor"],
+)
+def test_incompatible_torch_is_rejected(version, torch_version, cuda, message):
+    with pytest.raises(ImportError, match=message):
+        check_torch_build(version, torch_version, cuda)

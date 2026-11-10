@@ -22,7 +22,11 @@ def _model(batch_size, N, K, *, time_varying=True, seed=0, dtype=torch.float64, 
 
 
 def _brute_force(log_emit, log_trans, log_init):
-    """Enumerate every state sequence z[0], ..., z[N - 1]."""
+    """Enumerate every state sequence z[0], ..., z[N - 1].
+
+    Returns the log-likelihood, log-posteriors, best score and path, then the
+    joint log-probabilities (B, K^N) and the sequences (K^N, N) they are of.
+    """
     batch_size, N, K = log_emit.shape
     log_trans = log_trans.expand(batch_size, N - 1, K, K)
     paths = torch.tensor(list(itertools.product(range(K), repeat=N)), device=log_emit.device)
@@ -35,7 +39,7 @@ def _brute_force(log_emit, log_trans, log_init):
     one_hot = torch.nn.functional.one_hot(paths, K).to(joint.dtype)  # (P, N, K)
     posteriors = torch.einsum("bp,pnk->bnk", (joint - log_likelihood[:, None]).exp(), one_hot)
     best = joint.argmax(-1)
-    return log_likelihood, posteriors.log(), joint.amax(-1), paths[best]
+    return log_likelihood, posteriors.log(), joint.amax(-1), paths[best], joint, paths
 
 
 def _sequential(log_emit, log_trans, log_init):
@@ -79,23 +83,13 @@ def _sequential(log_emit, log_trans, log_init):
 @pytest.mark.parametrize("N", [1, 2, 5])
 def test_sequential_reference_matches_brute_force(time_varying, N):
     args = _model(2, N, 3, time_varying=time_varying, device="cpu")
-    log_likelihood, log_post, best_score, best_path = _brute_force(*args)
+    log_likelihood, log_post, best_score, best_path, *_ = _brute_force(*args)
     ll, filtered, posteriors, score, path = _sequential(*args)
     torch.testing.assert_close(ll, log_likelihood)
     torch.testing.assert_close(filtered[:, -1], log_post[:, -1])
     torch.testing.assert_close(posteriors, log_post)
     torch.testing.assert_close(score, best_score)
     torch.testing.assert_close(path, best_path)
-
-
-@pytest.mark.cuda
-def test_hmm_posteriors_are_the_gradient_of_the_log_likelihood():
-    log_emit, log_trans, log_init = _model(2, 7, 4)
-    log_emit.requires_grad_()
-    ll, _ = hmm_filter(log_emit, log_trans, log_init)
-    (grad,) = torch.autograd.grad(ll.sum(), log_emit)
-    _, log_post = hmm_smoother(log_emit, log_trans, log_init)
-    torch.testing.assert_close(grad, log_post.exp())
 
 
 def _transitions(log_trans, kind):
@@ -276,11 +270,8 @@ def test_hmm_em_step_is_baum_welch():
 
     # The references: pairwise posteriors from the brute-force joint.
     B, N, K = log_emit.shape
-    paths = torch.tensor(list(itertools.product(range(K), repeat=N)), device=log_emit.device)
-    joint = (
-        log_init[paths[:, 0]]
-        + log_trans[paths[:, :-1], paths[:, 1:]].sum(-1)
-        + log_emit[:, torch.arange(N), paths].sum(-1)
+    expected_log_likelihood, log_post, _, _, joint, paths = _brute_force(
+        log_emit, log_trans, log_init.expand(B, K)
     )
     weights = (joint - joint.logsumexp(-1, keepdim=True)).exp()  # (B, K^N)
     counts = torch.zeros(K, K, dtype=weights.dtype, device=weights.device)
@@ -288,7 +279,6 @@ def test_hmm_em_step_is_baum_welch():
         counts.index_put_((paths[:, n], paths[:, n + 1]), weights.sum(0), accumulate=True)
     starts = torch.zeros(K, dtype=weights.dtype, device=weights.device)
     starts.index_add_(0, paths[:, 0], weights.sum(0))
-    expected_log_likelihood, log_post, *_ = _brute_force(log_emit, log_trans, log_init.expand(B, K))
 
     torch.testing.assert_close(log_likelihood, expected_log_likelihood)
     torch.testing.assert_close(new_trans, (counts / counts.sum(-1, keepdim=True)).log())
@@ -365,12 +355,13 @@ def test_hmm_em_step_gradients():
     assert all(x.grad.isfinite().all() for x in inputs)
 
 
-def test_estimation_imports_without_triton(tmp_path):
-    # The kernels are imported on first use, so the Kalman functions, and
-    # the package, still import where Triton is missing. Run outside the
+@pytest.mark.parametrize("package", ["philtorch.align", "philtorch.estimation"])
+def test_imports_without_triton(tmp_path, package):
+    # The kernels are imported on first use, so the packages, and the Kalman
+    # functions, still import where Triton is missing. Run outside the
     # checkout, whose philtorch/ has no built extension, so the subprocess
     # imports the installed package as the tests do.
-    code = "import sys; sys.modules['triton'] = None; import philtorch.estimation"
+    code = f"import sys; sys.modules['triton'] = None; import {package}"
     result = subprocess.run(
         [sys.executable, "-c", code], cwd=tmp_path, capture_output=True, text=True
     )
@@ -418,7 +409,7 @@ def test_hmm_needs_its_inputs_on_one_device():
 
 @pytest.mark.cuda
 def test_hmm_needs_triton(tmp_path):
-    # Outside the checkout, as in test_estimation_imports_without_triton.
+    # Outside the checkout, as in test_imports_without_triton.
     code = (
         "import sys; sys.modules['triton'] = None; import torch\n"
         "from philtorch.estimation import hmm_viterbi\n"
@@ -484,7 +475,7 @@ def test_hmm_gradients_with_unreachable_states():
     log_emit.requires_grad_()
     ll, _ = hmm_filter(log_emit, log_trans, log_init)
     (grad,) = torch.autograd.grad(ll.sum(), log_emit)
-    expected_ll, log_post, _, _ = _brute_force(log_emit.detach(), log_trans, log_init.expand(B, K))
+    expected_ll, log_post, *_ = _brute_force(log_emit.detach(), log_trans, log_init.expand(B, K))
     torch.testing.assert_close(ll, expected_ll)
     torch.testing.assert_close(grad, log_post.exp())
     _, posteriors = hmm_smoother(log_emit, log_trans, log_init)
@@ -524,15 +515,22 @@ def test_hmm_impossible_emissions():
 
 
 @pytest.mark.cuda
-@pytest.mark.parametrize("K", [1, 2, 5, 16, 17, 32, 40, 64])
 @pytest.mark.parametrize(
-    ("N", "time_varying"), [(1, True), (64, True), (65, False), (66, True), (300, False)]
+    ("K", "N", "time_varying"),
+    [
+        (K, N, time_varying)
+        for K in (5, 40)
+        for N, time_varying in [(1, True), (64, True), (65, False), (66, True), (300, False)]
+    ]
+    + [(K, 66, True) for K in (1, 2, 16, 17, 32, 64)],
 )
 def test_hmm_matches_sequential(K, N, time_varying):
     """The kernels around one chunk and past it, in registers (K <= 16) and in tiles.
 
     The chains run over the N - 1 transitions, so N = 64, 65 and 66 put 63,
-    64 and 65 steps around the chunk size.
+    64 and 65 steps around the chunk size. K = 5 and K = 40 take every N, one
+    padded size in registers and one in tiles; the other K, which `_config`
+    pads to the sizes 2, 16, 32 and 64, take N = 66 only.
     """
     args = _model(2, N, K, time_varying=time_varying)
     ll, filtered, posteriors, score, path = _sequential(*args)

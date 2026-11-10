@@ -1,8 +1,6 @@
 import importlib
 import itertools
 import math
-import subprocess
-import sys
 from functools import partial
 
 import pytest
@@ -250,17 +248,6 @@ def test_dtw_kernels_reject_too_many_cells():
 def test_dtw_needs_cuda():
     with pytest.raises(ValueError, match="dtw runs Triton kernels on CUDA GPUs only"):
         dtw(_cost(1, 3, 3, device="cpu"))
-
-
-def test_align_imports_without_triton(tmp_path):
-    # The kernels are imported on first use. Run outside the checkout, whose
-    # philtorch/ has no built extension, so the subprocess imports the
-    # installed package as the tests do.
-    code = "import sys; sys.modules['triton'] = None; import philtorch.align"
-    result = subprocess.run(
-        [sys.executable, "-c", code], cwd=tmp_path, capture_output=True, text=True
-    )
-    assert result.returncode == 0, result.stderr
 
 
 @pytest.mark.cuda

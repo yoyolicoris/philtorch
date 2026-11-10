@@ -1,12 +1,16 @@
 import itertools
 import random
 
+import numpy as np
 import pytest
 import torch
+from scipy import signal
 
 import philtorch.lti.delay as delay_module
 from philtorch.lti import delay_state_space, state_space
 from philtorch.lti.ssm import _ssm_B, _ssm_C_D
+
+from ._cases import each_choice
 
 BATCH = 3
 LINES = 4
@@ -115,11 +119,23 @@ LAYOUTS = [
 ]
 
 
-@pytest.mark.parametrize("layout", LAYOUTS)
-@pytest.mark.parametrize("dtype", [torch.double, torch.cdouble])
-@pytest.mark.parametrize("batched_A", [False, True])
-@pytest.mark.parametrize("zi_mode", [None, "1d", "2d"])
-@pytest.mark.parametrize("block_size", [None, 1, 2])
+@pytest.mark.parametrize(
+    ("layout", "dtype", "batched_A", "zi_mode", "block_size"),
+    each_choice(
+        LAYOUTS,
+        [torch.double, torch.cdouble],
+        [False, True],
+        [None, "1d", "2d"],
+        [None, 1, 2],
+    )
+    # zi_mode and block_size reach _initial_queues and the chunk indexing
+    # alone, so one layout carries their product.
+    + [
+        ("B(M,F) C(P,M) D(P,F)", torch.double, False, zi_mode, block_size)
+        for zi_mode in [None, "1d", "2d"]
+        for block_size in [None, 1, 2]
+    ],
+)
 def test_delay_state_space_matches_expanded_state_space(
     layout, dtype, batched_A, zi_mode, block_size
 ):
@@ -221,12 +237,12 @@ def test_delay_state_space_default_input_and_initial_state():
 @pytest.mark.parametrize(
     "delays",
     [
-        pytest.param(lambda np: [np.int64(3), np.int32(7)], id="numpy-scalars"),
-        pytest.param(lambda np: np.array([3, 7]), id="numpy-array"),
-        pytest.param(lambda np: torch.tensor([3, 7]), id="tensor"),
-        pytest.param(lambda np: (torch.tensor(3), 7), id="0d-tensor-and-int"),
+        pytest.param([np.int64(3), np.int32(7)], id="numpy-scalars"),
+        pytest.param(np.array([3, 7]), id="numpy-array"),
+        pytest.param(torch.tensor([3, 7]), id="tensor"),
+        pytest.param((torch.tensor(3), 7), id="0d-tensor-and-int"),
         pytest.param(
-            lambda np: (torch.tensor([3], dtype=torch.int32), np.uint8(7)),
+            (torch.tensor([3], dtype=torch.int32), np.uint8(7)),
             id="one-element-tensor-and-uint8",
         ),
     ],
@@ -234,21 +250,19 @@ def test_delay_state_space_default_input_and_initial_state():
 @pytest.mark.parametrize(
     "block_size",
     [
-        pytest.param(lambda np: None, id="default-block"),
-        pytest.param(lambda np: np.int64(2), id="numpy-block"),
-        pytest.param(lambda np: torch.tensor(2), id="tensor-block"),
+        pytest.param(None, id="default-block"),
+        pytest.param(np.int64(2), id="numpy-block"),
+        pytest.param(torch.tensor(2), id="tensor-block"),
     ],
 )
 def test_delay_state_space_accepts_integer_like_delays(delays, block_size):
-    np = pytest.importorskip("numpy")
     x = torch.randn(2, 9, dtype=torch.double)
     A = 0.5 * torch.randn(2, 2, dtype=torch.double)
     zi = (torch.randn(3, dtype=torch.double), torch.randn(7, dtype=torch.double))
-    block = block_size(np)
 
-    y, zf = delay_state_space(A, x, delays(np), zi=zi, block_size=block)
+    y, zf = delay_state_space(A, x, delays, zi=zi, block_size=block_size)
     expected_y, expected_zf = delay_state_space(
-        A, x, (3, 7), zi=zi, block_size=None if block is None else 2
+        A, x, (3, 7), zi=zi, block_size=None if block_size is None else 2
     )
 
     torch.testing.assert_close(y, expected_y)
@@ -258,20 +272,19 @@ def test_delay_state_space_accepts_integer_like_delays(delays, block_size):
 @pytest.mark.parametrize(
     "delay",
     [
-        pytest.param(lambda np: 5, id="int"),
-        pytest.param(lambda np: torch.tensor(5), id="0d-tensor"),
-        pytest.param(lambda np: torch.tensor(5, dtype=torch.int32), id="0d-int32"),
-        pytest.param(lambda np: np.int64(5), id="numpy-scalar"),
-        pytest.param(lambda np: np.array(5), id="0d-numpy-array"),
+        pytest.param(5, id="int"),
+        pytest.param(torch.tensor(5), id="0d-tensor"),
+        pytest.param(torch.tensor(5, dtype=torch.int32), id="0d-int32"),
+        pytest.param(np.int64(5), id="numpy-scalar"),
+        pytest.param(np.array(5), id="0d-numpy-array"),
     ],
 )
 def test_delay_state_space_accepts_scalar_delay(delay):
-    np = pytest.importorskip("numpy")
     x = torch.randn(2, 13, dtype=torch.double)
     A = torch.tensor([[0.5]], dtype=torch.double)
     zi = (torch.randn(5, dtype=torch.double),)
 
-    y, zf = delay_state_space(A, x, delay(np), zi=zi)
+    y, zf = delay_state_space(A, x, delay, zi=zi)
     expected_y, expected_zf = delay_state_space(A, x, (5,), zi=zi)
 
     torch.testing.assert_close(y, expected_y)
@@ -281,19 +294,18 @@ def test_delay_state_space_accepts_scalar_delay(delay):
 @pytest.mark.parametrize(
     "delay",
     [
-        pytest.param(lambda np: True, id="bool"),
-        pytest.param(lambda np: 0, id="zero"),
-        pytest.param(lambda np: 5.0, id="float"),
-        pytest.param(lambda np: None, id="none"),
-        pytest.param(lambda np: torch.tensor(True), id="0d-bool-tensor"),
-        pytest.param(lambda np: torch.tensor(5.0), id="0d-float-tensor"),
-        pytest.param(lambda np: np.array(5.0), id="0d-float-array"),
+        pytest.param(True, id="bool"),
+        pytest.param(0, id="zero"),
+        pytest.param(5.0, id="float"),
+        pytest.param(None, id="none"),
+        pytest.param(torch.tensor(True), id="0d-bool-tensor"),
+        pytest.param(torch.tensor(5.0), id="0d-float-tensor"),
+        pytest.param(np.array(5.0), id="0d-float-array"),
     ],
 )
 def test_delay_state_space_rejects_invalid_scalar_delay(delay):
-    np = pytest.importorskip("numpy")
     with pytest.raises(ValueError, match="positive integer"):
-        delay_state_space(torch.zeros(1, 1), torch.zeros(1, 4), delay(np))
+        delay_state_space(torch.zeros(1, 1), torch.zeros(1, 4), delay)
 
 
 def test_delay_state_space_is_functional():
@@ -375,16 +387,15 @@ def test_delay_state_space_validates_delays_and_block_size(delays, block_size, m
 @pytest.mark.parametrize(
     ("delays", "message"),
     [
-        (lambda np: (2, np.float64(3.0)), "positive integer"),
-        (lambda np: (2, np.bool_(True)), "positive integer"),
-        (lambda np: (2, np.int64(0)), "positive integer"),
-        (lambda np: np.array([2.0, 3.0]), "positive integer"),
+        ((2, np.float64(3.0)), "positive integer"),
+        ((2, np.bool_(True)), "positive integer"),
+        ((2, np.int64(0)), "positive integer"),
+        (np.array([2.0, 3.0]), "positive integer"),
     ],
 )
 def test_delay_state_space_rejects_non_integer_numpy_delays(delays, message):
-    np = pytest.importorskip("numpy")
     with pytest.raises(ValueError, match=message):
-        delay_state_space(torch.zeros(2, 2), torch.zeros(1, 4), delays(np))
+        delay_state_space(torch.zeros(2, 2), torch.zeros(1, 4), delays)
 
 
 @pytest.mark.parametrize(
@@ -681,8 +692,6 @@ def test_delay_state_space_identity_absorption_is_a_no_op(after_matrix, batched_
 @pytest.mark.parametrize("after_matrix", POSITIONS, ids=POSITION_IDS)
 @pytest.mark.parametrize("delay", [1, 4])
 def test_delay_state_space_absorption_single_line_matches_scipy(after_matrix, delay):
-    np = pytest.importorskip("numpy")
-    signal = pytest.importorskip("scipy.signal")
     gain, b, a = 0.5, np.array([0.8, 0.3]), np.array([1.0, -0.4])
     x = torch.randn(2, 40, dtype=torch.double)
     x[0, 1:] = 0.0  # an impulse for the first row
@@ -986,24 +995,21 @@ def test_delay_state_space_absorption_passes_unroll_factor(monkeypatch, factor, 
 @pytest.mark.parametrize(
     "factor",
     [
-        pytest.param(lambda np: np.int64(2), id="numpy-scalar"),
-        pytest.param(lambda np: torch.tensor(2), id="tensor"),
+        pytest.param(np.int64(2), id="numpy-scalar"),
+        pytest.param(torch.tensor(2), id="tensor"),
     ],
 )
 @pytest.mark.parametrize("container", [tuple, list])
 def test_delay_state_space_absorption_accepts_integer_like_unroll_factor_and_list(
     factor, container
 ):
-    np = pytest.importorskip("numpy")
     dtype, delays = torch.double, (4, 6)
     x = torch.randn(2, 22, dtype=dtype)
     A = 0.5 * torch.randn(2, 2, dtype=dtype)
     absorption = 0.5 * torch.randn(2, 2, dtype=dtype), 0.3 * torch.randn(2, 1, dtype=dtype)
     expected = delay_state_space(A, x, delays, absorption=absorption, unroll_factor=2)
 
-    result = delay_state_space(
-        A, x, delays, absorption=container(absorption), unroll_factor=factor(np)
-    )
+    result = delay_state_space(A, x, delays, absorption=container(absorption), unroll_factor=factor)
 
     torch.testing.assert_close(result, expected)
 

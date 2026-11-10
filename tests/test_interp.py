@@ -15,19 +15,12 @@ from philtorch.lti.interp import (
     resample,
 )
 
+from ._cases import DEVICES
+
 
 @pytest.mark.parametrize("n", [20, 100])
 @pytest.mark.parametrize("m", [2, 3, 7])
-@pytest.mark.parametrize(
-    "device",
-    [
-        "cpu",
-        pytest.param(
-            "cuda",
-            marks=pytest.mark.cuda,
-        ),
-    ],
-)
+@pytest.mark.parametrize("device", DEVICES)
 @pytest.mark.parametrize("pfe", [True, False])
 @pytest.mark.parametrize("scipy_padding", [True, False])
 def test_cubic_spline(n, m, device, pfe, scipy_padding):
@@ -54,16 +47,7 @@ def test_cubic_spline(n, m, device, pfe, scipy_padding):
 
 
 @pytest.mark.parametrize("n", [20])
-@pytest.mark.parametrize(
-    "device",
-    [
-        "cpu",
-        pytest.param(
-            "cuda",
-            marks=pytest.mark.cuda,
-        ),
-    ],
-)
+@pytest.mark.parametrize("device", DEVICES)
 @pytest.mark.parametrize("pfe", [True, False])
 def test_cspline(n, device, pfe):
     x = torch.randn(n, device=device).double()
@@ -81,7 +65,6 @@ def test_cubic_spline_requires_batched_signals(shape):
         cubic_spline(torch.randn(shape), 4)
 
 
-_DEVICES = ["cpu", pytest.param("cuda", marks=pytest.mark.cuda)]
 _DTYPES = [torch.float64, torch.float32, torch.float16, torch.bfloat16]
 # Tolerances against the float64 reference; float16 and bfloat16 accumulate in
 # float32 and round once.
@@ -194,7 +177,7 @@ _REFERENCE_CASES = [
 ]
 
 
-@pytest.mark.parametrize("device", _DEVICES)
+@pytest.mark.parametrize("device", DEVICES)
 @pytest.mark.parametrize("dtype", _DTYPES)
 @pytest.mark.parametrize("orig_freq, new_freq, T", _REFERENCE_CASES)
 def test_resample_matches_dense_reference(device, dtype, orig_freq, new_freq, T):
@@ -210,7 +193,7 @@ def test_resample_matches_dense_reference(device, dtype, orig_freq, new_freq, T)
     torch.testing.assert_close(actual, expected, **_TOLS[dtype])
 
 
-@pytest.mark.parametrize("device", _DEVICES)
+@pytest.mark.parametrize("device", DEVICES)
 @pytest.mark.parametrize(
     "orig_freq, new_freq, T, kwargs",
     [
@@ -296,7 +279,7 @@ def test_resample_presets_reject_the_images_when_upsampling(quality, orig_freq, 
     torch.testing.assert_close(y[:, m_lo:m_hi], expected, rtol=0, atol=2.0 ** -(bits + 1))
 
 
-@pytest.mark.parametrize("device", _DEVICES)
+@pytest.mark.parametrize("device", DEVICES)
 @pytest.mark.parametrize("orig_freq, new_freq, T", [(2, 3, 200), (5, 2, 300), (147, 160, 60)])
 def test_resample_matches_scipy_resample_poly(device, orig_freq, new_freq, T):
     # resample_poly, given our filter at the upsampled rate as `window` (it
@@ -338,7 +321,7 @@ def _params(device, dtype=torch.float64, requires_grad=False):
     ]
 
 
-@pytest.mark.parametrize("device", _DEVICES)
+@pytest.mark.parametrize("device", DEVICES)
 @pytest.mark.parametrize("tensor_params", [False, True], ids=["x", "x-rolloff-beta"])
 @pytest.mark.parametrize("orig_freq, new_freq, T", _GRAD_CASES)
 def test_resample_gradcheck_and_gradgradcheck(device, tensor_params, orig_freq, new_freq, T):
@@ -353,7 +336,7 @@ def test_resample_gradcheck_and_gradgradcheck(device, tensor_params, orig_freq, 
     assert torch.autograd.gradgradcheck(fn, inputs, nondet_tol=1e-12)
 
 
-@pytest.mark.parametrize("device", _DEVICES)
+@pytest.mark.parametrize("device", DEVICES)
 @pytest.mark.parametrize("orig_freq, new_freq, T", _GRAD_CASES[-1:])
 def test_resample_forward_mode_and_forward_over_reverse(device, orig_freq, new_freq, T):
     fn = _grad_fn(orig_freq, new_freq)
@@ -375,7 +358,7 @@ def test_resample_forward_mode_and_forward_over_reverse(device, orig_freq, new_f
     torch.testing.assert_close(tangent, grad_fn(dx))
 
 
-@pytest.mark.parametrize("device", _DEVICES)
+@pytest.mark.parametrize("device", DEVICES)
 @pytest.mark.parametrize("orig_freq, new_freq, T", _GRAD_CASES[-1:])
 def test_resample_vmap_folds_into_the_batch(device, orig_freq, new_freq, T):
     fn = _grad_fn(orig_freq, new_freq)
@@ -387,7 +370,7 @@ def test_resample_vmap_folds_into_the_batch(device, orig_freq, new_freq, T):
     torch.testing.assert_close(vy, fn(x.reshape(6, T)).reshape(3, 2, -1))
 
 
-@pytest.mark.parametrize("device", _DEVICES)
+@pytest.mark.parametrize("device", DEVICES)
 @pytest.mark.parametrize("orig_freq, new_freq, T", _GRAD_CASES[-1:])
 def test_resample_vmap_of_grad_gives_per_sample_gradients(device, orig_freq, new_freq, T):
     fn = _grad_fn(orig_freq, new_freq)
@@ -403,7 +386,7 @@ def test_resample_vmap_of_grad_gives_per_sample_gradients(device, orig_freq, new
         torch.testing.assert_close(grad, expected)
 
 
-@pytest.mark.parametrize("device", _DEVICES)
+@pytest.mark.parametrize("device", DEVICES)
 @pytest.mark.parametrize("tensor_beta", [False, True])
 @pytest.mark.parametrize("orig_freq, new_freq, T", _GRAD_CASES[-1:])
 def test_resample_compiled_gradient_matches_eager(device, tensor_beta, orig_freq, new_freq, T):
@@ -429,7 +412,7 @@ def test_resample_compiled_gradient_matches_eager(device, tensor_beta, orig_freq
     torch.testing.assert_close(compiled(x, beta), loss(x, beta))
 
 
-@pytest.mark.parametrize("device", _DEVICES)
+@pytest.mark.parametrize("device", DEVICES)
 @pytest.mark.parametrize("dtype", _DTYPES)
 @pytest.mark.parametrize("orig_freq, new_freq, T", _GRAD_CASES[-1:])
 def test_resample_tensor_parameters_match_floats(device, dtype, orig_freq, new_freq, T):
@@ -462,7 +445,7 @@ def test_resample_cuda_parameter_gradients_match_cpu_in_float32(orig_freq, new_f
         torch.testing.assert_close(actual, expected, rtol=1e-4, atol=1e-4)
 
 
-@pytest.mark.parametrize("device", _DEVICES)
+@pytest.mark.parametrize("device", DEVICES)
 @pytest.mark.parametrize("orig_freq, new_freq, T", _GRAD_CASES[-1:])
 def test_resample_forward_mode_in_the_parameters(device, orig_freq, new_freq, T):
     fn = _grad_fn(orig_freq, new_freq)
@@ -524,7 +507,7 @@ def test_resample_ignores_the_default_device():
     torch.testing.assert_close(actual, resample(x, 11, 13))
 
 
-@pytest.mark.parametrize("device", _DEVICES)
+@pytest.mark.parametrize("device", DEVICES)
 def test_resample_empty_inputs_and_outputs(device):
     assert resample(torch.empty(0, 16, device=device), 2, 3).shape == (0, 24)
 
@@ -548,7 +531,7 @@ def test_resample_output_length_is_the_exact_ceiling(T, orig_freq, new_freq, out
     assert resample(torch.zeros(1, T), orig_freq, new_freq).shape == (1, out_len)
 
 
-@pytest.mark.parametrize("device", _DEVICES)
+@pytest.mark.parametrize("device", DEVICES)
 def test_resample_non_contiguous_input(device):
     x = torch.randn(40, 3, device=device, dtype=torch.float64).mT
     assert not x.is_contiguous()
@@ -557,7 +540,7 @@ def test_resample_non_contiguous_input(device):
     torch.testing.assert_close(resample(x, 147, 160), resample(x.contiguous(), 147, 160))
 
 
-@pytest.mark.parametrize("device", _DEVICES)
+@pytest.mark.parametrize("device", DEVICES)
 def test_resample_equal_rates_low_pass_instead_of_copying(device):
     # At orig_freq == new_freq the filter still cuts off at rolloff times the
     # Nyquist frequency (unlike scipy.signal.resample_poly, which copies).

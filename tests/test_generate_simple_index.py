@@ -1,29 +1,20 @@
 """Tests for scripts/generate_simple_index.py."""
 
 import hashlib
-import importlib.util
 import json
 import re
 import subprocess
 import sys
-from pathlib import Path
 from urllib.parse import quote
 
 import pytest
 
-SCRIPTS = Path(__file__).parents[1] / "scripts"
-SCRIPT = SCRIPTS / "generate_simple_index.py"
+from ._cases import REPO_ROOT, load_script
+
+SCRIPT = REPO_ROOT / "scripts" / "generate_simple_index.py"
 
 
-def _load(name):
-    spec = importlib.util.spec_from_file_location(name, SCRIPTS / f"{name}.py")
-    assert spec is not None and spec.loader is not None
-    module = importlib.util.module_from_spec(spec)
-    spec.loader.exec_module(module)
-    return module
-
-
-INDEX = _load("generate_simple_index")
+INDEX = load_script("scripts/generate_simple_index.py")
 
 BASE_URL = "https://example.github.io/philtorch"
 CU13 = "philtorch-0.9.0+cu13-cp311-abi3-manylinux_2_28_x86_64.whl"
@@ -253,39 +244,15 @@ def test_rejects_non_empty_output(tmp_path):
 
 
 def test_index_names_match_the_cuda_wheel_labels():
-    matrix = _load("torch_matrix")
+    matrix = load_script("scripts/torch_matrix.py")
     data = json.loads((matrix.REPO_ROOT / "torch_matrix.json").read_text())
     for leg in matrix.legs(data, "release", "3.11")["cuda_tests"]:
         filename = f"philtorch-0.9.0+{leg['label']}-cp311-abi3-manylinux_2_28_x86_64.whl"
         assert INDEX.index_name(filename) == leg["label"]
 
 
-def test_cli_reads_paginated_release_list(tmp_path, monkeypatch, capsys):
-    # gh api --paginate --slurp wraps each page of releases in its own list.
-    pages = [[release("v0.6.1")], [release("v0.6.0", asset(CU13))]]
-    (tmp_path / "releases.json").write_text(json.dumps(pages))
-    argv = ["prog", str(tmp_path / "releases.json"), "--output", str(tmp_path / "site")]
-    monkeypatch.setattr("sys.argv", [*argv, "--base-url", BASE_URL])
-
-    INDEX.main()
-
-    assert capsys.readouterr().out == "cu13: 1 wheels\n"
-    assert (tmp_path / "site/whl/cu13/philtorch/index.html").exists()
-
-
-@pytest.mark.parametrize(
-    ("releases", "message"),
-    [
-        pytest.param({"message": "Not Found"}, "expected a JSON list of releases", id="not-list"),
-        pytest.param(
-            [release("v0.6.0", asset(CU13, b"one"), asset(CU13, b"two"))],
-            "conflicting duplicate wheel filename",
-            id="conflict",
-        ),
-    ],
-)
-def test_cli_reports_errors(tmp_path, monkeypatch, capsys, releases, message):
-    (tmp_path / "releases.json").write_text(json.dumps(releases))
+def test_cli_reports_errors(tmp_path, monkeypatch, capsys):
+    (tmp_path / "releases.json").write_text(json.dumps({"message": "Not Found"}))
     argv = ["prog", str(tmp_path / "releases.json"), "--output", str(tmp_path / "site")]
     monkeypatch.setattr("sys.argv", [*argv, "--base-url", BASE_URL])
 
@@ -293,11 +260,13 @@ def test_cli_reports_errors(tmp_path, monkeypatch, capsys, releases, message):
         INDEX.main()
 
     assert exit_info.value.code == 2
-    assert message in capsys.readouterr().err
+    assert "expected a JSON list of releases" in capsys.readouterr().err
 
 
 def test_script_runs_as_a_command(tmp_path):
-    (tmp_path / "releases.json").write_text(json.dumps([release("v0.6.0", asset(CU13))]))
+    # gh api --paginate --slurp wraps each page of releases in its own list.
+    pages = [[release("v0.6.1")], [release("v0.6.0", asset(CU13))]]
+    (tmp_path / "releases.json").write_text(json.dumps(pages))
 
     result = subprocess.run(
         [
@@ -315,3 +284,4 @@ def test_script_runs_as_a_command(tmp_path):
     )
 
     assert result.stdout == "cu13: 1 wheels\n"
+    assert (tmp_path / "site/whl/cu13/philtorch/index.html").exists()

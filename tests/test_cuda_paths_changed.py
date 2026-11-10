@@ -1,18 +1,15 @@
 """Tests for scripts/cuda_paths_changed.py."""
 
-import importlib.util
 import re
 import subprocess
 import sys
-from pathlib import Path
 
 import pytest
 
-SCRIPT = Path(__file__).parents[1] / "scripts" / "cuda_paths_changed.py"
-spec = importlib.util.spec_from_file_location("cuda_paths_changed", SCRIPT)
-assert spec is not None and spec.loader is not None
-PATHS = importlib.util.module_from_spec(spec)
-spec.loader.exec_module(PATHS)
+from ._cases import REPO_ROOT, load_script
+
+SCRIPT = REPO_ROOT / "scripts" / "cuda_paths_changed.py"
+PATHS = load_script("scripts/cuda_paths_changed.py")
 
 
 def test_parsed_patterns_are_the_workflows_entries():
@@ -30,22 +27,26 @@ def test_parsing_skips_comments_and_stops_at_the_end_of_the_list():
     assert PATHS.pull_request_paths(text) == ["a/**", "b.py"]
 
 
-@pytest.mark.parametrize("line", ["", "      - 'b.py'", "      - b.py"])
-def test_parsing_rejects_an_unexpected_line_in_the_list(line):
-    text = f'on:\n  pull_request:\n    paths:\n      - "a.py"\n{line}\n      - "c.py"\n'
-    with pytest.raises(ValueError, match="unexpected line"):
-        PATHS.pull_request_paths(text)
-
-
-def test_parsing_rejects_a_workflow_without_paths():
-    with pytest.raises(ValueError, match="no pull_request paths"):
-        PATHS.pull_request_paths("on:\n  pull_request:\n    branches: [dev]\n")
-
-
-@pytest.mark.parametrize("pattern", ["a?.py", "a+.py", "[ab].py", "!a.py"])
-def test_parsing_rejects_unsupported_special_characters(pattern):
-    text = f'on:\n  pull_request:\n    paths:\n      - "{pattern}"\n'
-    with pytest.raises(ValueError, match="unsupported special characters"):
+@pytest.mark.parametrize(
+    ("text", "message"),
+    [
+        (
+            f'on:\n  pull_request:\n    paths:\n      - "a.py"\n{line}\n      - "c.py"\n',
+            "unexpected line",
+        )
+        for line in ["", "      - 'b.py'", "      - b.py"]
+    ]
+    + [("on:\n  pull_request:\n    branches: [dev]\n", "no pull_request paths")]
+    + [
+        (
+            f'on:\n  pull_request:\n    paths:\n      - "{pattern}"\n',
+            "unsupported special characters",
+        )
+        for pattern in ["a?.py", "a+.py", "[ab].py", "!a.py"]
+    ],
+)
+def test_parsing_rejects_an_invalid_workflow(text, message):
+    with pytest.raises(ValueError, match=message):
         PATHS.pull_request_paths(text)
 
 

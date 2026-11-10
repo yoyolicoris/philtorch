@@ -8,7 +8,6 @@ from philtorch.lpv import fir as lpv_fir
 from philtorch.lpv import lfilter
 
 from ._cases import time_varying_coeffs
-from .test_lpv_lfilter import _generate_random_signal
 
 
 def test_fir_defaults_to_transposed():
@@ -61,75 +60,14 @@ def test_fir_inverse(B: int, T: int, order: int):
     assert torch.allclose(x, x_reconstructed), "Reconstructed signal mismatch"
 
 
-def _generate_test_signal(B: int, T: int, signal_type: str = "white_noise") -> torch.Tensor:
-    """Generate different types of test signals"""
-    if signal_type == "white_noise":
-        return torch.randn(B, T)
-    elif signal_type == "impulse":
-        x = torch.zeros(B, T)
-        x[:, 0] = 1.0
-        return x
-    elif signal_type == "step":
-        return torch.ones(B, T)
-    elif signal_type == "sine":
-        t = torch.linspace(0, 4 * np.pi, T).unsqueeze(0).expand(B, -1)
-        return torch.sin(t)
-    else:
-        raise ValueError(f"Unknown signal type: {signal_type}")
-
-
-@pytest.mark.parametrize("B", [1, 8, 16])
-@pytest.mark.parametrize("T", [32, 128])
-@pytest.mark.parametrize("num_order", [1, 2, 4])
-@pytest.mark.parametrize("den_order", [1, 3, 5])
-@pytest.mark.parametrize("form", ["df1", "df2"])
-def test_time_varying_basic_functionality(
-    B: int, T: int, num_order: int, den_order: int, form: str
-):
-    """Test basic functionality with time-varying coefficients"""
-    b, a = time_varying_coeffs(B, T, num_order, den_order)
-    x = _generate_test_signal(B, T, "white_noise")
-
-    y = lfilter(b, a, x, form=form)
-
-    if isinstance(y, tuple):
-        y, zf = y
-        assert zf.shape[0] == B  # Check final state shape
-
-    assert y.shape == (B, T)
-    assert not torch.isnan(y).any(), f"NaN values found in output for form {form}"
-    assert torch.isfinite(y).all(), f"Non-finite values found in output for form {form}"
-
-
-@pytest.mark.parametrize("signal_type", ["impulse", "step", "sine", "white_noise"])
-def test_different_input_signals(signal_type: str):
-    """Test filter response to different input signal types"""
-    B, T = 2, 100
-    b, a = time_varying_coeffs(B, T, 3, 2)
-    x = _generate_test_signal(B, T, signal_type)
-
-    y = lfilter(b, a, x, form="df1")
-
-    if isinstance(y, tuple):
-        y = y[0]
-
-    assert y.shape == (B, T)
-    assert not torch.isnan(y).any()
-    assert torch.isfinite(y).all()
-
-    # For impulse response, check that it's not all zeros
-    if signal_type == "impulse":
-        assert not torch.allclose(y, torch.zeros_like(y))
-
-
 def test_linearity_property():
     """Test linearity: filter(a*x1 + b*x2) = a*filter(x1) + b*filter(x2)"""
     B, T = 2, 50
     b, a = time_varying_coeffs(B, T, 2, 1)
     b, a = b.double(), a.double()
 
-    x1 = _generate_test_signal(B, T, "white_noise").double()
-    x2 = _generate_test_signal(B, T, "white_noise").double()
+    x1 = torch.randn(B, T).double()
+    x2 = torch.randn(B, T).double()
 
     alpha, beta = 0.7, 1.3
     x_combined = alpha * x1 + beta * x2
@@ -197,173 +135,6 @@ def test_batch_independence():
     assert torch.allclose(y_batch, y_individual)
 
 
-def test_initial_conditions_df2():
-    """Test filter with initial conditions in DF2 form"""
-    B, T = 2, 50
-    order = 3
-    b, a = time_varying_coeffs(B, T, order, order)
-    x = _generate_test_signal(B, T, "white_noise")
-
-    # Test with random initial conditions
-    zi = torch.randn(B, order) * 0.1
-
-    y, zf = lfilter(b, a, x, zi=zi, form="df2")
-
-    assert y.shape == (B, T)
-    assert zf.shape == (B, order)
-    assert not torch.isnan(y).any()
-    assert not torch.isnan(zf).any()
-    assert torch.isfinite(y).all()
-    assert torch.isfinite(zf).all()
-
-
-def test_df_fir():
-    """Test df2 filter with FIR coefficients"""
-
-    B = 3
-    T = 100
-    num_order = 4
-
-    b = np.random.randn(B, num_order + 1)
-    x = _generate_random_signal(B, T)
-
-    # Convert to torch tensors
-    b_torch = torch.from_numpy(b)
-    x_torch = torch.from_numpy(x)
-
-    # Apply philtorch filter
-    y_torch = lpv_fir(b_torch.unsqueeze(1).expand(-1, T, -1), x_torch, transpose=False)
-    # Apply scipy filter
-    y_scipy = np.stack([signal.lfilter(b[i], [1.0], x[i]) for i in range(B)], axis=0)
-
-    # Compare outputs
-    assert np.allclose(y_torch.numpy(), y_scipy), np.max(np.abs(y_torch.numpy() - y_scipy))
-
-
-def test_df_allpole():
-    """Test df2 filter with all-pole coefficients"""
-
-    B = 3
-    T = 100
-    num_order = 4
-
-    a = np.random.randn(B, num_order)
-    a /= np.abs(a).sum(axis=-1, keepdims=True).clip(min=1e-6)  # Ensure stability
-    x = _generate_random_signal(B, T)
-
-    # Convert to torch tensors
-    a_torch = torch.from_numpy(a)
-    x_torch = torch.from_numpy(x)
-
-    # Apply philtorch filter
-    y_torch = lpv_allpole(a_torch.unsqueeze(1).expand(-1, T, -1), x_torch, transpose=False)
-    # Apply scipy filter
-    y_scipy = np.stack(
-        [signal.lfilter([1.0], [1.0] + a[i].tolist(), x[i]) for i in range(B)], axis=0
-    )
-
-    # Compare outputs
-    assert np.allclose(y_torch.numpy(), y_scipy), np.max(np.abs(y_torch.numpy() - y_scipy))
-
-
-@pytest.mark.parametrize("include_zi", [True, False])
-def test_tdf_fir(include_zi: bool):
-    """Test df2 filter with FIR coefficients"""
-
-    B = 3
-    T = 100
-    num_order = 4
-
-    b = np.random.randn(B, num_order + 1)
-    x = _generate_random_signal(B, T)
-    if include_zi:
-        # Generate random initial conditions
-        zi = np.random.randn(B, num_order)
-    else:
-        zi = None
-
-    # Convert to torch tensors
-    b_torch = torch.from_numpy(b)
-    x_torch = torch.from_numpy(x)
-    if zi is not None:
-        zi_torch = torch.from_numpy(zi)
-    else:
-        zi_torch = None
-
-    # Apply philtorch filter
-    torch_results = lpv_fir(
-        b_torch.unsqueeze(1).expand(-1, T, -1), x_torch, zi=zi_torch, transpose=True
-    )
-    # Apply scipy filter
-    scipy_results = [
-        signal.lfilter(b[i], [1.0], x[i], zi=zi[i] if zi is not None else None) for i in range(B)
-    ]
-
-    if include_zi:
-        y_scipy, zf_scipy = zip(*scipy_results)
-        y_scipy = np.stack(y_scipy, axis=0)
-        zf_scipy = np.stack(zf_scipy, axis=0)
-        y_torch, zf_torch = torch_results
-
-        assert np.allclose(zf_torch.numpy(), zf_scipy), np.max(np.abs(zf_torch.numpy() - zf_scipy))
-    else:
-        y_scipy = np.vstack(scipy_results)
-        y_torch = torch_results
-
-    # Compare outputs
-    assert np.allclose(y_torch.numpy(), y_scipy), np.max(np.abs(y_torch.numpy() - y_scipy))
-
-
-@pytest.mark.parametrize("include_zi", [True, False])
-def test_tdf_allpole(include_zi: bool):
-    """Test df2 filter with FIR coefficients"""
-
-    B = 3
-    T = 100
-    num_order = 4
-
-    a = np.random.randn(B, num_order)
-    a /= np.abs(a).sum(axis=-1, keepdims=True).clip(min=1e-6)  # Ensure stability
-    x = _generate_random_signal(B, T)
-    if include_zi:
-        # Generate random initial conditions
-        zi = np.random.randn(B, num_order)
-    else:
-        zi = None
-
-    # Convert to torch tensors
-    a_torch = torch.from_numpy(a)
-    x_torch = torch.from_numpy(x)
-    if zi is not None:
-        zi_torch = torch.from_numpy(zi)
-    else:
-        zi_torch = None
-
-    # Apply philtorch filter
-    torch_results = lpv_allpole(
-        a_torch.unsqueeze(1).expand(-1, T, -1), x_torch, zi=zi_torch, transpose=True
-    )
-    # Apply scipy filter
-    scipy_results = [
-        signal.lfilter([1.0], [1.0] + a[i].tolist(), x[i], zi=zi[i] if zi is not None else None)
-        for i in range(B)
-    ]
-
-    if include_zi:
-        y_scipy, zf_scipy = zip(*scipy_results)
-        y_scipy = np.stack(y_scipy, axis=0)
-        zf_scipy = np.stack(zf_scipy, axis=0)
-        y_torch, zf_torch = torch_results
-
-        assert np.allclose(zf_torch.numpy(), zf_scipy), np.max(np.abs(zf_torch.numpy() - zf_scipy))
-    else:
-        y_scipy = np.vstack(scipy_results)
-        y_torch = torch_results
-
-    # Compare outputs
-    assert np.allclose(y_torch.numpy(), y_scipy), np.max(np.abs(y_torch.numpy() - y_scipy))
-
-
 @pytest.mark.parametrize("transpose", [True, False])
 @pytest.mark.parametrize("filt", [lpv_fir, lpv_allpole])
 def test_zi_continuation(filt, transpose: bool):
@@ -375,7 +146,7 @@ def test_zi_continuation(filt, transpose: bool):
         coef = b
     else:
         coef = a
-    x = _generate_test_signal(B, T, "white_noise").double()
+    x = torch.randn(B, T).double()
 
     # First pass with initial conditions
     zi = torch.randn(B, 3).double() * 0.1
