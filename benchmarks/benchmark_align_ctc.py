@@ -8,27 +8,11 @@ Times are for the losses and their gradient with respect to the logits,
 through a log_softmax, after a warm-up call that compiles the kernels.
 """
 
-import time
-
 import torch
 import torch.nn.functional as F
+from _timing import bench
 
 from philtorch.align import ctc_loss
-
-
-def bench(fn, n=10):
-    """Mean milliseconds per call after a warm-up call, or the error's name."""
-    try:
-        torch.cuda.empty_cache()
-        fn()
-        torch.cuda.synchronize()
-        start = time.perf_counter()
-        for _ in range(n):
-            fn()
-        torch.cuda.synchronize()
-        return f"{1e3 * (time.perf_counter() - start) / n:8.2f} ms"
-    except (torch.OutOfMemoryError, RuntimeError) as e:
-        return f"{type(e).__name__:>11}"
 
 
 def main():

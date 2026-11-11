@@ -8,7 +8,7 @@ Times h[t] = A[t] h[t - 1] + x[t] with philtorch._recur.recurrence, which
 state_space_recursion runs with the default unroll_factor=None, and with
 philtorch.lti / philtorch.lpv's state_space_recursion at unroll_factor=32, the
 block-unrolled PyTorch recursion, forward alone and forward plus backward,
-after a warm-up call that compiles the kernels.
+after a warm-up call.
 """
 
 import time

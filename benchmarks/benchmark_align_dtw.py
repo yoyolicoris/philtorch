@@ -12,26 +12,11 @@ its CUDA extension compiles on first use, and it needs min(N, M) <= 1024.
 
 import os
 import sys
-import time
 
 import torch
+from _timing import bench
 
 from philtorch.align import dtw
-
-
-def bench(fn, n=10):
-    """Mean milliseconds per call after a warm-up call, or the error's name."""
-    try:
-        torch.cuda.empty_cache()
-        fn()
-        torch.cuda.synchronize()
-        start = time.perf_counter()
-        for _ in range(n):
-            fn()
-        torch.cuda.synchronize()
-        return f"{1e3 * (time.perf_counter() - start) / n:9.2f} ms"
-    except (torch.OutOfMemoryError, RuntimeError) as e:
-        return f"{type(e).__name__:>12}"
 
 
 def load_ddtw(gamma):
@@ -61,10 +46,10 @@ def main():
             (1, 8000, 8000),
         ):
             cost = torch.rand(B, N, M, device="cuda", requires_grad=True)
-            ours = bench(lambda: torch.autograd.grad(dtw(cost, gamma).sum(), cost))
+            ours = bench(lambda: torch.autograd.grad(dtw(cost, gamma).sum(), cost), width=9)
             row = f"gamma={gamma} B={B:2d} N={N:>6,} M={M:>5,}: philtorch {ours}"
             if reference is not None:
-                theirs = bench(lambda: torch.autograd.grad(reference(C=cost).sum(), cost))
+                theirs = bench(lambda: torch.autograd.grad(reference(C=cost).sum(), cost), width=9)
                 row += f" | dDTW {theirs}"
             print(row, flush=True)
 

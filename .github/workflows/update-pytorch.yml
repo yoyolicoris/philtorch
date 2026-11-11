@@ -51,7 +51,8 @@ jobs:
           git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
           git switch -C "$BRANCH"
           git add -A
-          git commit -m "ci: update the torch matrix for new PyTorch releases"
+          title="ci: update the torch matrix for new PyTorch releases"
+          git commit -m "$title"
 
           # The branch is regenerated from dev, but pushed only when its tree
           # differs: a new commit would detach the CI run started on the old one.
@@ -60,7 +61,6 @@ jobs:
             && [ "$(git rev-parse 'HEAD^{tree}')" = "$(git rev-parse 'FETCH_HEAD^{tree}')" ]; then
             same=true
           fi
-          title="ci: update the torch matrix for new PyTorch releases"
           if $same && [ -n "$number" ]; then
             echo "Branch and pull request are up to date."
             exit 0
@@ -74,7 +74,7 @@ jobs:
 
           - the diff of \`torch_matrix.json\`, \`pyproject.toml\` and the README table;
           - the places that name the oldest Python, when \`requires-python\` rises;
-          - whether \`MIN_TORCH\` in \`build_support.py\` must rise, by the criteria under "The floor" in CONTRIBUTING.md; it doesn't follow new minors;
+          - whether \`MIN_TORCH\` in \`build_support.py\` must rise, by the criteria under "The floor" in CONTRIBUTING.md; it doesn't follow new minors.
 
           CI doesn't start on pull requests opened by a workflow: close and reopen this pull request to run it.
           EOF

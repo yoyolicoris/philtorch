@@ -21,28 +21,13 @@ smaller models are padded to 32 with impossible states.
 """
 
 import os
-import time
 
 import torch
+from _timing import bench
 
 from philtorch.estimation import hmm_filter, hmm_smoother, hmm_viterbi
 
 IMPOSSIBLE = -1e30  # torbi-safe -inf
-
-
-def bench(fn, n=10):
-    """Mean milliseconds per call after a warm-up call, or the error's name."""
-    try:
-        torch.cuda.empty_cache()
-        fn()
-        torch.cuda.synchronize()
-        start = time.perf_counter()
-        for _ in range(n):
-            fn()
-        torch.cuda.synchronize()
-        return f"{1e3 * (time.perf_counter() - start) / n:8.2f} ms"
-    except (torch.OutOfMemoryError, RuntimeError) as e:
-        return f"{type(e).__name__:>11}"
 
 
 def load_torbi():

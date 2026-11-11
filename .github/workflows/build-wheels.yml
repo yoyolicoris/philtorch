@@ -329,7 +329,6 @@ jobs:
 
           pip install torch==${{ matrix.leg.torch }}${{ runner.os != 'macOS' && '+cpu' || '' }} --index-url https://download.pytorch.org/whl/cpu
 
-          # Vendored torchlpc is now bundled in philtorch._C; no separate pip install.
           # Keep --no-deps since torch is already present.
           pip install --no-deps "${WHEELS[0]}"
           pip install numpy scipy pytest pytest-cov

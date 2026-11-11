@@ -8,9 +8,8 @@ Run from the repository root on a CUDA machine:
     pixi run python benchmarks/benchmark_nl.py
 """
 
-import time
-
 import torch
+from _timing import bench
 from torch._higher_order_ops import scan
 
 from philtorch.nl import newton_solve
@@ -19,23 +18,6 @@ from philtorch.nl import newton_solve
 def fail(e):
     """Table cell for a failed run: n/a and the exception type."""
     return f"{('n/a ' + type(e).__name__)[:15]:>16}"
-
-
-def bench(fn, warmup=3, reps=10):
-    """Mean milliseconds per call; warm-up calls absorb compilation."""
-    try:
-        for _ in range(warmup):
-            fn()
-        if torch.cuda.is_available():
-            torch.cuda.synchronize()
-        start = time.perf_counter()
-        for _ in range(reps):
-            fn()
-        if torch.cuda.is_available():
-            torch.cuda.synchronize()
-        return f"{1e3 * (time.perf_counter() - start) / reps:16.2f}"
-    except Exception as e:
-        return fail(e)
 
 
 def bench_mem(fn):
@@ -99,8 +81,8 @@ def main():
                 x = torch.randn(shape, dtype=torch.float32, device=device)
                 init = torch.zeros(shape[:1] + shape[2:], device=device)
 
-                # Compile once per configuration; the warm-up calls in bench
-                # run it, so compilation is not timed.
+                # Compile once per configuration; the warm-up call in bench
+                # runs it, so compilation is not timed.
                 torch._dynamo.reset()
                 runs = (torch.compile(run_scan), run_newton)
 
@@ -120,7 +102,7 @@ def main():
                     return call
 
                 calls = [f(r) for f in (fwd, fwd_bwd) for r in runs]
-                times = [bench(c) for c in calls]
+                times = [bench(c, width=13) for c in calls]
                 mems = [bench_mem(c) for c in calls]
 
                 cfg = f"M={M}, B={B}, T={T}"
