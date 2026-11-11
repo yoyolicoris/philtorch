@@ -477,15 +477,9 @@ def hmm_smoother(log_emit: Tensor, log_trans: Tensor, log_init: Tensor) -> tuple
         builds for Linux.
 
     Args:
-        log_emit (Tensor): :math:`\log p(y[n] \mid z[n] = k)`, of shape
-            :math:`(B, N, K)`.
-        log_trans (Tensor): :math:`\log p(z[n + 1] = j \mid z[n] = i)` at
-            index :math:`[i, j]`: shared, of shape :math:`(K, K)`; per step,
-            :math:`(N - 1, K, K)`; per signal, :math:`(B, K, K)`; or both,
-            :math:`(B, N - 1, K, K)`. When :math:`B = N - 1`, a 3-D tensor is
-            taken per step.
-        log_init (Tensor): :math:`\log p(z[0] = k)`, of shape :math:`(K)` or
-            :math:`(B, K)`.
+        log_emit (Tensor): as in :func:`hmm_filter`.
+        log_trans (Tensor): as in :func:`hmm_filter`.
+        log_init (Tensor): as in :func:`hmm_filter`.
 
     Returns:
         tuple of Tensor: the log-likelihood, of shape :math:`(B)`, and the
@@ -493,8 +487,7 @@ def hmm_smoother(log_emit: Tensor, log_trans: Tensor, log_init: Tensor) -> tuple
         can emit some :math:`y[n]`, all of them are ``-inf``.
 
     Raises:
-        ValueError: if the inputs are not CUDA tensors or have unsupported
-            shapes.
+        ValueError: as :func:`hmm_filter` does for these arguments.
         RuntimeError: if Triton is not installed.
 
     Example::
@@ -550,15 +543,9 @@ def hmm_viterbi(log_emit: Tensor, log_trans: Tensor, log_init: Tensor) -> tuple[
         builds for Linux.
 
     Args:
-        log_emit (Tensor): :math:`\log p(y[n] \mid z[n] = k)`, of shape
-            :math:`(B, N, K)`.
-        log_trans (Tensor): :math:`\log p(z[n + 1] = j \mid z[n] = i)` at
-            index :math:`[i, j]`: shared, of shape :math:`(K, K)`; per step,
-            :math:`(N - 1, K, K)`; per signal, :math:`(B, K, K)`; or both,
-            :math:`(B, N - 1, K, K)`. When :math:`B = N - 1`, a 3-D tensor is
-            taken per step.
-        log_init (Tensor): :math:`\log p(z[0] = k)`, of shape :math:`(K)` or
-            :math:`(B, K)`.
+        log_emit (Tensor): as in :func:`hmm_filter`.
+        log_trans (Tensor): as in :func:`hmm_filter`.
+        log_init (Tensor): as in :func:`hmm_filter`.
 
     Returns:
         tuple of Tensor: the best joint log-probability
@@ -567,8 +554,7 @@ def hmm_viterbi(log_emit: Tensor, log_trans: Tensor, log_init: Tensor) -> tuple[
         of that path, of shape :math:`(B, N)`.
 
     Raises:
-        ValueError: if the inputs are not CUDA tensors or have unsupported
-            shapes.
+        ValueError: as :func:`hmm_filter` does for these arguments.
         RuntimeError: if Triton is not installed.
 
     Example::

@@ -419,34 +419,21 @@ def kalman_smoother(
     Bayesian Smoothers`_ (Särkkä and García-Fernández, 2021) and `On The
     Performance of Prefix-Sum Parallel Kalman Filters and Smoothers on GPUs`_
     (Särkkä and García-Fernández, 2025). The cross-covariances come from the
-    smoother's
-    gains, :math:`\mathrm{Cov}(\mathbf{x}[n], \mathbf{x}[n + 1] \mid
-    \mathbf{y}) = E[n] \, \mathrm{Cov}(\mathbf{x}[n + 1] \mid \mathbf{y})`.
-    The arguments are those of :func:`kalman_filter`.
+    smoother's gains, :math:`\mathrm{Cov}(\mathbf{x}[n], \mathbf{x}[n + 1]
+    \mid \mathbf{y}) = E[n] \, \mathrm{Cov}(\mathbf{x}[n + 1] \mid
+    \mathbf{y})`.
 
     These are the expectations of the E-step of expectation-maximization;
     :func:`kalman_em_step` runs its closed-form M-step.
 
     Args:
-        y (Tensor): measurements :math:`\mathbf{y}[n]`, of shape
-            :math:`(B, N, P)`.
-        A (Tensor): state transition matrices, each taking a state to the
-            next: shared, of shape :math:`(M, M)`; per step,
-            :math:`(N - 1, M, M)`; per signal, :math:`(B, M, M)`; or both,
-            :math:`(B, N - 1, M, M)`.
-        C (Tensor): measurement matrices: shared, of shape :math:`(P, M)`;
-            per step, :math:`(N, P, M)`; per signal, :math:`(B, P, M)`; or
-            both, :math:`(B, N, P, M)`.
-        Q (Tensor): process noise covariances: shared, of shape
-            :math:`(M, M)`; per step, :math:`(N - 1, M, M)`; per signal,
-            :math:`(B, M, M)`; or both, :math:`(B, N - 1, M, M)`.
-        R (Tensor): measurement noise covariances: shared, of shape
-            :math:`(P, P)`; per step, :math:`(N, P, P)`; per signal,
-            :math:`(B, P, P)`; or both, :math:`(B, N, P, P)`.
-        m0 (Tensor): the prior mean of :math:`\mathbf{x}[0]`, of shape
-            :math:`(M)` or :math:`(B, M)`.
-        P0 (Tensor): the prior covariance of :math:`\mathbf{x}[0]`, of shape
-            :math:`(M, M)` or :math:`(B, M, M)`.
+        y (Tensor): as in :func:`kalman_filter`.
+        A (Tensor): as in :func:`kalman_filter`.
+        C (Tensor): as in :func:`kalman_filter`.
+        Q (Tensor): as in :func:`kalman_filter`.
+        R (Tensor): as in :func:`kalman_filter`.
+        m0 (Tensor): as in :func:`kalman_filter`.
+        P0 (Tensor): as in :func:`kalman_filter`.
 
     Returns:
         KalmanSmootherResult: the smoothed means and covariances, of shapes
@@ -455,8 +442,7 @@ def kalman_smoother(
         :math:`(B)`.
 
     Raises:
-        ValueError: if :attr:`y` is not 3-D, :attr:`A` is not square, or a
-            coefficient has an unsupported shape.
+        ValueError: as :func:`kalman_filter` does for these arguments.
 
     Example::
 
