@@ -431,10 +431,10 @@ def _cost_at(
 
 @triton.jit
 def _first_best(up, left, diag, skip, best, none, DIAG: tl.constexpr, SKIP: tl.constexpr):
-    """Which of the steps' values up, left, diagonal and skip, the last two only
-    with DIAG and SKIP (None otherwise), the hard choice is: as masks, the
-    first of them equal to their minimum ``best``, none where ``none``. The
-    masks of absent steps are false."""
+    """The hard choice among the steps' values up, left, diag and skip, as
+    masks: the first equal to their minimum ``best``, all false where
+    ``none``. diag and skip are read only with DIAG and SKIP (they may be None
+    otherwise); the masks of absent steps are false."""
     # The first best of up, left, up-left and skip, as torch.argmin picks.
     is_up = (up == best) & ~none
     is_left = (left == best) & ~is_up & ~none
@@ -970,7 +970,7 @@ def _frontier_kernel(
 
 @triton.jit
 def _walk_row(code, cols, valid, i, j, written, out, BLOCK: tl.constexpr):
-    """One step of the walks of :func:`_backtrack_kernel` and
+    """One row block of the walks of :func:`_backtrack_kernel` and
     :func:`_walk_kernel`: the BLOCK cells ``cols`` of row i ending at column j,
     with their steps back ``code`` (1 up, 2 left, 3 diagonal, 0 none), ``valid``
     where on the grid. Stores the cells from j down to the row's exit, the last
