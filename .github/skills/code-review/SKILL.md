@@ -26,7 +26,7 @@ Provides specialized code review guidance for the PhilTorch repository. It enfor
 ### 2. C++ / CUDA & Dependencies
 - **Kernel Safety:** Check for out-of-bounds memory accesses in CUDA/Triton kernels, particularly at sequence boundaries during parallel associative scans.
 - **Synchronization:** Ensure appropriate thread synchronization (`__syncthreads()`) is used to avoid race conditions in custom extensions.
-- **Environment & Build:** Verify that dependency updates in `pixi.toml` and CMake/C++ build configurations do not break PyTorch >= 2.13 compatibility or GPU-accelerated environments.
+- **Environment & Build:** Verify that dependency updates in `pixi.toml` and the build (`setup.py`, `build_support.py`) do not break compatibility with the torch floor (`MIN_TORCH` in `build_support.py`) or GPU-accelerated environments.
 
 ### 3. API & Correctness
 - **SciPy Parity:** Ensure filter outputs (like `lfilter`, `filtfilt`, `lfilter_zi`) maintain strict numerical parity with `scipy.signal` conventions (e.g., ensuring $a_0 = 1$ is handled properly).
