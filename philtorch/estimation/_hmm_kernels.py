@@ -50,6 +50,8 @@ import triton
 import triton.language as tl
 from torch import Tensor
 
+from .._trace_kernels import _time
+
 _SEMIRINGS = {"log": 0, "max": 1, "linear": 2}
 # Triton kernels can only read module constants made with tl.constexpr. They
 # write float("-inf") in place: torch.compile copies the source of kernels
@@ -91,13 +93,6 @@ def _matmul(a, m, SEMIRING: tl.constexpr):
         # The tiles' few rows (BR) keep the sum, which is faster there.
         return tl.dot(a, m, input_precision="ieee")
     return _reduce(_times(a[:, :, None], m[None, :, :], SEMIRING), 1, SEMIRING)
-
-
-@triton.jit
-def _time(c, s, N, T: tl.constexpr, REVERSE: tl.constexpr):
-    """The time of step s of chunk c, a 64-bit index."""
-    t = c * T + s
-    return (N - 1 - t) if REVERSE else t
 
 
 @triton.jit
