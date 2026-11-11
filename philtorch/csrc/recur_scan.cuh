@@ -31,6 +31,15 @@ struct affine_binary_op
                                                 const affine<M, T> &q) const
     {
         affine<M, T> r;
+        if constexpr (M == 1)
+        {
+            // One product each, with no sum from 0: 0 + p is not p under
+            // IEEE (signed zero), so the add would stay, an op more per
+            // combine, about 40 % slower in float64 on a GeForce GPU.
+            r.a[0] = q.a[0] * p.a[0];
+            r.x[0] = q.a[0] * p.x[0] + q.x[0];
+            return r;
+        }
 #pragma unroll
         for (int i = 0; i < M; ++i)
         {
@@ -144,6 +153,20 @@ void scan_by_key_on_current_stream(KeysIt keys, InputIt input, OutputIt output,
         temp_storage.mutable_data_ptr(), temp_storage_bytes, keys, input,
         output, scan_op, static_cast<int>(num_items), equality_op, stream));
 }
+
+// The dtypes of the scalar ops (lti_recur, scan) and of recur2: floating,
+// complex, int64 and half precision.
+struct full_dispatch
+{
+    template <typename Fn>
+    void operator()(torch::headeronly::ScalarType type, Fn f) const
+    {
+        using S = torch::headeronly::ScalarType;
+        THO_DISPATCH_V2(
+            type, "recurrence", AT_WRAP([&] { f(scalar_t{}); }),
+            AT_FLOATING_TYPES, AT_COMPLEX_TYPES, S::Long, S::Half, S::BFloat16);
+    }
+};
 
 // The recurrence of M states, A read with these strides; the caller checks the inputs.
 // dispatch(type, f) calls f(scalar_t{}) for a scalar type of the dtypes the op
