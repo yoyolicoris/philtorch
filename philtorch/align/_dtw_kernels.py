@@ -430,6 +430,24 @@ def _cost_at(
 
 
 @triton.jit
+def _first_best(up, left, diag, skip, best, none, DIAG: tl.constexpr, SKIP: tl.constexpr):
+    """The hard choice among the steps' values up, left, diag and skip, as
+    masks: the first equal to their minimum ``best``, all false where
+    ``none``. diag and skip are read only with DIAG and SKIP (they may be None
+    otherwise); the masks of absent steps are false."""
+    # The first best of up, left, up-left and skip, as torch.argmin picks.
+    is_up = (up == best) & ~none
+    is_left = (left == best) & ~is_up & ~none
+    is_diag = tl.zeros(best.shape, tl.int1)
+    is_skip = tl.zeros(best.shape, tl.int1)
+    if DIAG:
+        is_diag = (diag == best) & ~is_up & ~is_left & ~none
+    if SKIP:
+        is_skip = (skip == best) & ~is_up & ~is_left & ~is_diag & ~none
+    return is_up, is_left, is_diag, is_skip
+
+
+@triton.jit
 def _shares(
     D_ptr, c, skip_ptr, b, r, cols, R, L, diag_weight, SOFT: tl.constexpr, STEPS: tl.constexpr,
     GIVEN: tl.constexpr = False, STRIP: tl.constexpr = False, RB=0, sbase=0, TR=0,
@@ -490,11 +508,7 @@ def _shares(
         scale = tl.where(none, 0.0, 1.0 / (e_up + e_left + e_diag + e_skip))
         w_up, w_left, w_diag, w_skip = e_up * scale, e_left * scale, e_diag * scale, e_skip * scale
     else:
-        # The first best of up, left, up-left and skip, as torch.argmin picks.
-        is_up = (up == best) & ~none
-        is_left = (left == best) & ~is_up & ~none
-        is_diag = (diag == best) & ~is_up & ~is_left & ~none
-        is_skip = (skip == best) & ~is_up & ~is_left & ~is_diag & ~none
+        is_up, is_left, is_diag, is_skip = _first_best(up, left, diag, skip, best, none, True, True)
         w_up = is_up.to(c.dtype)
         w_left = is_left.to(c.dtype)
         w_diag = is_diag.to(c.dtype)
@@ -930,16 +944,17 @@ def _frontier_kernel(
             along = tl.load(rows_ptr + own + pos - 1, mask=mask & (lanes > 0), other=_KERNEL_INF)
             up_best = up_row + c
             left_best = tl.where(lanes == 0, left, along) + c
+            diag_best = None
             best = tl.minimum(up_best, left_best)
             if SYMMETRIC:
                 diag_best = diag + diag_weight * c
                 best = tl.minimum(best, diag_best)
             none = best == _KERNEL_INF
-            is_up = (up_best == best) & ~none
-            is_left = (left_best == best) & ~is_up & ~none
+            is_up, is_left, is_diag, _ = _first_best(
+                up_best, left_best, diag_best, None, best, none, SYMMETRIC, False
+            )
             code = is_up.to(tl.int32) + 2 * is_left.to(tl.int32)
             if SYMMETRIC:
-                is_diag = (diag_best == best) & ~is_up & ~is_left & ~none
                 code += 3 * is_diag.to(tl.int32)
             word |= code << (2 * (g % 16))
             if (g % 16 == 15) | (kk == n_rows - 1):
@@ -951,6 +966,31 @@ def _frontier_kernel(
         if REVERSE:
             c_prev = c
             c_prev_shift = c_shift
+
+
+@triton.jit
+def _walk_row(code, cols, valid, i, j, written, out, BLOCK: tl.constexpr):
+    """One row block of the walks of :func:`_backtrack_kernel` and
+    :func:`_walk_kernel`: the BLOCK cells ``cols`` of row i ending at column j,
+    with their steps back ``code`` (1 up, 2 left, 3 diagonal, 0 none), ``valid``
+    where on the grid. Stores the cells from j down to the row's exit, the last
+    valid cell whose step is not left, at ``out`` from slot ``written``, and
+    returns the next row, column and ``written``."""
+    # The row's exit: the last cell that steps up or diagonally, or (0, 0),
+    # which has no step back.
+    exit_col = tl.max(tl.where(valid & (code != 2), cols, -1), axis=0)
+    found = exit_col >= 0
+    # This block's cells of the path, from column j down to the exit.
+    stop = tl.where(found, exit_col, j - BLOCK + 1)
+    keep = valid & (cols >= stop)
+    slot = out + 2 * (written + j - cols)
+    tl.store(slot, i + 0 * cols, mask=keep)
+    tl.store(slot + 1, cols, mask=keep)
+    written += j - stop + 1
+    step = tl.max(tl.where(cols == exit_col, code, 0), axis=0)
+    next_i = tl.where(found, tl.where(step == 0, -1, i - 1), i)
+    next_j = tl.where(found, tl.where(step == 1, exit_col, exit_col - 1), j - BLOCK)
+    return next_i, next_j, written
 
 
 @triton.jit
@@ -984,24 +1024,8 @@ def _backtrack_kernel(
         w_up, w_left, w_diag, _ = _shares(
             D_ptr, c, None, b, i, cols, R, L, diag_weight, False, STEPS
         )
-        # The row's exit: the last cell that steps up or diagonally, or (0, 0),
-        # which has no step back.
-        leaves = valid & (w_left == 0)
-        exit_col = tl.max(tl.where(leaves, cols, -1), axis=0)
-        found = exit_col >= 0
-        # This block's cells of the path, from column j down to the exit.
-        stop = tl.where(found, exit_col, j - BLOCK + 1)
-        keep = valid & (cols >= stop)
-        slot = out + 2 * (written + j - cols)
-        tl.store(slot, i + 0 * cols, mask=keep)
-        tl.store(slot + 1, cols, mask=keep)
-        written += j - stop + 1
-        at_exit = cols == exit_col
-        exit_up = tl.max(tl.where(at_exit & (w_up != 0), 1, 0), axis=0) == 1
-        origin = tl.max(tl.where(at_exit & (w_up + w_diag == 0), 1, 0), axis=0) == 1
-        next_i = tl.where(found, tl.where(origin, -1, i - 1), i)
-        j = tl.where(found, tl.where(exit_up, exit_col, exit_col - 1), j - BLOCK)
-        i = next_i
+        code = (w_up + 2 * w_left + 3 * w_diag).to(tl.int32)
+        i, j, written = _walk_row(code, cols, valid, i, j, written, out, BLOCK)
 
 
 @triton.jit
@@ -1028,18 +1052,7 @@ def _walk_kernel(codes_ptr, items_ptr, path_ptr, W, G, P, BLOCK: tl.constexpr):
         valid = cols >= 0
         word = tl.load(codes_ptr + (s * G + i // 16) * W + cols, mask=valid, other=0)
         code = (word >> (2 * (i % 16))) & 3
-        exit_col = tl.max(tl.where(valid & (code != 2), cols, -1), axis=0)
-        found = exit_col >= 0
-        stop = tl.where(found, exit_col, j - BLOCK + 1)
-        keep = valid & (cols >= stop)
-        slot = out + 2 * (written + j - cols)
-        tl.store(slot, i + 0 * cols, mask=keep)
-        tl.store(slot + 1, cols, mask=keep)
-        written += j - stop + 1
-        step = tl.max(tl.where(cols == exit_col, code, 0), axis=0)
-        next_i = tl.where(found, tl.where(step == 0, -1, i - 1), i)
-        j = tl.where(found, tl.where(step == 1, exit_col, exit_col - 1), j - BLOCK)
-        i = next_i
+        i, j, written = _walk_row(code, cols, valid, i, j, written, out, BLOCK)
 
 
 def _in_order(walk):
