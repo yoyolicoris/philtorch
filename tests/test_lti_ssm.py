@@ -519,3 +519,15 @@ def test_diag_state_space_complex_input_gives_complex_outputs(system, complex_ar
     assert y.is_complex() and zf.is_complex()
     torch.testing.assert_close(y, y_ref)
     torch.testing.assert_close(zf, zf_ref)
+
+
+def test_diag_state_space_real_eigenvectors_with_C():
+    # A symmetric A has real eigenvalues and eigenvectors: no complex step.
+    A = torch.tensor([[0.5, 0.2], [0.2, -0.3]], dtype=torch.double)
+    L, V = torch.linalg.eigh(A)
+    x = torch.randn(3, 9, dtype=torch.double)
+    C = torch.randn(2, dtype=torch.double)
+
+    y = diag_state_space(x, L=L, V=V, C=C)
+
+    torch.testing.assert_close(y, state_space(A, x, C=C))

@@ -541,13 +541,13 @@ def diag_state_space(
         VinvBx.mT.flatten(0, 1),
     ).unflatten(0, (batch_size, M))
 
-    def run(out_idx):
+    def run(out_idx, h_hat=Vinvh):
         if V is None:
-            h = Vinvh.mT if out_idx is None else Vinvh[:, out_idx]
+            h = h_hat.mT if out_idx is None else h_hat[:, out_idx]
         elif out_idx is None:
-            h = (V @ Vinvh).mT
+            h = (V @ h_hat).mT
         else:
-            h = (V[..., out_idx, None, :] @ Vinvh).squeeze(-2)
+            h = (V[..., out_idx, None, :] @ h_hat).squeeze(-2)
         # A real system's states are real: their imaginary part is rounding.
         return h.real if real else h
 
@@ -556,15 +556,21 @@ def diag_state_space(
         h, zf = _ssm.states(run, zi, out_idx=out_idx, final_state=return_zf)
         y = _ssm_C_D(h, x_orig, None, D, batch_size, M)
     else:
-        # y[n] = C h[n], h[n] being the state before x[n]: shift C h, of P
-        # values per step, by a step rather than the M states.
-        h = run(out_idx=None)
-        N = h.size(1)
-        zf = (h[:, -1] if N else zi) if return_zf else None
-        Ch = torch.cat(
-            [_ssm_C_D(s, x_orig, C, None, batch_size, M) for s in (zi.unsqueeze(1), h[:, :-1])],
-            dim=1,
-        )[:, :N]
+        # y[n] = C h[n] = C_hat h_hat[n], with C_hat = C V: the states stay in
+        # the eigenbasis, and the shift moves C h, of P values per step,
+        # rather than the M states. h[0] = zi is in the original basis.
+        N = Vinvh.size(-1)
+        zf = (run(None, Vinvh[..., -1:])[:, 0] if N else zi) if return_zf else None
+        Czi = _ssm_C_D(zi.unsqueeze(1), x_orig, C, None, batch_size, M)  # checks C
+        C_hat = C
+        if V is not None:
+            if V.is_complex() and not C.is_complex():
+                C_hat = C + 0j
+            # A (B, M) C is a row per signal, as _ssm_C_D reads it.
+            per_signal = V.dim() == 3 and C.dim() == 2 and C.size(0) == batch_size
+            C_hat = (C_hat.unsqueeze(-2) @ V).squeeze(-2) if per_signal else C_hat @ V
+        Ch = _ssm_C_D(Vinvh.mT[:, :-1], x_orig, C_hat, None, batch_size, M)
+        Ch = torch.cat([Czi, Ch.real if real else Ch], dim=1)[:, :N]
         y = _ssm.outputs(Ch, None if D is None else _ssm_D(D, x_orig, batch_size))
     if return_zf:
         # Real states with only C or D complex: the final state is complex too.
