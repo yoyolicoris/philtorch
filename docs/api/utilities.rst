@@ -32,6 +32,8 @@ philtorch.poly
    :nosignatures:
 
    polydiv
+   polymul
+   unique_roots
 
 philtorch.utils
 ---------------

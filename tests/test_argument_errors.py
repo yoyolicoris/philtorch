@@ -11,7 +11,7 @@ from philtorch import lpv, lti
 from philtorch.estimation import kalman_filter
 from philtorch.lpv.utils import diag_shift
 from philtorch.mat import companion, find_eigenvectors, matrices_cumdot, matrix_power_accumulate
-from philtorch.poly import polydiv
+from philtorch.poly import polydiv, polymul, unique_roots
 
 F64 = torch.float64
 
@@ -471,6 +471,69 @@ _LTI_FILTERING_CASES = [
         "sos must be 2D or 3D",
         id="sosfilt_zi-sos-1d",
     ),
+    # sos2tf(sos), with sosfilt's check of sos
+    pytest.param(
+        lambda: lti.sos2tf(_ones(5)),
+        "sos must be 2D or 3D",
+        id="sos2tf-sos-1d",
+    ),
+    pytest.param(
+        lambda: lti.sos2tf(_ones(1, 6)),
+        "last dimension of sos must be 5",
+        id="sos2tf-sos-last-dim",
+    ),
+    pytest.param(
+        lambda: lti.sos2tf(_ones(0, 5)),
+        "at least one section",
+        id="sos2tf-sos-no-sections",
+    ),
+    # residuez(b, a, tol, rtype): b and a 1D or 2D
+    pytest.param(
+        lambda: lti.residuez(_ones(1, 1, 3), _ones(2)),
+        "b must be 1D or 2D",
+        id="residuez-b-3d",
+    ),
+    pytest.param(
+        lambda: lti.residuez(_ones(3), _ones(())),
+        "a must be 1D or 2D",
+        id="residuez-a-0d",
+    ),
+    pytest.param(
+        lambda: lti.residuez(_ones(2, 3), _ones(3, 2)),
+        "must share a batch size",
+        id="residuez-batch-mismatch",
+    ),
+    pytest.param(
+        lambda: lti.residuez(_ones(3), _ones(2), rtype="median"),
+        "rtype must be one of",
+        id="residuez-rtype",
+    ),
+    # invresz(r, p, k, tol, rtype): r, p and k 1D or 2D
+    pytest.param(
+        lambda: lti.invresz(_ones(1, 1, 2), _ones(2), _ones(1)),
+        "r must be 1D or 2D",
+        id="invresz-r-3d",
+    ),
+    pytest.param(
+        lambda: lti.invresz(_ones(2), _ones(2), _ones(())),
+        "k must be 1D or 2D",
+        id="invresz-k-0d",
+    ),
+    pytest.param(
+        lambda: lti.invresz(_ones(2, 2), _ones(2, 2), _ones(3, 1)),
+        "must share a batch size",
+        id="invresz-batch-mismatch",
+    ),
+    pytest.param(
+        lambda: lti.invresz(_ones(2), _ones(3), _ones(1)),
+        "r and p must have the same shape",
+        id="invresz-r-p-shape",
+    ),
+    pytest.param(
+        lambda: lti.invresz(_ones(2), _ones(2), _ones(1), rtype="median"),
+        "rtype must be one of",
+        id="invresz-rtype",
+    ),
     # filtfilt(b, a, x)
     pytest.param(
         lambda: lti.filtfilt(_ones(2), _zeros(1), _ones(16), method="odd"),
@@ -725,6 +788,31 @@ _POLY_CASES = [
         lambda: polydiv(_ones(3), _ones(())),
         "u and v must be at least 1D",
         id="v-0d",
+    ),
+    pytest.param(
+        lambda: polymul(_ones(()), _ones(2)),
+        "a and b must be at least 1D",
+        id="polymul-a-0d",
+    ),
+    pytest.param(
+        lambda: polymul(_ones(3), _ones(())),
+        "a and b must be at least 1D",
+        id="polymul-b-0d",
+    ),
+    pytest.param(
+        lambda: unique_roots(_ones(1, 2, 3)),
+        "p must be 1D or 2D",
+        id="unique_roots-p-3d",
+    ),
+    pytest.param(
+        lambda: unique_roots(_ones(())),
+        "p must be 1D or 2D",
+        id="unique_roots-p-0d",
+    ),
+    pytest.param(
+        lambda: unique_roots(_ones(3), rtype="median"),
+        "rtype must be one of",
+        id="unique_roots-rtype",
     ),
 ]
 

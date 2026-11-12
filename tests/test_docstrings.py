@@ -8,6 +8,7 @@ import philtorch.estimation.kalman
 import philtorch.lpv.filtering
 import philtorch.lpv.recur
 import philtorch.lpv.ssm
+import philtorch.lti.conversions
 import philtorch.lti.delay
 import philtorch.lti.filtering
 import philtorch.lti.interp
@@ -24,6 +25,7 @@ MODULES = [
     philtorch.mat,
     philtorch.poly,
     philtorch.utils,
+    philtorch.lti.conversions,
     philtorch.lti.delay,
     philtorch.lti.filtering,
     philtorch.lti.interp,
