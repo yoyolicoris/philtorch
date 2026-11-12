@@ -470,6 +470,157 @@ def lfilter(
     return _squeeze_first_result(y, squeeze_first)
 
 
+def _check_sos(sos: Tensor) -> None:
+    if sos.dim() not in (2, 3):
+        raise ValueError("Sections sos must be 2D or 3D.")
+    if sos.size(-1) != 5:
+        raise ValueError(f"The last dimension of sos must be 5, got {sos.size(-1)}.")
+    if sos.size(-2) == 0:
+        raise ValueError("sos must have at least one section.")
+
+
+def sosfilt(sos: Tensor, x: Tensor, zi: Tensor | None = None) -> Tensor | tuple[Tensor, Tensor]:
+    r"""Filter signals with batched cascades of second-order sections.
+
+    The signals go through the :math:`K` sections one after another, each
+    section a biquad
+
+    .. math::
+        H_k(z) = \frac{b_{k0} + b_{k1} z^{-1} + b_{k2} z^{-2}}
+                      {1 + a_{k1} z^{-1} + a_{k2} z^{-2}}.
+
+    Each section runs as one :func:`lfilter` call, as a two-state recursion.
+
+    Args:
+        sos (Tensor): the sections, of shape :math:`(K, 5)` or
+            :math:`(B, K, 5)`, :math:`K \ge 1`. Each row is
+            :math:`b_0, b_1, b_2, a_1, a_2`. A batched :attr:`sos` has one
+            cascade per signal.
+        x (Tensor): input signals, of shape :math:`(B, N)` or :math:`(N)`.
+        zi (Tensor, optional): the initial state of each section, of shape
+            :math:`(K, 2)` or :math:`(B, K, 2)` and the dtype of :attr:`x`.
+            It is SciPy's ``zi``, the state of the transposed direct form II
+            (see :func:`sosfilt_zi`). Default: ``None``, all zero.
+
+    Returns:
+        Tensor or tuple of Tensor: the filtered signals, of the shape of
+        :attr:`x`, and with :attr:`zi`, the final states, of shape
+        :math:`(B, K, 2)`, or :math:`(K, 2)` when :attr:`sos`, :attr:`x` and
+        :attr:`zi` are all unbatched; a shared :attr:`zi` with batched signals
+        still gives one final state per signal. Pass them as the next chunk's
+        :attr:`zi` to filter a signal in chunks.
+
+    Raises:
+        ValueError: if :attr:`sos` is not 2-D or 3-D, its last dimension is
+            not 5, or it has no section, :attr:`x` is not 1-D or 2-D,
+            :attr:`zi` is not 2-D or 3-D or its last two dimensions are not
+            :math:`(K, 2)`, a batched :attr:`sos` or :attr:`zi` has a batch
+            size other than that of :attr:`x`, or :attr:`sos` or :attr:`zi`
+            has a dtype or device other than that of :attr:`x`.
+
+    Note:
+        Unlike :func:`scipy.signal.sosfilt`, the rows of :attr:`sos` omit the
+        column :math:`a_0`, which is taken to be 1, as the denominator of
+        :func:`lfilter` does, and :attr:`zi` is batch first, of shape
+        :math:`(B, K, 2)` instead of :math:`(K, B, 2)`. There is no ``axis``
+        argument.
+
+    Example::
+
+        >>> from philtorch.lti import sosfilt
+        >>> # two sections, y[n] = 0.5 x[n] + 0.5 y[n - 1] and a gain of 2
+        >>> sos = torch.tensor([[0.5, 0.0, 0.0, -0.5, 0.0],
+        ...                     [2.0, 0.0, 0.0, 0.0, 0.0]])
+        >>> sosfilt(sos, torch.tensor([1.0, 0.0, 0.0, 0.0]))
+        tensor([1.0000, 0.5000, 0.2500, 0.1250])
+    """
+    _check_sos(sos)
+    if x.dim() not in (1, 2):
+        raise ValueError("Input signal x must be 1D or 2D.")
+    K = sos.size(-2)
+    if zi is not None:
+        if zi.dim() not in (2, 3):
+            raise ValueError("Initial states zi must be 2D or 3D.")
+        if zi.shape[-2:] != (K, 2):
+            raise ValueError(
+                f"The last two dimensions of zi must be (K, 2) = ({K}, 2), "
+                f"got {tuple(zi.shape[-2:])}."
+            )
+    squeeze_first = (x.dim() == 1) & (sos.dim() == 2) & ((zi is None) or (zi.dim() == 2))
+    if x.dim() == 1:
+        x = x.unsqueeze(0)
+    for name, t in (("sos", sos), ("zi", zi)):
+        if t is not None and t.dim() == 3 and t.size(0) != x.size(0):
+            raise ValueError(
+                f"Batch size of {name} must match batch size of x, "
+                f"got {name}: {t.size(0)}, x: {x.size(0)}"
+            )
+    if any(t is not None and (t.dtype != x.dtype or t.device != x.device) for t in (sos, zi)):
+        raise ValueError(
+            f"sos, zi and x must share a dtype and a device, got "
+            f"{[(t.dtype, str(t.device)) for t in (sos, zi, x) if t is not None]}"
+        )
+
+    if zi is None:
+        sections = (partial(lfilter, s[..., :3], s[..., 3:]) for s in sos.unbind(-2))
+        return _squeeze_first_result(chain_functions(*sections)(x), squeeze_first)
+
+    def section(s, z):
+        # passes on the output and the final states of the sections so far
+        def run(y, *zfs):
+            y, zf = lfilter(s[..., :3], s[..., 3:], y, zi=z)
+            return y, *zfs, zf
+
+        return run
+
+    y, *zfs = chain_functions(*map(section, sos.unbind(-2), zi.unbind(-2)))(x)
+    return _squeeze_first_result((y, torch.stack(zfs, dim=-2)), squeeze_first)
+
+
+def sosfilt_zi(sos: Tensor) -> Tensor:
+    r"""Return the initial states of :func:`sosfilt` for a steady step response.
+
+    With these states, filtering a constant input of 1 starts every section in
+    steady state. Section :math:`k` gets the state of :func:`lfilter_zi`,
+    scaled by the gain at DC of the sections before it,
+
+    .. math::
+        \prod_{j < k} \frac{b_{j0} + b_{j1} + b_{j2}}{1 + a_{j1} + a_{j2}}.
+
+    Args:
+        sos (Tensor): the sections, of shape :math:`(K, 5)` or
+            :math:`(B, K, 5)`, :math:`K \ge 1`, as in :func:`sosfilt`.
+
+    Returns:
+        Tensor: the initial states, of shape :math:`(K, 2)` or
+        :math:`(B, K, 2)`.
+
+    Raises:
+        ValueError: if :attr:`sos` is not 2-D or 3-D, its last dimension is
+            not 5, or it has no section.
+
+    Note:
+        As in :func:`sosfilt`, the rows of :attr:`sos` omit the column
+        :math:`a_0`, and the states of batched sections are batch first. The
+        states are those of :func:`scipy.signal.sosfilt_zi`.
+
+    Example::
+
+        >>> from philtorch.lti import sosfilt, sosfilt_zi
+        >>> sos = torch.tensor([[0.5, 0.0, 0.0, -0.5, 0.0],
+        ...                     [2.0, 0.0, 0.0, 0.0, 0.0]])
+        >>> y, _ = sosfilt(sos, torch.ones(4), zi=sosfilt_zi(sos))
+        >>> y
+        tensor([2., 2., 2., 2.])
+    """
+    _check_sos(sos)
+    b, a = sos[..., :3], sos[..., 3:]
+    gain = b.sum(-1) / (1 + a.sum(-1))
+    # the gains of the sections before each one, the first having none
+    before = torch.cumprod(F.pad(gain, (1, 0), value=1.0)[..., :-1], dim=-1)
+    return lfilter_zi(a, b) * before.unsqueeze(-1)
+
+
 # The keyword arguments the general path forwards: ``state_space`` and
 # ``state_space_recursion`` take only ``unroll_factor`` of those that
 # ``lfilter`` leaves free, and ``diag_state_space`` also ``L``, ``V`` and
