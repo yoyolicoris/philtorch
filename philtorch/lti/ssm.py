@@ -499,12 +499,10 @@ def diag_state_space(
         Vinvzi = torch.linalg.vecdot(Vinv.conj(), zi.unsqueeze(1))
 
     if Vinv is None:
-        if B is not None:
-            VinvBx = _ssm_B(B, x, batch_size, M)
-        elif x.dim() == 2:  # every state is driven by x
+        if B is None and x.dim() == 2:  # every state is driven by x
             VinvBx = x.unsqueeze(-1).expand(-1, -1, M)
         else:
-            VinvBx = x
+            VinvBx = _ssm_B(B, x, batch_size, M)
     elif B is not None:
         # Same dispatch as _ssm_B, but Vinv is folded into B before touching x.
         features = x.size(-1)

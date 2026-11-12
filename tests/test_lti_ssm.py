@@ -396,17 +396,16 @@ def test_ssm_C_rejects_invalid_shapes(C_shape):
 # diag_state_space(L=...) alone: A = diag(L), V = I, and no M x M work.
 def _diag_L_inputs(complex_L, batched_L, x_dim, with_B):
     batch, N, M, F = 3, 11, 4, 5
-    dtype = torch.cdouble if complex_L else torch.double
     L = 0.9 * torch.rand((batch, M) if batched_L else (M,), dtype=torch.double)
     if complex_L:
-        L = L * torch.polar(torch.ones_like(L), torch.rand_like(L) * 6.0).to(dtype)
+        L = torch.polar(L, torch.rand_like(L) * 6.0)
     x = torch.randn(
         (batch, N) if x_dim == 2 else (batch, N, F if with_B else M), dtype=torch.double
     )
     B = None
     if with_B:
         shape = {2: (M,), 3: (M, F)}[x_dim]
-        B = torch.randn((batch, *shape) if batched_L else shape, dtype=dtype)
+        B = torch.randn((batch, *shape) if batched_L else shape, dtype=L.dtype)
     return L, x, B
 
 
@@ -460,12 +459,10 @@ def test_diag_state_space_L_alone_C_D_zi_out_idx(complex_L, batched_L, extras):
 def test_diag_state_space_L_alone_gradcheck():
     L, x, B = _diag_L_inputs(True, True, 2, True)
     zi = torch.randn(x.size(0), L.size(-1), dtype=torch.double)
-    L, B, zi = (t.requires_grad_() for t in (L, B, zi))
-    x.requires_grad_()
+    inputs = tuple(t.requires_grad_() for t in (x, L, B, zi))
 
     assert torch.autograd.gradcheck(
-        lambda *args: diag_state_space(args[0], L=args[1], B=args[2], zi=args[3]),
-        (x, L, B, zi),
+        lambda x, L, B, zi: diag_state_space(x, L=L, B=B, zi=zi), inputs
     )
 
 
