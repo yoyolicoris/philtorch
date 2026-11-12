@@ -226,7 +226,7 @@ def unique_roots(p: Tensor, tol: float = 1e-3, rtype: str = "min") -> tuple[Tens
 
 
 def residuez(
-    b: Tensor, a: Tensor, tol: float = 1e-3, rtype: str = "avg"
+    b: Tensor, a: Tensor, tol: float = 1e-3, rtype: str = "avg", delayed_form: bool = False
 ) -> tuple[Tensor, Tensor, Tensor]:
     r"""Expand a transfer function into partial fractions.
 
@@ -240,24 +240,28 @@ def residuez(
     term :math:`k` of
 
     .. math::
-        H(z) = \sum_{i=1}^{M} \frac{r_i}{(1 - p_i z^{-1})^{j_i}}
-            + \sum_{n=0}^{L-M-1} k_n z^{-n},
+        H(z) = \sum_{n=0}^{D-1} k_n z^{-n}
+            + z^{-d} \sum_{i=1}^{M} \frac{r_i}{(1 - p_i z^{-1})^{j_i}},
+        \quad D = \max(L - M, 0),
 
-    where a pole of multiplicity :math:`m` is listed :math:`m` times in a row,
-    with the powers :math:`j_i = 1, \dots, m`. The poles are the roots of the
-    denominator, grouped by :func:`unique_roots` and sorted by magnitude,
+    with the fractions starting with the direct term, :math:`d = 0`, as in
+    SciPy, or, with ``delayed_form=True``, delayed until it has ended,
+    :math:`d = D`. The two agree when :math:`L \le M`. A pole of multiplicity
+    :math:`m` is listed :math:`m` times in a row, with the powers
+    :math:`j_i = 1, \dots, m`. The poles are the roots of the denominator,
+    grouped by :func:`unique_roots` and sorted by magnitude,
     ascending.
 
-    The residues come from the impulse response :math:`h` of :math:`H`, found
-    as the first :math:`\max(L, M)` terms of :math:`b / a` by one triangular
-    solve. The impulse response of each fraction is
-    :math:`\binom{n + j_i - 1}{j_i - 1} p_i^n`, so the response from the
-    index :math:`L - M` on, where the direct term has ended, is
-    :math:`h[n] = \sum_i V_{ni} r_i` with the confluent Vandermonde matrix
-    :math:`V_{ni} = \binom{n + j_i - 1}{j_i - 1} p_i^n`. One linear solve gives
-    :math:`r`, and the direct term is what the fractions leave of the
-    response before that, :math:`k_n = h[n] - \sum_i V_{ni} r_i`. Simple and
-    repeated poles take the same path.
+    Both parts come from the impulse response :math:`h` of :math:`H`, found as
+    the first :math:`D + M` terms of :math:`b / a` by one triangular solve. The
+    impulse response of each fraction is
+    :math:`\binom{n + j_i - 1}{j_i - 1} p_i^n`, so that after the direct term,
+    :math:`h[D + n] = \sum_i V_{D - d + n, i} r_i` with the confluent
+    Vandermonde matrix :math:`V_{ni} = \binom{n + j_i - 1}{j_i - 1} p_i^n`, and
+    one linear solve gives :math:`r`. The direct term is the rest of the
+    response before, :math:`k_n = h[n] - \sum_i V_{n - d, i} r_i`, which is
+    :math:`h[n]` itself in the delayed form. Simple and repeated poles take the
+    same path.
 
     Args:
         b (Tensor): numerator coefficients, of shape :math:`(L)` or
@@ -269,6 +273,9 @@ def residuez(
             considered equal, as in :func:`unique_roots`. Default: ``1e-3``.
         rtype (str, optional): how to choose the pole of a group of equal poles,
             as in :func:`unique_roots`. Default: ``"avg"``.
+        delayed_form (bool, optional): if ``True``, delay the fractions until
+            the direct term has ended, as :func:`lfilter`'s ``delayed_form``
+            does. Default: ``False``.
 
     Returns:
         tuple of Tensor: the residues :math:`r` and the poles :math:`p`, both
@@ -280,14 +287,19 @@ def residuez(
 
     Raises:
         ValueError: if :attr:`b` or :attr:`a` is not 1-D or 2-D, their batch
-            sizes differ, or :attr:`rtype` is unknown.
+            sizes differ, :attr:`rtype` is unknown, or, without
+            ``delayed_form``, :math:`L > M` and :math:`a_M = 0` for a filter.
 
     Note:
         Unlike :func:`scipy.signal.residuez`, the denominator omits its leading
         1, and no zero coefficients are trimmed, so the shapes of the outputs
-        follow from those of the inputs. A pole at 0 (:math:`a_M = 0`) makes
-        the linear system singular, so that the solve raises an error, unless
-        it is simple and :math:`L \le M`.
+        follow from those of the inputs. A pole at 0 (:math:`a_M = 0`) has
+        the fraction :math:`r_i`, a constant: when :math:`L > M`, it overlaps
+        the direct term, so that the expansion isn't unique, and SciPy trims
+        the pole from :math:`a`, changing the shapes, where this raises an
+        error. In the delayed form, it is a tap at delay :math:`D` instead,
+        which is unique. In either form, a pole at 0 of multiplicity 2 or more
+        makes the linear system singular, so that the solve raises an error.
 
     Note:
         The poles are the roots of :attr:`a`, which are ill-conditioned at high
@@ -315,6 +327,11 @@ def residuez(
     b, a = b.to(dtype), a.to(dtype)
     B, M = a.shape
     L = b.size(-1)
+    if not delayed_form and L > M > 0 and (a[:, -1] == 0).any():
+        raise ValueError(
+            "A pole at 0 (a_M = 0) with a numerator longer than the denominator "
+            "has no unique expansion; pass delayed_form=True."
+        )
 
     if M == 0:
         r = p = b.new_empty(B, 0, dtype=torch.promote_types(dtype, torch.complex64))
@@ -338,36 +355,42 @@ def residuez(
     h = torch.linalg.solve_triangular(
         T, F.pad(b, (0, N - L)).unsqueeze(-1), upper=False, unitriangular=True
     )
-    h = h.squeeze(-1).to(p.dtype)
+    h = h.squeeze(-1)
 
-    # h[L - M:] = V r, and k = h[:L - M] - V r on the rows before
-    V = _vandermonde(p, extra.view(B, M), N)
-    Lk = N - M
-    r = torch.linalg.solve(V[:, Lk:], h[:, Lk:])
-    if Lk == 0:
-        return (r, p, b[:, :0]) if batched else (r[0], p[0], b[0, :0])
-    k = torch.baddbmm(h[:, :Lk].unsqueeze(-1), V[:, :Lk], r.unsqueeze(-1), alpha=-1).squeeze(-1)
-    k = k if dtype.is_complex else k.real
+    # after the direct term, h[D:] = V r, V's rows starting at D - d
+    D = N - M
+    V = _vandermonde(p, extra.view(B, M), M if delayed_form else N)
+    r = torch.linalg.solve(V[:, -M:], h[:, D:].to(p.dtype))
+    k = h[:, :D]
+    if not delayed_form and D > 0:
+        k = torch.baddbmm(k.to(p.dtype).unsqueeze(-1), V[:, :D], r.unsqueeze(-1), alpha=-1)
+        k = k.squeeze(-1) if dtype.is_complex else k.squeeze(-1).real
     return (r, p, k) if batched else (r[0], p[0], k[0])
 
 
 def invresz(
-    r: Tensor, p: Tensor, k: Tensor, tol: float = 1e-3, rtype: str = "avg"
+    r: Tensor,
+    p: Tensor,
+    k: Tensor,
+    tol: float = 1e-3,
+    rtype: str = "avg",
+    delayed_form: bool = False,
 ) -> tuple[Tensor, Tensor]:
     r"""Convert a partial fraction expansion to transfer function coefficients.
 
     This is the inverse of :func:`residuez`: it multiplies out
 
     .. math::
-        H(z) = \sum_{i=1}^{M} \frac{r_i}{(1 - p_i z^{-1})^{j_i}}
-            + \sum_{n=0}^{M_k-1} k_n z^{-n},
+        H(z) = \sum_{n=0}^{M_k-1} k_n z^{-n}
+            + z^{-d} \sum_{i=1}^{M} \frac{r_i}{(1 - p_i z^{-1})^{j_i}},
 
+    with :math:`d = 0`, or :math:`d = M_k` with ``delayed_form=True``,
     where equal poles are adjacent and have the powers :math:`j_i = 1, 2, \dots`
     in a row. The denominator is the product of :math:`(1 - p_i z^{-1})` over
     the poles, by a tree of :func:`~philtorch.poly.polymul`. The numerator is
     the first :math:`M + M_k` coefficients of the denominator times the impulse
-    response :math:`h = V r + k` of :math:`H`, with the confluent Vandermonde
-    matrix :math:`V` of :func:`residuez`.
+    response of :math:`H`, :math:`k` plus :math:`V r` delayed by :math:`d`,
+    with the confluent Vandermonde matrix :math:`V` of :func:`residuez`.
 
     Args:
         r (Tensor): the residues, of shape :math:`(M)` or :math:`(B, M)`. A
@@ -383,6 +406,9 @@ def invresz(
             poles: ``"max"`` or ``"maximum"``, ``"min"`` or ``"minimum"``, or
             ``"avg"`` or ``"mean"``, as in :func:`unique_roots`.
             Default: ``"avg"``.
+        delayed_form (bool, optional): if ``True``, the fractions are delayed
+            until the direct term has ended, as in :func:`residuez`.
+            Default: ``False``.
 
     Returns:
         tuple of Tensor: the numerator :math:`b`, of shape :math:`(M + M_k)`
@@ -441,9 +467,13 @@ def invresz(
     poles = _reduce_groups(p.unsqueeze(1), run.unsqueeze(-1) == run.unsqueeze(-2), rtype)
 
     denominator = _tree_prod(F.pad(-poles.unsqueeze(-1), (1, 0), value=1))
-    response = torch.baddbmm(
-        F.pad(k, (0, M)).unsqueeze(-1), _vandermonde(poles, extra, L), r.unsqueeze(-1)
-    ).squeeze(-1)
+    if delayed_form:
+        fractions = (_vandermonde(poles, extra, M) @ r.unsqueeze(-1)).squeeze(-1)
+        response = torch.cat([k, fractions], -1)
+    else:
+        response = torch.baddbmm(
+            F.pad(k, (0, M)).unsqueeze(-1), _vandermonde(poles, extra, L), r.unsqueeze(-1)
+        ).squeeze(-1)
     b = polymul(denominator, response)[..., :L]
     a = denominator[:, 1:]
     return (b, a) if batched else (b[0], a[0])

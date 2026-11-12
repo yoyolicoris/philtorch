@@ -489,6 +489,11 @@ _LTI_FILTERING_CASES = [
     ),
     # residuez(b, a, tol, rtype): b and a 1D or 2D
     pytest.param(
+        lambda: lti.residuez(_ones(4), torch.tensor([-0.5, 0.0], dtype=F64)),
+        "pass delayed_form=True",
+        id="residuez-zero-pole-undelayed",
+    ),
+    pytest.param(
         lambda: lti.residuez(_ones(1, 1, 3), _ones(2)),
         "b must be 1D or 2D",
         id="residuez-b-3d",

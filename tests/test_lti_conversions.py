@@ -35,15 +35,43 @@ def _canonical(r: np.ndarray, p: np.ndarray) -> tuple[np.ndarray, np.ndarray]:
     return r[order], p[order]
 
 
-def _check_residuez(b: np.ndarray, a: np.ndarray, **kwargs):
+def _delayed_residuez(b: np.ndarray, a: np.ndarray, **kwargs):
+    """SciPy's residuez in the delayed form, with a = [1, a1, ...].
+
+    The direct term is the first D samples of the impulse response, and the
+    residues are SciPy's of the rest, H - k, advanced by D, which has no
+    direct term.
+    """
+    D = max(len(b) - len(a) + 1, 0)
+    if D == 0:
+        return signal.residuez(b, a, **kwargs)
+    k = signal.lfilter(b, a, np.eye(1, D)[0])
+    rest = (b - np.convolve(k, a)[: len(b)])[D:]
+    r, p, _ = signal.residuez(rest, a, **kwargs)
+    return r, p, k
+
+
+def _delayed_invresz(r: np.ndarray, p: np.ndarray, k: np.ndarray, **kwargs):
+    """SciPy's invresz of the delayed form: k a, plus SciPy's numerator delayed by D."""
+    b_rest, a = signal.invresz(r, p, [], **kwargs)
+    D = len(k)
+    b = np.zeros(len(r) + D, dtype=complex)
+    if D:
+        b += np.convolve(k, a)
+    b[D : D + len(b_rest)] += b_rest
+    return b, a
+
+
+def _check_residuez(b: np.ndarray, a: np.ndarray, delayed_form: bool = False, **kwargs):
     """Compare residuez with SciPy, row by row when batched."""
-    r, p, k = residuez(torch.from_numpy(b), torch.from_numpy(a), **kwargs)
+    r, p, k = residuez(*map(torch.from_numpy, (b, a)), delayed_form=delayed_form, **kwargs)
+    reference = _delayed_residuez if delayed_form else signal.residuez
     assert r.is_complex() and p.is_complex()
     b, a, r, p, k = (np.atleast_2d(t) for t in (b, a, r.numpy(), p.numpy(), k.numpy()))
     for i in range(len(r)):
         # an unbatched b or a is shared by the rows
         row_b, row_a = b[i if len(b) > 1 else 0], a[i if len(a) > 1 else 0]
-        expected_r, expected_p, expected_k = signal.residuez(
+        expected_r, expected_p, expected_k = reference(
             row_b, np.concatenate([[1.0], row_a]), **kwargs
         )
         got_r, got_p = _canonical(r[i], p[i])
@@ -141,7 +169,8 @@ def test_sos2tf_matches_scipy(K, batched):
     ],
 )
 @pytest.mark.parametrize("rtype", ["avg", "min"])
-def test_residuez_matches_scipy(b_length, a, rtype):
+@pytest.mark.parametrize("delayed_form", [False, True])
+def test_residuez_matches_scipy(b_length, a, rtype, delayed_form):
     rng = np.random.default_rng(b_length)
     b = rng.standard_normal(b_length)
     if np.iscomplexobj(a):
@@ -180,6 +209,23 @@ def test_residuez_unbatched_denominator_with_batched_numerator():
     _check_residuez(b, a)
 
 
+@pytest.mark.parametrize("b_length", [2, 4])
+def test_residuez_delayed_form_takes_a_pole_at_zero(b_length):
+    # a first-order filter padded to second order: poles 0.5 and 0
+    b = torch.arange(1.0, b_length + 1, dtype=F64)
+    a = torch.tensor([-0.5, 0.0], dtype=F64)
+    r, p, k = residuez(b, a, delayed_form=True)
+    # the expansion's impulse response is the filter's
+    # (NumPy's 0j ** 0 is 1, torch's is nan)
+    h = (r.numpy()[:, None] * p.numpy()[:, None] ** np.arange(20)).sum(0).real
+    h = np.concatenate([k.numpy(), h])[:20]
+    x = np.eye(1, 20)[0]
+    np.testing.assert_allclose(h, signal.lfilter(b.numpy(), [1.0, -0.5, 0.0], x), atol=1e-12)
+    b_back, a_back = invresz(r, p, k, delayed_form=True)
+    torch.testing.assert_close(b_back.real, b)
+    torch.testing.assert_close(a_back.real, a)
+
+
 def test_residuez_without_poles():
     b = torch.arange(3.0, dtype=F64)
     r, p, k = residuez(b, torch.zeros(0, dtype=F64))
@@ -187,10 +233,11 @@ def test_residuez_without_poles():
     torch.testing.assert_close(k, b)
 
 
-def _check_invresz(r: np.ndarray, p: np.ndarray, k: np.ndarray, **kwargs):
+def _check_invresz(r, p, k, delayed_form: bool = False, **kwargs):
     r, p, k = (np.ascontiguousarray(x) for x in (r, p, k))  # SciPy's k has a negative stride
-    b, a = invresz(torch.from_numpy(r), torch.from_numpy(p), torch.from_numpy(k), **kwargs)
-    expected_b, expected_a = signal.invresz(r, p, k, **kwargs)
+    b, a = invresz(*map(torch.from_numpy, (r, p, k)), delayed_form=delayed_form, **kwargs)
+    reference = _delayed_invresz if delayed_form else signal.invresz
+    expected_b, expected_a = reference(r, p, k, **kwargs)
     assert b.is_complex() and a.is_complex()
     assert b.shape[-1] == len(r) + len(k)
     # SciPy's numerator can be longer than ours by zeros, never shorter
@@ -209,14 +256,17 @@ def _check_invresz(r: np.ndarray, p: np.ndarray, k: np.ndarray, **kwargs):
     ],
 )
 @pytest.mark.parametrize("rtype", ["avg", "min", "max"])
-def test_invresz_matches_scipy_and_round_trips(b_length, a, rtype):
+@pytest.mark.parametrize("delayed_form", [False, True])
+def test_invresz_matches_scipy_and_round_trips(b_length, a, rtype, delayed_form):
     rng = np.random.default_rng(b_length)
     b = rng.standard_normal(b_length)
-    r, p, k = signal.residuez(b, np.concatenate([[1.0], a]))
-    _check_invresz(r, p, k, rtype=rtype)
+    reference = _delayed_residuez if delayed_form else signal.residuez
+    r, p, k = reference(b, np.concatenate([[1.0], a]))
+    _check_invresz(r, p, k, delayed_form, rtype=rtype)
 
     # invresz(residuez(b, a)) is (b, a), a numerator shorter than a padded
-    got_b, got_a = invresz(*residuez(torch.from_numpy(b), torch.from_numpy(a)))
+    expansion = residuez(torch.from_numpy(b), torch.from_numpy(a), delayed_form=delayed_form)
+    got_b, got_a = invresz(*expansion, delayed_form=delayed_form)
     np.testing.assert_allclose(got_a.numpy(), a, atol=1e-10)
     np.testing.assert_allclose(got_b.numpy(), np.pad(b, (0, got_b.size(-1) - b_length)), atol=1e-9)
 
