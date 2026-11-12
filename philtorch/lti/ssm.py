@@ -478,7 +478,7 @@ def diag_state_space(
 
     zi, return_zf = _ssm.initial_state(x, zi, M)
 
-    x_orig = x
+    x_orig, zi_orig = x, zi
     if (L if Vinv is None else Vinv).is_complex():
         if not zi.is_complex():
             zi = zi + 0j  # Ensure zi is complex if the states are
@@ -486,6 +486,8 @@ def diag_state_space(
             x = x + 0j  # Ensure x is complex if the states are
         if B is not None and not B.is_complex():
             B = B + 0j
+        if not real and C is not None and not C.is_complex():
+            C = C + 0j
 
     # Vinv is None (the identity), or 2-D or 3-D: as given and checked, or as
     # computed.
@@ -538,16 +540,17 @@ def diag_state_space(
 
     def run(out_idx):
         if V is None:
-            return Vinvh.mT if out_idx is None else Vinvh[:, out_idx]
-        if out_idx is None:
-            return (V @ Vinvh).mT
-        return (V[..., out_idx, None, :] @ Vinvh).squeeze(-2)
+            h = Vinvh.mT if out_idx is None else Vinvh[:, out_idx]
+        elif out_idx is None:
+            h = (V @ Vinvh).mT
+        else:
+            h = (V[..., out_idx, None, :] @ Vinvh).squeeze(-2)
+        # A real system's states are real: their imaginary part is rounding.
+        return h.real if real else h
 
+    zi = zi_orig if real else zi
     if C is None:
         h, zf = _ssm.states(run, zi, out_idx=out_idx, final_state=return_zf)
-        if real:
-            h = h.real
-            zf = zf.real if return_zf else None
         y = _ssm_C_D(h, x_orig, None, D, batch_size, M)
     else:
         # y[n] = C h[n], h[n] being the state before x[n]: shifting C h by a
@@ -555,14 +558,9 @@ def diag_state_space(
         h = run(out_idx=None)
         N = h.size(1)
         zf = (h[:, -1] if N else zi) if return_zf else None
-        h0 = zi.unsqueeze(1)
-        if real:
-            h, h0 = h.real, h0.real
-            zf = zf.real if return_zf else None
-        elif h.is_complex() and not C.is_complex():
-            C = C + 0j
         Ch = torch.cat(
-            [_ssm_C_D(s, x_orig, C, None, batch_size, M) for s in (h0, h[:, :-1])], dim=1
+            [_ssm_C_D(s, x_orig, C, None, batch_size, M) for s in (zi.unsqueeze(1), h[:, :-1])],
+            dim=1,
         )[:, :N]
         y = _ssm.outputs(Ch, None if D is None else _ssm_D(D, x_orig, batch_size))
     if return_zf:
