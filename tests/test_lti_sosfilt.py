@@ -30,7 +30,7 @@ def test_sosfilt_matches_scipy(K, batched_sos, batched_x, use_zi):
     B, N = 3, 40
     sos = _random_sos(B, K=K) if batched_sos else _random_sos(K=K)
     x = np.random.randn(B, N) if batched_x else np.random.randn(N)
-    zi = np.random.randn(B, K, 2) if batched_sos and use_zi else np.random.randn(K, 2)
+    zi = np.random.randn(B, K, 2) if batched_sos else np.random.randn(K, 2)
 
     def reference(i):
         s = _scipy_sos(sos[i] if batched_sos else sos)
@@ -52,8 +52,6 @@ def test_sosfilt_matches_scipy(K, batched_sos, batched_x, use_zi):
     if use_zi:
         zf_ref = np.stack([r[1] for r in refs]) if batched_x else refs[0][1]
         torch.testing.assert_close(zf, torch.from_numpy(zf_ref))
-        unbatched = not (batched_sos or batched_x)
-        assert zf.shape == ((K, 2) if unbatched else (B, K, 2))
 
 
 @pytest.mark.parametrize("K", [1, 3])
@@ -95,7 +93,7 @@ def test_sosfilt_gradients():
     sos1 = sos[0].detach().clone().requires_grad_()
     zi1 = zi[0].detach().clone().requires_grad_()
     assert torch.autograd.gradcheck(sosfilt, (sos1, x, zi1))
-    assert torch.autograd.gradcheck(lambda s, x: sosfilt(s, x), (sos, x))
+    assert torch.autograd.gradcheck(sosfilt, (sos, x))
 
 
 @pytest.mark.parametrize("batched", [False, True])

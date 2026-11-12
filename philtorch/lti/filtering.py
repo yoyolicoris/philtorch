@@ -546,7 +546,7 @@ def sosfilt(sos: Tensor, x: Tensor, zi: Tensor | None = None) -> Tensor | tuple[
                 f"The last two dimensions of zi must be (K, 2) = ({K}, 2), "
                 f"got {tuple(zi.shape[-2:])}."
             )
-    squeeze_first = (x.dim() == 1) & (sos.dim() == 2) & ((zi is None) or (zi.dim() == 2))
+    squeeze_first = x.dim() == 1 and sos.dim() == 2 and (zi is None or zi.dim() == 2)
     if x.dim() == 1:
         x = x.unsqueeze(0)
     for name, t in (("sos", sos), ("zi", zi)):
