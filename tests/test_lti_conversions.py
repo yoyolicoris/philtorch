@@ -255,6 +255,12 @@ def test_invresz_matches_scipy_and_round_trips(b_length, a, delayed_form):
     np.testing.assert_allclose(got_b.numpy(), np.pad(b, (0, got_b.size(-1) - b_length)), atol=1e-9)
 
 
+@pytest.mark.parametrize("delayed_form", [False, True])
+def test_invresz_keeps_a_long_direct_term_beside_a_growing_pole(delayed_form):
+    # the fraction's response grows as 2^n, which would round the ones of k away
+    _check_invresz(np.array([1.0]), np.array([2.0]), np.ones(60), delayed_form)
+
+
 def test_invresz_batched():
     rows = [_a(0.5, 0.5, 0.3), _a(0.5, 0.4, 0.3), _a(0.5, 0.5, 0.5)]
     parts = [

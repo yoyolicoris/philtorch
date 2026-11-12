@@ -290,8 +290,9 @@ def residuez(
             sizes or precisions differ (real and complex inputs of one
             precision mix), :attr:`rtype` is unknown, or, without
             ``delayed_form``, :math:`L > M` and :math:`a_M = 0` for any filter.
-        torch.linalg.LinAlgError: if a pole at 0 is repeated, which makes the
-            linear system singular.
+        torch.linalg.LinAlgError: if the linear system is singular: a pole at 0
+            is repeated, or, without ``delayed_form``, :math:`p_i^D`
+            underflows.
 
     Note:
         Unlike :func:`scipy.signal.residuez`, the denominator omits its leading
@@ -305,6 +306,13 @@ def residuez(
         isn't unique: SciPy trims the pole from :math:`a`, changing the
         shapes, where this raises an error. In the delayed form, the pole is a
         tap at delay :math:`D`, which is unique.
+
+    Note:
+        Without ``delayed_form``, the residues come from the response after the
+        direct term, from :math:`h[D]` on, where a pole contributes
+        :math:`p_i^D`. If that underflows, as :math:`0.5^{1100}` does in
+        float64, the linear system is singular, and the solve raises an error.
+        The delayed form has no such limit.
 
     Note:
         The poles are the roots of :attr:`a`, which are ill-conditioned at high
@@ -396,9 +404,10 @@ def invresz(
     where equal poles are adjacent and have the powers :math:`j_i = 1, 2, \dots`
     in a row. The denominator is the product of :math:`(1 - p_i z^{-1})` over
     the poles, by a tree of :func:`~philtorch.poly.polymul`. The numerator is
-    the first :math:`M + M_k` coefficients of the denominator times the impulse
-    response of :math:`H`, :math:`k` plus :math:`V r` delayed by :math:`d`,
-    with the confluent Vandermonde matrix :math:`V` of :func:`residuez`.
+    :math:`k` times the denominator plus, delayed by :math:`d`, the fractions'
+    numerator: the first :math:`M` coefficients of the denominator times their
+    impulse response :math:`V r`, with the confluent Vandermonde matrix
+    :math:`V` of :func:`residuez`.
 
     Args:
         r (Tensor): the residues, of shape :math:`(M)` or :math:`(B, M)`. A
@@ -479,10 +488,11 @@ def invresz(
     poles = _reduce_groups(p.unsqueeze(1), run.unsqueeze(-1) == run.unsqueeze(-2), rtype)
 
     denominator = _tree_prod(F.pad(-poles.unsqueeze(-1), (1, 0), value=1))
-    # the fractions start at the delay d, after the direct term in the delayed form
+    # k a, then the fractions' numerator, from their first M samples, delayed by
+    # d; a zero pads k, so that an empty k multiplies too
+    fractions = (_vandermonde(poles, extra, M) @ r.unsqueeze(-1)).squeeze(-1)
+    numerator = polymul(denominator, fractions)[..., :M]
     d = k.size(-1) if delayed_form else 0
-    V = F.pad(_vandermonde(poles, extra, L - d), (0, 0, d, 0))
-    response = torch.baddbmm(F.pad(k, (0, M)).unsqueeze(-1), V, r.unsqueeze(-1)).squeeze(-1)
-    b = polymul(denominator, response)[..., :L]
+    b = polymul(F.pad(k, (0, 1)), denominator)[..., :L] + F.pad(numerator, (d, L - M - d))
     a = denominator[:, 1:]
     return (b, a) if batched else (b[0], a[0])
