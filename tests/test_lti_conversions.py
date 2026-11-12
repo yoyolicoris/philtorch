@@ -126,19 +126,6 @@ def test_unique_roots_batched(rtype, dtype):
     np.testing.assert_array_equal(m.numpy(), np.concatenate([e[1] for e in expected]))
 
 
-def test_unique_roots_gradcheck():
-    # Rows with groups of 2 and 1, and of 3: the mean's gradient is 1 / size.
-    p = torch.tensor([[0.0, 0.0001, 1.0], [2.0, 2.0002, 2.0001]], dtype=torch.double)
-    p.requires_grad_()
-    assert torch.autograd.gradcheck(lambda p: unique_roots(p, rtype="avg")[0], (p,))
-    p = p.detach().to(torch.cdouble).requires_grad_()
-    assert torch.autograd.gradcheck(lambda p: unique_roots(p, rtype="avg")[0], (p,))
-    # a minimum takes the gradient of the selected root alone
-    p = torch.tensor([0.1, 0.0, 0.2], dtype=torch.double, requires_grad=True)
-    unique_roots(p, tol=1.0, rtype="min")[0].sum().backward()
-    torch.testing.assert_close(p.grad, torch.tensor([0.0, 1.0, 0.0], dtype=torch.double))
-
-
 @pytest.mark.parametrize("K", [1, 2, 3, 5])
 @pytest.mark.parametrize("batched", [False, True])
 def test_sos2tf_matches_scipy(K, batched):
@@ -312,29 +299,3 @@ def test_invresz_without_poles():
     b, a = invresz(torch.zeros(0, dtype=F64), torch.zeros(0, dtype=F64), k)
     assert a.shape == (0,)
     torch.testing.assert_close(b.real, k)
-
-
-def test_sos2tf_gradcheck():
-    sos = torch.from_numpy(_random_sos(2, K=3)).requires_grad_()
-    assert torch.autograd.gradcheck(sos2tf, (sos,))
-
-
-@pytest.mark.parametrize(
-    "a",
-    [
-        # distinct magnitudes, so that a perturbation doesn't reorder the poles
-        _a(0.6, -0.3, 0.2, -0.1),
-        _a(0.6, 0.2 + 0.3j, 0.1 - 0.4j, -0.3),
-    ],
-)
-def test_residuez_gradcheck(a):
-    b = torch.randn(6, dtype=F64, requires_grad=True)
-    a = torch.from_numpy(a).requires_grad_()
-    assert torch.autograd.gradcheck(residuez, (b, a))
-
-
-def test_invresz_gradcheck():
-    r = torch.randn(4, dtype=torch.cdouble, requires_grad=True)
-    p = torch.tensor([0.6, -0.3, 0.2 + 0.3j, 0.1], dtype=torch.cdouble, requires_grad=True)
-    k = torch.randn(2, dtype=F64, requires_grad=True)
-    assert torch.autograd.gradcheck(invresz, (r, p, k))

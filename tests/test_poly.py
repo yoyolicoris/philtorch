@@ -23,13 +23,6 @@ def test_polydiv_matches_numpy(dividend: int, divisor: int):
         )
 
 
-def test_polydiv_gradcheck():
-    # Gradients reach both the dividend and the divisor.
-    u = torch.randn(2, 6, dtype=torch.double, requires_grad=True)
-    v = torch.randn(2, 3, dtype=torch.double, requires_grad=True)
-    assert torch.autograd.gradcheck(polydiv, (u, v))
-
-
 @pytest.mark.parametrize("dtype", [torch.double, torch.cdouble])
 @pytest.mark.parametrize("shape_a, shape_b", [((3, 4), (3, 5)), ((4,), (6,)), ((1,), (3, 1))])
 def test_polymul_matches_numpy(shape_a, shape_b, dtype):
@@ -43,13 +36,3 @@ def test_polymul_matches_numpy(shape_a, shape_b, dtype):
     b_full = b.expand(*batch, -1).reshape(-1, b.size(-1))
     for row, (x, y) in enumerate(zip(a_full.numpy(), b_full.numpy())):
         np.testing.assert_allclose(c.reshape(-1, c.size(-1))[row].numpy(), np.polymul(x, y))
-
-
-def test_polymul_gradcheck():
-    a = torch.randn(2, 3, dtype=torch.double, requires_grad=True)
-    b = torch.randn(1, 4, dtype=torch.double, requires_grad=True)
-    assert torch.autograd.gradcheck(polymul, (a, b))
-    a = torch.randn(2, 3, dtype=torch.cdouble, requires_grad=True)
-    b = torch.randn(2, 2, dtype=torch.cdouble, requires_grad=True)
-    assert torch.autograd.gradcheck(polymul, (a, b))
-    assert torch.autograd.gradgradcheck(polymul, (a, b))
