@@ -249,7 +249,8 @@ def residuez(
     :math:`d = D`. The two agree when :math:`L \le M`. A pole of multiplicity
     :math:`m` is listed :math:`m` times in a row, with the powers
     :math:`j_i = 1, \dots, m`. The poles are the roots of the denominator,
-    grouped by :func:`unique_roots` and sorted by magnitude, ascending.
+    sorted by magnitude, ascending, and grouped in that order by
+    :func:`unique_roots`.
 
     Both parts come from the impulse response :math:`h` of :math:`H`, found as
     the first :math:`D + M` terms of :math:`b / a` by one triangular solve. The
@@ -294,8 +295,10 @@ def residuez(
 
     Note:
         Unlike :func:`scipy.signal.residuez`, the denominator omits its leading
-        1, and no zero coefficients are trimmed, so the shapes of the outputs
-        follow from those of the inputs. A pole at 0 (:math:`a_M = 0`) has
+        1, no zero coefficients are trimmed, so the shapes of the outputs
+        follow from those of the inputs, and the poles are grouped after they
+        are sorted, not before, which differs only for a chain in which each
+        pole is close to the next while the ends are not. A pole at 0 (:math:`a_M = 0`) has
         the fraction :math:`r_i`, a constant: when :math:`L > M`, it overlaps
         the direct term, so that the expansion isn't unique, and SciPy trims
         the pole from :math:`a`, changing the shapes, where this raises an
@@ -341,16 +344,15 @@ def residuez(
             "has no unique expansion; pass delayed_form=True."
         )
 
-    unique, multiplicity, batch_index = unique_roots(torch.linalg.eigvals(companion(a)), tol, rtype)
-    # each row by ascending magnitude: sort by magnitude, then stably by row
-    by_magnitude = unique.abs().argsort(stable=True)
-    order = by_magnitude[batch_index[by_magnitude].argsort(stable=True)]
+    poles = torch.linalg.eigvals(companion(a))
+    # by ascending magnitude in each row, so that the groups come out in order
+    poles = poles.gather(-1, poles.abs().argsort(dim=-1, stable=True))
+    unique, multiplicity, _ = unique_roots(poles, tol, rtype)
     # every row has M entries, one per power of each unique pole
     n = B * M
-    multiplicity = multiplicity[order]
     first = multiplicity.cumsum(0) - multiplicity
     extra = torch.arange(n, device=a.device) - first.repeat_interleave(multiplicity, output_size=n)
-    p = unique[order].repeat_interleave(multiplicity, output_size=n).view(B, M)
+    p = unique.repeat_interleave(multiplicity, output_size=n).view(B, M)
 
     # The impulse response h = b / a: T h = b, T the lower Toeplitz matrix of
     # [1, a], whose unit diagonal the solver doesn't read.
@@ -468,7 +470,7 @@ def invresz(
         return (k, p) if batched else (k[0], p[0])
 
     # a run of poles, each within tol of the one before; its powers 1, 2, ...
-    starts = F.pad((p[:, 1:] - p[:, :-1]).abs() > tol, (1, 0), value=True)
+    starts = F.pad(torch.diff(p).abs() > tol, (1, 0), value=True)
     run = starts.cumsum(-1)
     index = torch.arange(M, device=p.device)
     extra = index - (starts * index).cummax(-1).values
