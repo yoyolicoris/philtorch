@@ -578,11 +578,6 @@ _LTI_SSM_CASES = [
     ),
     # L a batch of 2 vectors of M = 3 eigenvalues.
     pytest.param(
-        lambda: lti.diag_state_space(_ones(2, 4), L=_zeros(2, 3)),
-        "V and Vinv cannot both be None",
-        id="diag-L-batch-no-V",
-    ),
-    pytest.param(
         lambda: lti.diag_state_space(_ones(2, 4), L=_zeros(2, 3), V=_eye(3)),
         "V must be 3D",
         id="diag-L-batch-V-2d",

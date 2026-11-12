@@ -346,20 +346,23 @@ def diag_state_space(
     - :attr:`L` with :attr:`A`, :attr:`V` or :attr:`Vinv`: the missing
       matrices are computed from it.
     - :attr:`L` with both :attr:`V` and :attr:`Vinv`: used as given.
-    - :attr:`L` alone: :math:`A` is diagonal and :math:`V = I`.
+    - :attr:`L` alone: :math:`A` is diagonal and :math:`V = I`. Then a 2-D
+      :attr:`x` without :attr:`B` drives every state, unlike
+      :func:`state_space`, whose default feeds the first state only.
 
     Args:
         x (Tensor): inputs, of shape :math:`(B, N, F)` or :math:`(B, N)`.
         L (Tensor, optional): the eigenvalues :math:`\boldsymbol{\lambda}`,
-            of shape :math:`(M)` or :math:`(B, M)`. Batched eigenvalues need
-            :attr:`V` or :attr:`Vinv`. Default: ``None``.
+            of shape :math:`(M)` or :math:`(B, M)`. Default: ``None``.
         V (Tensor, optional): the eigenvectors as columns, of shape
             :math:`(M, M)` or :math:`(B, M, M)`. Default: ``None``.
         Vinv (Tensor, optional): the inverse of :attr:`V`, of the same shape.
             Default: ``None``.
         A (Tensor, optional): the state matrix, of shape :math:`(M, M)` or
             :math:`(B, M, M)`. Default: ``None``.
-        B (Tensor, optional): see :func:`state_space`. Default: ``None``.
+        B (Tensor, optional): see :func:`state_space`, except that with
+            :attr:`L` alone a 2-D :attr:`x` without :attr:`B` drives every
+            state. Default: ``None``.
         C (Tensor, optional): see :func:`state_space`. Default: ``None``.
         D (Tensor, optional): see :func:`state_space`. Default: ``None``.
         zi (Tensor, optional): see :func:`state_space`. Default: ``None``.
@@ -423,8 +426,6 @@ def diag_state_space(
 
             case (L_batch, _) if L_batch == batch_size:
                 M = L.size(1)
-                if V is None and Vinv is None:
-                    raise ValueError("V and Vinv cannot both be None when L is a batch of vectors")
                 if V is not None:
                     if V.dim() != 3:
                         raise ValueError(f"V must be 3D, got {V.shape}")
@@ -454,8 +455,8 @@ def diag_state_space(
 
     match (V, Vinv, A):
         case (None, None, None):
-            # scalar case
-            V = Vinv = torch.eye(M, device=x.device, dtype=x.dtype)
+            # A = diag(L) and V = I: V and Vinv stay None, meaning the identity.
+            pass
         case (None, None, _):
             V = find_eigenvectors(A, L)
             Vinv = torch.linalg.inv(V)
@@ -469,21 +470,31 @@ def diag_state_space(
     zi, return_zf = _ssm.initial_state(x, zi, M)
 
     x_orig = x
-    if Vinv.is_complex():
+    if (L if Vinv is None else Vinv).is_complex():
         if not zi.is_complex():
-            zi = zi + 0j  # Ensure zi is complex if Vinv is complex
+            zi = zi + 0j  # Ensure zi is complex if the states are
         if not x.is_complex():
-            x = x + 0j  # Ensure x is complex if Vinv is complex
+            x = x + 0j  # Ensure x is complex if the states are
         if B is not None and not B.is_complex():
             B = B + 0j
 
-    # Vinv is 2-D or 3-D: as given and checked, or as computed.
-    if Vinv.dim() == 2:
+    # Vinv is None (the identity), or 2-D or 3-D: as given and checked, or as
+    # computed.
+    if Vinv is None:
+        Vinvzi = zi
+    elif Vinv.dim() == 2:
         Vinvzi = zi @ Vinv.T
     else:
         Vinvzi = torch.linalg.vecdot(Vinv.conj(), zi.unsqueeze(1))
 
-    if B is not None:
+    if Vinv is None:
+        if B is not None:
+            VinvBx = _ssm_B(B, x, batch_size, M)
+        elif x.dim() == 2:  # every state is driven by x
+            VinvBx = x.unsqueeze(-1).expand(-1, -1, M)
+        else:
+            VinvBx = x
+    elif B is not None:
         # Same dispatch as _ssm_B, but Vinv is folded into B before touching x.
         features = x.size(-1)
         match x.dim(), tuple(B.shape):
@@ -517,17 +528,29 @@ def diag_state_space(
     ).unflatten(0, (batch_size, M))
 
     def run(out_idx):
+        if V is None:
+            return Vinvh.mT if out_idx is None else Vinvh[:, out_idx]
         if out_idx is None:
             return (V @ Vinvh).mT
         return (V[..., out_idx, None, :] @ Vinvh).squeeze(-2)
 
-    h, zf = _ssm.states(run, zi, out_idx=out_idx, final_state=return_zf)
-
-    if C is not None and not C.is_complex():
-        h = h.real
-        zf = zf.real if return_zf else None
-
-    y = _ssm_C_D(h, x_orig, C, D, batch_size, M)
+    if C is None:
+        h, zf = _ssm.states(run, zi, out_idx=out_idx, final_state=return_zf)
+        y = _ssm_C_D(h, x_orig, None, D, batch_size, M)
+    else:
+        # y[n] = C h[n], h[n] being the state before x[n]: shifting C h by a
+        # step, rather than the M states, moves fewer values.
+        h = run(out_idx=None)
+        N = h.size(1)
+        zf = (h[:, -1] if N else zi) if return_zf else None
+        h0 = zi.unsqueeze(1)
+        if not C.is_complex():
+            h, h0 = h.real, h0.real
+            zf = zf.real if return_zf else None
+        Ch = torch.cat(
+            [_ssm_C_D(s, x_orig, C, None, batch_size, M) for s in (h0, h[:, :-1])], dim=1
+        )[:, :N]
+        y = _ssm.outputs(Ch, None if D is None else _ssm_D(D, x_orig, batch_size))
     if return_zf:
         return y, zf
     return y
