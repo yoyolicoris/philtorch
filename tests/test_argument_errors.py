@@ -424,6 +424,53 @@ _LTI_FILTERING_CASES = [
         "a must be 1D or 2D",
         id="lfilter-a-3d",
     ),
+    # sosfilt(sos, x, zi): sos (K, 5) or (B, K, 5), x (B, N) or (N), zi (K, 2) or (B, K, 2).
+    pytest.param(
+        lambda: lti.sosfilt(_ones(5), _ones(4)),
+        "sos must be 2D or 3D",
+        id="sosfilt-sos-1d",
+    ),
+    pytest.param(
+        lambda: lti.sosfilt(_ones(1, 6), _ones(4)),
+        "last dimension of sos must be 5",
+        id="sosfilt-sos-last-dim",
+    ),
+    pytest.param(
+        lambda: lti.sosfilt(_ones(0, 5), _ones(4)),
+        "at least one section",
+        id="sosfilt-sos-no-sections",
+    ),
+    pytest.param(
+        lambda: lti.sosfilt(_ones(1, 5), _ones(1, 1, 4)),
+        "x must be 1D or 2D",
+        id="sosfilt-x-3d",
+    ),
+    pytest.param(
+        lambda: lti.sosfilt(_ones(1, 5), _ones(4), zi=_zeros(2)),
+        "zi must be 2D or 3D",
+        id="sosfilt-zi-1d",
+    ),
+    pytest.param(
+        lambda: lti.sosfilt(_ones(2, 5), _ones(4), zi=_zeros(1, 2)),
+        "last two dimensions of zi",
+        id="sosfilt-zi-sections-mismatch",
+    ),
+    pytest.param(
+        lambda: lti.sosfilt(_ones(2, 1, 5), _ones(3, 4)),
+        "Batch size of sos must match batch size of x",
+        id="sosfilt-sos-batch-mismatch",
+    ),
+    pytest.param(
+        lambda: lti.sosfilt(_ones(1, 5).float(), _ones(4)),
+        "sos, zi and x must share a dtype",
+        id="sosfilt-sos-dtype",
+    ),
+    # sosfilt_zi(sos), with sosfilt's check of sos
+    pytest.param(
+        lambda: lti.sosfilt_zi(_ones(5)),
+        "sos must be 2D or 3D",
+        id="sosfilt_zi-sos-1d",
+    ),
     # filtfilt(b, a, x)
     pytest.param(
         lambda: lti.filtfilt(_ones(2), _zeros(1), _ones(16), method="odd"),

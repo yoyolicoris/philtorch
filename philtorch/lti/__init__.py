@@ -5,7 +5,16 @@ with the differences noted in each docstring.
 """
 
 from .delay import delay_state_space
-from .filtering import comb_filter, filtfilt, fir, lfilter, lfilter_zi, lfiltic
+from .filtering import (
+    comb_filter,
+    filtfilt,
+    fir,
+    lfilter,
+    lfilter_zi,
+    lfiltic,
+    sosfilt,
+    sosfilt_zi,
+)
 from .interp import cubic_spline, resample
 from .recur import linear_recurrence
 from .ssm import diag_state_space, state_space, state_space_recursion
@@ -13,6 +22,8 @@ from .ssm import diag_state_space, state_space, state_space_recursion
 __all__ = [
     "lfilter",
     "lfilter_zi",
+    "sosfilt",
+    "sosfilt_zi",
     "lfiltic",
     "filtfilt",
     "state_space_recursion",
