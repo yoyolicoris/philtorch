@@ -553,8 +553,8 @@ def diag_state_space(
         h, zf = _ssm.states(run, zi, out_idx=out_idx, final_state=return_zf)
         y = _ssm_C_D(h, x_orig, None, D, batch_size, M)
     else:
-        # y[n] = C h[n], h[n] being the state before x[n]: shifting C h by a
-        # step, rather than the M states, moves fewer values.
+        # y[n] = C h[n], h[n] being the state before x[n]: shift C h, of P
+        # values per step, by a step rather than the M states.
         h = run(out_idx=None)
         N = h.size(1)
         zf = (h[:, -1] if N else zi) if return_zf else None
@@ -564,5 +564,6 @@ def diag_state_space(
         )[:, :N]
         y = _ssm.outputs(Ch, None if D is None else _ssm_D(D, x_orig, batch_size))
     if return_zf:
-        return y, zf
+        # Real states with only C or D complex: the final state is complex too.
+        return y, zf if real or zf.is_complex() else zf + 0j
     return y
