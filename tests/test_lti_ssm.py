@@ -324,9 +324,8 @@ def test_diag_state_space_B_layouts_match_state_space(x_shape, B_shape, batched_
 
     y = diag_state_space(A=A, x=x, B=B)
 
-    # Without C, diag_state_space returns its complex eigenbasis result as is.
-    torch.testing.assert_close(y.imag, torch.zeros_like(y.real))
-    torch.testing.assert_close(y.real, state_space(A=A, x=x, B=B))
+    # A real system gives real outputs, even without C.
+    torch.testing.assert_close(y, state_space(A=A, x=x, B=B))
 
 
 @pytest.mark.parametrize("ssm", [state_space, diag_state_space])
@@ -453,8 +452,7 @@ def test_diag_state_space_L_alone_C_D_zi_out_idx(complex_L, batched_L, extras):
     y, zf = diag_state_space(x, L=L, B=B, **kwargs)
     y_ref, zf_ref = _diag_L_reference(L, x, B, **kwargs)
 
-    if complex_L and extras == "C_D_zi":  # a real C returns the real part
-        y_ref, zf_ref = y_ref.real, zf_ref.real
+    # A complex L makes the outputs complex, even with a real C.
     torch.testing.assert_close(y, y_ref)
     torch.testing.assert_close(zf, zf_ref)
 

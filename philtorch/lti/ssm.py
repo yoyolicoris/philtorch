@@ -373,8 +373,10 @@ def diag_state_space(
     Returns:
         Tensor or tuple of Tensor: as :func:`state_space`. With complex
         eigenvalues, for example a real filter with complex poles, the
-        computation is complex: a real :attr:`C` returns the real part, and
-        otherwise the outputs are complex.
+        computation is complex; the outputs and final state are real when
+        every tensor given (:attr:`x`, :attr:`L`, :attr:`V`, :attr:`Vinv`,
+        :attr:`A`, :attr:`B`, :attr:`C`, :attr:`D` and :attr:`zi`) is real,
+        and complex otherwise.
 
     Raises:
         ValueError: if neither :attr:`L` nor :attr:`A` is given, if both
@@ -393,6 +395,8 @@ def diag_state_space(
         True
     """
     _ssm.check_arguments(x, C, out_idx)
+    # A real system has real outputs, even through complex eigenvalues.
+    real = not any(t is not None and t.is_complex() for t in (x, L, V, Vinv, A, B, C, D, zi))
 
     batch_size = x.size(0)
 
@@ -541,6 +545,9 @@ def diag_state_space(
 
     if C is None:
         h, zf = _ssm.states(run, zi, out_idx=out_idx, final_state=return_zf)
+        if real:
+            h = h.real
+            zf = zf.real if return_zf else None
         y = _ssm_C_D(h, x_orig, None, D, batch_size, M)
     else:
         # y[n] = C h[n], h[n] being the state before x[n]: shifting C h by a
@@ -549,9 +556,11 @@ def diag_state_space(
         N = h.size(1)
         zf = (h[:, -1] if N else zi) if return_zf else None
         h0 = zi.unsqueeze(1)
-        if not C.is_complex():
+        if real:
             h, h0 = h.real, h0.real
             zf = zf.real if return_zf else None
+        elif h.is_complex() and not C.is_complex():
+            C = C + 0j
         Ch = torch.cat(
             [_ssm_C_D(s, x_orig, C, None, batch_size, M) for s in (h0, h[:, :-1])], dim=1
         )[:, :N]
