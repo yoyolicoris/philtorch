@@ -328,15 +328,20 @@ def diag_state_space(
 ):
     r"""Compute a state-space model's outputs through its eigendecomposition.
 
-    With :math:`A = V \operatorname{diag}(\boldsymbol{\lambda}) V^{-1}`, the
-    state :math:`\mathbf{z} = V^{-1} \mathbf{h}` evolves as :math:`M`
-    independent first-order recurrences,
+    With :math:`A = V \Lambda V^{-1}` and
+    :math:`\Lambda = \operatorname{diag}(\boldsymbol{\lambda})`, the model of
+    :func:`state_space` in the eigenvectors' coordinates,
+    :math:`\hat{\mathbf{h}} = V^{-1} \mathbf{h}`, is
 
     .. math::
-        z_i[n + 1] = \lambda_i z_i[n] + (V^{-1} B \mathbf{x}[n])_i,
+        \hat{\mathbf{h}}[n + 1] &= \Lambda \hat{\mathbf{h}}[n]
+            + \hat{B} \mathbf{x}[n], \\
+        \mathbf{y}[n] &= \hat{C} \hat{\mathbf{h}}[n] + D \mathbf{x}[n],
 
-    which run with :func:`linear_recurrence`. The outputs are those of
-    :func:`state_space` for a diagonalizable :math:`A`.
+    with :math:`\hat{B} = V^{-1} B` and :math:`\hat{C} = C V`. As
+    :math:`\Lambda` is diagonal, the states are :math:`M` independent
+    first-order recurrences, which run with :func:`linear_recurrence`. The
+    outputs are those of :func:`state_space` for a diagonalizable :math:`A`.
 
     Give the decomposition in one of these ways:
 
