@@ -106,7 +106,7 @@ def test_sosfilt_compiled_matches_eager():
     sos = torch.from_numpy(_random_sos(2, K=3))
     x = torch.randn(2, 30, dtype=F64)
     zi = torch.randn(2, 3, 2, dtype=F64)
-    compiled = torch.compile(sosfilt, fullgraph=True)
+    compiled = torch.compile(sosfilt, backend="aot_eager", fullgraph=True)
     y, zf = compiled(sos, x, zi)
     y_ref, zf_ref = sosfilt(sos, x, zi)
     torch.testing.assert_close(y, y_ref)
