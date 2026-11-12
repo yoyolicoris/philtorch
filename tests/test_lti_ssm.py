@@ -496,7 +496,7 @@ def test_diag_state_space_L_alone_allocates_no_M_by_M_tensor():
 
 
 # The outputs and final state are real exactly when every tensor given is.
-@pytest.mark.parametrize("system, complex_arg", [("A", "x"), ("A", "D"), ("L", "D")])
+@pytest.mark.parametrize("system, complex_arg", [("A", "x"), ("A", "D"), ("L", "D"), ("L", "C")])
 def test_diag_state_space_complex_input_gives_complex_outputs(system, complex_arg):
     if system == "A":
         A = _generate_diagonalizable_matrix((2, 2)).double()
@@ -521,13 +521,15 @@ def test_diag_state_space_complex_input_gives_complex_outputs(system, complex_ar
     torch.testing.assert_close(zf, zf_ref)
 
 
-def test_diag_state_space_real_eigenvectors_with_C():
-    # A symmetric A has real eigenvalues and eigenvectors: no complex step.
+@pytest.mark.parametrize("complex_C", [False, True])
+def test_diag_state_space_real_eigenvectors_with_C(complex_C):
+    # A symmetric A has real eigenvalues and eigenvectors: real states.
     A = torch.tensor([[0.5, 0.2], [0.2, -0.3]], dtype=torch.double)
     L, V = torch.linalg.eigh(A)
     x = torch.randn(3, 9, dtype=torch.double)
-    C = torch.randn(2, dtype=torch.double)
+    C = torch.randn(2, dtype=torch.cdouble if complex_C else torch.double)
 
     y = diag_state_space(x, L=L, V=V, C=C)
 
+    A, x = (A + 0j, x + 0j) if complex_C else (A, x)
     torch.testing.assert_close(y, state_space(A, x, C=C))

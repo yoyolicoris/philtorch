@@ -235,6 +235,11 @@ def _ssm_B(B, x, batch_size, M):
     raise _ssm_B_shape_error(B, x, batch_size, M)
 
 
+def _complex_as(t, other):
+    """``t``, as complex at its own precision when ``other`` is complex."""
+    return t + 0j if other.is_complex() and not t.is_complex() else t
+
+
 def _ssm_B_shape_error(B, x, batch_size, M):
     if x.dim() == 2:
         allowed = f"({M},) or ({batch_size}, {M})"
@@ -561,15 +566,17 @@ def diag_state_space(
         # rather than the M states. h[0] = zi is in the original basis.
         N = Vinvh.size(-1)
         zf = (run(None, Vinvh[..., -1:])[:, 0] if N else zi) if return_zf else None
-        Czi = _ssm_C_D(zi.unsqueeze(1), x_orig, C, None, batch_size, M)  # checks C
+        # A complex C on real states, or a real C on complex ones: each
+        # product is taken in complex, its operands keeping their precision.
+        Czi = _ssm_C_D(_complex_as(zi.unsqueeze(1), C), x_orig, C, None, batch_size, M)
         C_hat = C
         if V is not None:
-            if V.is_complex() and not C.is_complex():
-                C_hat = C + 0j
+            C_hat, V_ = _complex_as(C, V), _complex_as(V, C)
             # A (B, M) C is a row per signal, as _ssm_C_D reads it.
             per_signal = V.dim() == 3 and C.dim() == 2 and C.size(0) == batch_size
-            C_hat = (C_hat.unsqueeze(-2) @ V).squeeze(-2) if per_signal else C_hat @ V
-        Ch = _ssm_C_D(Vinvh.mT[:, :-1], x_orig, C_hat, None, batch_size, M)
+            C_hat = (C_hat.unsqueeze(-2) @ V_).squeeze(-2) if per_signal else C_hat @ V_
+        h_hat = _complex_as(Vinvh.mT[:, :-1], C_hat)
+        Ch = _ssm_C_D(h_hat, x_orig, C_hat, None, batch_size, M)
         Ch = torch.cat([Czi, Ch.real if real else Ch], dim=1)[:, :N]
         y = _ssm.outputs(Ch, None if D is None else _ssm_D(D, x_orig, batch_size))
     if return_zf:
