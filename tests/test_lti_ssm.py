@@ -412,7 +412,8 @@ def _diag_L_inputs(complex_L, batched_L, x_dim, with_B):
 
 
 def _diag_L_reference(L, x, B, **kwargs):
-    """state_space with A = diag(L), and B = ones for the 2-D x it feeds to every state."""
+    """state_space with A = diag(L), and B = ones for the 2-D x it feeds to
+    every state."""
     if B is None and x.dim() == 2:
         B = torch.ones(L.shape, dtype=x.dtype)
     if L.is_complex():

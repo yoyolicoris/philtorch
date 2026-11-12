@@ -576,6 +576,11 @@ _LTI_SSM_CASES = [
         "A must be square with size 2",
         id="diag-L-vector-A-wrong-size",
     ),
+    pytest.param(
+        lambda: lti.diag_state_space(_ones(1, 4, 2), L=_zeros(3)),
+        "Last dimension of A must match last dimension of x",
+        id="diag-3d-x-no-B-wrong-features",
+    ),
     # L a batch of 2 vectors of M = 3 eigenvalues.
     pytest.param(
         lambda: lti.diag_state_space(_ones(2, 4), L=_zeros(2, 3), V=_eye(3)),

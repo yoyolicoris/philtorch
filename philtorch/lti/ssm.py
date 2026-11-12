@@ -453,6 +453,11 @@ def diag_state_space(
             case _:
                 raise ValueError(f"L must be a vector or a batch of vectors, got {L.shape}")
 
+    if B is None and x.dim() == 3 and x.size(-1) != M:
+        raise ValueError(
+            f"Last dimension of A must match last dimension of x, got A: {M}, x: {x.size(-1)}"
+        )
+
     match (V, Vinv, A):
         case (None, None, None):
             # A = diag(L) and V = I: V and Vinv stay None, meaning the identity.
