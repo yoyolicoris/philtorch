@@ -31,6 +31,7 @@ Conversions
    sos2tf
    residuez
    invresz
+   unique_roots
 
 State-space models
 ------------------

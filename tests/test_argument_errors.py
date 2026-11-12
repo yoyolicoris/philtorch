@@ -11,7 +11,7 @@ from philtorch import lpv, lti
 from philtorch.estimation import kalman_filter
 from philtorch.lpv.utils import diag_shift
 from philtorch.mat import companion, find_eigenvectors, matrices_cumdot, matrix_power_accumulate
-from philtorch.poly import polydiv, polymul, unique_roots
+from philtorch.poly import polydiv, polymul
 
 F64 = torch.float64
 
@@ -800,17 +800,17 @@ _POLY_CASES = [
         id="polymul-b-0d",
     ),
     pytest.param(
-        lambda: unique_roots(_ones(1, 2, 3)),
+        lambda: lti.unique_roots(_ones(1, 2, 3)),
         "p must be 1D or 2D",
         id="unique_roots-p-3d",
     ),
     pytest.param(
-        lambda: unique_roots(_ones(())),
+        lambda: lti.unique_roots(_ones(())),
         "p must be 1D or 2D",
         id="unique_roots-p-0d",
     ),
     pytest.param(
-        lambda: unique_roots(_ones(3), rtype="median"),
+        lambda: lti.unique_roots(_ones(3), rtype="median"),
         "rtype must be one of",
         id="unique_roots-rtype",
     ),

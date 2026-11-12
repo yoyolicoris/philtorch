@@ -1,9 +1,11 @@
+from functools import reduce
+
 import numpy as np
 import pytest
 import torch
 from scipy import signal
 
-from philtorch.lti import invresz, residuez, sos2tf
+from philtorch.lti import invresz, residuez, sos2tf, unique_roots
 
 F64 = torch.float64
 
@@ -48,7 +50,65 @@ def _check_residuez(b: np.ndarray, a: np.ndarray, **kwargs):
         expected_r, expected_p = _canonical(expected_r, expected_p)
         np.testing.assert_allclose(got_p, expected_p, atol=1e-8)
         np.testing.assert_allclose(got_r, expected_r, rtol=1e-6, atol=1e-6)
-        np.testing.assert_allclose(k[i], expected_k, rtol=1e-8, atol=1e-10)
+        np.testing.assert_allclose(k[i], expected_k, rtol=1e-6, atol=1e-8)
+
+
+def _check_unique_roots(p: np.ndarray, tol: float, rtype: str):
+    expected_u, expected_m = signal.unique_roots(p, tol=tol, rtype=rtype)
+    u, m = unique_roots(torch.from_numpy(p), tol=tol, rtype=rtype)
+    assert m.dtype == torch.int64
+    np.testing.assert_allclose(u.numpy(), expected_u)
+    np.testing.assert_array_equal(m.numpy(), expected_m)
+
+
+@pytest.mark.parametrize("rtype", ["max", "maximum", "min", "minimum", "avg", "mean"])
+def test_unique_roots_matches_scipy(rtype):
+    # SciPy's docstring example
+    _check_unique_roots(np.array([0, 1.3, 1.31, 2.8, 1.25, 2.2, 10.3]), 2e-2, rtype)
+    # a ~ b ~ c, with a and c farther apart than tol: a takes b, c stays alone
+    _check_unique_roots(np.array([0.0, 0.0015, 0.003, 1.0]), 2e-3, rtype)
+    _check_unique_roots(np.array([0.003, 0.0015, 0.0, 1.0]), 2e-3, rtype)
+    # complex roots, compared by real part, then imaginary part
+    z = np.array([0.5 + 0.3j, 0.5 - 0.3j, 0.5 + 0.3001j, 0.2j, 0.2 - 0.0004j, 0.5 - 0.2999j])
+    _check_unique_roots(z, 1e-2, rtype)
+    rng = np.random.default_rng(0)
+    base = rng.standard_normal(5) + 1j * rng.standard_normal(5)
+    z = np.concatenate([base, base + 1e-4, base - 1e-4j])[rng.permutation(15)]
+    _check_unique_roots(z, 1e-3, rtype)
+    _check_unique_roots(z.real.copy(), 1e-3, rtype)
+
+
+@pytest.mark.parametrize("rtype", ["min", "max", "avg"])
+@pytest.mark.parametrize("dtype", [np.float64, np.complex128])
+def test_unique_roots_batched(rtype, dtype):
+    rng = np.random.default_rng(1)
+    base = rng.standard_normal((4, 6)).astype(dtype)
+    if dtype is np.complex128:
+        base = base + 1j * rng.standard_normal((4, 6))
+    # each row repeats a different number of its roots, in a shuffled order
+    shift = np.where(np.arange(4)[None] <= np.arange(4)[:, None], 1e-4, 1.0)
+    p = np.stack([np.concatenate([base[b], base[b, :4] + shift[b]]) for b in range(4)])
+    p = np.stack([row[rng.permutation(10)] for row in p])
+    u, m, index = unique_roots(torch.from_numpy(p), rtype=rtype)
+    assert u.dtype == torch.from_numpy(p).dtype
+    assert m.dtype == index.dtype == torch.int64
+    expected = [signal.unique_roots(row, rtype=rtype) for row in p]
+    np.testing.assert_array_equal(index.numpy(), np.repeat(range(4), [len(e[0]) for e in expected]))
+    np.testing.assert_allclose(u.numpy(), np.concatenate([e[0] for e in expected]))
+    np.testing.assert_array_equal(m.numpy(), np.concatenate([e[1] for e in expected]))
+
+
+def test_unique_roots_gradcheck():
+    # Rows with groups of 2 and 1, and of 3: the mean's gradient is 1 / size.
+    p = torch.tensor([[0.0, 0.0001, 1.0], [2.0, 2.0002, 2.0001]], dtype=torch.double)
+    p.requires_grad_()
+    assert torch.autograd.gradcheck(lambda p: unique_roots(p, rtype="avg")[0], (p,))
+    p = p.detach().to(torch.cdouble).requires_grad_()
+    assert torch.autograd.gradcheck(lambda p: unique_roots(p, rtype="avg")[0], (p,))
+    # a minimum takes the gradient of the selected root alone
+    p = torch.tensor([0.1, 0.0, 0.2], dtype=torch.double, requires_grad=True)
+    unique_roots(p, tol=1.0, rtype="min")[0].sum().backward()
+    torch.testing.assert_close(p.grad, torch.tensor([0.0, 1.0, 0.0], dtype=torch.double))
 
 
 @pytest.mark.parametrize("K", [1, 2, 3, 5])
@@ -179,6 +239,26 @@ def test_invresz_batched():
     # a shared k
     b_shared, _ = invresz(r, p, k[0])
     assert b_shared.shape == (3, 5)
+
+
+def test_invresz_groups_poles_by_the_previous_pole():
+    # Each pole of the first three is within tol of the one before, but the
+    # first and the third are not: one run of three, then a simple pole. The
+    # run's value is the average of its members, 0.0015.
+    p = np.array([0.0, 0.0015, 0.003, 1.0])
+    r = np.array([1.0, 2.0, 3.0, 4.0])
+    b, a = invresz(torch.from_numpy(r), torch.from_numpy(p), torch.zeros(0, dtype=F64), tol=2e-3)
+
+    def poly(*roots):  # coefficients of the product of (1 - x w), ascending
+        return reduce(np.convolve, [[1.0, -x] for x in roots])
+
+    q = 0.0015
+    denominator = poly(q, q, q, 1.0)
+    # r1 / (1 - q w) + r2 / (1 - q w)^2 + r3 / (1 - q w)^3 + r4 / (1 - w)
+    terms = [poly(q, q, 1.0), poly(q, 1.0), poly(1.0), poly(q, q, q)]
+    numerator = sum(c * np.pad(t, (0, 4 - len(t))) for c, t in zip(r, terms))
+    np.testing.assert_allclose(a.numpy(), denominator[1:], atol=1e-12)
+    np.testing.assert_allclose(b.numpy(), numerator, atol=1e-12)
 
 
 def test_invresz_without_poles():

@@ -68,7 +68,8 @@ def polymul(a: Tensor, b: Tensor) -> Tensor:
     r"""Multiply polynomials, returning the coefficients of the product.
 
     This computes the product :math:`c(x) = a(x) b(x)` along the last
-    dimension, as the convolution of the coefficients. They run from the
+    dimension, as the convolution of the coefficients, one grouped
+    :func:`torch.nn.functional.conv1d`. They run from the
     highest degree down, as in :func:`numpy.polymul`; a convolution doesn't
     depend on the order, so ascending coefficients multiply the same way.
 
@@ -97,107 +98,12 @@ def polymul(a: Tensor, b: Tensor) -> Tensor:
     if a.ndim < 1 or b.ndim < 1:
         raise ValueError(f"a and b must be at least 1D, got {tuple(a.shape)} and {tuple(b.shape)}")
 
-    m, n = a.size(-1), b.size(-1)
-    outer = a.unsqueeze(-1) * b.unsqueeze(-2)
-    # Row i of the outer product is shifted right by i: padding every row to
-    # m + n and reading the flattened rows at width m + n - 1 moves row i by i.
-    shifted = F.pad(outer, (0, m)).flatten(-2)[..., : m * (m + n - 1)]
-    return shifted.unflatten(-1, (m, m + n - 1)).sum(-2)
-
-
-_RTYPES = ("max", "maximum", "min", "minimum", "avg", "mean")
-
-
-def _reduce_groups(p: Tensor, member: Tensor, rtype: str) -> Tensor:
-    """Reduce the roots of each group to one value.
-
-    ``p`` is of shape (B, M), ``member`` of shape (B, G, M) marks the roots of
-    each of G groups, and the result is of shape (B, G): the value of each group
-    by ``rtype``. A group without a member gets an arbitrary value.
-    """
-    if rtype in ("avg", "mean"):
-        total = torch.where(member, p.unsqueeze(1), 0).sum(-1)
-        return total / member.sum(-1).clamp(min=1)
-    # Compare by the real part, then by the imaginary part; a maximum is the
-    # minimum of the negated parts.
-    sign = 1.0 if rtype in ("min", "minimum") else -1.0
-    real = torch.where(member, sign * p.real.unsqueeze(1), torch.inf)
-    candidate = member & (real == real.amin(-1, keepdim=True))
-    if p.is_complex():
-        imag = torch.where(candidate, sign * p.imag.unsqueeze(1), torch.inf)
-        index = imag.argmin(-1)
-    else:
-        index = candidate.to(torch.int8).argmax(-1)
-    return p.gather(-1, index)
-
-
-def unique_roots(p: Tensor, tol: float = 1e-3, rtype: str = "min") -> tuple[Tensor, ...]:
-    r"""Find the unique roots and their multiplicities.
-
-    The roots are grouped greedily, in the order they are given: each root not
-    yet in a group starts one with every later root within a distance
-    :attr:`tol` of it that is not in a group yet. If :math:`a` is close to
-    :math:`b` and :math:`b` to :math:`c`, :math:`a` and :math:`c` can still be
-    farther apart than :attr:`tol`, so the grouping depends on the order. Each
-    group gives one unique root, chosen by :attr:`rtype`.
-
-    Args:
-        p (Tensor): the roots, real or complex, of shape :math:`(M)` or
-            :math:`(B, M)`.
-        tol (float, optional): the distance within which two roots are
-            considered equal. Default: ``1e-3``.
-        rtype (str, optional): how to choose the root of a group: ``"max"`` or
-            ``"maximum"``, ``"min"`` or ``"minimum"``, or ``"avg"`` or
-            ``"mean"``. Complex roots are compared by their real parts, then
-            by their imaginary parts. Default: ``"min"``.
-
-    Returns:
-        tuple of Tensor: the unique roots, of :attr:`p`'s dtype, and their
-        multiplicities, of dtype ``torch.int64``, both of shape :math:`(U)`,
-        where :math:`U` is the number of groups, and for a 2-D :attr:`p` also
-        the batch index of each, of shape :math:`(U)` and dtype
-        ``torch.int64``. The groups are in the order of their first roots, one
-        row of :attr:`p` after the other, so the output is flat, not padded:
-        use the batch indices in scatter operations such as
-        :meth:`torch.Tensor.index_add`.
-
-    Raises:
-        ValueError: if :attr:`p` is not 1-D or 2-D, or :attr:`rtype` is
-            unknown.
-
-    Note:
-        The number of groups depends on the values of :attr:`p`, so the output
-        shapes do too, and the call can't be compiled without a graph break.
-
-    Example::
-
-        >>> from philtorch.poly import unique_roots
-        >>> p = torch.tensor([0.0, 1.3, 1.31, 2.8, 1.25, 2.2, 10.3])
-        >>> unique, multiplicity = unique_roots(p, tol=2e-2, rtype="avg")
-        >>> unique[multiplicity > 1]
-        tensor([1.3050])
-    """
-    if rtype not in _RTYPES:
-        raise ValueError(f"rtype must be one of {_RTYPES}, got {rtype!r}")
-    if p.ndim not in (1, 2):
-        raise ValueError(f"p must be 1D or 2D, got {p.ndim}D")
-
-    batched = p.ndim == 2
-    roots = p if batched else p.unsqueeze(0)
-    B, M = roots.shape
-    close = (roots.unsqueeze(-1) - roots.unsqueeze(-2)).abs() <= tol
-    used = torch.zeros(B, M, dtype=torch.bool, device=p.device)
-    # group[b, i]: the roots of the group that root i starts, none if it is used
-    group = torch.zeros_like(close)
-    for i in range(M):
-        group[:, i] = close[:, i] & ~used & ~used[:, i : i + 1]
-        used = used | group[:, i]
-
-    multiplicity = group.sum(-1)
-    first = multiplicity > 0
-    unique = _reduce_groups(roots, group, rtype)[first]
-    multiplicity = multiplicity[first]
-    if not batched:
-        return unique, multiplicity
-    batch_index = torch.arange(B, device=p.device).unsqueeze(-1).expand(B, M)[first]
-    return unique, multiplicity, batch_index
+    # conv1d correlates, so the weights are flipped; the batch is one group each
+    batch = torch.broadcast_shapes(a.shape[:-1], b.shape[:-1])
+    if a.dtype != b.dtype:
+        dtype = torch.promote_types(a.dtype, b.dtype)
+        a, b = a.to(dtype), b.to(dtype)
+    n, m = a.size(-1), b.size(-1)
+    x = a.expand(*batch, n).reshape(1, -1, n)
+    w = b.expand(*batch, m).flip(-1).reshape(-1, 1, m)
+    return F.conv1d(x, w, padding=m - 1, groups=w.size(0)).view(*batch, n + m - 1)

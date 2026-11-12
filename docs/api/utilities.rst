@@ -33,7 +33,6 @@ philtorch.poly
 
    polydiv
    polymul
-   unique_roots
 
 philtorch.utils
 ---------------

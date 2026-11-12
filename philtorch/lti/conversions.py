@@ -4,29 +4,34 @@ The coefficients follow :mod:`scipy.signal`'s functions of the same names, with
 the differences noted in each docstring.
 """
 
+from functools import reduce
+
 import torch
 import torch.nn.functional as F
 from torch import Tensor
 
 from ..mat import companion
-from ..poly import _RTYPES, _reduce_groups, polydiv, polymul, unique_roots
+from ..poly import polymul
 from .filtering import _check_sos
+
+_RTYPES = ("max", "maximum", "min", "minimum", "avg", "mean")
 
 
 def _tree_prod(polys: Tensor) -> Tensor:
-    """Multiply the polynomials along dimension -2, in log2(P) batched products.
+    """Multiply the polynomials along dimension -2, in ceil(log2 P) batched products.
 
     ``polys`` is of shape (..., P, d + 1), P >= 1, in ascending powers (an odd
     P is padded with the polynomial 1), and the result of shape (..., P * d + 1).
     """
-    P, d = polys.size(-2), polys.size(-1) - 1
-    while polys.size(-2) > 1:
+
+    def halve(polys: Tensor, _) -> Tensor:
         if polys.size(-2) % 2:
-            polys = torch.cat(
-                [polys, F.pad(torch.ones_like(polys[..., :1, :1]), (0, polys.size(-1) - 1))], -2
-            )
-        polys = polymul(polys[..., 0::2, :], polys[..., 1::2, :])
-    return polys[..., 0, : P * d + 1]
+            one = F.pad(torch.ones_like(polys[..., :1, :1]), (0, polys.size(-1) - 1))
+            polys = torch.cat([polys, one], -2)
+        return polymul(polys[..., 0::2, :], polys[..., 1::2, :])
+
+    P, d = polys.size(-2), polys.size(-1) - 1
+    return reduce(halve, range((P - 1).bit_length()), polys)[..., 0, : P * d + 1]
 
 
 def _as_batch(**named: Tensor) -> tuple[list[Tensor], bool]:
@@ -43,29 +48,44 @@ def _as_batch(**named: Tensor) -> tuple[list[Tensor], bool]:
             f"Batched {', '.join(named)} must share a batch size, got {sorted(sizes)}."
         )
     B = sizes.pop() if sizes else 1
-    tensors = [(t if t.dim() == 2 else t.unsqueeze(0)).expand(B, -1) for t in named.values()]
+    tensors = [t.unsqueeze(0).expand(B, -1) if t.dim() == 1 else t for t in named.values()]
     return tensors, any(t.dim() == 2 for t in named.values())
 
 
-def _expansion_matrix(p: Tensor, group: Tensor, power: Tensor) -> Tensor:
-    r"""Return the matrix F of the partial fractions, of shape (B, M, M).
+def _reduce_groups(p: Tensor, member: Tensor, rtype: str) -> Tensor:
+    """Reduce each group of roots to one value.
 
-    ``p`` holds the M poles of each filter, repeated once per power, ``group``
-    the index of each pole's group and ``power`` the power of its entry. Column
-    i holds the coefficients of
-
-    .. math::
-        \frac{\prod_k (1 - p_k w)}{(1 - p_i w)^{j_i}}
-
-    in ascending powers of w, which are the first M of the product with the
-    entries of i's group of power up to j_i left out.
+    ``member`` of shape (..., M) marks the roots of each group among the M of
+    ``p``, which broadcasts with it, and each group has a member. The result is
+    of shape (...): the value of each group by ``rtype``.
     """
-    leave_out = (group.unsqueeze(-1) == group.unsqueeze(-2)) & (
-        power.unsqueeze(-2) <= power.unsqueeze(-1)
-    )
-    linear = torch.where(leave_out, 0, -p.unsqueeze(-2))
-    columns = _tree_prod(torch.stack([torch.ones_like(linear), linear], dim=-1))
-    return columns[..., : p.size(-1)].transpose(-1, -2)
+    if rtype in ("avg", "mean"):
+        return (member * p).sum(-1) / member.sum(-1)
+    # Compare by the real part, then by the imaginary part; a maximum is the
+    # minimum of the negated parts.
+    key = (lambda t: t) if rtype in ("min", "minimum") else torch.neg
+    if p.is_complex():
+        real = torch.where(member, key(p.real), torch.inf)
+        candidate = member & (real == real.amin(-1, keepdim=True))
+        index = torch.where(candidate, key(p.imag), torch.inf).argmin(-1)
+    else:
+        index = torch.where(member, key(p), torch.inf).argmin(-1)
+    return torch.take_along_dim(p, index.unsqueeze(-1), -1).squeeze(-1)
+
+
+def _vandermonde(p: Tensor, extra: Tensor, rows: int) -> Tensor:
+    r"""Return the confluent Vandermonde matrix of shape (B, rows, M).
+
+    ``p`` holds the M poles of each filter, repeated once per power, and
+    ``extra`` the power minus 1 of each entry, e. Entry [n, i] is
+    :math:`\binom{n + e_i}{e_i} p_i^n`, the impulse response of
+    :math:`1 / (1 - p_i z^{-1})^{e_i + 1}`. A cumulative product builds it from
+    the ratios :math:`p_i (n + e_i) / n` of consecutive rows, which keeps the
+    binomials exact up to rounding, with no gamma functions.
+    """
+    n = torch.arange(1, rows, dtype=p.dtype.to_real(), device=p.device).unsqueeze(-1)
+    ratios = p.unsqueeze(-2) * ((n + extra.unsqueeze(-2)) / n)
+    return torch.cumprod(F.pad(ratios, (0, 0, 1, 0), value=1), dim=-2)
 
 
 def sos2tf(sos: Tensor) -> tuple[Tensor, Tensor]:
@@ -120,9 +140,89 @@ def sos2tf(sos: Tensor) -> tuple[Tensor, Tensor]:
         tensor([ 0.0000, -0.2500,  0.0000,  0.0000])
     """
     _check_sos(sos)
-    denominators = torch.cat([torch.ones_like(sos[..., :1]), sos[..., 3:]], dim=-1)
-    both = _tree_prod(torch.stack([sos[..., :3], denominators], dim=-3))
+    # [1, b0, b1, b2, a1, a2] gathered into numerators and denominators
+    columns = torch.tensor([[1, 2, 3], [0, 4, 5]], device=sos.device)
+    both = _tree_prod(F.pad(sos, (1, 0), value=1)[..., columns].transpose(-2, -3))
     return both[..., 0, :], both[..., 1, 1:]
+
+
+def unique_roots(p: Tensor, tol: float = 1e-3, rtype: str = "min") -> tuple[Tensor, ...]:
+    r"""Find the unique roots and their multiplicities.
+
+    The roots are grouped greedily, in the order they are given: each root not
+    yet in a group starts one with every later root within a distance
+    :attr:`tol` of it that is not in a group yet. If :math:`a` is close to
+    :math:`b` and :math:`b` to :math:`c`, :math:`a` and :math:`c` can still be
+    farther apart than :attr:`tol`, so the grouping depends on the order. Each
+    group gives one unique root, chosen by :attr:`rtype`.
+
+    Args:
+        p (Tensor): the roots, real or complex, of shape :math:`(M)` or
+            :math:`(B, M)`.
+        tol (float, optional): the distance within which two roots are
+            considered equal. Default: ``1e-3``.
+        rtype (str, optional): how to choose the root of a group: ``"max"`` or
+            ``"maximum"``, ``"min"`` or ``"minimum"``, or ``"avg"`` or
+            ``"mean"``. Complex roots are compared by their real parts, then
+            by their imaginary parts. Default: ``"min"``.
+
+    Returns:
+        tuple of Tensor: the unique roots, of :attr:`p`'s dtype, and their
+        multiplicities, of dtype ``torch.int64``, both of shape :math:`(U)`,
+        where :math:`U` is the number of groups, and for a 2-D :attr:`p` also
+        the batch index of each, of shape :math:`(U)` and dtype
+        ``torch.int64``. The groups are in the order of their first roots, one
+        row of :attr:`p` after the other, so the output is flat, not padded:
+        use the batch indices in scatter operations such as
+        :meth:`torch.Tensor.index_add`.
+
+    Raises:
+        ValueError: if :attr:`p` is not 1-D or 2-D, or :attr:`rtype` is
+            unknown.
+
+    Note:
+        The number of groups depends on the values of :attr:`p`, so the output
+        shapes do too, and the call can't be compiled without a graph break.
+
+    Example::
+
+        >>> from philtorch.lti import unique_roots
+        >>> p = torch.tensor([0.0, 1.3, 1.31, 2.8, 1.25, 2.2, 10.3])
+        >>> unique, multiplicity = unique_roots(p, tol=2e-2, rtype="avg")
+        >>> unique[multiplicity > 1]
+        tensor([1.3050])
+    """
+    if rtype not in _RTYPES:
+        raise ValueError(f"rtype must be one of {_RTYPES}, got {rtype!r}")
+    if p.ndim not in (1, 2):
+        raise ValueError(f"p must be 1D or 2D, got {p.ndim}D")
+
+    batched = p.ndim == 2
+    roots = p if batched else p.unsqueeze(0)
+    B, M = roots.shape
+    if M == 0:
+        none = torch.empty(0, dtype=torch.int64, device=p.device)
+        return (roots.new_empty(0), none, none) if batched else (roots.new_empty(0), none)
+    close = (roots.unsqueeze(-1) - roots.unsqueeze(-2)).abs() <= tol
+
+    # A root starts a group when no earlier group took it; the group takes the
+    # roots that are close and not yet taken. For booleans, c > u is c & ~u.
+    def take(carry: tuple[Tensor, tuple[Tensor, ...]], i_row: tuple[int, Tensor]):
+        used, used_before = carry
+        i, row = i_row
+        was_used = used[:, i : i + 1]
+        return used | (row > was_used), (*used_before, was_used)
+
+    unused = torch.zeros(B, M, dtype=torch.bool, device=p.device)
+    _, used_before = reduce(take, enumerate(close.unbind(1)), (unused, ()))
+    leader = ~torch.cat(used_before, 1)
+    # a root belongs to the first leader that is close to it
+    owner = (close & leader.unsqueeze(-1)).to(torch.int8).argmax(1)
+    batch_index, first = leader.nonzero(as_tuple=True)
+    group = owner[batch_index] == first.unsqueeze(-1)
+    unique = _reduce_groups(roots[batch_index], group, rtype)
+    multiplicity = group.sum(-1)
+    return (unique, multiplicity, batch_index) if batched else (unique, multiplicity)
 
 
 def residuez(
@@ -141,33 +241,34 @@ def residuez(
 
     .. math::
         H(z) = \sum_{i=1}^{M} \frac{r_i}{(1 - p_i z^{-1})^{j_i}}
-            + \sum_n k_n z^{-n},
+            + \sum_{n=0}^{L-M-1} k_n z^{-n},
 
     where a pole of multiplicity :math:`m` is listed :math:`m` times in a row,
     with the powers :math:`j_i = 1, \dots, m`. The poles are the roots of the
-    denominator, grouped by :func:`~philtorch.poly.unique_roots` and sorted by
-    magnitude, ascending. The direct term :math:`k` is the quotient of the
-    numerator by the denominator, in :math:`w = z^{-1}`, with the remainder
-    :math:`\rho(w)` of degree below :math:`M` left. All the residues come from
-    one linear system, :math:`F r = \rho`, where column :math:`i` of :math:`F`
-    holds the coefficients of
+    denominator, grouped by :func:`unique_roots` and sorted by magnitude,
+    ascending.
 
-    .. math::
-        \frac{\prod_k (1 - p_k w)}{(1 - p_i w)^{j_i}},
-
-    so that simple and repeated poles take the same path.
+    The residues come from the impulse response :math:`h` of :math:`H`, found
+    as the first :math:`\max(L, M)` terms of :math:`b / a` by one triangular
+    solve. The impulse response of each fraction is
+    :math:`\binom{n + j_i - 1}{j_i - 1} p_i^n`, so the response from the
+    index :math:`L - M` on, where the direct term has ended, is
+    :math:`h[n] = \sum_i V_{ni} r_i` with the confluent Vandermonde matrix
+    :math:`V_{ni} = \binom{n + j_i - 1}{j_i - 1} p_i^n`. One linear solve gives
+    :math:`r`, and the direct term is what the fractions leave of the
+    response before that, :math:`k_n = h[n] - \sum_i V_{ni} r_i`. Simple and
+    repeated poles take the same path.
 
     Args:
         b (Tensor): numerator coefficients, of shape :math:`(L)` or
             :math:`(B, L)`.
         a (Tensor): denominator coefficients without the leading 1, of shape
-            :math:`(M)` or :math:`(B, M)`, with :math:`a_M \ne 0`. Batched
-            :attr:`b` and :attr:`a` have the same batch size.
+            :math:`(M)` or :math:`(B, M)`. Batched :attr:`b` and :attr:`a`
+            have the same batch size.
         tol (float, optional): the distance within which two poles are
-            considered equal, as in :func:`~philtorch.poly.unique_roots`.
-            Default: ``1e-3``.
+            considered equal, as in :func:`unique_roots`. Default: ``1e-3``.
         rtype (str, optional): how to choose the pole of a group of equal poles,
-            as in :func:`~philtorch.poly.unique_roots`. Default: ``"avg"``.
+            as in :func:`unique_roots`. Default: ``"avg"``.
 
     Returns:
         tuple of Tensor: the residues :math:`r` and the poles :math:`p`, both
@@ -184,9 +285,9 @@ def residuez(
     Note:
         Unlike :func:`scipy.signal.residuez`, the denominator omits its leading
         1, and no zero coefficients are trimmed, so the shapes of the outputs
-        follow from those of the inputs. A denominator with :math:`a_M = 0`
-        has a pole at 0 that the division by it can't handle: the result is
-        not finite.
+        follow from those of the inputs. A pole at 0 (:math:`a_M = 0`) makes
+        the linear system singular, so that the solve raises an error, unless
+        it is simple and :math:`L \le M`.
 
     Note:
         The poles are the roots of :attr:`a`, which are ill-conditioned at high
@@ -212,46 +313,41 @@ def residuez(
     (b, a), batched = _as_batch(b=b, a=a)
     dtype = torch.promote_types(b.dtype, a.dtype)
     b, a = b.to(dtype), a.to(dtype)
-    cdtype = torch.promote_types(dtype, torch.complex64)
     B, M = a.shape
     L = b.size(-1)
 
     if M == 0:
-        r = p = b.new_empty(B, 0, dtype=cdtype)
+        r = p = b.new_empty(B, 0, dtype=torch.promote_types(dtype, torch.complex64))
         return (r, p, b) if batched else (r[0], p[0], b[0])
 
-    poles = torch.linalg.eigvals(companion(a.to(cdtype)))
-    unique, multiplicity, batch_index = unique_roots(poles, tol, rtype)
+    unique, multiplicity, batch_index = unique_roots(torch.linalg.eigvals(companion(a)), tol, rtype)
     # each row by ascending magnitude: sort by magnitude, then stably by row
     by_magnitude = unique.abs().argsort(stable=True)
     order = by_magnitude[batch_index[by_magnitude].argsort(stable=True)]
-    unique, multiplicity = unique[order], multiplicity[order]
     # every row has M entries, one per power of each unique pole
     n = B * M
+    multiplicity = multiplicity[order]
     first = multiplicity.cumsum(0) - multiplicity
-    group = torch.arange(unique.numel(), device=a.device).repeat_interleave(
-        multiplicity, output_size=n
-    )
-    power = (
-        torch.arange(n, device=a.device) - first.repeat_interleave(multiplicity, output_size=n) + 1
-    )
-    entries = unique.repeat_interleave(multiplicity, output_size=n)
+    extra = torch.arange(n, device=a.device) - first.repeat_interleave(multiplicity, output_size=n)
+    p = unique[order].repeat_interleave(multiplicity, output_size=n).view(B, M)
 
-    # b(w) = k(w) a(w) + remainder(w), in descending powers of w, as SciPy does
-    b_rev = b.flip(-1)
-    if L > M:
-        k_rev, remainder_rev = polydiv(
-            b_rev, torch.cat([a.flip(-1), torch.ones_like(a[:, :1])], -1)
-        )
-        k = k_rev.flip(-1)
-    else:
-        remainder_rev = F.pad(b_rev, (M - L, 0))
-        k = b[:, :0]
-    remainder = remainder_rev.flip(-1).to(cdtype)
+    # The impulse response h = b / a: T h = b, T the lower Toeplitz matrix of
+    # [1, a], whose unit diagonal the solver doesn't read.
+    N = max(L, M)
+    T = F.pad(a, (N, N - 1 - M)).unfold(-1, N, 1).flip(-1)
+    h = torch.linalg.solve_triangular(
+        T, F.pad(b, (0, N - L)).unsqueeze(-1), upper=False, unitriangular=True
+    )
+    h = h.squeeze(-1).to(p.dtype)
 
-    columns = _expansion_matrix(entries.view(B, M), group.view(B, M), power.view(B, M))
-    r = torch.linalg.solve(columns, remainder.unsqueeze(-1)).squeeze(-1)
-    p = entries.view(B, M)
+    # h[L - M:] = V r, and k = h[:L - M] - V r on the rows before
+    V = _vandermonde(p, extra.view(B, M), N)
+    Lk = N - M
+    r = torch.linalg.solve(V[:, Lk:], h[:, Lk:])
+    if Lk == 0:
+        return (r, p, b[:, :0]) if batched else (r[0], p[0], b[0, :0])
+    k = torch.baddbmm(h[:, :Lk].unsqueeze(-1), V[:, :Lk], r.unsqueeze(-1), alpha=-1).squeeze(-1)
+    k = k if dtype.is_complex else k.real
     return (r, p, k) if batched else (r[0], p[0], k[0])
 
 
@@ -264,13 +360,14 @@ def invresz(
 
     .. math::
         H(z) = \sum_{i=1}^{M} \frac{r_i}{(1 - p_i z^{-1})^{j_i}}
-            + \sum_n k_n z^{-n},
+            + \sum_{n=0}^{M_k-1} k_n z^{-n},
 
     where equal poles are adjacent and have the powers :math:`j_i = 1, 2, \dots`
     in a row. The denominator is the product of :math:`(1 - p_i z^{-1})` over
     the poles, by a tree of :func:`~philtorch.poly.polymul`. The numerator is
-    :math:`k` times the denominator plus the matrix :math:`F` of
-    :func:`residuez` times :math:`r`.
+    the first :math:`M + M_k` coefficients of the denominator times the impulse
+    response :math:`h = V r + k` of :math:`H`, with the confluent Vandermonde
+    matrix :math:`V` of :func:`residuez`.
 
     Args:
         r (Tensor): the residues, of shape :math:`(M)` or :math:`(B, M)`. A
@@ -284,7 +381,7 @@ def invresz(
             are considered equal. Default: ``1e-3``.
         rtype (str, optional): how to choose the pole of a group of equal
             poles: ``"max"`` or ``"maximum"``, ``"min"`` or ``"minimum"``, or
-            ``"avg"`` or ``"mean"``, as in :func:`~philtorch.poly.unique_roots`.
+            ``"avg"`` or ``"mean"``, as in :func:`unique_roots`.
             Default: ``"avg"``.
 
     Returns:
@@ -304,6 +401,10 @@ def invresz(
         1, and no zero coefficients are trimmed. A group of poles has the value
         that :attr:`rtype` chooses among its members, whereas SciPy reduces
         copies of the group's first pole, so that its ``rtype`` has no effect.
+        A pole continues a group when it is within :attr:`tol` of the previous
+        pole, whereas SciPy compares it with the group's first pole. That is
+        the same for repeated poles, but a chain in which each pole is close to
+        the next while the ends are not is one group here.
 
     Example::
 
@@ -323,33 +424,26 @@ def invresz(
         raise ValueError(
             f"r and p must have the same shape, got {tuple(r.shape)} and {tuple(p.shape)}."
         )
-    cdtype = torch.promote_types(torch.promote_types(r.dtype, p.dtype), k.dtype)
-    cdtype = torch.promote_types(cdtype, torch.complex64)
+    dtype = torch.promote_types(torch.promote_types(r.dtype, p.dtype), k.dtype)
+    cdtype = torch.promote_types(dtype, torch.complex64)
     r, p, k = r.to(cdtype), p.to(cdtype), k.to(cdtype)
     B, M = p.shape
+    L = M + k.size(-1)
 
     if M == 0:
-        a = p
-        return (k, a) if batched else (k[0], a[0])
+        return (k, p) if batched else (k[0], p[0])
 
-    # Runs of adjacent poles within tol of the run's first pole
+    # a run of poles, each within tol of the one before; its powers 1, 2, ...
+    starts = F.pad((p[:, 1:] - p[:, :-1]).abs() > tol, (1, 0), value=True)
+    run = starts.cumsum(-1)
     index = torch.arange(M, device=p.device)
-    starts = [torch.ones(B, dtype=torch.bool, device=p.device)]
-    reference = p[:, 0]
-    for i in range(1, M):
-        new = ~((p[:, i] - reference).abs() <= tol)
-        starts.append(new)
-        reference = torch.where(new, p[:, i], reference)
-    starts = torch.stack(starts, dim=-1)
-    group = starts.cumsum(-1)
-    power = index - torch.where(starts, index, 0).cummax(-1).values + 1
-    poles = _reduce_groups(p, group.unsqueeze(-1) == group.unsqueeze(-2), rtype)
+    extra = index - (starts * index).cummax(-1).values
+    poles = _reduce_groups(p.unsqueeze(1), run.unsqueeze(-1) == run.unsqueeze(-2), rtype)
 
-    denominator = _tree_prod(torch.stack([torch.ones_like(poles), -poles], dim=-1))
-    numerator = F.pad(
-        (_expansion_matrix(poles, group, power) @ r.unsqueeze(-1)).squeeze(-1), (0, k.size(-1))
-    )
-    if k.size(-1) > 0:
-        numerator = numerator + polymul(k, denominator)
+    denominator = _tree_prod(F.pad(-poles.unsqueeze(-1), (1, 0), value=1))
+    response = torch.baddbmm(
+        F.pad(k, (0, M)).unsqueeze(-1), _vandermonde(poles, extra, L), r.unsqueeze(-1)
+    ).squeeze(-1)
+    b = polymul(denominator, response)[..., :L]
     a = denominator[:, 1:]
-    return (numerator, a) if batched else (numerator[0], a[0])
+    return (b, a) if batched else (b[0], a[0])
