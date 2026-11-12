@@ -307,9 +307,10 @@ def residuez(
 
     Note:
         The poles are the roots of :attr:`a`, which are ill-conditioned at high
-        orders: as in SciPy, a Butterworth filter of order 12 already fails. For
-        a filter given as sections, expanding it from the sections' own poles
-        will be better than converting to :attr:`a` first.
+        orders: for a Butterworth filter of order 12, the expansion's impulse
+        response is off by about :math:`10^{-3}` in float64 (SciPy's by about
+        100%). For a filter given as sections, expanding it from the sections'
+        own poles will be better than converting to :attr:`a` first.
 
     Example::
 
