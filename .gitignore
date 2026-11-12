@@ -16,3 +16,5 @@ philtorch/_version.py
 # Sphinx
 docs/_build/
 docs/api/generated/
+
+.juggler/
