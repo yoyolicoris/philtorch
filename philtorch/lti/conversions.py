@@ -258,10 +258,10 @@ def residuez(
     :math:`\binom{n + j_i - 1}{j_i - 1} p_i^n`, so that after the direct term,
     :math:`h[D + n] = \sum_i V_{D - d + n, i} r_i` with the confluent
     Vandermonde matrix :math:`V_{ni} = \binom{n + j_i - 1}{j_i - 1} p_i^n`, and
-    one linear solve gives :math:`r`. The direct term is the rest of the
-    response before, :math:`k_n = h[n] - \sum_i V_{n - d, i} r_i`, which is
-    :math:`h[n]` itself in the delayed form. Simple and repeated poles take the
-    same path.
+    one linear solve gives :math:`r`. The direct term is what the fractions
+    leave of the response before,
+    :math:`k_n = h[n] - \sum_i V_{n - d, i} r_i`, which is :math:`h[n]` itself
+    in the delayed form. Simple and repeated poles take the same path.
 
     Args:
         b (Tensor): numerator coefficients, of shape :math:`(L)` or
@@ -289,21 +289,22 @@ def residuez(
         ValueError: if :attr:`b` or :attr:`a` is not 1-D or 2-D, their batch
             sizes or precisions differ (real and complex inputs of one
             precision mix), :attr:`rtype` is unknown, or, without
-            ``delayed_form``, :math:`L > M` and :math:`a_M = 0` for a filter.
+            ``delayed_form``, :math:`L > M` and :math:`a_M = 0` for any filter.
         torch.linalg.LinAlgError: if a pole at 0 is repeated, which makes the
             linear system singular.
 
     Note:
         Unlike :func:`scipy.signal.residuez`, the denominator omits its leading
-        1, no zero coefficients are trimmed, so the shapes of the outputs
-        follow from those of the inputs, and the poles are grouped after they
-        are sorted, not before, which differs only for a chain in which each
-        pole is close to the next while the ends are not. A pole at 0 (:math:`a_M = 0`) has
-        the fraction :math:`r_i`, a constant: when :math:`L > M`, it overlaps
-        the direct term, so that the expansion isn't unique, and SciPy trims
-        the pole from :math:`a`, changing the shapes, where this raises an
-        error. In the delayed form, it is a tap at delay :math:`D` instead,
-        which is unique.
+        1, and no zero coefficients are trimmed, so the output shapes follow
+        from the input shapes. The poles are grouped after they are sorted,
+        not before, which differs only for a chain of poles each close to the
+        next while the ends are not.
+
+        A pole at 0 (:math:`a_M = 0`) has the constant fraction :math:`r_i`.
+        When :math:`L > M`, that overlaps the direct term, so the expansion
+        isn't unique: SciPy trims the pole from :math:`a`, changing the
+        shapes, where this raises an error. In the delayed form, the pole is a
+        tap at delay :math:`D`, which is unique.
 
     Note:
         The poles are the roots of :attr:`a`, which are ill-conditioned at high
