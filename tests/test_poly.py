@@ -30,10 +30,6 @@ def test_polydiv_gradcheck():
     assert torch.autograd.gradcheck(polydiv, (u, v))
 
 
-def _random_complex(*shape: int) -> torch.Tensor:
-    return torch.randn(*shape, dtype=torch.cdouble)
-
-
 @pytest.mark.parametrize("dtype", [torch.double, torch.cdouble])
 @pytest.mark.parametrize("shape_a, shape_b", [((3, 4), (3, 5)), ((4,), (6,)), ((1,), (3, 1))])
 def test_polymul_matches_numpy(shape_a, shape_b, dtype):
@@ -41,8 +37,7 @@ def test_polymul_matches_numpy(shape_a, shape_b, dtype):
     a = torch.randn(*shape_a, dtype=dtype)
     b = torch.randn(*shape_b, dtype=dtype)
     c = polymul(a, b)
-    a_b, b_b = torch.broadcast_tensors(a[..., :1], b[..., :1])
-    batch = a_b.shape[:-1]
+    batch = torch.broadcast_shapes(a.shape[:-1], b.shape[:-1])
     assert c.shape == (*batch, a.size(-1) + b.size(-1) - 1)
     a_full = a.expand(*batch, -1).reshape(-1, a.size(-1))
     b_full = b.expand(*batch, -1).reshape(-1, b.size(-1))
@@ -54,7 +49,7 @@ def test_polymul_gradcheck():
     a = torch.randn(2, 3, dtype=torch.double, requires_grad=True)
     b = torch.randn(1, 4, dtype=torch.double, requires_grad=True)
     assert torch.autograd.gradcheck(polymul, (a, b))
-    a = _random_complex(2, 3).requires_grad_()
-    b = _random_complex(2, 2).requires_grad_()
+    a = torch.randn(2, 3, dtype=torch.cdouble, requires_grad=True)
+    b = torch.randn(2, 2, dtype=torch.cdouble, requires_grad=True)
     assert torch.autograd.gradcheck(polymul, (a, b))
     assert torch.autograd.gradgradcheck(polymul, (a, b))

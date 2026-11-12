@@ -18,10 +18,11 @@ _RTYPES = ("max", "maximum", "min", "minimum", "avg", "mean")
 
 
 def _tree_prod(polys: Tensor) -> Tensor:
-    """Multiply the polynomials along dimension -2, in ceil(log2 P) batched products.
+    """Multiply the polynomials along dimension -2 in batched products.
 
-    ``polys`` is of shape (..., P, d + 1), P >= 1, in ascending powers (an odd
-    P is padded with the polynomial 1), and the result of shape (..., P * d + 1).
+    ``polys`` is of shape (..., P, d + 1), P >= 1, in ascending powers, and the
+    result of shape (..., P * d + 1). There are ceil(log2 P) levels of products
+    of pairs, an odd P padded with the polynomial 1.
     """
 
     def halve(polys: Tensor, _) -> Tensor:
@@ -47,9 +48,10 @@ def _as_batch(**named: Tensor) -> tuple[list[Tensor], bool]:
         raise ValueError(
             f"Batched {', '.join(named)} must share a batch size, got {sorted(sizes)}."
         )
+    batched = bool(sizes)
     B = sizes.pop() if sizes else 1
     tensors = [t.unsqueeze(0).expand(B, -1) if t.dim() == 1 else t for t in named.values()]
-    return tensors, any(t.dim() == 2 for t in named.values())
+    return tensors, batched
 
 
 def _reduce_groups(p: Tensor, member: Tensor, rtype: str) -> Tensor:
@@ -140,9 +142,7 @@ def sos2tf(sos: Tensor) -> tuple[Tensor, Tensor]:
         tensor([ 0.0000, -0.2500,  0.0000,  0.0000])
     """
     _check_sos(sos)
-    # [1, b0, b1, b2, a1, a2] gathered into numerators and denominators
-    columns = torch.tensor([[1, 2, 3], [0, 4, 5]], device=sos.device)
-    both = _tree_prod(F.pad(sos, (1, 0), value=1)[..., columns].transpose(-2, -3))
+    both = _tree_prod(torch.stack((sos[..., :3], F.pad(sos[..., 3:], (1, 0), value=1)), -3))
     return both[..., 0, :], both[..., 1, 1:]
 
 
@@ -249,8 +249,7 @@ def residuez(
     :math:`d = D`. The two agree when :math:`L \le M`. A pole of multiplicity
     :math:`m` is listed :math:`m` times in a row, with the powers
     :math:`j_i = 1, \dots, m`. The poles are the roots of the denominator,
-    grouped by :func:`unique_roots` and sorted by magnitude,
-    ascending.
+    grouped by :func:`unique_roots` and sorted by magnitude, ascending.
 
     Both parts come from the impulse response :math:`h` of :math:`H`, found as
     the first :math:`D + M` terms of :math:`b / a` by one triangular solve. The
@@ -280,15 +279,18 @@ def residuez(
     Returns:
         tuple of Tensor: the residues :math:`r` and the poles :math:`p`, both
         complex and of shape :math:`(M)` or :math:`(B, M)`, and the direct term
-        :math:`k`, of the dtype of :attr:`b` and :attr:`a`, and of shape
+        :math:`k`, complex when :attr:`b` or :attr:`a` is, and of shape
         :math:`(\max(L - M, 0))` or :math:`(B, \max(L - M, 0))`, empty when
         the numerator's degree is below the denominator's. The outputs are
         batched when :attr:`b` or :attr:`a` is.
 
     Raises:
         ValueError: if :attr:`b` or :attr:`a` is not 1-D or 2-D, their batch
-            sizes differ, :attr:`rtype` is unknown, or, without
+            sizes or precisions differ (real and complex inputs of one
+            precision mix), :attr:`rtype` is unknown, or, without
             ``delayed_form``, :math:`L > M` and :math:`a_M = 0` for a filter.
+        torch.linalg.LinAlgError: if a pole at 0 is repeated, which makes the
+            linear system singular.
 
     Note:
         Unlike :func:`scipy.signal.residuez`, the denominator omits its leading
@@ -298,8 +300,7 @@ def residuez(
         the direct term, so that the expansion isn't unique, and SciPy trims
         the pole from :math:`a`, changing the shapes, where this raises an
         error. In the delayed form, it is a tap at delay :math:`D` instead,
-        which is unique. In either form, a pole at 0 of multiplicity 2 or more
-        makes the linear system singular, so that the solve raises an error.
+        which is unique.
 
     Note:
         The poles are the roots of :attr:`a`, which are ill-conditioned at high
@@ -323,19 +324,22 @@ def residuez(
     if rtype not in _RTYPES:
         raise ValueError(f"rtype must be one of {_RTYPES}, got {rtype!r}")
     (b, a), batched = _as_batch(b=b, a=a)
-    dtype = torch.promote_types(b.dtype, a.dtype)
+    if b.dtype.to_real() != a.dtype.to_real():
+        raise ValueError(f"b and a must share a precision, got {b.dtype} and {a.dtype}")
+    # a real one is made complex, at its own precision, with a complex other
+    dtype = b.dtype.to_complex() if b.is_complex() or a.is_complex() else b.dtype
     b, a = b.to(dtype), a.to(dtype)
     B, M = a.shape
     L = b.size(-1)
-    if not delayed_form and L > M > 0 and (a[:, -1] == 0).any():
+
+    if M == 0:
+        r = p = b.new_empty(B, 0, dtype=b.dtype.to_complex())
+        return (r, p, b) if batched else (r[0], p[0], b[0])
+    if not delayed_form and L > M and (a[:, -1] == 0).any():
         raise ValueError(
             "A pole at 0 (a_M = 0) with a numerator longer than the denominator "
             "has no unique expansion; pass delayed_form=True."
         )
-
-    if M == 0:
-        r = p = b.new_empty(B, 0, dtype=torch.promote_types(dtype, torch.complex64))
-        return (r, p, b) if batched else (r[0], p[0], b[0])
 
     unique, multiplicity, batch_index = unique_roots(torch.linalg.eigvals(companion(a)), tol, rtype)
     # each row by ascending magnitude: sort by magnitude, then stably by row
@@ -364,7 +368,7 @@ def residuez(
     k = h[:, :D]
     if not delayed_form and D > 0:
         k = torch.baddbmm(k.to(p.dtype).unsqueeze(-1), V[:, :D], r.unsqueeze(-1), alpha=-1)
-        k = k.squeeze(-1) if dtype.is_complex else k.squeeze(-1).real
+        k = k.squeeze(-1) if b.is_complex() else k.squeeze(-1).real
     return (r, p, k) if batched else (r[0], p[0], k[0])
 
 
@@ -395,11 +399,12 @@ def invresz(
     Args:
         r (Tensor): the residues, of shape :math:`(M)` or :math:`(B, M)`. A
             repeated pole's residues go by ascending power.
-        p (Tensor): the poles, of the shape of :attr:`r`. Equal poles must be
-            adjacent.
+        p (Tensor): the poles, of shape :math:`(M)` or :math:`(B, M)`. Equal
+            poles must be adjacent.
         k (Tensor): the direct term, of shape :math:`(M_k)` or
             :math:`(B, M_k)`, possibly empty. Batched :attr:`r`, :attr:`p` and
-            :attr:`k` have the same batch size.
+            :attr:`k` have the same batch size, and an unbatched one is shared
+            by the batch.
         tol (float, optional): the distance within which two adjacent poles
             are considered equal. Default: ``1e-3``.
         rtype (str, optional): how to choose the pole of a group of equal
@@ -419,8 +424,9 @@ def invresz(
 
     Raises:
         ValueError: if :attr:`r`, :attr:`p` or :attr:`k` is not 1-D or 2-D,
-            their batch sizes differ, :attr:`r` and :attr:`p` differ in
-            shape, or :attr:`rtype` is unknown.
+            their batch sizes or precisions differ (real and complex inputs of
+            one precision mix), :attr:`r` and :attr:`p` differ in length, or
+            :attr:`rtype` is unknown.
 
     Note:
         Unlike :func:`scipy.signal.invresz`, the denominator omits its leading
@@ -447,11 +453,13 @@ def invresz(
         raise ValueError(f"rtype must be one of {_RTYPES}, got {rtype!r}")
     (r, p, k), batched = _as_batch(r=r, p=p, k=k)
     if r.size(-1) != p.size(-1):
+        raise ValueError(f"r and p must have the same length, got {r.size(-1)} and {p.size(-1)}.")
+    if len({t.dtype.to_real() for t in (r, p, k)}) > 1:
         raise ValueError(
-            f"r and p must have the same shape, got {tuple(r.shape)} and {tuple(p.shape)}."
+            f"r, p and k must share a precision, got {r.dtype}, {p.dtype} and {k.dtype}"
         )
-    dtype = torch.promote_types(torch.promote_types(r.dtype, p.dtype), k.dtype)
-    cdtype = torch.promote_types(dtype, torch.complex64)
+    # real inputs are made complex at their own precision
+    cdtype = r.dtype.to_complex()
     r, p, k = r.to(cdtype), p.to(cdtype), k.to(cdtype)
     B, M = p.shape
     L = M + k.size(-1)
@@ -467,13 +475,10 @@ def invresz(
     poles = _reduce_groups(p.unsqueeze(1), run.unsqueeze(-1) == run.unsqueeze(-2), rtype)
 
     denominator = _tree_prod(F.pad(-poles.unsqueeze(-1), (1, 0), value=1))
-    if delayed_form:
-        fractions = (_vandermonde(poles, extra, M) @ r.unsqueeze(-1)).squeeze(-1)
-        response = torch.cat([k, fractions], -1)
-    else:
-        response = torch.baddbmm(
-            F.pad(k, (0, M)).unsqueeze(-1), _vandermonde(poles, extra, L), r.unsqueeze(-1)
-        ).squeeze(-1)
+    # the fractions start at the delay d, after the direct term in the delayed form
+    d = k.size(-1) if delayed_form else 0
+    V = F.pad(_vandermonde(poles, extra, L - d), (0, 0, d, 0))
+    response = torch.baddbmm(F.pad(k, (0, M)).unsqueeze(-1), V, r.unsqueeze(-1)).squeeze(-1)
     b = polymul(denominator, response)[..., :L]
     a = denominator[:, 1:]
     return (b, a) if batched else (b[0], a[0])

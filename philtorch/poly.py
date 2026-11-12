@@ -69,9 +69,9 @@ def polymul(a: Tensor, b: Tensor) -> Tensor:
 
     This computes the product :math:`c(x) = a(x) b(x)` along the last
     dimension, as the convolution of the coefficients, one grouped
-    :func:`torch.nn.functional.conv1d`. They run from the
-    highest degree down, as in :func:`numpy.polymul`; a convolution doesn't
-    depend on the order, so ascending coefficients multiply the same way.
+    :func:`torch.nn.functional.conv1d`. The coefficients run from the highest
+    degree down, as in :func:`numpy.polymul`; a convolution doesn't depend on
+    the order, so ascending coefficients multiply the same way.
 
     Args:
         a (Tensor): coefficients of the first factor, of shape
@@ -79,7 +79,7 @@ def polymul(a: Tensor, b: Tensor) -> Tensor:
             dimensions.
         b (Tensor): coefficients of the second factor, of shape
             :math:`(*, N + 1)`. Its batch dimensions must broadcast with those
-            of :attr:`a`.
+            of :attr:`a`, and its dtype is that of :attr:`a`.
 
     Returns:
         Tensor: the coefficients of the product, of shape
@@ -87,6 +87,7 @@ def polymul(a: Tensor, b: Tensor) -> Tensor:
 
     Raises:
         ValueError: if :attr:`a` or :attr:`b` is 0-D.
+        RuntimeError: if :attr:`a` and :attr:`b` differ in dtype.
 
     Example::
 
@@ -100,9 +101,6 @@ def polymul(a: Tensor, b: Tensor) -> Tensor:
 
     # conv1d correlates, so the weights are flipped; the batch is one group each
     batch = torch.broadcast_shapes(a.shape[:-1], b.shape[:-1])
-    if a.dtype != b.dtype:
-        dtype = torch.promote_types(a.dtype, b.dtype)
-        a, b = a.to(dtype), b.to(dtype)
     n, m = a.size(-1), b.size(-1)
     x = a.expand(*batch, n).reshape(1, -1, n)
     w = b.expand(*batch, m).flip(-1).reshape(-1, 1, m)

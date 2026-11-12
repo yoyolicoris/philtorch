@@ -487,7 +487,17 @@ _LTI_FILTERING_CASES = [
         "at least one section",
         id="sos2tf-sos-no-sections",
     ),
-    # residuez(b, a, tol, rtype): b and a 1D or 2D
+    # residuez(b, a, tol, rtype, delayed_form): b and a 1D or 2D, of one precision
+    pytest.param(
+        lambda: lti.residuez(_ones(3), _ones(2).float()),
+        "b and a must share a precision",
+        id="residuez-dtype",
+    ),
+    pytest.param(
+        lambda: lti.invresz(_ones(2).to(torch.complex64), _ones(2), _ones(0)),
+        "r, p and k must share a precision",
+        id="invresz-precision",
+    ),
     pytest.param(
         lambda: lti.residuez(_ones(4), torch.tensor([-0.5, 0.0], dtype=F64)),
         "pass delayed_form=True",
@@ -513,7 +523,7 @@ _LTI_FILTERING_CASES = [
         "rtype must be one of",
         id="residuez-rtype",
     ),
-    # invresz(r, p, k, tol, rtype): r, p and k 1D or 2D
+    # invresz(r, p, k, tol, rtype, delayed_form): r, p and k 1D or 2D, of one precision
     pytest.param(
         lambda: lti.invresz(_ones(1, 1, 2), _ones(2), _ones(1)),
         "r must be 1D or 2D",
@@ -531,13 +541,29 @@ _LTI_FILTERING_CASES = [
     ),
     pytest.param(
         lambda: lti.invresz(_ones(2), _ones(3), _ones(1)),
-        "r and p must have the same shape",
-        id="invresz-r-p-shape",
+        "r and p must have the same length",
+        id="invresz-r-p-length",
     ),
     pytest.param(
         lambda: lti.invresz(_ones(2), _ones(2), _ones(1), rtype="median"),
         "rtype must be one of",
         id="invresz-rtype",
+    ),
+    # unique_roots(p, tol, rtype): p 1D or 2D
+    pytest.param(
+        lambda: lti.unique_roots(_ones(1, 2, 3)),
+        "p must be 1D or 2D",
+        id="unique_roots-p-3d",
+    ),
+    pytest.param(
+        lambda: lti.unique_roots(_ones(())),
+        "p must be 1D or 2D",
+        id="unique_roots-p-0d",
+    ),
+    pytest.param(
+        lambda: lti.unique_roots(_ones(3), rtype="median"),
+        "rtype must be one of",
+        id="unique_roots-rtype",
     ),
     # filtfilt(b, a, x)
     pytest.param(
@@ -803,21 +829,6 @@ _POLY_CASES = [
         lambda: polymul(_ones(3), _ones(())),
         "a and b must be at least 1D",
         id="polymul-b-0d",
-    ),
-    pytest.param(
-        lambda: lti.unique_roots(_ones(1, 2, 3)),
-        "p must be 1D or 2D",
-        id="unique_roots-p-3d",
-    ),
-    pytest.param(
-        lambda: lti.unique_roots(_ones(())),
-        "p must be 1D or 2D",
-        id="unique_roots-p-0d",
-    ),
-    pytest.param(
-        lambda: lti.unique_roots(_ones(3), rtype="median"),
-        "rtype must be one of",
-        id="unique_roots-rtype",
     ),
 ]
 

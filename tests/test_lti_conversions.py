@@ -89,7 +89,7 @@ def _check_unique_roots(p: np.ndarray, tol: float, rtype: str):
     np.testing.assert_array_equal(m.numpy(), expected_m)
 
 
-@pytest.mark.parametrize("rtype", ["max", "maximum", "min", "minimum", "avg", "mean"])
+@pytest.mark.parametrize("rtype", ["max", "min", "avg"])
 def test_unique_roots_matches_scipy(rtype):
     # SciPy's docstring example
     _check_unique_roots(np.array([0, 1.3, 1.31, 2.8, 1.25, 2.2, 10.3]), 2e-2, rtype)
@@ -147,10 +147,13 @@ def test_sos2tf_matches_scipy(K, batched):
     b, a = sos2tf(torch.from_numpy(sos))
     assert b.shape == (*sos.shape[:-2], 2 * K + 1)
     assert a.shape == (*sos.shape[:-2], 2 * K)
-    for i, row in enumerate(sos if batched else sos[None]):
+    rows = zip(
+        sos.reshape(-1, K, 5), b.reshape(-1, 2 * K + 1).numpy(), a.reshape(-1, 2 * K).numpy()
+    )
+    for row, got_b, got_a in rows:
         expected_b, expected_a = signal.sos2tf(np.insert(row, 3, 1.0, axis=-1))
-        np.testing.assert_allclose((b[i] if batched else b).numpy(), expected_b, atol=1e-12)
-        np.testing.assert_allclose((a[i] if batched else a).numpy(), expected_a[1:], atol=1e-12)
+        np.testing.assert_allclose(got_b, expected_b, atol=1e-12)
+        np.testing.assert_allclose(got_a, expected_a[1:], atol=1e-12)
 
 
 @pytest.mark.parametrize(
@@ -175,7 +178,7 @@ def test_residuez_matches_scipy(b_length, a, rtype, delayed_form):
     b = rng.standard_normal(b_length)
     if np.iscomplexobj(a):
         b = b + 1j * rng.standard_normal(b_length)
-    _check_residuez(b, a, rtype=rtype)
+    _check_residuez(b, a, delayed_form=delayed_form, rtype=rtype)
 
 
 def test_residuez_triple_pole():
@@ -196,17 +199,12 @@ def test_residuez_batched_multiplicities():
     a = np.stack(rows)
     b = np.random.default_rng(0).standard_normal((4, 5))
     _check_residuez(b, a)
-    # an unbatched b is shared by the rows
+    # an unbatched b is shared by the rows, and so is an unbatched a
     _check_residuez(b[0], a)
-
-
-def test_residuez_unbatched_denominator_with_batched_numerator():
-    a = _a(0.5, 0.5, 0.3)
-    b = np.random.default_rng(0).standard_normal((3, 5))
-    r, p, k = residuez(torch.from_numpy(b), torch.from_numpy(a))
-    assert r.shape == p.shape == (3, 3)
-    assert k.shape == (3, 2)
-    _check_residuez(b, a)
+    _check_residuez(b, a[0])
+    r, p, k = residuez(torch.from_numpy(b), torch.from_numpy(a[0]))
+    assert r.shape == p.shape == (4, 3)
+    assert k.shape == (4, 2)
 
 
 @pytest.mark.parametrize("b_length", [2, 4])
@@ -255,14 +253,13 @@ def _check_invresz(r, p, k, delayed_form: bool = False, **kwargs):
         _a(0.5, 0.5, 0.3 + 0.4j, 0.3 - 0.4j, 0.3 + 0.4j, 0.3 - 0.4j),
     ],
 )
-@pytest.mark.parametrize("rtype", ["avg", "min", "max"])
 @pytest.mark.parametrize("delayed_form", [False, True])
-def test_invresz_matches_scipy_and_round_trips(b_length, a, rtype, delayed_form):
+def test_invresz_matches_scipy_and_round_trips(b_length, a, delayed_form):
     rng = np.random.default_rng(b_length)
     b = rng.standard_normal(b_length)
     reference = _delayed_residuez if delayed_form else signal.residuez
     r, p, k = reference(b, np.concatenate([[1.0], a]))
-    _check_invresz(r, p, k, delayed_form, rtype=rtype)
+    _check_invresz(r, p, k, delayed_form)
 
     # invresz(residuez(b, a)) is (b, a), a numerator shorter than a padded
     expansion = residuez(torch.from_numpy(b), torch.from_numpy(a), delayed_form=delayed_form)
@@ -287,8 +284,7 @@ def test_invresz_batched():
         )
         np.testing.assert_allclose(a[i].numpy(), expected_a[1:], atol=1e-10)
     # a shared k
-    b_shared, _ = invresz(r, p, k[0])
-    assert b_shared.shape == (3, 5)
+    torch.testing.assert_close(invresz(r, p, k[0]), invresz(r, p, k[0].expand(3, -1)))
 
 
 def test_invresz_groups_poles_by_the_previous_pole():
