@@ -235,6 +235,11 @@ def _ssm_B(B, x, batch_size, M):
     raise _ssm_B_shape_error(B, x, batch_size, M)
 
 
+def _complex_as(t, other):
+    """``t``, as complex at its own precision when ``other`` is complex."""
+    return t + 0j if other.is_complex() and not t.is_complex() else t
+
+
 def _ssm_B_shape_error(B, x, batch_size, M):
     if x.dim() == 2:
         allowed = f"({M},) or ({batch_size}, {M})"
@@ -328,15 +333,20 @@ def diag_state_space(
 ):
     r"""Compute a state-space model's outputs through its eigendecomposition.
 
-    With :math:`A = V \operatorname{diag}(\boldsymbol{\lambda}) V^{-1}`, the
-    state :math:`\mathbf{z} = V^{-1} \mathbf{h}` evolves as :math:`M`
-    independent first-order recurrences,
+    With :math:`A = V \Lambda V^{-1}` and
+    :math:`\Lambda = \operatorname{diag}(\boldsymbol{\lambda})`, the model of
+    :func:`state_space` in the eigenvectors' coordinates,
+    :math:`\hat{\mathbf{h}} = V^{-1} \mathbf{h}`, is
 
     .. math::
-        z_i[n + 1] = \lambda_i z_i[n] + (V^{-1} B \mathbf{x}[n])_i,
+        \hat{\mathbf{h}}[n + 1] &= \Lambda \hat{\mathbf{h}}[n]
+            + \hat{B} \mathbf{x}[n], \\
+        \mathbf{y}[n] &= \hat{C} \hat{\mathbf{h}}[n] + D \mathbf{x}[n],
 
-    which run with :func:`linear_recurrence`. The outputs are those of
-    :func:`state_space` for a diagonalizable :math:`A`.
+    with :math:`\hat{B} = V^{-1} B` and :math:`\hat{C} = C V`. As
+    :math:`\Lambda` is diagonal, the states are :math:`M` independent
+    first-order recurrences, which run with :func:`linear_recurrence`. The
+    outputs are those of :func:`state_space` for a diagonalizable :math:`A`.
 
     Give the decomposition in one of these ways:
 
@@ -346,20 +356,23 @@ def diag_state_space(
     - :attr:`L` with :attr:`A`, :attr:`V` or :attr:`Vinv`: the missing
       matrices are computed from it.
     - :attr:`L` with both :attr:`V` and :attr:`Vinv`: used as given.
-    - :attr:`L` alone: :math:`A` is diagonal and :math:`V = I`.
+    - :attr:`L` alone: :math:`A` is diagonal and :math:`V = I`. Then a 2-D
+      :attr:`x` without :attr:`B` drives every state, unlike
+      :func:`state_space`, whose default feeds the first state only.
 
     Args:
         x (Tensor): inputs, of shape :math:`(B, N, F)` or :math:`(B, N)`.
         L (Tensor, optional): the eigenvalues :math:`\boldsymbol{\lambda}`,
-            of shape :math:`(M)` or :math:`(B, M)`. Batched eigenvalues need
-            :attr:`V` or :attr:`Vinv`. Default: ``None``.
+            of shape :math:`(M)` or :math:`(B, M)`. Default: ``None``.
         V (Tensor, optional): the eigenvectors as columns, of shape
             :math:`(M, M)` or :math:`(B, M, M)`. Default: ``None``.
         Vinv (Tensor, optional): the inverse of :attr:`V`, of the same shape.
             Default: ``None``.
         A (Tensor, optional): the state matrix, of shape :math:`(M, M)` or
             :math:`(B, M, M)`. Default: ``None``.
-        B (Tensor, optional): see :func:`state_space`. Default: ``None``.
+        B (Tensor, optional): see :func:`state_space`, except that with
+            :attr:`L` alone a 2-D :attr:`x` without :attr:`B` drives every
+            state. Default: ``None``.
         C (Tensor, optional): see :func:`state_space`. Default: ``None``.
         D (Tensor, optional): see :func:`state_space`. Default: ``None``.
         zi (Tensor, optional): see :func:`state_space`. Default: ``None``.
@@ -370,8 +383,10 @@ def diag_state_space(
     Returns:
         Tensor or tuple of Tensor: as :func:`state_space`. With complex
         eigenvalues, for example a real filter with complex poles, the
-        computation is complex: a real :attr:`C` returns the real part, and
-        otherwise the outputs are complex.
+        computation is complex; the outputs and final state are real when
+        every tensor given (:attr:`x`, :attr:`L`, :attr:`V`, :attr:`Vinv`,
+        :attr:`A`, :attr:`B`, :attr:`C`, :attr:`D` and :attr:`zi`) is real,
+        and complex otherwise.
 
     Raises:
         ValueError: if neither :attr:`L` nor :attr:`A` is given, if both
@@ -390,6 +405,8 @@ def diag_state_space(
         True
     """
     _ssm.check_arguments(x, C, out_idx)
+    # A real system has real outputs, even through complex eigenvalues.
+    real = not any(t is not None and t.is_complex() for t in (x, L, V, Vinv, A, B, C, D, zi))
 
     batch_size = x.size(0)
 
@@ -423,8 +440,6 @@ def diag_state_space(
 
             case (L_batch, _) if L_batch == batch_size:
                 M = L.size(1)
-                if V is None and Vinv is None:
-                    raise ValueError("V and Vinv cannot both be None when L is a batch of vectors")
                 if V is not None:
                     if V.dim() != 3:
                         raise ValueError(f"V must be 3D, got {V.shape}")
@@ -452,10 +467,15 @@ def diag_state_space(
             case _:
                 raise ValueError(f"L must be a vector or a batch of vectors, got {L.shape}")
 
+    if B is None and x.dim() == 3 and x.size(-1) != M:
+        raise ValueError(
+            f"Last dimension of A must match last dimension of x, got A: {M}, x: {x.size(-1)}"
+        )
+
     match (V, Vinv, A):
         case (None, None, None):
-            # scalar case
-            V = Vinv = torch.eye(M, device=x.device, dtype=x.dtype)
+            # A = diag(L) and V = I: V and Vinv stay None, meaning the identity.
+            pass
         case (None, None, _):
             V = find_eigenvectors(A, L)
             Vinv = torch.linalg.inv(V)
@@ -468,22 +488,32 @@ def diag_state_space(
 
     zi, return_zf = _ssm.initial_state(x, zi, M)
 
-    x_orig = x
-    if Vinv.is_complex():
+    x_orig, zi_orig = x, zi
+    if (L if Vinv is None else Vinv).is_complex():
         if not zi.is_complex():
-            zi = zi + 0j  # Ensure zi is complex if Vinv is complex
+            zi = zi + 0j  # Ensure zi is complex if the states are
         if not x.is_complex():
-            x = x + 0j  # Ensure x is complex if Vinv is complex
+            x = x + 0j  # Ensure x is complex if the states are
         if B is not None and not B.is_complex():
             B = B + 0j
+        if not real and C is not None and not C.is_complex():
+            C = C + 0j
 
-    # Vinv is 2-D or 3-D: as given and checked, or as computed.
-    if Vinv.dim() == 2:
+    # Vinv is None (the identity), or 2-D or 3-D: as given and checked, or as
+    # computed.
+    if Vinv is None:
+        Vinvzi = zi
+    elif Vinv.dim() == 2:
         Vinvzi = zi @ Vinv.T
     else:
         Vinvzi = torch.linalg.vecdot(Vinv.conj(), zi.unsqueeze(1))
 
-    if B is not None:
+    if Vinv is None:
+        if B is None and x.dim() == 2:  # every state is driven by x
+            VinvBx = x.unsqueeze(-1).expand(-1, -1, M)
+        else:
+            VinvBx = _ssm_B(B, x, batch_size, M)
+    elif B is not None:
         # Same dispatch as _ssm_B, but Vinv is folded into B before touching x.
         features = x.size(-1)
         match x.dim(), tuple(B.shape):
@@ -516,18 +546,40 @@ def diag_state_space(
         VinvBx.mT.flatten(0, 1),
     ).unflatten(0, (batch_size, M))
 
-    def run(out_idx):
-        if out_idx is None:
-            return (V @ Vinvh).mT
-        return (V[..., out_idx, None, :] @ Vinvh).squeeze(-2)
+    def run(out_idx, h_hat=Vinvh):
+        if V is None:
+            h = h_hat.mT if out_idx is None else h_hat[:, out_idx]
+        elif out_idx is None:
+            h = (V @ h_hat).mT
+        else:
+            h = (V[..., out_idx, None, :] @ h_hat).squeeze(-2)
+        # A real system's states are real: their imaginary part is rounding.
+        return h.real if real else h
 
-    h, zf = _ssm.states(run, zi, out_idx=out_idx, final_state=return_zf)
-
-    if C is not None and not C.is_complex():
-        h = h.real
-        zf = zf.real if return_zf else None
-
-    y = _ssm_C_D(h, x_orig, C, D, batch_size, M)
+    zi = zi_orig if real else zi
+    if C is None:
+        h, zf = _ssm.states(run, zi, out_idx=out_idx, final_state=return_zf)
+        y = _ssm_C_D(h, x_orig, None, D, batch_size, M)
+    else:
+        # y[n] = C h[n] = C_hat h_hat[n], with C_hat = C V: the states stay in
+        # the eigenbasis, and the shift moves C h, of P values per step,
+        # rather than the M states. h[0] = zi is in the original basis.
+        N = Vinvh.size(-1)
+        zf = (run(None, Vinvh[..., -1:])[:, 0] if N else zi) if return_zf else None
+        # A complex C on real states, or a real C on complex ones: each
+        # product is taken in complex, its operands keeping their precision.
+        Czi = _ssm_C_D(_complex_as(zi.unsqueeze(1), C), x_orig, C, None, batch_size, M)
+        C_hat = C
+        if V is not None:
+            C_hat, V_ = _complex_as(C, V), _complex_as(V, C)
+            # A (B, M) C is a row per signal, as _ssm_C_D reads it.
+            per_signal = V.dim() == 3 and C.dim() == 2 and C.size(0) == batch_size
+            C_hat = (C_hat.unsqueeze(-2) @ V_).squeeze(-2) if per_signal else C_hat @ V_
+        h_hat = _complex_as(Vinvh.mT[:, :-1], C_hat)
+        Ch = _ssm_C_D(h_hat, x_orig, C_hat, None, batch_size, M)
+        Ch = torch.cat([Czi, Ch.real if real else Ch], dim=1)[:, :N]
+        y = _ssm.outputs(Ch, None if D is None else _ssm_D(D, x_orig, batch_size))
     if return_zf:
-        return y, zf
+        # Real states with only C or D complex: the final state is complex too.
+        return y, zf if real or zf.is_complex() else zf + 0j
     return y
