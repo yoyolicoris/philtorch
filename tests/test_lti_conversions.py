@@ -346,6 +346,7 @@ def test_sos2pfe_matches_scipy_for_simple_poles():
     sos[1, 3:] = [-0.8, 0.15]
     _check_sos2pfe(sos, 1e-8)
     _check_sos2pfe(np.delete(signal.butter(5, 0.2, output="sos"), 3, 1), 1e-8)
+    _check_sos2pfe(_random_sos(K=3) + 0.2j * _random_sos(K=3), 1e-10)
 
 
 def test_sos2pfe_conjugate_pair_is_exact():
@@ -354,13 +355,9 @@ def test_sos2pfe_conjugate_pair_is_exact():
 
 
 def test_sos2pfe_matches_scipy_for_repeated_poles():
-    # np.roots finds a multiple root only to about 1e-8 per level of multiplicity,
-    # so SciPy's reference is that accurate, and the tolerances follow
     double_real = [1.0, 0.5, -0.3, -1.0, 0.25]
     complex_pair = np.delete(signal.butter(2, 0.3, output="sos"), 3, 1)[0]
-    _check_sos2pfe(np.stack([double_real, double_real]), 1e-6)
-    _check_sos2pfe(np.stack([complex_pair, complex_pair]), 1e-6)
-    _check_sos2pfe(np.stack([complex_pair, complex_pair, complex_pair, double_real]), 1e-6)
+    _check_sos2pfe(np.stack([complex_pair, complex_pair, complex_pair, double_real]), 1e-10)
 
 
 def test_sos2pfe_fir_section():
@@ -377,7 +374,7 @@ def test_sos2pfe_batched_multiplicities():
     pair = np.delete(signal.butter(2, 0.3, output="sos"), 3, 1)[0]
     other = [0.7, 0.1, 0.2, -0.3, 0.02]
     sos = np.stack([[double, double], [double, other], [pair, pair], [pair, other]])
-    _check_sos2pfe(sos, 1e-6)
+    _check_sos2pfe(sos, 1e-10)
 
 
 @pytest.mark.parametrize(

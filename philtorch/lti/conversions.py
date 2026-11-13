@@ -333,7 +333,8 @@ def residuez(
         The poles are the roots of :attr:`a`, which are ill-conditioned at high
         orders: for a Butterworth filter of order 12, the expansion's impulse
         response is off by about :math:`10^{-3}` in float64 (SciPy's by about
-        100%). For a filter given as sections, use :func:`sos2pfe`.
+        100%). For a filter given as sections, use :func:`sos2pfe`, whose
+        expansion is in positive powers of :math:`z`.
 
     Example::
 
@@ -538,10 +539,10 @@ def sos2pfe(sos: Tensor, tol: float = 1e-6, rtype: str = "avg") -> tuple[Tensor,
     :math:`F(s) = s^m H(p + s) = \sum_j r_j s^{m-j} + O(s^m)`: the residues
     are the first :math:`m` Taylor coefficients of :math:`F` at 0. :math:`F` is
     the product over the sections of their numerators at :math:`p + s`, divided
-    by the factors :math:`(p - p_l + s)` of their poles outside the group, so
-    that the coefficients come from the product of the sections' power series,
-    truncated to :math:`m` terms, found by a tree of
-    :func:`~philtorch.poly.polymul`. There is no polynomial division, root
+    by the factors :math:`(p - p_l + s)` of their poles in other groups, each
+    at its group's value :math:`p_l`, so that the coefficients come from the
+    product of the sections' power series, truncated to :math:`m` terms, found
+    by a tree of :func:`~philtorch.poly.polymul`. There is no polynomial division, root
     finding of a high-order polynomial or linear solve. Simple and repeated
     poles take the same path.
 
@@ -571,9 +572,9 @@ def sos2pfe(sos: Tensor, tol: float = 1e-6, rtype: str = "avg") -> tuple[Tensor,
         The expansion is in :func:`scipy.signal.residue`'s basis, that of the
         filter written in positive powers of :math:`z`, with the denominator's
         leading 1 omitted from :attr:`sos` as in :func:`sos2tf`. For simple
-        poles, it equals :func:`residuez`'s with ``delayed_form=True``. Unlike
-        :func:`residuez`, it takes a pole at 0 (an odd-order design has one),
-        and a repeated pole at 0 (an FIR section, :math:`a_1 = a_2 = 0`), whose
+        poles, it equals :func:`residuez`'s with ``delayed_form=True``, up to
+        the order of the poles. Unlike :func:`residuez`, it also takes a
+        repeated pole at 0 (an FIR section, :math:`a_1 = a_2 = 0`), whose
         bases can't hold it.
 
     Note:
@@ -585,9 +586,7 @@ def sos2pfe(sos: Tensor, tol: float = 1e-6, rtype: str = "avg") -> tuple[Tensor,
         elliptic of order 16, it is :math:`10^{-10}`,
         :math:`4 \times 10^{-12}` and :math:`3 \times 10^{-15}`, where
         :func:`residuez` on :func:`sos2tf`'s output is off by :math:`10^{-4}`,
-        :math:`10^{25}` and :math:`0.2`. The number of groups depends on the
-        values of the poles, so the shapes inside depend on them, and a
-        compiled call has a graph break.
+        :math:`10^{25}` and :math:`0.2`.
 
     Note:
         The default :attr:`tol` is below SciPy's :math:`10^{-3}`, which merges
@@ -599,6 +598,10 @@ def sos2pfe(sos: Tensor, tol: float = 1e-6, rtype: str = "avg") -> tuple[Tensor,
         and :math:`3.5 \times 10^{-4}` in float32; a :attr:`tol` below that
         keeps the two poles apart, with large residues that cancel, so float32
         sections with double roots need a larger :attr:`tol`.
+
+    Note:
+        The number of groups depends on the values of the poles, so the shapes
+        inside do too, and the call can't be compiled without a graph break.
 
     Example::
 
@@ -627,19 +630,19 @@ def sos2pfe(sos: Tensor, tol: float = 1e-6, rtype: str = "avg") -> tuple[Tensor,
     d = torch.where((a1.conj() * d).real < 0, -d, d)
     q = -(a1 + d) / 2
     conjugates = (d.real == 0) & (a1.imag == 0)
-    poles = torch.stack((q, torch.where(conjugates, q.conj(), a2 / (q + (q == 0)))), -1)
+    poles = torch.stack((q, torch.where(conjugates, q.conj(), a2 / q)), -1)
     poles = poles.view(B, 2 * K)
 
     batch_index, group = _group(poles, tol)
     unique = _reduce_groups(poles[batch_index], group, rtype)
     multiplicity = group.sum(-1)
     m = int(multiplicity.max())
-    # the distance from the group's pole to the group's value at each pole
+    # each pole's group value minus this group's
     away = torch.zeros_like(poles).index_add(0, batch_index, group * unique[:, None])
-    away = away[batch_index].unflatten(-1, (K, 2)) - unique.view(-1, 1, 1)
+    away = (away[batch_index] - unique.unsqueeze(-1)).unflatten(-1, (K, 2))
 
-    # the first m terms of the series of 1 / (s - away) are
-    # -cumprod(1 / away); a member of the group, whose distance is 0, has 1
+    # the first m terms of the series of 1 / (s - away) are -cumprod(1 / away);
+    # a member of the group has 1
     member = group.unflatten(-1, (K, 2))
     series = (
         F.pad(member.unsqueeze(-1), (0, m - 1))
