@@ -194,6 +194,13 @@ def test_residuez_batched_multiplicities():
     assert k.shape == (4, 2)
 
 
+def test_residuez_orders_a_conjugate_pair_by_angle():
+    # the solver returns real input's conjugates exactly, so their magnitudes tie
+    a = torch.from_numpy(_a(0.3 + 0.4j, 0.3 - 0.4j))
+    _, p, _ = residuez(torch.ones(1, dtype=F64), a)
+    torch.testing.assert_close(p, torch.tensor([0.3 - 0.4j, 0.3 + 0.4j], dtype=torch.complex128))
+
+
 @pytest.mark.parametrize("b_length", [2, 4])
 def test_residuez_delayed_form_takes_a_pole_at_zero(b_length):
     # a first-order filter padded to second order: poles 0.5 and 0

@@ -249,8 +249,8 @@ def residuez(
     :math:`d = D`. The two agree when :math:`L \le M`. A pole of multiplicity
     :math:`m` is listed :math:`m` times in a row, with the powers
     :math:`j_i = 1, \dots, m`. The poles are the roots of the denominator,
-    sorted by magnitude, ascending, and grouped in that order by
-    :func:`unique_roots`.
+    sorted by magnitude, ascending, then by angle in :math:`(-\pi, \pi]`, and
+    grouped in that order by :func:`unique_roots`.
 
     Both parts come from the impulse response :math:`h` of :math:`H`, found as
     the first :math:`D + M` terms of :math:`b / a` by one triangular solve. The
@@ -299,7 +299,10 @@ def residuez(
         1, and no zero coefficients are trimmed, so the output shapes follow
         from the input shapes. The poles are grouped after they are sorted,
         not before, which differs only for a chain of poles each close to the
-        next while the ends are not.
+        next while the ends are not. Poles of equal magnitude, such as a
+        conjugate pair, are ordered by angle, where SciPy keeps the order of
+        the root finder, which can vary between platforms; magnitudes that
+        differ only by rounding still can.
 
         A pole at 0 (:math:`a_M = 0`) has the constant fraction :math:`r_i`.
         When :math:`L > M`, that overlaps the direct term, so the expansion
@@ -355,7 +358,9 @@ def residuez(
         )
 
     poles = torch.linalg.eigvals(companion(a))
-    # by ascending magnitude in each row, so that the groups come out in order
+    # by ascending magnitude, then angle, in each row, so that the groups come
+    # out in order and tied poles don't keep the solver's order
+    poles = poles.gather(-1, poles.angle().argsort(dim=-1))
     poles = poles.gather(-1, poles.abs().argsort(dim=-1, stable=True))
     unique, multiplicity, _ = unique_roots(poles, tol, rtype)
     # every row has M entries, one per power of each unique pole
