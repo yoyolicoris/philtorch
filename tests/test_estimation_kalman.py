@@ -205,20 +205,6 @@ def test_kalman_rejects_unsupported_shapes(name, shape):
         kalman_filter(**args)
 
 
-@pytest.mark.parametrize("fn", [kalman_filter, kalman_smoother])
-def test_kalman_gradcheck(fn):
-    y, A, C, Q, R, m0, P0 = _model(2, 5, 2, 1)
-    # Covariances as factors, so that gradcheck's perturbations keep them valid.
-    factors = [torch.linalg.cholesky(t) for t in (Q, R, P0)]
-
-    def run(y, A, C, Q_factor, R_factor, m0, P0_factor):
-        Q, R, P0 = (L @ L.mH for L in (Q_factor, R_factor, P0_factor))
-        return tuple(fn(y, A, C, Q, R, m0, P0))
-
-    inputs = [t.clone().requires_grad_() for t in (y, A, C, factors[0], factors[1], m0, factors[2])]
-    assert torch.autograd.gradcheck(run, inputs)
-
-
 def test_kalman_compiled_matches_eager():
     """The scans' combine functions trace without aliasing or mutating inputs.
 

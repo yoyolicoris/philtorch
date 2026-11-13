@@ -21,6 +21,18 @@ Filtering
    lfiltic
    comb_filter
 
+Conversions
+-----------
+
+.. autosummary::
+   :toctree: generated
+   :nosignatures:
+
+   sos2tf
+   residuez
+   invresz
+   unique_roots
+
 State-space models
 ------------------
 

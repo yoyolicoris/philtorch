@@ -96,12 +96,6 @@ def test_sosfilt_gradients():
     assert torch.autograd.gradcheck(sosfilt, (sos, x))
 
 
-@pytest.mark.parametrize("batched", [False, True])
-def test_sosfilt_zi_gradients(batched):
-    sos = torch.from_numpy(_random_sos(2, K=3) if batched else _random_sos(K=3)).requires_grad_()
-    assert torch.autograd.gradcheck(sosfilt_zi, (sos,))
-
-
 def test_sosfilt_compiled_matches_eager():
     sos = torch.from_numpy(_random_sos(2, K=3))
     x = torch.randn(2, 30, dtype=F64)

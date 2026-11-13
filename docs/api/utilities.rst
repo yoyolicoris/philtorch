@@ -32,6 +32,7 @@ philtorch.poly
    :nosignatures:
 
    polydiv
+   polymul
 
 philtorch.utils
 ---------------
