@@ -158,14 +158,16 @@ def test_sos2tf_matches_scipy(K, batched):
         (9, _a(0.5, 0.5, 0.3 + 0.4j, 0.3 - 0.4j, 0.3 + 0.4j, 0.3 - 0.4j)),  # longer
     ],
 )
-@pytest.mark.parametrize("rtype", ["avg", "min"])
 @pytest.mark.parametrize("delayed_form", [False, True])
-def test_residuez_matches_scipy(b_length, a, rtype, delayed_form):
+def test_residuez_matches_scipy(b_length, a, delayed_form):
+    # rtype stays "avg": rounding splits a double pole by about 1e-8,
+    # into two real roots or a conjugate pair, depending on the LAPACK build, and
+    # "min" would choose among that noise
     rng = np.random.default_rng(b_length)
     b = rng.standard_normal(b_length)
     if np.iscomplexobj(a):
         b = b + 1j * rng.standard_normal(b_length)
-    _check_residuez(b, a, delayed_form=delayed_form, rtype=rtype)
+    _check_residuez(b, a, delayed_form=delayed_form)
 
 
 def test_residuez_triple_pole():
