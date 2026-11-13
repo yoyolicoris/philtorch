@@ -324,15 +324,15 @@ def residuez(
     Example::
 
         >>> from philtorch.lti import residuez
-        >>> # (1 + z^-1) / (1 - 0.25 z^-2)
-        >>> #     = 1.5 / (1 - 0.5 z^-1) - 0.5 / (1 + 0.5 z^-1)
+        >>> # (1 + z^-1) / (1 - 0.75 z^-1 + 0.125 z^-2)
+        >>> #     = -5 / (1 - 0.25 z^-1) + 6 / (1 - 0.5 z^-1)
         >>> b = torch.tensor([1.0, 1.0])
-        >>> a = torch.tensor([0.0, -0.25])
+        >>> a = torch.tensor([-0.75, 0.125])
         >>> r, p, k = residuez(b, a)
         >>> r.real
-        tensor([ 1.5000, -0.5000])
+        tensor([-5.,  6.])
         >>> p.real
-        tensor([ 0.5000, -0.5000])
+        tensor([0.2500, 0.5000])
     """
     if rtype not in _RTYPES:
         raise ValueError(f"rtype must be one of {_RTYPES}, got {rtype!r}")
