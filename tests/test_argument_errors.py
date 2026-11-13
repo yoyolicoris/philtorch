@@ -487,6 +487,17 @@ _LTI_FILTERING_CASES = [
         "at least one section",
         id="sos2tf-sos-no-sections",
     ),
+    # sos2pfe(sos, tol, rtype), with sosfilt's check of sos
+    pytest.param(
+        lambda: lti.sos2pfe(_ones(1, 6)),
+        "last dimension of sos must be 5",
+        id="sos2pfe-sos-last-dim",
+    ),
+    pytest.param(
+        lambda: lti.sos2pfe(_ones(1, 5), rtype="median"),
+        "rtype must be one of",
+        id="sos2pfe-rtype",
+    ),
     # residuez(b, a, tol, rtype, delayed_form): b and a 1D or 2D, of one precision
     pytest.param(
         lambda: lti.residuez(_ones(3), _ones(2).float()),
