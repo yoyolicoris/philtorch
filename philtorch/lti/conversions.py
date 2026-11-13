@@ -17,22 +17,24 @@ from .filtering import _check_sos
 _RTYPES = ("max", "maximum", "min", "minimum", "avg", "mean")
 
 
-def _tree_prod(polys: Tensor) -> Tensor:
+def _tree_prod(polys: Tensor, length: int | None = None) -> Tensor:
     """Multiply the polynomials along dimension -2 in batched products.
 
     ``polys`` is of shape (..., P, d + 1), P >= 1, in ascending powers, and the
-    result of shape (..., P * d + 1). There are ceil(log2 P) levels of products
-    of pairs, an odd P padded with the polynomial 1.
+    result of shape (..., P * d + 1), or its first ``length`` coefficients,
+    truncated after each level, if given. There are ceil(log2 P) levels of
+    products of pairs, an odd P padded with the polynomial 1.
     """
 
     def halve(polys: Tensor, _) -> Tensor:
         if polys.size(-2) % 2:
             one = F.pad(torch.ones_like(polys[..., :1, :1]), (0, polys.size(-1) - 1))
             polys = torch.cat([polys, one], -2)
-        return polymul(polys[..., 0::2, :], polys[..., 1::2, :])
+        return polymul(polys[..., 0::2, :], polys[..., 1::2, :])[..., :length]
 
     P, d = polys.size(-2), polys.size(-1) - 1
-    return reduce(halve, range((P - 1).bit_length()), polys)[..., 0, : P * d + 1]
+    end = P * d + 1 if length is None else length
+    return reduce(halve, range((P - 1).bit_length()), polys)[..., 0, :end]
 
 
 def _as_batch(**named: Tensor) -> tuple[list[Tensor], bool]:
@@ -624,13 +626,14 @@ def sos2pfe(
     B, K, _ = sos.shape
 
     # the roots of z^2 + a1 z + a2: q is the one without cancellation, and the
-    # other is a2 / q, or q's conjugate where the roots are conjugates
+    # other is a2 / q (q is 0 only where a1 = a2 = 0), or, for a real section,
+    # q's conjugate where the roots are conjugates
     a1, a2 = sos[..., 3:].to(sos.dtype.to_complex()).unbind(-1)
     d = torch.sqrt(a1 * a1 - 4 * a2)
     d = torch.where((a1.conj() * d).real < 0, -d, d)
     q = -(a1 + d) / 2
-    conjugates = (d.real == 0) & (a1.imag == 0)
-    poles = torch.stack((q, torch.where(conjugates, q.conj(), a2 / q)), -1)
+    conjugates = (d.real == 0) & (not sos.is_complex())
+    poles = torch.stack((q, torch.where(conjugates, q.conj(), a2 / (q + (q == 0)))), -1)
     poles = poles.view(B, 2 * K)
 
     batch_index, group = _group(poles, tol)
@@ -654,7 +657,7 @@ def sos2pfe(
     t = b0 * u + b1
     numerator = torch.stack((t * u + b2, t + b0 * u, b0), -1)
     terms = torch.cat((F.pad(numerator, (0, m - 3)).unsqueeze(-2), series), -2)
-    f = _tree_prod(terms.flatten(1, 2))[..., :m]
+    f = _tree_prod(terms.flatten(1, 2), m)
 
     # r_j = f[m - j]: each group's first m terms, reversed
     keep = torch.arange(m, device=sos.device) >= m - multiplicity.unsqueeze(-1)
