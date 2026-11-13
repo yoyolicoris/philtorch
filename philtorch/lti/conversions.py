@@ -515,7 +515,9 @@ def invresz(
     return (b, a) if batched else (b[0], a[0])
 
 
-def sos2pfe(sos: Tensor, tol: float = 1e-6, rtype: str = "avg") -> tuple[Tensor, Tensor, Tensor]:
+def sos2pfe(
+    sos: Tensor, tol: float | None = None, rtype: str = "avg"
+) -> tuple[Tensor, Tensor, Tensor]:
     r"""Expand second-order sections into partial fractions.
 
     For the cascade
@@ -552,7 +554,9 @@ def sos2pfe(sos: Tensor, tol: float = 1e-6, rtype: str = "avg") -> tuple[Tensor,
             :math:`b_0, b_1, b_2, a_1, a_2`, as in
             :func:`~philtorch.lti.sosfilt`.
         tol (float, optional): the distance within which two poles are
-            considered equal, as in :func:`unique_roots`. Default: ``1e-6``.
+            considered equal, as in :func:`unique_roots`. ``None`` means
+            :math:`10 \sqrt{\epsilon}`, :math:`\epsilon` being the machine
+            epsilon of :attr:`sos`'s dtype. Default: ``None``.
         rtype (str, optional): how to choose the pole of a group of equal poles,
             as in :func:`unique_roots`. Default: ``"avg"``.
 
@@ -589,15 +593,15 @@ def sos2pfe(sos: Tensor, tol: float = 1e-6, rtype: str = "avg") -> tuple[Tensor,
         :math:`10^{25}` and :math:`0.2`.
 
     Note:
-        The default :attr:`tol` is below SciPy's :math:`10^{-3}`, which merges
-        distinct poles of sharp designs: for an elliptic design of order 24
-        whose closest poles are :math:`1.2 \times 10^{-4}` apart, the error
-        above grows from :math:`10^{-13}` to :math:`3 \times 10^{-4}`. A
-        section's double root is split by rounding, by about the square root
-        of the dtype's machine epsilon, :math:`1.5 \times 10^{-8}` in float64
-        and :math:`3.5 \times 10^{-4}` in float32; a :attr:`tol` below that
-        keeps the two poles apart, with large residues that cancel, so float32
-        sections with double roots need a larger :attr:`tol`.
+        Rounding splits a section's double root, by about :math:`\sqrt{\epsilon}`,
+        :math:`\epsilon` being the machine epsilon of :attr:`sos`'s dtype. A
+        :attr:`tol` below that keeps the two poles apart, with large residues
+        that cancel, hence the default :math:`10 \sqrt{\epsilon}`:
+        :math:`1.5 \times 10^{-7}` in float64 and :math:`3.5 \times 10^{-3}`
+        in float32. SciPy's :math:`10^{-3}` would merge distinct poles of sharp
+        designs in float64: for an elliptic design of order 24 whose closest
+        poles are :math:`1.2 \times 10^{-4}` apart, the error above grows from
+        :math:`10^{-13}` to :math:`3 \times 10^{-4}`.
 
     Note:
         The number of groups depends on the values of the poles, so the shapes
@@ -619,6 +623,8 @@ def sos2pfe(sos: Tensor, tol: float = 1e-6, rtype: str = "avg") -> tuple[Tensor,
     if rtype not in _RTYPES:
         raise ValueError(f"rtype must be one of {_RTYPES}, got {rtype!r}")
     _check_sos(sos)
+    if tol is None:
+        tol = 10 * torch.finfo(sos.dtype).eps ** 0.5
     batched = sos.dim() == 3
     sos = sos if batched else sos.unsqueeze(0)
     B, K, _ = sos.shape

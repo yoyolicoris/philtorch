@@ -354,6 +354,13 @@ def test_sos2pfe_conjugate_pair_is_exact():
     assert p[0] == p[1].conj() and p[0].imag != 0
 
 
+@pytest.mark.parametrize("dtype", [torch.float32, F64])
+def test_sos2pfe_default_tol_merges_a_double_root_split_by_rounding(dtype):
+    # (z - 0.7)^2, whose roots rounding splits by about sqrt(eps)
+    _, p, _ = sos2pfe(torch.tensor([[1.0, 0.3, 0.2, -1.4, 0.49]], dtype=dtype))
+    assert p[0] == p[1]
+
+
 def test_sos2pfe_matches_scipy_for_repeated_poles():
     double_real = [1.0, 0.5, -0.3, -1.0, 0.25]
     complex_pair = np.delete(signal.butter(2, 0.3, output="sos"), 3, 1)[0]
