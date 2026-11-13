@@ -544,9 +544,9 @@ def sos2pfe(
     by the factors :math:`(p - p_l + s)` of their poles in other groups, each
     at its group's value :math:`p_l`, so that the coefficients come from the
     product of the sections' power series, truncated to :math:`m` terms, found
-    by a tree of :func:`~philtorch.poly.polymul`. There is no polynomial division, root
-    finding of a high-order polynomial or linear solve. Simple and repeated
-    poles take the same path.
+    by a tree of :func:`~philtorch.poly.polymul`. There is no polynomial
+    division, root finding of a high-order polynomial or linear solve. Simple
+    and repeated poles take the same path.
 
     Args:
         sos (Tensor): the sections, of shape :math:`(K, 5)` or
@@ -573,35 +573,29 @@ def sos2pfe(
             not 5, it has no section, or :attr:`rtype` is unknown.
 
     Note:
-        The expansion is in :func:`scipy.signal.residue`'s basis, that of the
-        filter written in positive powers of :math:`z`, with the denominator's
-        leading 1 omitted from :attr:`sos` as in :func:`sos2tf`. For simple
-        poles, it equals :func:`residuez`'s with ``delayed_form=True``, up to
-        the order of the poles. Unlike :func:`residuez`, it also takes a
-        repeated pole at 0 (an FIR section, :math:`a_1 = a_2 = 0`), whose
-        bases can't hold it.
+        Compared with :func:`residuez` on :func:`sos2tf`'s output:
 
-    Note:
-        The residues don't pass through the coefficients of a high-order
-        denominator, whose roots are ill-conditioned. Measured in float64 as
-        the error of the expansion's impulse response against
-        :func:`~philtorch.lti.sosfilt`'s, relative to its peak, for SciPy's
-        Butterworth design of order 24, Chebyshev type I of order 24 and
-        elliptic of order 16, it is :math:`10^{-10}`,
-        :math:`4 \times 10^{-12}` and :math:`3 \times 10^{-15}`, where
-        :func:`residuez` on :func:`sos2tf`'s output is off by :math:`10^{-4}`,
-        :math:`10^{25}` and :math:`0.2`.
-
-    Note:
-        Rounding splits a section's double root, by about :math:`\sqrt{\epsilon}`,
-        :math:`\epsilon` being the machine epsilon of :attr:`sos`'s dtype. A
-        :attr:`tol` below that keeps the two poles apart, with large residues
-        that cancel, hence the default :math:`10 \sqrt{\epsilon}`:
-        :math:`1.5 \times 10^{-7}` in float64 and :math:`3.5 \times 10^{-3}`
-        in float32. SciPy's :math:`10^{-3}` would merge distinct poles of sharp
-        designs in float64: for an elliptic design of order 24 whose closest
-        poles are :math:`1.2 \times 10^{-4}` apart, the error above grows from
-        :math:`10^{-13}` to :math:`3 \times 10^{-4}`.
+        - For simple poles, the expansion is :func:`residuez`'s with
+          ``delayed_form=True``, up to the order of the poles. It also holds a
+          repeated pole at 0 (an FIR section, :math:`a_1 = a_2 = 0`), which
+          :func:`residuez`'s bases can't.
+        - The poles are the sections' own, not the ill-conditioned roots of a
+          high-order denominator. In float64, the expansion's impulse response
+          is off from :func:`~philtorch.lti.sosfilt`'s, relative to its peak,
+          by :math:`10^{-10}`, :math:`4 \times 10^{-12}` and
+          :math:`3 \times 10^{-15}` for SciPy's Butterworth design of order 24,
+          Chebyshev type I of order 24 and elliptic of order 16, where
+          :func:`residuez`'s is off by :math:`10^{-4}`, :math:`10^{25}` and
+          :math:`0.2`.
+        - Rounding splits a section's double root by only about
+          :math:`\sqrt{\epsilon}`, :math:`\epsilon` being the machine epsilon
+          of :attr:`sos`'s dtype, hence the default :attr:`tol` of
+          :math:`10 \sqrt{\epsilon}`: :math:`1.5 \times 10^{-7}` in float64 and
+          :math:`3.5 \times 10^{-3}` in float32. :func:`residuez`'s
+          :math:`10^{-3}` would merge distinct poles of sharp designs: for an
+          elliptic design of order 24 whose closest poles are
+          :math:`1.2 \times 10^{-4}` apart, the error above grows from
+          :math:`10^{-13}` to :math:`3 \times 10^{-4}`.
 
     Note:
         The number of groups depends on the values of the poles, so the shapes
