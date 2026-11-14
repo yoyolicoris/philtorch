@@ -493,6 +493,46 @@ _LTI_FILTERING_CASES = [
         "rtype must be one of",
         id="sos2pfe-rtype",
     ),
+    # pfefilt(r, p, k, x, zi): one precision; a real k needs conjugate pairs
+    pytest.param(
+        lambda: lti.pfefilt(_ones(2), _ones(2), _ones(()), _ones(4).float()),
+        "share a precision",
+        id="pfefilt-precision",
+    ),
+    pytest.param(
+        lambda: lti.pfefilt(_ones(2), _ones(3), _ones(()), _ones(4)),
+        "same length",
+        id="pfefilt-length",
+    ),
+    pytest.param(
+        lambda: lti.pfefilt(_ones(3, 2), _ones(2), _ones(()), _ones(2, 4)),
+        "Batch size of r",
+        id="pfefilt-batch",
+    ),
+    pytest.param(
+        lambda: lti.pfefilt(
+            _ones(1), torch.tensor([0.5 + 0.1j], dtype=torch.complex128), _ones(()), _ones(4)
+        ),
+        "conjugate pairs",
+        id="pfefilt-unpaired-pole",
+    ),
+    pytest.param(
+        lambda: lti.pfefilt(
+            _ones(2) + _ones(2).cumsum(0),
+            torch.tensor([0.5 + 0.1j, 0.5 - 0.1j], dtype=torch.complex128),
+            _ones(()),
+            _ones(4),
+        ),
+        "conjugate pairs",
+        id="pfefilt-unpaired-residue",
+    ),
+    pytest.param(
+        lambda: lti.pfefilt(
+            _ones(1), _ones(1), _ones(()), _ones(4), zi=torch.tensor([1j], dtype=torch.complex128)
+        ),
+        "conjugate pairs",
+        id="pfefilt-complex-state-of-real-pole",
+    ),
     # residuez(b, a, tol, rtype, delayed_form): b and a 1D or 2D, of one precision
     pytest.param(
         lambda: lti.residuez(_ones(3), _ones(2).float()),

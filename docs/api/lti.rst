@@ -18,6 +18,7 @@ Filtering
    lfilter_zi
    sosfilt
    sosfilt_zi
+   pfefilt
    lfiltic
    comb_filter
 

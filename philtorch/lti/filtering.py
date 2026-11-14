@@ -1,7 +1,8 @@
 """IIR and FIR filtering with time-invariant coefficients."""
 
 import operator
-from functools import partial
+from functools import partial, reduce
+from itertools import product
 
 import torch
 import torch.nn.functional as F
@@ -619,6 +620,172 @@ def sosfilt_zi(sos: Tensor) -> Tensor:
     # the gains of the sections before each one, the first having none
     before = torch.cumprod(F.pad(gain, (1, 0), value=1.0)[..., :-1], dim=-1)
     return lfilter_zi(a, b) * before.unsqueeze(-1)
+
+
+def pfefilt(
+    r: Tensor, p: Tensor, k: Tensor, x: Tensor, zi: Tensor | None = None
+) -> Tensor | tuple[Tensor, Tensor]:
+    r"""Filter signals with a filter in parallel form.
+
+    The filter is a partial fraction expansion, as :func:`sos2pfe` returns
+    it, run as separate parallel sections:
+
+    .. math::
+        y = k x + \sum_{i=1}^{M} \frac{r_i z^{-j_i}}{(1 - p_i z^{-1})^{j_i}} x.
+
+    A real pole is a first-order section, and a conjugate pair a second-order
+    one, its two terms summing to a real one. A pole of multiplicity
+    :math:`m` is listed :math:`m` times in a row, with the powers
+    :math:`j_i = 1, \dots, m`, and has one section per power. The delay
+    :math:`z^{-j_i}` keeps the powers of a pole at 0 apart: they are the taps
+    of an FIR filter.
+
+    Each term runs as the first-order recursion
+    :math:`h_i[n + 1] = p_i h_i[n] + u_i[n]`, by
+    :func:`~philtorch.lti.linear_recurrence`, whose output :math:`h_i[n]` is
+    the term's signal before the residue: :math:`u_i = x` for :math:`j_i = 1`,
+    and the output of the same pole's power :math:`j_i - 1` otherwise. A real
+    :attr:`k` makes a real filter: a conjugate pair then runs as one complex
+    recursion, whose term is doubled, as
+    :math:`r h + \overline{r h} = 2 \operatorname{Re}(r h)`, and a real pole
+    as a real one.
+
+    Batched :attr:`r`, :attr:`p`, :attr:`k` and :attr:`zi` have the batch
+    size of :attr:`x`, and all of them share a precision and a device; real
+    and complex tensors of one precision mix.
+
+    Args:
+        r (Tensor): the residues, of shape :math:`(M)` or :math:`(B, M)`.
+        p (Tensor): the poles, of shape :math:`(M)` or :math:`(B, M)`. Equal
+            poles, listed in a row, are one pole with the powers
+            :math:`1, 2, \dots`.
+        k (Tensor): the direct gain, of shape :math:`()` or :math:`(B)`.
+        x (Tensor): input signals, of shape :math:`(B, N)` or :math:`(N)`.
+        zi (Tensor, optional): the initial state :math:`h_i[0]` of each term,
+            of shape :math:`(M)` or :math:`(B, M)`. Default: ``None``, all
+            zero.
+
+    Returns:
+        Tensor or tuple of Tensor: the filtered signals, of the shape of
+        :attr:`x`, real when :attr:`k` and :attr:`x` are, complex otherwise,
+        and with :attr:`zi`, the final states, complex, of shape
+        :math:`(B, M)`, or :math:`(M)` when every input is unbatched. Pass
+        them as the next chunk's :attr:`zi` to filter a signal in chunks.
+
+    Raises:
+        ValueError: if :attr:`x`, :attr:`r`, :attr:`p` or :attr:`zi` is not
+            1-D or 2-D, :attr:`k` is not 0-D or 1-D, :attr:`r`, :attr:`p` and
+            :attr:`zi` differ in length, a batched input has a batch size
+            other than that of :attr:`x`, the inputs differ in precision or
+            device, or, for a real :attr:`k`, an entry has no partner of the
+            same power with the conjugate pole and, up to a relative
+            :math:`\sqrt{\epsilon}` of the precision, the conjugate residue
+            and initial state (a real pole is its own partner).
+
+    Note:
+        The terms that run, and the stages of repeated poles, depend on the
+        values of :attr:`p`, so the call can't be compiled without a graph
+        break.
+
+    Example::
+
+        >>> from philtorch.lti import pfefilt, sos2pfe, sosfilt
+        >>> sos = torch.tensor([[1.0, 1.0, 0.0, -0.5, 0.0]])
+        >>> x = torch.tensor([1.0, 0.0, 0.0, 0.0])
+        >>> pfefilt(*sos2pfe(sos), x)
+        tensor([1.0000, 1.5000, 0.7500, 0.3750])
+        >>> sosfilt(sos, x)
+        tensor([1.0000, 1.5000, 0.7500, 0.3750])
+    """
+    if x.dim() not in (1, 2):
+        raise ValueError("Input signal x must be 1D or 2D.")
+    for name, t in (("r", r), ("p", p), ("zi", zi)):
+        if t is not None and t.dim() not in (1, 2):
+            raise ValueError(f"{name} must be 1D or 2D.")
+    if k.dim() not in (0, 1):
+        raise ValueError("Gain k must be 0D or 1D.")
+    M = p.size(-1)
+    if r.size(-1) != M or (zi is not None and zi.size(-1) != M):
+        raise ValueError(
+            f"r, p and zi must have the same length, got "
+            f"{[t.size(-1) for t in (r, p, zi) if t is not None]}."
+        )
+    squeeze_first = x.dim() == 1 and r.dim() == p.dim() == 1 and k.dim() == 0
+    squeeze_first &= zi is None or zi.dim() == 1
+    if x.dim() == 1:
+        x = x.unsqueeze(0)
+    B, N = x.shape
+    for name, t in (("r", r), ("p", p), ("k", k.unsqueeze(-1)), ("zi", zi)):
+        if t is not None and t.dim() == 2 and t.size(0) != B:
+            raise ValueError(
+                f"Batch size of {name} must match batch size of x, got {name}: {t.size(0)}, x: {B}"
+            )
+    given = [t for t in (r, p, k, x, zi) if t is not None]
+    if len({(t.dtype.to_real(), t.device) for t in given}) > 1:
+        raise ValueError(
+            f"r, p, k, x and zi must share a precision and a device, got "
+            f"{[(t.dtype, str(t.device)) for t in given]}"
+        )
+    return_zf = zi is not None
+    cdtype = x.dtype.to_complex()
+    r, p = r.to(cdtype).expand(B, M), p.to(cdtype).expand(B, M)
+    zi = x.new_zeros(B, M, dtype=cdtype) if zi is None else zi.to(cdtype).expand(B, M)
+    k = k.expand(B)
+
+    # the power of each term: its position in its run of equal poles, from 1
+    index = torch.arange(M, device=x.device)
+    start = F.pad(p[:, 1:] != p[:, :-1], (1, 0), value=True)
+    power = index - (start * index).cummax(-1).values + 1
+
+    real = not k.is_complex() and not x.is_complex()
+    if not k.is_complex():
+        # each term's conjugate partner: the conjugate pole, exactly, and the
+        # conjugate residue and state, up to rounding
+        rtol = torch.finfo(x.dtype).eps ** 0.5
+        conjugate = (p.conj().unsqueeze(-1) == p.unsqueeze(-2)) & (
+            power.unsqueeze(-1) == power.unsqueeze(-2)
+        )
+        for t in (r, zi):
+            conjugate &= torch.isclose(t.conj().unsqueeze(-1), t.unsqueeze(-2), rtol=rtol, atol=0)
+        if not conjugate.any(-1).all():
+            raise ValueError(
+                "A real k makes a real filter, whose poles, residues and initial "
+                "states must be real or come in conjugate pairs of the same power."
+            )
+    # A real filter runs its real poles in the real dtype and one term per
+    # conjugate pair, doubled; a complex one runs every term in complex.
+    real_pole = (p.imag == 0) & real
+    if real:
+        weight = torch.where(p.imag > 0, 2.0, real_pole.to(x.dtype))
+    else:
+        weight = torch.ones_like(p.real)
+    runs = weight != 0
+
+    def stage(carry: tuple[Tensor, Tensor], step: tuple[int, bool]):
+        # the terms of power t of one kind, fed by power t - 1 of their pole
+        s, zf = carry
+        t, in_real = step
+        b, i = (runs & (power == t) & (real_pole == in_real)).nonzero(as_tuple=True)
+        if b.numel() == 0:
+            return carry
+        a, init = p[b, i], zi[b, i]
+        u = x[b] if t == 1 else s[b, i - 1]
+        if in_real:
+            a, init, u = a.real, init.real, u.real
+        h = linear_recurrence(a, init, u.to(a.dtype))
+        out = torch.cat((init.unsqueeze(-1), h[:, :-1]), -1)
+        return s.index_put((b, i), out.to(cdtype)), zf.index_put((b, i), h[:, -1].to(cdtype))
+
+    m = int(power.max()) if M else 0
+    signals = x.new_zeros(B, M, N, dtype=cdtype)
+    s, zf = reduce(stage, product(range(1, m + 1), (True, False)), (signals, zi))
+    y = k.unsqueeze(-1) * x + ((weight * r).unsqueeze(-2) @ s).squeeze(-2)
+    if real:
+        y = y.real
+        # a doubled term's partner has the conjugate state
+        partner = conjugate.to(torch.int8).argmax(-1)
+        zf = torch.where(runs, zf, zf.gather(-1, partner).conj())
+    return _squeeze_first_result((y, zf) if return_zf else y, squeeze_first)
 
 
 # The keyword arguments the general path forwards: ``state_space`` and
