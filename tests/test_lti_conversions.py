@@ -349,7 +349,11 @@ def test_sos2pfe_matches_scipy_for_simple_poles():
     _check_sos2pfe(_random_sos(K=3) + 0.2j * _random_sos(K=3), 1e-10)
 
 
-def test_sos2pfe_conjugate_pair_is_exact():
+@pytest.mark.parametrize("rounding", [0.0, 1e-9])
+def test_sos2pfe_conjugate_pair_is_exact(monkeypatch, rounding):
+    # CUDA's complex sqrt of a negative real has a real part that isn't 0 (2e-8 in complex64)
+    sqrt = torch.sqrt
+    monkeypatch.setattr(torch, "sqrt", lambda z: sqrt(z) + rounding)
     _, p, _ = sos2pfe(torch.tensor([[1.0, 0.5, 0.2, -0.6, 0.45]], dtype=F64))
     assert p[0] == p[1].conj() and p[0].imag != 0
 

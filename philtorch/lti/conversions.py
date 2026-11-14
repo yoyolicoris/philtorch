@@ -635,10 +635,12 @@ def sos2pfe(
     # other is a2 / q (q is 0 only where a1 = a2 = 0), or, for a real section,
     # q's conjugate where the roots are conjugates
     a1, a2 = sos[..., 3:].to(sos.dtype.to_complex()).unbind(-1)
-    d = torch.sqrt(a1 * a1 - 4 * a2)
+    disc = a1 * a1 - 4 * a2
+    d = torch.sqrt(disc)
     d = torch.where((a1.conj() * d).real < 0, -d, d)
     q = -(a1 + d) / 2
-    conjugates = (d.real == 0) & (not sos.is_complex())
+    # by the discriminant's sign: sqrt's real part isn't exactly 0 on CUDA
+    conjugates = (disc.real < 0) & (not sos.is_complex())
     poles = torch.stack((q, torch.where(conjugates, q.conj(), a2 / (q + (q == 0)))), -1)
     poles = poles.view(B, 2 * K)
 
