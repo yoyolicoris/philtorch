@@ -4,7 +4,7 @@ The filtering functions follow :mod:`scipy.signal` where they share a name,
 with the differences noted in each docstring.
 """
 
-from .conversions import invresz, residuez, sos2tf, unique_roots
+from .conversions import invresz, residuez, sos2pfe, sos2tf, unique_roots
 from .delay import delay_state_space
 from .filtering import (
     comb_filter,
@@ -26,6 +26,7 @@ __all__ = [
     "sosfilt",
     "sosfilt_zi",
     "sos2tf",
+    "sos2pfe",
     "residuez",
     "invresz",
     "unique_roots",

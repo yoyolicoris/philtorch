@@ -5,7 +5,7 @@ import pytest
 import torch
 from scipy import signal
 
-from philtorch.lti import invresz, residuez, sos2tf, unique_roots
+from philtorch.lti import invresz, residuez, sos2pfe, sos2tf, sosfilt, unique_roots
 
 F64 = torch.float64
 
@@ -314,3 +314,89 @@ def test_invresz_without_poles():
     b, a = invresz(torch.zeros(0, dtype=F64), torch.zeros(0, dtype=F64), k)
     assert a.shape == (0,)
     torch.testing.assert_close(b.real, k)
+
+
+def _check_sos2pfe(sos: np.ndarray, atol: float):
+    """Compare sos2pfe with SciPy's residue of the sections' product, row by row."""
+    r, p, k = sos2pfe(torch.from_numpy(sos))
+    M = 2 * sos.shape[-2]
+    assert r.shape == p.shape == (*sos.shape[:-2], M)
+    assert k.shape == sos.shape[:-2]
+    rows = zip(
+        sos.reshape(-1, M // 2, 5),
+        r.reshape(-1, M).numpy(),
+        p.reshape(-1, M).numpy(),
+        k.numpy().ravel(),
+    )
+    for row, got_r, got_p, got_k in rows:
+        expected_r, expected_p, expected_k = signal.residue(
+            *signal.sos2tf(np.insert(row, 3, 1.0, axis=-1))
+        )
+        got_r, got_p = _canonical(got_r, got_p)
+        expected_r, expected_p = _canonical(expected_r, expected_p)
+        np.testing.assert_allclose(got_p, expected_p, atol=atol)
+        np.testing.assert_allclose(got_r, expected_r, rtol=atol, atol=atol)
+        np.testing.assert_allclose(got_k, expected_k[0], rtol=1e-12)
+
+
+def test_sos2pfe_matches_scipy_for_simple_poles():
+    np.random.seed(0)
+    sos = _random_sos(K=4)
+    # a section with real poles, and an odd-order design, whose last section has a pole at 0
+    sos[1, 3:] = [-0.8, 0.15]
+    _check_sos2pfe(sos, 1e-8)
+    _check_sos2pfe(np.delete(signal.butter(5, 0.2, output="sos"), 3, 1), 1e-8)
+    _check_sos2pfe(_random_sos(K=3) + 0.2j * _random_sos(K=3), 1e-10)
+
+
+def test_sos2pfe_conjugate_pair_is_exact():
+    _, p, _ = sos2pfe(torch.tensor([[1.0, 0.5, 0.2, -0.6, 0.45]], dtype=F64))
+    assert p[0] == p[1].conj() and p[0].imag != 0
+
+
+@pytest.mark.parametrize("dtype", [torch.float32, F64])
+def test_sos2pfe_default_tol_merges_a_double_root_split_by_rounding(dtype):
+    # (z - 0.7)^2, whose roots rounding splits by about sqrt(eps)
+    _, p, _ = sos2pfe(torch.tensor([[1.0, 0.3, 0.2, -1.4, 0.49]], dtype=dtype))
+    assert p[0] == p[1]
+
+
+def test_sos2pfe_matches_scipy_for_repeated_poles():
+    double_real = [1.0, 0.5, -0.3, -1.0, 0.25]
+    complex_pair = np.delete(signal.butter(2, 0.3, output="sos"), 3, 1)[0]
+    _check_sos2pfe(np.stack([complex_pair, complex_pair, complex_pair, double_real]), 1e-10)
+
+
+def test_sos2pfe_fir_section():
+    # 1 + 2 / z + 3 / z^2: a double pole at 0 with residues 2 and 3
+    r, p, k = sos2pfe(torch.tensor([[1.0, 2.0, 3.0, 0.0, 0.0]], dtype=F64))
+    torch.testing.assert_close(r, torch.tensor([2.0, 3.0], dtype=torch.complex128))
+    torch.testing.assert_close(p, torch.zeros(2, dtype=torch.complex128))
+    torch.testing.assert_close(k, torch.tensor(1.0, dtype=F64))
+
+
+def test_sos2pfe_batched_multiplicities():
+    # one cascade per row, each with a different multiplicity of the same order
+    double = [1.0, 0.5, -0.3, -1.0, 0.25]
+    pair = np.delete(signal.butter(2, 0.3, output="sos"), 3, 1)[0]
+    other = [0.7, 0.1, 0.2, -0.3, 0.02]
+    sos = np.stack([[double, double], [double, other], [pair, pair], [pair, other]])
+    _check_sos2pfe(sos, 1e-10)
+
+
+@pytest.mark.parametrize(
+    "design, atol",
+    [
+        (lambda: signal.butter(24, 0.2, output="sos"), 5e-10),
+        (lambda: signal.cheby1(24, 1, 0.2, output="sos"), 1e-11),
+        # poles 1.2e-4 apart, which SciPy's tol of 1e-3 would merge
+        (lambda: signal.ellip(24, 0.1, 100, 0.05, output="sos"), 1e-12),
+    ],
+)
+def test_sos2pfe_impulse_response_matches_sosfilt(design, atol):
+    sos = torch.from_numpy(np.delete(design(), 3, 1))
+    r, p, k = sos2pfe(sos)
+    h = (r[:, None] * p[:, None] ** torch.arange(199)).sum(0).real
+    h = torch.cat([k.unsqueeze(0), h])
+    expected = sosfilt(sos, torch.eye(1, 200, dtype=F64)[0])
+    assert ((h - expected).abs().max() / expected.abs().max()).item() < atol

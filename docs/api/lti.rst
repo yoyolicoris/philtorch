@@ -29,6 +29,7 @@ Conversions
    :nosignatures:
 
    sos2tf
+   sos2pfe
    residuez
    invresz
    unique_roots
