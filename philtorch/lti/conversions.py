@@ -335,8 +335,7 @@ def residuez(
         The poles are the roots of :attr:`a`, which are ill-conditioned at high
         orders: for a Butterworth filter of order 12, the expansion's impulse
         response is off by about :math:`10^{-3}` in float64 (SciPy's by about
-        100%). For a filter given as sections, use :func:`sos2pfe`, whose
-        expansion is in positive powers of :math:`z`.
+        100%). For a filter given as sections, use :func:`sos2pfe`.
 
     Example::
 
@@ -543,8 +542,9 @@ def sos2pfe(
 
     The poles are the sections' own, in closed form, by the quadratic formula
     in its stable arrangement, and grouped by :func:`unique_roots`. For a group
-    of multiplicity :math:`m` at :math:`p`, as
-    :math:`r z^{-j} / (1 - p z^{-1})^j = r / (z - p)^j`, let
+    of multiplicity :math:`m` at :math:`p`, the term
+    :math:`r_j z^{-j} / (1 - p z^{-1})^j` is :math:`r_j / s^j` at
+    :math:`z = p + s`, so that
     :math:`F(s) = s^m H(p + s) = \sum_j r_j s^{m-j} + O(s^m)`: the residues
     are the first :math:`m` Taylor coefficients of :math:`F` at 0. :math:`F` is
     the product over the sections of their numerators at :math:`p + s`, divided
