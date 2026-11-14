@@ -526,20 +526,25 @@ def sos2pfe(
 
     .. math::
         H(z) = \prod_{k=1}^{K}
-            \frac{b_{k0} z^2 + b_{k1} z + b_{k2}}{z^2 + a_{k1} z + a_{k2}},
+            \frac{b_{k0} + b_{k1} z^{-1} + b_{k2} z^{-2}}
+                 {1 + a_{k1} z^{-1} + a_{k2} z^{-2}},
 
     this returns the residues :math:`r_i`, the poles :math:`p_i` and the direct
-    term :math:`k = \prod_k b_{k0}` of
+    gain :math:`k = \prod_k b_{k0}` of the delayed form
 
     .. math::
-        H(z) = k + \sum_{i=1}^{2K} \frac{r_i}{(z - p_i)^{j_i}}.
+        H(z) = k + \sum_{i=1}^{2K}
+            \frac{r_i z^{-j_i}}{(1 - p_i z^{-1})^{j_i}}.
 
     A pole of multiplicity :math:`m` is listed :math:`m` times in a row, with
-    the powers :math:`j_i = 1, \dots, m`.
+    the powers :math:`j_i = 1, \dots, m`. Each term is delayed by its power,
+    so that the powers of a pole at 0 are the taps :math:`r_i z^{-j_i}` of an
+    FIR filter.
 
     The poles are the sections' own, in closed form, by the quadratic formula
     in its stable arrangement, and grouped by :func:`unique_roots`. For a group
-    of multiplicity :math:`m` at :math:`p`, let
+    of multiplicity :math:`m` at :math:`p`, as
+    :math:`r z^{-j} / (1 - p z^{-1})^j = r / (z - p)^j`, let
     :math:`F(s) = s^m H(p + s) = \sum_j r_j s^{m-j} + O(s^m)`: the residues
     are the first :math:`m` Taylor coefficients of :math:`F` at 0. :math:`F` is
     the product over the sections of their numerators at :math:`p + s`, divided
@@ -606,7 +611,8 @@ def sos2pfe(
     Example::
 
         >>> from philtorch.lti import sos2pfe
-        >>> # (z + 1) / (z - 0.5) = 1 + 1.5 / (z - 0.5), with a pole at 0
+        >>> # (1 + z^-1) / (1 - 0.5 z^-1) = 1 + 1.5 z^-1 / (1 - 0.5 z^-1),
+        >>> # and a pole at 0 with residue 0
         >>> sos = torch.tensor([[1.0, 1.0, 0.0, -0.5, 0.0]])
         >>> r, p, k = sos2pfe(sos)
         >>> r.real
