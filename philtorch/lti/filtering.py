@@ -761,27 +761,52 @@ def pfefilt(
         weight = torch.ones_like(p.real)
     runs = weight != 0
 
-    def stage(carry: tuple[Tensor, Tensor], step: tuple[int, bool]):
-        # the terms of power t of one kind, fed by power t - 1 of their pole
-        s, zf = carry
+    coef = weight * r
+    xc = x.to(cdtype)
+
+    def stage(carry: tuple, step: tuple[int, bool]):
+        # The terms of power t of one kind, fed by power t - 1 of their pole.
+        # acc sums their weighted states after each input, acc0 before the
+        # first: the output's terms are acc one sample later.
+        acc, acc0, zf, feeds = carry
         t, in_real = step
         b, i = (runs & (power == t) & (real_pole == in_real)).nonzero(as_tuple=True)
         if b.numel() == 0:
             return carry
-        a, init = p[b, i], zi[b, i]
-        u = x[b] if t == 1 else s[b, i - 1]
+        a, init, c = p[b, i], zi[b, i], coef[b, i]
         if in_real:
-            a, init, u = a.real, init.real, u.real
-        h = linear_recurrence(a, init, u.to(a.dtype))
-        out = torch.cat((init.unsqueeze(-1), h[:, :-1]), -1)
-        return s.index_put((b, i), out.to(cdtype)), zf.index_put((b, i), h[:, -1].to(cdtype))
+            a, init, c = a.real, init.real, c.real
+        if t == 1:
+            u = (x if in_real else xc)[b]
+        else:
+            # the previous power's states before each input
+            row, h_prev, init_prev = feeds[in_real]
+            j = row[b, i - 1]
+            u = torch.cat((init_prev[j].unsqueeze(-1), h_prev[j, :-1]), -1)
+        h = linear_recurrence(a, init, u)
+        term0 = c * init
+        if real and not in_real:
+            # Re(c h) = Re c Re h - Im c Im h, without the imaginary part
+            cri = torch.stack((c.real, -c.imag), -1).unsqueeze(-1)
+            term, term0 = (torch.view_as_real(h) @ cri).squeeze(-1), term0.real
+        else:
+            term = c.unsqueeze(-1) * h
+        row = torch.full((B, M), -1, device=x.device)
+        row = row.index_put((b, i), torch.arange(b.numel(), device=x.device))
+        return (
+            acc.index_add(0, b, term),
+            acc0.index_add(0, b, term0),
+            zf.index_put((b, i), h[:, -1].to(cdtype)),
+            {**feeds, in_real: (row, h, init)},
+        )
 
     m = int(power.max()) if M else 0
-    signals = x.new_zeros(B, M, N, dtype=cdtype)
-    s, zf = reduce(stage, product(range(1, m + 1), (True, False)), (signals, zi))
-    y = k.unsqueeze(-1) * x + ((weight * r).unsqueeze(-2) @ s).squeeze(-2)
+    ydtype = x.dtype if real else cdtype
+    acc, acc0 = x.new_zeros(B, N, dtype=ydtype), x.new_zeros(B, dtype=ydtype)
+    steps = product(range(1, m + 1), (True, False))
+    acc, acc0, zf, _ = reduce(stage, steps, (acc, acc0, zi, {}))
+    y = k.unsqueeze(-1) * x + torch.cat((acc0.unsqueeze(-1), acc[:, :-1]), -1)
     if real:
-        y = y.real
         # a doubled term's partner has the conjugate state
         partner = conjugate.to(torch.int8).argmax(-1)
         zf = torch.where(runs, zf, zf.gather(-1, partner).conj())
