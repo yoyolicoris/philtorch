@@ -16,6 +16,7 @@ philtorch.mat
 
    companion
    vandermonde
+   confluent_vandermonde
    find_eigenvectors
    matrix_power_accumulate
    matrices_cumdot

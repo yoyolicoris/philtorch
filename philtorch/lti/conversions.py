@@ -10,7 +10,7 @@ import torch
 import torch.nn.functional as F
 from torch import Tensor
 
-from ..mat import companion
+from ..mat import companion, confluent_vandermonde
 from ..poly import polymul
 from ..utils import _check_shared
 from .filtering import _check_sos, _sections_by_row
@@ -114,21 +114,6 @@ def _group_roots(
     rows = torch.arange(roots.size(0), device=roots.device).unsqueeze(-1)
     group, multiplicity = (rows * M + label).unique(return_counts=True)
     return label, group // M, group % M, multiplicity
-
-
-def _vandermonde(p: Tensor, extra: Tensor, rows: int) -> Tensor:
-    r"""Return the confluent Vandermonde matrix of shape (B, rows, M).
-
-    ``p`` holds the M poles of each filter, repeated once per power, and
-    ``extra`` the power minus 1 of each entry, e. Entry [n, i] is
-    :math:`\binom{n + e_i}{e_i} p_i^n`, the impulse response of
-    :math:`1 / (1 - p_i z^{-1})^{e_i + 1}`. A cumulative product builds it from
-    the ratios :math:`p_i (n + e_i) / n` of consecutive rows, which keeps the
-    binomials exact up to rounding, with no gamma functions.
-    """
-    n = torch.arange(1, rows, dtype=p.dtype.to_real(), device=p.device).unsqueeze(-1)
-    ratios = p.unsqueeze(-2) * ((n + extra.unsqueeze(-2)) / n)
-    return torch.cumprod(F.pad(ratios, (0, 0, 1, 0), value=1), dim=-2)
 
 
 def sos2tf(sos: Tensor, batch_index: Tensor | None = None) -> tuple[Tensor, Tensor]:
@@ -391,7 +376,8 @@ def residuez(
 
     # after the direct term, h[D:] = V r, V's rows starting at D - d
     D = N - M
-    V = _vandermonde(p, extra.view(B, M), M if delayed_form else N)
+    extra = extra.view(B, M)
+    V = confluent_vandermonde(p, extra, M if delayed_form else N, start=extra)
     r = torch.linalg.solve(V[:, -M:], h[:, D:].to(p.dtype))
     k = h[:, :D]
     if not delayed_form and D > 0:
@@ -496,7 +482,7 @@ def invresz(
     denominator = _tree_prod(F.pad(-poles.unsqueeze(-1), (1, 0), value=1))
     # k a, then the fractions' numerator, from their first M samples, delayed by
     # d; a zero pads k, so that an empty k multiplies too
-    fractions = (_vandermonde(poles, extra, M) @ r.unsqueeze(-1)).squeeze(-1)
+    fractions = (confluent_vandermonde(poles, extra, M, start=extra) @ r.unsqueeze(-1)).squeeze(-1)
     numerator = polymul(denominator, fractions)[..., :M]
     d = k.size(-1) if delayed_form else 0
     b = polymul(F.pad(k, (0, 1)), denominator)[..., :L] + F.pad(numerator, (d, L - M - d))

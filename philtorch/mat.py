@@ -155,6 +155,58 @@ def vandermonde(poles: Tensor) -> Tensor:
     return torch.vander(poles).mT
 
 
+def confluent_vandermonde(p: Tensor, e: Tensor, rows: int, start: Tensor | None = None) -> Tensor:
+    r"""Return the confluent Vandermonde matrix of poles and exponents.
+
+    Column :math:`c` holds the powers of a Jordan chain,
+
+    .. math::
+        V_{ic} = \binom{n}{e_c} p_c^{\,n - e_c}, \quad n = i + s_c,
+
+    zero where :math:`n < e_c`: the entry of row :math:`n` of the
+    :math:`e_c`-th derivative of :math:`p^n`, divided by :math:`e_c!`, and the
+    impulse response of :math:`z^{-e_c} / (1 - p_c z^{-1})^{e_c + 1}`. With
+    every :math:`e_c = 0`, it is the Vandermonde matrix of ascending powers.
+    The rows of column :math:`c` start at :math:`n = s_c`: from :math:`s_c =
+    e_c`, the entries are :math:`\binom{i + e_c}{e_c} p_c^{\,i}`, the impulse
+    response of :math:`1 / (1 - p_c z^{-1})^{e_c + 1}`. A cumulative product
+    builds each column from the ratios of consecutive rows, which keeps the
+    binomials exact up to rounding.
+
+    Args:
+        p (Tensor): the poles, real or complex, of shape :math:`(*, M)`.
+        e (Tensor): the exponents :math:`e_c \ge 0`, integers, of a shape
+            that broadcasts with :attr:`p`.
+        rows (int): the number of rows.
+        start (Tensor, optional): the row :math:`s_c` each column starts at,
+            integers with :math:`0 \le s_c \le e_c`, of a shape that
+            broadcasts with :attr:`p`. Default: ``None``, all 0.
+
+    Returns:
+        Tensor: the matrix, of shape :math:`(*, \text{rows}, M)`, with the
+        dtype and device of :attr:`p`.
+
+    Example::
+
+        >>> from philtorch.mat import confluent_vandermonde
+        >>> # a double pole at 0.5: n 0.5^(n - 1) beside 0.5^n
+        >>> p = torch.tensor([0.5, 0.5])
+        >>> confluent_vandermonde(p, torch.tensor([0, 1]), 4)
+        tensor([[1.0000, 0.0000],
+                [0.5000, 1.0000],
+                [0.2500, 1.0000],
+                [0.1250, 0.7500]])
+    """
+    # t = n - e runs from start - e <= 0; the ratio of row t to row t - 1 is
+    # p (t + e) / t from t = 1 on, and 1 before, then t < 0 is masked out
+    shift = -e if start is None else start - e
+    n = torch.arange(rows, dtype=p.dtype.to_real(), device=p.device)
+    t = n.unsqueeze(-1) + shift.unsqueeze(-2)
+    ratio = p.unsqueeze(-2) * ((t + e.unsqueeze(-2)) / t.clamp(min=1))
+    ratio = torch.where(t >= 1, ratio, 1)
+    return torch.cumprod(ratio, dim=-2) * (t >= 0)
+
+
 def matrix_power_accumulate(A: Tensor, n: int) -> Tensor:
     r"""Return the powers of square matrices up to :math:`A^n`.
 
