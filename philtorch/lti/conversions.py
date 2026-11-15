@@ -64,25 +64,24 @@ def _reduce_groups(p: Tensor, label: Tensor, rtype: str) -> Tensor:
     value by ``rtype``.
     """
 
-    def total(t: Tensor) -> Tensor:
-        return torch.zeros_like(t).scatter_add(-1, label, t).gather(-1, label)
+    # The groups' values land at their labels, which they all read back; the
+    # other positions keep t's values, never read.
+    def by_group(t: Tensor, reduce: str) -> Tensor:
+        return t.scatter_reduce(-1, label, t, reduce, include_self=False).gather(-1, label)
 
     if rtype in ("avg", "mean"):
-        return total(p) / total(torch.ones_like(p.real))
-    # Compare by the real part, then by the imaginary part.
-    least = rtype in ("min", "minimum")
-
-    def extreme(t: Tensor) -> Tensor:
-        reduce = "amin" if least else "amax"
-        groups = torch.zeros_like(t).scatter_reduce(-1, label, t, reduce, include_self=False)
-        return groups.gather(-1, label)
-
+        # CUDA's scatter_reduce takes no complex tensors
+        if p.is_complex():
+            return torch.complex(by_group(p.real, "mean"), by_group(p.imag, "mean"))
+        return by_group(p, "mean")
+    reduce = "amin" if rtype in ("min", "minimum") else "amax"
     if not p.is_complex():
-        return extreme(p)
-    real = extreme(p.real)
-    # the imaginary parts of the roots of that real part
-    tied = torch.where(p.real == real, p.imag, torch.inf if least else -torch.inf)
-    return torch.complex(real, extreme(tied))
+        return by_group(p, reduce)
+    # Compare by the real part, then by the imaginary parts of the roots of
+    # that real part.
+    real = by_group(p.real, reduce)
+    tied = torch.where(p.real == real, p.imag, torch.inf if reduce == "amin" else -torch.inf)
+    return torch.complex(real, by_group(tied, reduce))
 
 
 def _group_roots(roots: Tensor, tol: float) -> tuple[Tensor, Tensor, Tensor]:
@@ -233,8 +232,10 @@ def unique_roots(p: Tensor, tol: float = 1e-3, rtype: str = "min") -> tuple[Tens
         return (roots.new_empty(0), none, none) if batched else (roots.new_empty(0), none)
     label, batch_index, first = _group_roots(roots, tol)
     unique = _reduce_groups(roots, label, rtype)[batch_index, first]
-    count = torch.zeros_like(label).scatter_add(-1, label, torch.ones_like(label))
-    multiplicity = count[batch_index, first]
+    ones = torch.ones_like(label)
+    multiplicity = ones.scatter_reduce(-1, label, ones, "sum", include_self=False)[
+        batch_index, first
+    ]
     return (unique, multiplicity, batch_index) if batched else (unique, multiplicity)
 
 
@@ -643,11 +644,10 @@ def sos2pfe(
         # a section's conjugate poles are adjacent; a real pole is its own
         partner = torch.arange(2 * K, device=sos.device) ^ conjugates.repeat_interleave(2, -1)
         value = (value + value.gather(-1, partner).conj()) / 2
-    unique = value[batch_index, first]
-    if not sos.is_complex():
         # a real sos lists one group of each conjugate pair, that of Im >= 0
-        half = unique.imag >= 0
-        batch_index, first, unique = batch_index[half], first[half], unique[half]
+        half = value[batch_index, first].imag >= 0
+        batch_index, first = batch_index[half], first[half]
+    unique = value[batch_index, first]
     group = label[batch_index] == first.unsqueeze(-1)
     multiplicity = group.sum(-1)
     m = int(multiplicity.max())

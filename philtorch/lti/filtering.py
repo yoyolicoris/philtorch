@@ -764,12 +764,9 @@ def pfefilt(
     # the next entry's power, 0 past the end
     after = F.pad(power[1:], (0, 1))
 
-    # acc sums the weighted states after each input, acc0 before the first:
-    # the output's terms are acc one sample later. Each round runs one power
-    # of the chains of one kind, from power 1, and passes on the chains that
-    # go on.
-    ydtype = x.dtype if real else cdtype
-    acc, acc0 = x.new_zeros(B, N, dtype=ydtype), x.new_zeros(B, dtype=ydtype)
+    # Each round runs one power of the chains of one kind, from power 1, adds
+    # their terms to the output, and passes on the chains that go on.
+    y = k.unsqueeze(-1) * x
     zf = zi.clone()
     for in_real in (True, False):
         (i,) = ((power == 1) & (in_real_dtype == in_real)).nonzero(as_tuple=True)
@@ -780,21 +777,21 @@ def pfefilt(
             if in_real:
                 a, init, c = a.real, init.real, c.real
             h = linear_recurrence(a, init, u)
+            # the output and the next power take the states before each input
+            before = h[:, :-1]
             term0 = c * init
             if real and not in_real:
                 # Re(c h) = Re c Re h - Im c Im h, without the imaginary part
                 cri = torch.stack((c.real, -c.imag), -1).unsqueeze(-1)
-                term, term0 = (torch.view_as_real(h) @ cri).squeeze(-1), term0.real
+                term, term0 = (torch.view_as_real(before) @ cri).squeeze(-1), term0.real
             else:
-                term = c.unsqueeze(-1) * h
-            acc.index_add_(0, b, term)
-            acc0.index_add_(0, b, term0)
+                term = c.unsqueeze(-1) * before
+            y[:, :1].index_add_(0, b, term0.unsqueeze(-1))
+            y[:, 1:].index_add_(0, b, term)
             zf[i] = h[:, -1].to(cdtype)
-            # the next power takes the states before each input
             cont = after[i] > 1
-            u = torch.cat((init[cont].unsqueeze(-1), h[cont, :-1]), -1)
+            u = torch.cat((init[cont].unsqueeze(-1), before[cont]), -1)
             i = i[cont] + 1
-    y = k.unsqueeze(-1) * x + torch.cat((acc0.unsqueeze(-1), acc[:, :-1]), -1)
     y = y if batched else y.squeeze(0)
     return (y, zf.reshape(zshape)) if return_zf else y
 
