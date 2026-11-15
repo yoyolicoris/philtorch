@@ -529,11 +529,10 @@ def sos2pfe(
     FIR filter.
 
     The poles are the sections' own, in closed form, by the quadratic formula
-    in its stable arrangement. Poles within :attr:`tol` of each other, chained,
-    are one group, which, unlike :func:`unique_roots`'s grouping in order, maps
-    the group of a pole to that of its conjugate, so that a real :attr:`sos`
-    gives conjugate pairs of groups, with conjugate values. For a group of
-    multiplicity :math:`m` at :math:`p`, the term
+    in its stable arrangement. Poles within :attr:`tol` of each other,
+    directly or through a chain of such poles, are one group; a real
+    :attr:`sos`'s groups come in conjugate pairs. For a group of multiplicity
+    :math:`m` at :math:`p`, the term
     :math:`r_j z^{-j} / (1 - p z^{-1})^j` is :math:`r_j / s^j` at
     :math:`z = p + s`, so that
     :math:`F(s) = s^m H(p + s) = \sum_j r_j s^{m-j} + O(s^m)`: the residues

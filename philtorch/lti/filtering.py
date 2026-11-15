@@ -625,68 +625,53 @@ def sosfilt_zi(sos: Tensor) -> Tensor:
 def pfefilt(
     r: Tensor, p: Tensor, k: Tensor, x: Tensor, zi: Tensor | None = None
 ) -> Tensor | tuple[Tensor, Tensor]:
-    r"""Filter signals with a filter in parallel form.
+    r"""Filter signals with batched filters in parallel form.
 
     The filter is a partial fraction expansion, as :func:`sos2pfe` returns
-    it, run as separate parallel sections:
+    it,
 
     .. math::
-        y = k x + \sum_{i=1}^{M} \frac{r_i z^{-j_i}}{(1 - p_i z^{-1})^{j_i}} x.
+        H(z) = k + \sum_{i=1}^{M} \frac{r_i z^{-j_i}}{(1 - p_i z^{-1})^{j_i}},
 
-    A real pole is a first-order section, and a conjugate pair a second-order
-    one, its two terms summing to a real one. A pole of multiplicity
-    :math:`m` is listed :math:`m` times in a row, with the powers
-    :math:`j_i = 1, \dots, m`, and has one section per power. The delay
-    :math:`z^{-j_i}` keeps the powers of a pole at 0 apart: they are the taps
-    of an FIR filter.
+    where a pole of multiplicity :math:`m` is listed :math:`m` times in a row,
+    with the powers :math:`j_i = 1, \dots, m`.
 
-    Each term runs as the first-order recursion
-    :math:`h_i[n + 1] = p_i h_i[n] + u_i[n]`, by
-    :func:`~philtorch.lti.linear_recurrence`, whose output :math:`h_i[n]` is
-    the term's signal before the residue: :math:`u_i = x` for :math:`j_i = 1`,
-    and the output of the same pole's power :math:`j_i - 1` otherwise. A real
-    :attr:`k` makes a real filter: a conjugate pair then runs as one complex
-    recursion, whose term is doubled, as
-    :math:`r h + \overline{r h} = 2 \operatorname{Re}(r h)`, and a real pole
-    as a real one.
-
-    Batched :attr:`r`, :attr:`p`, :attr:`k` and :attr:`zi` have the batch
-    size of :attr:`x`, and all of them share a precision and a device; real
-    and complex tensors of one precision mix.
+    Each term runs as a first-order recursion, by
+    :func:`~philtorch.lti.linear_recurrence`, a repeated pole's power
+    :math:`j` taking the output of its power :math:`j - 1`. For a real
+    :attr:`k`, each conjugate pair runs as one complex recursion, its term
+    doubled, and each real pole as a real one.
 
     Args:
         r (Tensor): the residues, of shape :math:`(M)` or :math:`(B, M)`.
-        p (Tensor): the poles, of shape :math:`(M)` or :math:`(B, M)`. Equal
-            poles, listed in a row, are one pole with the powers
-            :math:`1, 2, \dots`.
+            Batched :attr:`r`, :attr:`p` and :attr:`k` have one filter per
+            signal.
+        p (Tensor): the poles, of shape :math:`(M)` or :math:`(B, M)`.
         k (Tensor): the direct gain, of shape :math:`()` or :math:`(B)`.
         x (Tensor): input signals, of shape :math:`(B, N)` or :math:`(N)`.
-        zi (Tensor, optional): the initial state :math:`h_i[0]` of each term,
+        zi (Tensor, optional): the initial state of each term's recursion,
             of shape :math:`(M)` or :math:`(B, M)`. Default: ``None``, all
             zero.
 
     Returns:
         Tensor or tuple of Tensor: the filtered signals, of the shape of
-        :attr:`x`, real when :attr:`k` and :attr:`x` are, complex otherwise,
-        and with :attr:`zi`, the final states, complex, of shape
-        :math:`(B, M)`, or :math:`(M)` when every input is unbatched. Pass
-        them as the next chunk's :attr:`zi` to filter a signal in chunks.
+        :attr:`x`, real when :attr:`k` and :attr:`x` are, and with
+        :attr:`zi`, the final states, complex, of shape :math:`(B, M)`, or
+        :math:`(M)` when every input is unbatched. Pass them as the next
+        chunk's :attr:`zi` to filter a signal in chunks.
 
     Raises:
         ValueError: if :attr:`x`, :attr:`r`, :attr:`p` or :attr:`zi` is not
             1-D or 2-D, :attr:`k` is not 0-D or 1-D, :attr:`r`, :attr:`p` and
             :attr:`zi` differ in length, a batched input has a batch size
             other than that of :attr:`x`, the inputs differ in precision or
-            device, or, for a real :attr:`k`, an entry has no partner of the
-            same power with the conjugate pole and, up to
-            :math:`\sqrt{\epsilon}` of the precision times the largest one,
-            the conjugate residue and initial state (a real pole is its own
-            partner).
+            device, or, for a real :attr:`k`, the poles, residues and initial
+            states don't come in conjugate pairs of the same power, up to
+            rounding (a real pole is its own pair).
 
     Note:
-        The terms that run, and the stages of repeated poles, depend on the
-        values of :attr:`p`, so the call can't be compiled without a graph
-        break.
+        The terms that run depend on the values of :attr:`p`, so a compiled
+        call has a graph break.
 
     Example::
 
