@@ -514,9 +514,8 @@ def sos2pfe(
     :math:`j_i = 1, \dots, m`. Each term is delayed by its power, so that the
     powers of a pole at 0 are the taps :math:`r_i z^{-j_i}` of an FIR filter.
     For simple poles, this is the delayed form of the partial fraction
-    expansion in `Introduction to Digital Filters
-    <https://ccrma.stanford.edu/~jos/filters/FIR_Part_PFE.html>`__, with the
-    FIR part :math:`k`. A real :attr:`sos` lists one pole of each conjugate
+    expansion in `Introduction to Digital Filters with Audio Applications`_
+    (Smith, 2007), with the FIR part :math:`k`. A real :attr:`sos` lists one pole of each conjugate
     pair, that of positive imaginary part, which stands for both in
     :func:`~philtorch.lti.pfefilt`, and its real poles have real residues. A
     complex :attr:`sos` lists every pole.
@@ -592,6 +591,9 @@ def sos2pfe(
         >>> y = pfefilt(r, p, k, x, batch_index=batch_index, power=power)
         >>> torch.allclose(y, sosfilt(sos, x))
         True
+
+    .. _Introduction to Digital Filters with Audio Applications:
+        https://ccrma.stanford.edu/~jos/filters/
     """
     if rtype not in _RTYPES:
         raise ValueError(f"rtype must be one of {_RTYPES}, got {rtype!r}")
