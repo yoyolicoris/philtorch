@@ -664,7 +664,9 @@ def pfefilt(
             rounding (a real pole is its own pair).
 
     Note:
-        A compiled call has a graph break.
+        :func:`torch.compile` compiles the call in several pieces, not as one
+        graph, so ``fullgraph=True`` raises an error: which terms run depends
+        on the values of :attr:`p`.
 
     Example::
 

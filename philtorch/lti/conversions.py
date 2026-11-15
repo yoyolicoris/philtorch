@@ -582,8 +582,9 @@ def sos2pfe(
           :math:`10^{-13}` to :math:`3 \times 10^{-4}`.
 
     Note:
-        The number of groups depends on the values of the poles, so the shapes
-        inside do too, and the call can't be compiled without a graph break.
+        :func:`torch.compile` compiles the call in several pieces, not as one
+        graph, so ``fullgraph=True`` raises an error: the number of groups
+        depends on the values of the poles.
 
     Example::
 
