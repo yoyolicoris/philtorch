@@ -108,6 +108,11 @@ def test_unique_roots_matches_scipy(rtype):
     _check_unique_roots(z.real.copy(), 1e-3, rtype)
 
 
+def test_unique_roots_without_roots():
+    u, m = unique_roots(torch.zeros(0, dtype=F64))
+    assert u.shape == m.shape == (0,)
+
+
 @pytest.mark.parametrize("rtype", ["min", "max", "avg"])
 @pytest.mark.parametrize("dtype", [np.float64, np.complex128])
 def test_unique_roots_batched(rtype, dtype):

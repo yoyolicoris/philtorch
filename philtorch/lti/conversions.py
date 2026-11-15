@@ -56,34 +56,42 @@ def _as_batch(**named: Tensor) -> tuple[list[Tensor], bool]:
     return tensors, batched
 
 
-def _reduce_groups(p: Tensor, member: Tensor, rtype: str) -> Tensor:
-    """Reduce each group of roots to one value.
+def _reduce_groups(p: Tensor, label: Tensor, rtype: str) -> Tensor:
+    """Give each root the value of its group.
 
-    ``member`` of shape (..., M) marks the roots of each group among the M of
-    ``p``, which broadcasts with it, and each group has a member. The result is
-    of shape (...): the value of each group by ``rtype``.
+    ``label`` holds the group of each root of ``p``, both of shape (B, M), as
+    a position from 0 to M - 1. The result has ``p``'s shape: each root's group
+    value by ``rtype``.
     """
+
+    def total(t: Tensor) -> Tensor:
+        return torch.zeros_like(t).scatter_add(-1, label, t).gather(-1, label)
+
     if rtype in ("avg", "mean"):
-        return (member * p).sum(-1) / member.sum(-1)
-    # Compare by the real part, then by the imaginary part; a maximum is the
-    # minimum of the negated parts.
-    key = (lambda t: t) if rtype in ("min", "minimum") else torch.neg
-    if p.is_complex():
-        real = torch.where(member, key(p.real), torch.inf)
-        candidate = member & (real == real.amin(-1, keepdim=True))
-        index = torch.where(candidate, key(p.imag), torch.inf).argmin(-1)
-    else:
-        index = torch.where(member, key(p), torch.inf).argmin(-1)
-    return torch.take_along_dim(p, index.unsqueeze(-1), -1).squeeze(-1)
+        return total(p) / total(torch.ones_like(p.real))
+    # Compare by the real part, then by the imaginary part.
+    least = rtype in ("min", "minimum")
+
+    def extreme(t: Tensor) -> Tensor:
+        reduce = "amin" if least else "amax"
+        groups = torch.zeros_like(t).scatter_reduce(-1, label, t, reduce, include_self=False)
+        return groups.gather(-1, label)
+
+    if not p.is_complex():
+        return extreme(p)
+    real = extreme(p.real)
+    # the imaginary parts of the roots of that real part
+    tied = torch.where(p.real == real, p.imag, torch.inf if least else -torch.inf)
+    return torch.complex(real, extreme(tied))
 
 
 def _group_roots(roots: Tensor, tol: float) -> tuple[Tensor, Tensor, Tensor]:
     """Group the roots within ``tol`` of each other, directly or through a
     chain of such roots.
 
-    ``roots`` is of shape (B, M), M >= 1. Returns ``same``, of shape (B, M, M),
-    true where two roots are in one group, and the batch index and position
-    of each group's first root, of shape (G), the groups in row order.
+    ``roots`` is of shape (B, M), M >= 1. Returns the group of each root, the
+    position of its first root, of shape (B, M), and the batch index and
+    position of each group's first root, of shape (G), the groups in row order.
     """
     real = roots.dtype.to_real()
     near = ((roots.unsqueeze(-1) - roots.unsqueeze(-2)).abs() <= tol).to(real)
@@ -91,8 +99,9 @@ def _group_roots(roots: Tensor, tol: float) -> tuple[Tensor, Tensor, Tensor]:
     steps = range((roots.size(-1) - 1).bit_length())
     same = reduce(lambda c, _: (c @ c > 0).to(real), steps, near) > 0
     position = torch.arange(roots.size(-1), device=roots.device)
-    batch_index, first = (same.to(torch.int8).argmax(-1) == position).nonzero(as_tuple=True)
-    return same, batch_index, first
+    label = same.to(torch.int8).argmax(-1)
+    batch_index, first = (label == position).nonzero(as_tuple=True)
+    return label, batch_index, first
 
 
 def _vandermonde(p: Tensor, extra: Tensor, rows: int) -> Tensor:
@@ -222,10 +231,10 @@ def unique_roots(p: Tensor, tol: float = 1e-3, rtype: str = "min") -> tuple[Tens
     if roots.size(-1) == 0:
         none = torch.empty(0, dtype=torch.int64, device=p.device)
         return (roots.new_empty(0), none, none) if batched else (roots.new_empty(0), none)
-    same, batch_index, first = _group_roots(roots, tol)
-    group = same[batch_index, first]
-    unique = _reduce_groups(roots[batch_index], group, rtype)
-    multiplicity = group.sum(-1)
+    label, batch_index, first = _group_roots(roots, tol)
+    unique = _reduce_groups(roots, label, rtype)[batch_index, first]
+    count = torch.zeros_like(label).scatter_add(-1, label, torch.ones_like(label))
+    multiplicity = count[batch_index, first]
     return (unique, multiplicity, batch_index) if batched else (unique, multiplicity)
 
 
@@ -490,10 +499,10 @@ def invresz(
 
     # a run of poles, each within tol of the one before; its powers 1, 2, ...
     starts = F.pad(torch.diff(p).abs() > tol, (1, 0), value=True)
-    run = starts.cumsum(-1)
     index = torch.arange(M, device=p.device)
-    extra = index - (starts * index).cummax(-1).values
-    poles = _reduce_groups(p.unsqueeze(1), run.unsqueeze(-1) == run.unsqueeze(-2), rtype)
+    first = (starts * index).cummax(-1).values
+    extra = index - first
+    poles = _reduce_groups(p, first, rtype)
 
     denominator = _tree_prod(F.pad(-poles.unsqueeze(-1), (1, 0), value=1))
     # k a, then the fractions' numerator, from their first M samples, delayed by
@@ -627,9 +636,9 @@ def sos2pfe(
     poles = poles.view(B, 2 * K)
 
     # the closure maps the group of p to that of conj(p)
-    same, batch_index, first = _group_roots(poles, tol)
+    label, batch_index, first = _group_roots(poles, tol)
     # each pole's group value; a real sos's are made exact conjugates
-    value = _reduce_groups(poles.unsqueeze(-2), same, rtype)
+    value = _reduce_groups(poles, label, rtype)
     if not sos.is_complex():
         # a section's conjugate poles are adjacent; a real pole is its own
         partner = torch.arange(2 * K, device=sos.device) ^ conjugates.repeat_interleave(2, -1)
@@ -639,7 +648,7 @@ def sos2pfe(
         # a real sos lists one group of each conjugate pair, that of Im >= 0
         half = unique.imag >= 0
         batch_index, first, unique = batch_index[half], first[half], unique[half]
-    group = same[batch_index, first]
+    group = label[batch_index] == first.unsqueeze(-1)
     multiplicity = group.sum(-1)
     m = int(multiplicity.max())
     # each pole's group value minus this group's
