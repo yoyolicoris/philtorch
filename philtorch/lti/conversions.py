@@ -84,23 +84,25 @@ def _reduce_groups(p: Tensor, label: Tensor, rtype: str) -> Tensor:
     return torch.complex(real, by_group(tied, reduce))
 
 
-def _group_roots(roots: Tensor, tol: float) -> tuple[Tensor, Tensor, Tensor]:
+def _group_roots(roots: Tensor, tol: float) -> tuple[Tensor, Tensor, Tensor, Tensor]:
     """Group the roots within ``tol`` of each other, directly or through a
     chain of such roots.
 
     ``roots`` is of shape (B, M), M >= 1. Returns the group of each root, the
-    position of its first root, of shape (B, M), and the batch index and
-    position of each group's first root, of shape (G), the groups in row order.
+    position of its first root, of shape (B, M), and the batch index, the
+    position of the first root and the number of roots of each group, of
+    shape (G), the groups in row order.
     """
     real = roots.dtype.to_real()
     near = ((roots.unsqueeze(-1) - roots.unsqueeze(-2)).abs() <= tol).to(real)
     # each squaring doubles the length of the chains linked
     steps = range((roots.size(-1) - 1).bit_length())
     same = reduce(lambda c, _: (c @ c > 0).to(real), steps, near) > 0
-    position = torch.arange(roots.size(-1), device=roots.device)
     label = same.to(torch.int8).argmax(-1)
-    batch_index, first = (label == position).nonzero(as_tuple=True)
-    return label, batch_index, first
+    M = roots.size(-1)
+    rows = torch.arange(roots.size(0), device=roots.device).unsqueeze(-1)
+    group, multiplicity = (rows * M + label).unique(return_counts=True)
+    return label, group // M, group % M, multiplicity
 
 
 def _vandermonde(p: Tensor, extra: Tensor, rows: int) -> Tensor:
@@ -228,12 +230,8 @@ def unique_roots(p: Tensor, tol: float = 1e-3, rtype: str = "min") -> tuple[Tens
     if roots.size(-1) == 0:
         none = torch.empty(0, dtype=torch.int64, device=p.device)
         return (roots.new_empty(0), none, none) if batched else (roots.new_empty(0), none)
-    label, batch_index, first = _group_roots(roots, tol)
+    label, batch_index, first, multiplicity = _group_roots(roots, tol)
     unique = _reduce_groups(roots, label, rtype)[batch_index, first]
-    ones = torch.ones_like(label)
-    multiplicity = ones.scatter_reduce(-1, label, ones, "sum", include_self=False)[
-        batch_index, first
-    ]
     return (unique, multiplicity, batch_index) if batched else (unique, multiplicity)
 
 
@@ -618,7 +616,7 @@ def sos2pfe(
     poles = poles.view(B, 2 * K)
 
     # the closure maps the group of p to that of conj(p)
-    label, batch_index, first = _group_roots(poles, tol)
+    label, batch_index, first, multiplicity = _group_roots(poles, tol)
     # each pole's group value; a real sos's are made exact conjugates
     value = _reduce_groups(poles, label, rtype)
     if not sos.is_complex():
@@ -627,10 +625,9 @@ def sos2pfe(
         value = (value + value.gather(-1, partner).conj()) / 2
         # a real sos lists one group of each conjugate pair, that of Im >= 0
         half = value[batch_index, first].imag >= 0
-        batch_index, first = batch_index[half], first[half]
+        batch_index, first, multiplicity = batch_index[half], first[half], multiplicity[half]
     unique = value[batch_index, first]
     group = label[batch_index] == first.unsqueeze(-1)
-    multiplicity = group.sum(-1)
     m = int(multiplicity.max())
     # each pole's group value minus this group's
     away = (value[batch_index] - unique.unsqueeze(-1)).unflatten(-1, (K, 2))

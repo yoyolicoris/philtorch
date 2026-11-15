@@ -729,7 +729,7 @@ def pfefilt(
     zshape = (B, M) if shared and batched else (M,)
     if zi is not None and zi.shape != zshape:
         raise ValueError(f"zi must have shape {zshape}, got {tuple(zi.shape)}.")
-    if batch_index is not None and ((batch_index < 0) | (batch_index >= B)).any():
+    if not shared and ((batch_index < 0) | (batch_index >= B)).any():
         raise ValueError(f"batch_index must be from 0 to B - 1 = {B - 1}.")
     given = [t for t in (r, p, k, x, zi) if t is not None]
     if len({(t.dtype.to_real(), t.device) for t in given}) > 1:
@@ -773,8 +773,8 @@ def pfefilt(
     # non-real pole for its conjugate pair; a complex one runs every term in
     # complex.
     in_real_dtype = real_pole & real
-    # the next entry's power, 0 past the end
-    after = F.pad(power[1:], (0, 1))
+    # whether the next entry continues each chain
+    goes_on = F.pad(power[1:] > 1, (0, 1))
 
     # Each round runs one power of the chains of one kind, from power 1, adds
     # their terms to the output, and passes on the chains that go on.
@@ -782,9 +782,9 @@ def pfefilt(
     zf = zi.clone()
     for in_real in (True, False):
         (i,) = ((power == 1) & (in_real_dtype == in_real)).nonzero(as_tuple=True)
-        u = (x if in_real else x.to(cdtype))[batch_index[i]]
+        b = batch_index[i]
+        u = (x if in_real else x.to(cdtype))[b]
         while N and i.numel():
-            b = batch_index[i]
             a, init, c = p[i], zi[i], r[i]
             if in_real:
                 a, init, c = a.real, init.real, c.real
@@ -796,12 +796,12 @@ def pfefilt(
             term, term0 = c.unsqueeze(-1) * before, c * init
             if real:
                 term, term0 = term.real, term0.real
-            y[:, :1].index_add_(0, b, term0.unsqueeze(-1))
+            y[:, 0].index_add_(0, b, term0)
             y[:, 1:].index_add_(0, b, term)
             zf[i] = h[:, -1].to(cdtype)
-            cont = after[i] > 1
+            cont = goes_on[i]
             u = torch.cat((init[cont].unsqueeze(-1), before[cont]), -1)
-            i = i[cont] + 1
+            i, b = i[cont] + 1, b[cont]
     y = y if batched else y.squeeze(0)
     return (y, zf.reshape(zshape)) if return_zf else y
 
