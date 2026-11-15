@@ -538,9 +538,10 @@ def sos2pfe(
             :math:`b_0, b_1, b_2, a_1, a_2`, as in
             :func:`~philtorch.lti.sosfilt`.
         tol (float, optional): the distance within which two poles are
-            considered equal. ``None`` means
-            :math:`10 \sqrt{\epsilon}`, :math:`\epsilon` being the machine
-            epsilon of :attr:`sos`'s dtype. Default: ``None``.
+            considered equal. ``None`` means :math:`10 \sqrt{\epsilon}`,
+            :math:`\epsilon` being the machine epsilon of :attr:`sos`'s
+            dtype, enough to merge a double root that rounding splits.
+            Default: ``None``.
         rtype (str, optional): how to choose the pole of a group of equal poles,
             as in :func:`unique_roots`. Default: ``"avg"``.
 
@@ -557,29 +558,15 @@ def sos2pfe(
             not 5, it has no section, or :attr:`rtype` is unknown.
 
     Note:
-        Compared with :func:`residuez` on :func:`sos2tf`'s output:
-
-        - For simple poles, the expansion is :func:`residuez`'s with
-          ``delayed_form=True``, up to the order of the poles. It also holds a
-          repeated pole at 0 (an FIR section, :math:`a_1 = a_2 = 0`), which
-          :func:`residuez`'s bases can't.
-        - The poles are the sections' own, not the ill-conditioned roots of a
-          high-order denominator. In float64, the expansion's impulse response
-          is off from :func:`~philtorch.lti.sosfilt`'s, relative to its peak,
-          by :math:`10^{-10}`, :math:`4 \times 10^{-12}` and
-          :math:`3 \times 10^{-15}` for SciPy's Butterworth design of order 24,
-          Chebyshev type I of order 24 and elliptic of order 16, where
-          :func:`residuez`'s is off by :math:`10^{-4}`, :math:`10^{25}` and
-          :math:`0.2`.
-        - Rounding splits a section's double root by only about
-          :math:`\sqrt{\epsilon}`, :math:`\epsilon` being the machine epsilon
-          of :attr:`sos`'s dtype, hence the default :attr:`tol` of
-          :math:`10 \sqrt{\epsilon}`: :math:`1.5 \times 10^{-7}` in float64 and
-          :math:`3.5 \times 10^{-3}` in float32. :func:`residuez`'s
-          :math:`10^{-3}` would merge distinct poles of sharp designs: for an
-          elliptic design of order 24 whose closest poles are
-          :math:`1.2 \times 10^{-4}` apart, the error above grows from
-          :math:`10^{-13}` to :math:`3 \times 10^{-4}`.
+        For simple poles, the expansion is that of :func:`residuez` with
+        ``delayed_form=True`` on :func:`sos2tf`'s output, up to the order of
+        the poles; :func:`residuez` can't hold a repeated pole at 0, as an FIR
+        section has.
+        The poles here are the sections' own, not the roots of a high-order
+        denominator: for SciPy's Chebyshev type I design of order 24, in
+        float64, the expansion's impulse response is off by
+        :math:`4 \times 10^{-12}` of its peak, against :math:`10^{25}` for
+        :func:`residuez`.
 
     Example::
 
