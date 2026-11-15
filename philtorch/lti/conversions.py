@@ -187,8 +187,8 @@ def unique_roots(p: Tensor, tol: float = 1e-3, rtype: str = "min") -> tuple[Tens
     one unique root, chosen by :attr:`rtype`.
 
     Args:
-        p (Tensor): the roots, real or complex, of shape :math:`(M)` or
-            :math:`(B, M)`.
+        p (Tensor): the roots, floating-point or complex, of shape
+            :math:`(M)` or :math:`(B, M)`.
         tol (float, optional): the distance within which two roots are
             considered equal. Default: ``1e-3``.
         rtype (str, optional): how to choose the root of a group: ``"max"`` or
@@ -207,8 +207,8 @@ def unique_roots(p: Tensor, tol: float = 1e-3, rtype: str = "min") -> tuple[Tens
         :meth:`torch.Tensor.index_add`.
 
     Raises:
-        ValueError: if :attr:`p` is not 1-D or 2-D, or :attr:`rtype` is
-            unknown.
+        ValueError: if :attr:`p` is not 1-D or 2-D, or neither floating-point
+            nor complex, or :attr:`rtype` is unknown.
 
     Note:
         Unlike :func:`scipy.signal.unique_roots`, which groups the roots
@@ -227,6 +227,8 @@ def unique_roots(p: Tensor, tol: float = 1e-3, rtype: str = "min") -> tuple[Tens
         raise ValueError(f"rtype must be one of {_RTYPES}, got {rtype!r}")
     if p.ndim not in (1, 2):
         raise ValueError(f"p must be 1D or 2D, got {p.ndim}D")
+    if not (p.is_floating_point() or p.is_complex()):
+        raise ValueError(f"p must be floating-point or complex, got {p.dtype}")
 
     batched = p.ndim == 2
     roots = p if batched else p.unsqueeze(0)

@@ -668,6 +668,11 @@ _LTI_FILTERING_CASES = [
         "rtype must be one of",
         id="unique_roots-rtype",
     ),
+    pytest.param(
+        lambda: lti.unique_roots(torch.tensor([1, 1, 3])),
+        "floating-point or complex",
+        id="unique_roots-integer",
+    ),
     # filtfilt(b, a, x)
     pytest.param(
         lambda: lti.filtfilt(_ones(2), _zeros(1), _ones(16), method="odd"),
