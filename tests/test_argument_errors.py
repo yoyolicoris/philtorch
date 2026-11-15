@@ -503,7 +503,7 @@ _LTI_FILTERING_CASES = [
         "rtype must be one of",
         id="sos2pfe-rtype",
     ),
-    # pfefilt(r, p, k, x, zi, batch_index, power): flat arguments of one precision; a real k
+    # pfefilt(r, p, g, x, zi, batch_index, power): flat arguments of one precision; a real g
     # takes a real x and real residues for real poles
     pytest.param(
         lambda: lti.pfefilt(_ones(2), _ones(2), _ones(()), _ones(1, 2, 4)),
@@ -512,8 +512,8 @@ _LTI_FILTERING_CASES = [
     ),
     pytest.param(
         lambda: lti.pfefilt(_ones(2), _ones(2), _ones(1, 2), _ones(2, 4)),
-        "k must be 0D or 1D",
-        id="pfefilt-k-2d",
+        "g must be 0D or 1D",
+        id="pfefilt-g-2d",
     ),
     pytest.param(
         lambda: lti.pfefilt(_ones(2), _ones(1, 2), _ones(()), _ones(4)),
@@ -532,7 +532,7 @@ _LTI_FILTERING_CASES = [
     ),
     pytest.param(
         lambda: lti.pfefilt(_ones(2), _ones(2), _ones(3), _ones(2, 4)),
-        "A 1D k needs a 2D x of its batch size",
+        "A 1D g needs a 2D x of its batch size",
         id="pfefilt-batch",
     ),
     pytest.param(
@@ -543,7 +543,7 @@ _LTI_FILTERING_CASES = [
     pytest.param(
         lambda: lti.pfefilt(_ones(1), _ones(1), _ones(()), _ones(4).to(torch.complex128)),
         "takes a real x",
-        id="pfefilt-real-k-complex-x",
+        id="pfefilt-real-g-complex-x",
     ),
     pytest.param(
         lambda: lti.pfefilt(
@@ -585,8 +585,8 @@ _LTI_FILTERING_CASES = [
     ),
     pytest.param(
         lambda: lti.pfefilt(_ones(1), _ones(1), _ones(1), _ones(4)),
-        "A 1D k needs a 2D x",
-        id="pfefilt-1d-k-1d-x",
+        "A 1D g needs a 2D x",
+        id="pfefilt-1d-g-1d-x",
     ),
     pytest.param(
         lambda: lti.pfefilt(

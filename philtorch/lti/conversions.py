@@ -129,9 +129,9 @@ def sos2tf(sos: Tensor) -> tuple[Tensor, Tensor]:
     This multiplies the sections' numerators and denominators,
 
     .. math::
-        H(z) = \prod_{k=1}^{K}
-            \frac{b_{k0} + b_{k1} z^{-1} + b_{k2} z^{-2}}
-                 {1 + a_{k1} z^{-1} + a_{k2} z^{-2}}
+        H(z) = \prod_{l=1}^{K}
+            \frac{b_{l0} + b_{l1} z^{-1} + b_{l2} z^{-2}}
+                 {1 + a_{l1} z^{-1} + a_{l2} z^{-2}}
             = \frac{b_0 + b_1 z^{-1} + \cdots + b_{2K} z^{-2K}}
                    {1 + a_1 z^{-1} + \cdots + a_{2K} z^{-2K}}.
 
@@ -500,11 +500,11 @@ def sos2pfe(
                  {1 + a_{l1} z^{-1} + a_{l2} z^{-2}},
 
     this returns the residues :math:`r_i`, the poles :math:`p_i`, the direct
-    gain :math:`k = \prod_l b_{l0}` and the powers :math:`j_i` of the delayed
+    gain :math:`g = \prod_l b_{l0}` and the powers :math:`j_i` of the delayed
     form
 
     .. math::
-        H(z) = k + \sum_{i=1}^{M}
+        H(z) = g + \sum_{i=1}^{M}
             \frac{r_i z^{-j_i}}{(1 - p_i z^{-1})^{j_i}},
 
     as :func:`~philtorch.lti.pfefilt` takes it. A pole of multiplicity
@@ -513,10 +513,10 @@ def sos2pfe(
     powers of a pole at 0 are the taps :math:`r_i z^{-j_i}` of an FIR filter.
     For simple poles, this is the delayed form of the partial fraction
     expansion in `Introduction to Digital Filters with Audio Applications`_
-    (Smith, 2007), with the FIR part :math:`k`. A real :attr:`sos` lists one
-    pole of each conjugate pair, that of positive imaginary part, which stands
-    for both in :func:`~philtorch.lti.pfefilt`, and its real poles have real
-    residues. A complex :attr:`sos` lists every pole.
+    (Smith, 2007), with the FIR part :math:`F(z) = g`. A real :attr:`sos`
+    lists one pole of each conjugate pair, that of positive imaginary part,
+    which stands for both in :func:`~philtorch.lti.pfefilt`, and its real
+    poles have real residues. A complex :attr:`sos` lists every pole.
 
     Poles within :attr:`tol` of each other, directly or through a chain of
     such poles, are one group.
@@ -539,7 +539,7 @@ def sos2pfe(
         tuple: the residues :math:`r` and the poles :math:`p`, both complex
         and of shape :math:`(M)`, :math:`M` being the number of terms of all
         the filters: at most :math:`2K` per filter, fewer for a real
-        :attr:`sos`; the direct term :math:`k`, of :attr:`sos`'s
+        :attr:`sos`; the direct gain :math:`g`, of :attr:`sos`'s
         dtype and of shape :math:`()` or :math:`(B)`; the batch index, the row
         of the filter each term belongs to, of shape :math:`(M)`, or ``None``
         for a 2-D :attr:`sos`; and the powers :math:`j_i`, of shape
@@ -567,12 +567,12 @@ def sos2pfe(
         >>> # (1 + z^-1) / (1 - 0.5 z^-1) = 1 + 1.5 z^-1 / (1 - 0.5 z^-1),
         >>> # and a pole at 0 with residue 0
         >>> sos = torch.tensor([[1.0, 1.0, 0.0, -0.5, 0.0]])
-        >>> r, p, k, batch_index, power = sos2pfe(sos)
+        >>> r, p, g, batch_index, power = sos2pfe(sos)
         >>> r.real
         tensor([1.5000, 0.0000])
         >>> p.real
         tensor([0.5000, 0.0000])
-        >>> k
+        >>> g
         tensor(1.)
         >>> power
         tensor([1, 1])
@@ -585,8 +585,8 @@ def sos2pfe(
         >>> sos = torch.stack([b, 2 * b, b, a1, a2], -1)
         >>> x = torch.zeros(200, dtype=torch.float64)
         >>> x[0] = 1.0
-        >>> r, p, k, batch_index, power = sos2pfe(sos)
-        >>> y = pfefilt(r, p, k, x, batch_index=batch_index, power=power)
+        >>> r, p, g, batch_index, power = sos2pfe(sos)
+        >>> y = pfefilt(r, p, g, x, batch_index=batch_index, power=power)
         >>> torch.allclose(y, sosfilt(sos, x))
         True
 
@@ -660,7 +660,7 @@ def sos2pfe(
         # of an upstream bug: torch.where's backward fails for a real and a
         # complex input
         r = torch.where(p.imag == 0, r.real.to(r.dtype), r)
-    k = sos[..., 0].prod(-1)
+    g = sos[..., 0].prod(-1)
     if not batched:
-        return r, p, k[0], None, power
-    return r, p, k, batch_index.repeat_interleave(multiplicity), power
+        return r, p, g[0], None, power
+    return r, p, g, batch_index.repeat_interleave(multiplicity), power

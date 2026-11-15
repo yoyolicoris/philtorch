@@ -243,7 +243,7 @@ def fir(
     This computes
 
     .. math::
-        y[n] = \sum_{k=0}^{M} b_k\, x[n - k].
+        y[n] = \sum_{m=0}^{M} b_m\, x[n - m].
 
     Args:
         b (Tensor): filter coefficients :math:`b_0, \dots, b_M`, of shape
@@ -633,7 +633,7 @@ def sosfilt_zi(sos: Tensor) -> Tensor:
 def pfefilt(
     r: Tensor,
     p: Tensor,
-    k: Tensor,
+    g: Tensor,
     x: Tensor,
     zi: Tensor | None = None,
     batch_index: Tensor | None = None,
@@ -644,7 +644,7 @@ def pfefilt(
     The filter is a partial fraction expansion, a sum of sections:
 
     .. math::
-        H(z) = k + \sum_{i=1}^{M} \frac{r_i z^{-j_i}}{(1 - p_i z^{-1})^{j_i}},
+        H(z) = g + \sum_{i=1}^{M} \frac{r_i z^{-j_i}}{(1 - p_i z^{-1})^{j_i}},
 
     where :math:`j_i` is the power of term :math:`i`. :func:`sos2pfe` expands
     second-order sections into this form, with the :attr:`batch_index` and
@@ -659,19 +659,19 @@ def pfefilt(
     the :math:`s` of the term listed before it: the powers of a repeated pole
     are a chain of sections, each delaying its input by one sample.
 
-    A real :attr:`k` makes a real filter, which takes a real :attr:`x`. Each
+    A real :attr:`g` makes a real filter, which takes a real :attr:`x`. Each
     of its terms with a non-real pole stands for itself and its conjugate,
     the term with the conjugates of :math:`r_i`, :math:`p_i` and
     :math:`\text{zi}_i`, so that the pair sums to a real second-order section:
     list one pole of each conjugate pair, as :func:`sos2pfe` does, not both,
     as :func:`residuez` does. Its terms with a real pole need a real residue
     and initial state. For a complex :attr:`x`, filter its real and imaginary
-    parts. A complex :attr:`k` makes a complex filter, which lists every pole.
+    parts. A complex :attr:`g` makes a complex filter, which lists every pole.
 
     Args:
         r (Tensor): the residues, real or complex, of shape :math:`(M)`.
         p (Tensor): the poles, real or complex, of shape :math:`(M)`.
-        k (Tensor): the direct gain, of shape :math:`()` or :math:`(B)`.
+        g (Tensor): the direct gain, of shape :math:`()` or :math:`(B)`.
         x (Tensor): input signals, of shape :math:`(B, N)` or :math:`(N)`.
         zi (Tensor, optional): the initial states :math:`s_i[0]`, of shape
             :math:`(M)`, or :math:`(B, M)` for a 2-D :attr:`x` without
@@ -690,20 +690,20 @@ def pfefilt(
 
     Returns:
         Tensor or tuple of Tensor: the filtered signals, of the shape of
-        :attr:`x`, real when :attr:`k` is, and with :attr:`zi`, the final
+        :attr:`x`, real when :attr:`g` is, and with :attr:`zi`, the final
         states :math:`s_i[N]`, complex, of the shape of :attr:`zi`. Pass them
         as the next chunk's :attr:`zi` to filter a signal in chunks.
 
     Raises:
-        ValueError: if :attr:`x` is not 1-D or 2-D, :attr:`k` is not 0-D or
+        ValueError: if :attr:`x` is not 1-D or 2-D, :attr:`g` is not 0-D or
             1-D, :attr:`r`, :attr:`p`, :attr:`batch_index` or :attr:`power`
-            is not 1-D of one length, :attr:`zi` or a batched :attr:`k` has
+            is not 1-D of one length, :attr:`zi` or a batched :attr:`g` has
             the wrong shape, :attr:`batch_index` or :attr:`power` isn't int32
             or int64 on :attr:`x`'s device, :attr:`batch_index` is out of
             range, the inputs differ in precision or device, are neither
             floating-point nor complex, or are bfloat16, which has no complex
             dtype, a power doesn't follow the power below it, or
-            :attr:`k` is real and :attr:`x` complex, or a real pole has a
+            :attr:`g` is real and :attr:`x` complex, or a real pole has a
             complex residue or initial state.
 
     Example::
@@ -720,8 +720,8 @@ def pfefilt(
     """
     if x.dim() not in (1, 2):
         raise ValueError("Input signal x must be 1D or 2D.")
-    if k.dim() not in (0, 1):
-        raise ValueError("Gain k must be 0D or 1D.")
+    if g.dim() not in (0, 1):
+        raise ValueError("Gain g must be 0D or 1D.")
     if p.dim() != 1:
         raise ValueError("Poles p must be 1D.")
     M = p.size(0)
@@ -733,9 +733,9 @@ def pfefilt(
             raise ValueError(f"{name} must be int32 or int64, got {t.dtype}.")
         if t is not None and t.device != x.device:
             raise ValueError(f"{name} must be on x's device, {x.device}, got {t.device}.")
-    if k.dim() == 1 and (x.dim() == 1 or k.size(0) != x.size(0)):
+    if g.dim() == 1 and (x.dim() == 1 or g.size(0) != x.size(0)):
         raise ValueError(
-            f"A 1D k needs a 2D x of its batch size, got k: {tuple(k.shape)}, x: {tuple(x.shape)}"
+            f"A 1D g needs a 2D x of its batch size, got g: {tuple(g.shape)}, x: {tuple(x.shape)}"
         )
     batched = x.dim() == 2
     x = x if batched else x.unsqueeze(0)
@@ -746,10 +746,10 @@ def pfefilt(
         raise ValueError(f"zi must have shape {zshape}, got {tuple(zi.shape)}.")
     if not shared and ((batch_index < 0) | (batch_index >= B)).any():
         raise ValueError(f"batch_index must be from 0 to B - 1 = {B - 1}.")
-    given = [t for t in (r, p, k, x, zi) if t is not None]
+    given = [t for t in (r, p, g, x, zi) if t is not None]
     if len({(t.dtype.to_real(), t.device) for t in given}) > 1:
         raise ValueError(
-            f"r, p, k, x and zi must share a precision and a device, got "
+            f"r, p, g, x and zi must share a precision and a device, got "
             f"{[(t.dtype, str(t.device)) for t in given]}"
         )
     if not (x.is_floating_point() or x.is_complex()) or x.dtype == torch.bfloat16:
@@ -757,10 +757,10 @@ def pfefilt(
             f"pfefilt takes floating-point or complex inputs other than bfloat16, which "
             f"has no complex dtype, got {x.dtype}."
         )
-    real = not k.is_complex()
+    real = not g.is_complex()
     if real and x.is_complex():
         raise ValueError(
-            "A real k makes a real filter, which takes a real x; filter the real and "
+            "A real g makes a real filter, which takes a real x; filter the real and "
             "imaginary parts of a complex x."
         )
     return_zf = zi is not None
@@ -785,7 +785,7 @@ def pfefilt(
     real_pole = p.imag == 0
     if real and (real_pole & ((r.imag != 0) | (zi.imag != 0))).any():
         raise ValueError(
-            "A real k makes a real filter, whose real poles need real residues and initial states."
+            "A real g makes a real filter, whose real poles need real residues and initial states."
         )
     # A real filter runs its real poles in the real dtype and each listed
     # non-real pole for its conjugate pair; a complex one runs every term in
@@ -796,7 +796,7 @@ def pfefilt(
 
     # Each round runs one power of the chains of one kind, from power 1, adds
     # their terms to the output, and passes on the chains that go on.
-    y = k.unsqueeze(-1) * x
+    y = g.unsqueeze(-1) * x
     zf = zi.clone()
     for in_real in (True, False):
         (i,) = ((power == 1) & (in_real_dtype == in_real)).nonzero(as_tuple=True)
