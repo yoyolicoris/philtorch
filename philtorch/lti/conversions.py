@@ -64,10 +64,13 @@ def _reduce_groups(p: Tensor, label: Tensor, rtype: str) -> Tensor:
     value by ``rtype``.
     """
 
-    # The groups' values land at their labels, which they all read back; the
-    # other positions keep t's values, never read.
+    # The groups' values land at their labels, which they all read back.
+    # Workaround of an upstream bug: with include_self=False, the backward of
+    # "amin" and "amax" still splits the gradient with the base wherever the
+    # base equals the result, so the base is NaN, which equals nothing.
     def by_group(t: Tensor, reduce: str) -> Tensor:
-        return t.scatter_reduce(-1, label, t, reduce, include_self=False).gather(-1, label)
+        base = torch.full_like(t, torch.nan)
+        return base.scatter_reduce(-1, label, t, reduce, include_self=False).gather(-1, label)
 
     if rtype in ("avg", "mean"):
         # CUDA's scatter_reduce takes no complex tensors
@@ -513,10 +516,10 @@ def sos2pfe(
     powers of a pole at 0 are the taps :math:`r_i z^{-j_i}` of an FIR filter.
     For simple poles, this is the delayed form of the partial fraction
     expansion in `Introduction to Digital Filters with Audio Applications`_
-    (Smith, 2007), with the FIR part :math:`k`. A real :attr:`sos` lists one pole of each conjugate
-    pair, that of positive imaginary part, which stands for both in
-    :func:`~philtorch.lti.pfefilt`, and its real poles have real residues. A
-    complex :attr:`sos` lists every pole.
+    (Smith, 2007), with the FIR part :math:`k`. A real :attr:`sos` lists one
+    pole of each conjugate pair, that of positive imaginary part, which stands
+    for both in :func:`~philtorch.lti.pfefilt`, and its real poles have real
+    residues. A complex :attr:`sos` lists every pole.
 
     Poles within :attr:`tol` of each other, directly or through a chain of
     such poles, are one group.
@@ -601,6 +604,10 @@ def sos2pfe(
     batched = sos.dim() == 3
     sos = sos if batched else sos.unsqueeze(0)
     B, K, _ = sos.shape
+    if B == 0:
+        none = torch.empty(0, dtype=torch.long, device=sos.device)
+        empty = sos.new_empty(0, dtype=sos.dtype.to_complex())
+        return empty, empty, sos.new_empty(0), none, none
 
     # the roots of z^2 + a1 z + a2: q is the one without cancellation, and the
     # other is a2 / q (q is 0 only where a1 = a2 = 0), or, for a real section,
@@ -652,8 +659,10 @@ def sos2pfe(
     keep = power >= 1
     p, r, power = unique.unsqueeze(-1).expand(-1, m)[keep], f.flip(-1)[keep], power[keep]
     if not sos.is_complex():
-        # a real pole's residue is real
-        r = torch.where(p.imag == 0, r.real, r)
+        # a real pole's residue is real; r.real is made complex as a workaround
+        # of an upstream bug: torch.where's backward fails for a real and a
+        # complex input
+        r = torch.where(p.imag == 0, r.real.to(r.dtype), r)
     k = sos[..., 0].prod(-1)
     if not batched:
         return r, p, k[0], None, power

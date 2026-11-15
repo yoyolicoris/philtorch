@@ -690,9 +690,11 @@ def pfefilt(
         ValueError: if :attr:`x` is not 1-D or 2-D, :attr:`k` is not 0-D or
             1-D, :attr:`r`, :attr:`p`, :attr:`batch_index` or :attr:`power`
             is not 1-D of one length, :attr:`zi` or a batched :attr:`k` has
-            the wrong shape, :attr:`batch_index` is out of range, the inputs
-            differ in precision or device or are bfloat16, which has no
-            complex dtype, a power doesn't follow the power below it, or
+            the wrong shape, :attr:`batch_index` or :attr:`power` doesn't hold
+            integers on :attr:`x`'s device, :attr:`batch_index` is out of
+            range, the inputs differ in precision or device, are neither
+            floating-point nor complex, or are bfloat16, which has no complex
+            dtype, a power doesn't follow the power below it, or
             :attr:`k` is real and :attr:`x` complex, or a real pole has a
             complex residue or initial state.
 
@@ -718,6 +720,11 @@ def pfefilt(
     for name, t in (("r", r), ("batch_index", batch_index), ("power", power)):
         if t is not None and t.shape != (M,):
             raise ValueError(f"{name} must be 1D of length {M}, got shape {tuple(t.shape)}.")
+    for name, t in (("batch_index", batch_index), ("power", power)):
+        if t is not None and (t.is_floating_point() or t.is_complex() or t.dtype == torch.bool):
+            raise ValueError(f"{name} must hold integers, got {t.dtype}.")
+        if t is not None and t.device != x.device:
+            raise ValueError(f"{name} must be on x's device, {x.device}, got {t.device}.")
     if k.dim() == 1 and (x.dim() == 1 or k.size(0) != x.size(0)):
         raise ValueError(
             f"A 1D k needs a 2D x of its batch size, got k: {tuple(k.shape)}, x: {tuple(x.shape)}"
@@ -737,8 +744,11 @@ def pfefilt(
             f"r, p, k, x and zi must share a precision and a device, got "
             f"{[(t.dtype, str(t.device)) for t in given]}"
         )
-    if x.dtype == torch.bfloat16:
-        raise ValueError("pfefilt doesn't take bfloat16, which has no complex dtype.")
+    if not (x.is_floating_point() or x.is_complex()) or x.dtype == torch.bfloat16:
+        raise ValueError(
+            f"pfefilt takes floating-point or complex inputs other than bfloat16, which "
+            f"has no complex dtype, got {x.dtype}."
+        )
     real = not k.is_complex()
     if real and x.is_complex():
         raise ValueError(

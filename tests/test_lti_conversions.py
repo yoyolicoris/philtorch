@@ -396,6 +396,11 @@ def test_sos2pfe_fir_section():
     assert power.tolist() == [1, 2] and batch_index is None
 
 
+def test_sos2pfe_empty_batch():
+    r, p, k, batch_index, power = sos2pfe(torch.zeros(0, 2, 5, dtype=F64))
+    assert r.shape == p.shape == k.shape == batch_index.shape == power.shape == (0,)
+
+
 def test_sos2pfe_batched_multiplicities():
     # one cascade per row, each with a different multiplicity of the same order
     double = [1.0, 0.5, -0.3, -1.0, 0.25]

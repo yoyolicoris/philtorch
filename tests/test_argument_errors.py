@@ -548,6 +548,37 @@ _LTI_FILTERING_CASES = [
         id="pfefilt-bfloat16",
     ),
     pytest.param(
+        lambda: lti.pfefilt(
+            *(torch.ones(1, dtype=torch.long) for _ in range(2)),
+            torch.tensor(1),
+            torch.ones(4, dtype=torch.long),
+        ),
+        "floating-point or complex",
+        id="pfefilt-integer",
+    ),
+    pytest.param(
+        lambda: lti.pfefilt(_ones(1), _ones(1), _ones(1), _ones(1, 4), batch_index=torch.zeros(1)),
+        "batch_index must hold integers",
+        id="pfefilt-batch-index-float",
+    ),
+    pytest.param(
+        lambda: lti.pfefilt(_ones(1), _ones(1), _ones(()), _ones(4), power=torch.tensor([True])),
+        "power must hold integers",
+        id="pfefilt-power-bool",
+    ),
+    pytest.param(
+        lambda: lti.pfefilt(_ones(1), _ones(1), _ones(1), _ones(4)),
+        "A 1D k needs a 2D x",
+        id="pfefilt-1d-k-1d-x",
+    ),
+    pytest.param(
+        lambda: lti.pfefilt(
+            _ones(1), _ones(1), _ones(()), _ones(4), zi=torch.tensor([1j], dtype=torch.complex128)
+        ),
+        "real poles need real residues and initial states",
+        id="pfefilt-complex-state-of-real-pole",
+    ),
+    pytest.param(
         lambda: lti.pfefilt(_ones(1), _ones(1), _ones(()), _ones(4), power=torch.tensor([2])),
         "Each power above 1",
         id="pfefilt-power",
