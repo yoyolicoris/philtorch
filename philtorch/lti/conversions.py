@@ -563,10 +563,8 @@ def sos2pfe(
         the poles; :func:`residuez` can't hold a repeated pole at 0, as an FIR
         section has.
         The poles here are the sections' own, not the roots of a high-order
-        denominator: for SciPy's Chebyshev type I design of order 24, in
-        float64, the expansion's impulse response is off by
-        :math:`4 \times 10^{-12}` of its peak, against :math:`10^{25}` for
-        :func:`residuez`.
+        denominator, so the expansion stays accurate for high-order filters,
+        where :func:`residuez` loses precision.
 
     Example::
 
