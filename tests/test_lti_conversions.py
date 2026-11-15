@@ -5,7 +5,7 @@ import pytest
 import torch
 from scipy import signal
 
-from philtorch.lti import invresz, residuez, sos2pfe, sos2tf, sosfilt, unique_roots
+from philtorch.lti import invresz, pfefilt, residuez, sos2pfe, sos2tf, sosfilt, unique_roots
 
 F64 = torch.float64
 
@@ -404,3 +404,13 @@ def test_sos2pfe_impulse_response_matches_sosfilt(design, atol):
     h = torch.cat([k.unsqueeze(0), h])
     expected = sosfilt(sos, torch.eye(1, 200, dtype=F64)[0])
     assert ((h - expected).abs().max() / expected.abs().max()).item() < atol
+
+
+def test_sos2pfe_groups_a_cluster_of_conjugate_pairs_symmetrically():
+    # pairs 0.5 +- 0.0004j and 0.5006 +- 0.0008j: each pole is within tol of
+    # its conjugate and of the other pair's pole on its side, not across
+    poles = [0.5 + 0.0004j, 0.5006 + 0.0008j]
+    sos = torch.tensor([[1.0, 0.3, 0.2, -2 * q.real, abs(q) ** 2] for q in poles], dtype=F64)
+    r, p, k = sos2pfe(sos, tol=1e-3)
+    np.testing.assert_array_equal(np.sort_complex(p.numpy()), np.sort_complex(p.numpy().conj()))
+    pfefilt(r, p, k, torch.randn(8, dtype=F64))

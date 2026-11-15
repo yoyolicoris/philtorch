@@ -148,34 +148,6 @@ def sos2tf(sos: Tensor) -> tuple[Tensor, Tensor]:
     return both[..., 0, :], both[..., 1, 1:]
 
 
-def _group(roots: Tensor, tol: float) -> tuple[Tensor, Tensor]:
-    """Group the roots of each row of ``roots``, of shape (B, M), M >= 1.
-
-    Returns the batch index of each group, of shape (U), and the groups' members
-    among the M roots of their rows, a boolean mask of shape (U, M), as
-    :func:`unique_roots` orders them.
-    """
-    B, M = roots.shape
-    close = (roots.unsqueeze(-1) - roots.unsqueeze(-2)).abs() <= tol
-
-    # A root starts a group when no earlier group took it; the group takes the
-    # roots that are close and not yet taken. For booleans, c > u is c & ~u.
-    def take(carry: tuple[Tensor, tuple[Tensor, ...]], i_row: tuple[int, Tensor]):
-        used, used_before = carry
-        i, row = i_row
-        was_used = used[:, i : i + 1]
-        return used | (row > was_used), (*used_before, was_used)
-
-    unused = torch.zeros(B, M, dtype=torch.bool, device=roots.device)
-    _, used_before = reduce(take, enumerate(close.unbind(1)), (unused, ()))
-    leader = ~torch.cat(used_before, 1)
-    # a root belongs to the first leader that is close to it
-    owner = (close & leader.unsqueeze(-1)).to(torch.int8).argmax(1)
-    batch_index, first = leader.nonzero(as_tuple=True)
-    group = owner[batch_index] == first.unsqueeze(-1)
-    return batch_index, group
-
-
 def unique_roots(p: Tensor, tol: float = 1e-3, rtype: str = "min") -> tuple[Tensor, ...]:
     r"""Find the unique roots and their multiplicities.
 
@@ -229,11 +201,27 @@ def unique_roots(p: Tensor, tol: float = 1e-3, rtype: str = "min") -> tuple[Tens
 
     batched = p.ndim == 2
     roots = p if batched else p.unsqueeze(0)
-    M = roots.size(-1)
+    B, M = roots.shape
     if M == 0:
         none = torch.empty(0, dtype=torch.int64, device=p.device)
         return (roots.new_empty(0), none, none) if batched else (roots.new_empty(0), none)
-    batch_index, group = _group(roots, tol)
+    close = (roots.unsqueeze(-1) - roots.unsqueeze(-2)).abs() <= tol
+
+    # A root starts a group when no earlier group took it; the group takes the
+    # roots that are close and not yet taken. For booleans, c > u is c & ~u.
+    def take(carry: tuple[Tensor, tuple[Tensor, ...]], i_row: tuple[int, Tensor]):
+        used, used_before = carry
+        i, row = i_row
+        was_used = used[:, i : i + 1]
+        return used | (row > was_used), (*used_before, was_used)
+
+    unused = torch.zeros(B, M, dtype=torch.bool, device=p.device)
+    _, used_before = reduce(take, enumerate(close.unbind(1)), (unused, ()))
+    leader = ~torch.cat(used_before, 1)
+    # a root belongs to the first leader that is close to it
+    owner = (close & leader.unsqueeze(-1)).to(torch.int8).argmax(1)
+    batch_index, first = leader.nonzero(as_tuple=True)
+    group = owner[batch_index] == first.unsqueeze(-1)
     unique = _reduce_groups(roots[batch_index], group, rtype)
     multiplicity = group.sum(-1)
     return (unique, multiplicity, batch_index) if batched else (unique, multiplicity)
@@ -541,8 +529,11 @@ def sos2pfe(
     FIR filter.
 
     The poles are the sections' own, in closed form, by the quadratic formula
-    in its stable arrangement, and grouped by :func:`unique_roots`. For a group
-    of multiplicity :math:`m` at :math:`p`, the term
+    in its stable arrangement. Poles within :attr:`tol` of each other, chained,
+    are one group, which, unlike :func:`unique_roots`'s grouping in order, maps
+    the group of a pole to that of its conjugate, so that a real :attr:`sos`
+    gives conjugate pairs of groups, with conjugate values. For a group of
+    multiplicity :math:`m` at :math:`p`, the term
     :math:`r_j z^{-j} / (1 - p z^{-1})^j` is :math:`r_j / s^j` at
     :math:`z = p + s`, so that
     :math:`F(s) = s^m H(p + s) = \sum_j r_j s^{m-j} + O(s^m)`: the residues
@@ -561,7 +552,7 @@ def sos2pfe(
             :math:`b_0, b_1, b_2, a_1, a_2`, as in
             :func:`~philtorch.lti.sosfilt`.
         tol (float, optional): the distance within which two poles are
-            considered equal, as in :func:`unique_roots`. ``None`` means
+            considered equal. ``None`` means
             :math:`10 \sqrt{\epsilon}`, :math:`\epsilon` being the machine
             epsilon of :attr:`sos`'s dtype. Default: ``None``.
         rtype (str, optional): how to choose the pole of a group of equal poles,
@@ -644,13 +635,27 @@ def sos2pfe(
     poles = torch.stack((q, torch.where(conjugates, q.conj(), a2 / (q + (q == 0)))), -1)
     poles = poles.view(B, 2 * K)
 
-    batch_index, group = _group(poles, tol)
-    unique = _reduce_groups(poles[batch_index], group, rtype)
+    # Poles within tol of each other, chained, are one group: unlike greedy
+    # grouping in order, the closure maps the group of p to that of conj(p).
+    close = (poles.unsqueeze(-1) - poles.unsqueeze(-2)).abs() <= tol
+    real = sos.dtype.to_real()
+    close = reduce(
+        lambda c, _: (c.to(real) @ c.to(real)) > 0, range((2 * K - 1).bit_length()), close
+    )
+    leader = close.to(torch.int8).argmax(-1)
+    batch_index, first = (leader == torch.arange(2 * K, device=sos.device)).nonzero(as_tuple=True)
+    group = leader[batch_index] == first.unsqueeze(-1)
+    # each pole's group value; a real sos's are made exact conjugates
+    value = _reduce_groups(poles[batch_index], group, rtype)
+    value = torch.zeros_like(poles).index_add(0, batch_index, group * value[:, None])
+    if not sos.is_complex():
+        partner = (poles.conj().unsqueeze(-1) == poles.unsqueeze(-2)).to(torch.int8).argmax(-1)
+        value = (value + value.gather(-1, partner).conj()) / 2
+    unique = value[batch_index, first]
     multiplicity = group.sum(-1)
     m = int(multiplicity.max())
     # each pole's group value minus this group's
-    away = torch.zeros_like(poles).index_add(0, batch_index, group * unique[:, None])
-    away = (away[batch_index] - unique.unsqueeze(-1)).unflatten(-1, (K, 2))
+    away = (value[batch_index] - unique.unsqueeze(-1)).unflatten(-1, (K, 2))
 
     # the first m terms of the series of 1 / (s - away) are -cumprod(1 / away);
     # a member of the group has 1
