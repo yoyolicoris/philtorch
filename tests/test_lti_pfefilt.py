@@ -86,3 +86,18 @@ def test_pfefilt_in_chunks_equals_whole(sos):
         ys.append(y)
     torch.testing.assert_close(torch.cat(ys, dim=-1), whole)
     torch.testing.assert_close(zf, zf_whole)
+
+
+def test_pfefilt_without_poles():
+    x = torch.randn(2, 8, dtype=torch.float64)
+    empty = torch.zeros(0, dtype=torch.complex128)
+    y = pfefilt(empty, empty, torch.tensor(2.0, dtype=torch.float64), x)
+    torch.testing.assert_close(y, 2 * x)
+
+
+def test_pfefilt_real_check_scales_with_the_largest_residue():
+    # a real pole's small residue with rounding noise at the scale of the
+    # largest residue, as sos2pfe gives in float32
+    r = torch.tensor([1e4 + 1e3j, 1e4 - 1e3j, -0.026 - 1.1e-5j])
+    p = torch.tensor([0.5 + 0.2j, 0.5 - 0.2j, 0.0038 + 0j])
+    pfefilt(r, p, torch.tensor(1.0), torch.randn(16))

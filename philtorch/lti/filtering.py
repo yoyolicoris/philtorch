@@ -678,9 +678,10 @@ def pfefilt(
             :attr:`zi` differ in length, a batched input has a batch size
             other than that of :attr:`x`, the inputs differ in precision or
             device, or, for a real :attr:`k`, an entry has no partner of the
-            same power with the conjugate pole and, up to a relative
-            :math:`\sqrt{\epsilon}` of the precision, the conjugate residue
-            and initial state (a real pole is its own partner).
+            same power with the conjugate pole and, up to
+            :math:`\sqrt{\epsilon}` of the precision times the largest one,
+            the conjugate residue and initial state (a real pole is its own
+            partner).
 
     Note:
         The terms that run, and the stages of repeated poles, depend on the
@@ -738,15 +739,16 @@ def pfefilt(
     power = index - (start * index).cummax(-1).values + 1
 
     real = not k.is_complex() and not x.is_complex()
-    if not k.is_complex():
+    if not k.is_complex() and M:
         # each term's conjugate partner: the conjugate pole, exactly, and the
-        # conjugate residue and state, up to rounding
+        # conjugate residue and state, up to rounding of the row's largest
         rtol = torch.finfo(x.dtype).eps ** 0.5
         conjugate = (p.conj().unsqueeze(-1) == p.unsqueeze(-2)) & (
             power.unsqueeze(-1) == power.unsqueeze(-2)
         )
         for t in (r, zi):
-            conjugate &= torch.isclose(t.conj().unsqueeze(-1), t.unsqueeze(-2), rtol=rtol, atol=0)
+            atol = rtol * t.abs().amax(-1)[:, None, None]
+            conjugate &= (t.conj().unsqueeze(-1) - t.unsqueeze(-2)).abs() <= atol
         if not conjugate.any(-1).all():
             raise ValueError(
                 "A real k makes a real filter, whose poles, residues and initial "
@@ -806,7 +808,7 @@ def pfefilt(
     steps = product(range(1, m + 1), (True, False))
     acc, acc0, zf, _ = reduce(stage, steps, (acc, acc0, zi, {}))
     y = k.unsqueeze(-1) * x + torch.cat((acc0.unsqueeze(-1), acc[:, :-1]), -1)
-    if real:
+    if real and M:
         # a doubled term's partner has the conjugate state
         partner = conjugate.to(torch.int8).argmax(-1)
         zf = torch.where(runs, zf, zf.gather(-1, partner).conj())
