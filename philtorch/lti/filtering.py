@@ -757,10 +757,9 @@ def pfefilt(
             "A real k makes a real filter, whose real poles need real residues and initial states."
         )
     # A real filter runs its real poles in the real dtype and each listed
-    # non-real pole for its conjugate pair, doubled; a complex one runs every
-    # term in complex.
+    # non-real pole for its conjugate pair; a complex one runs every term in
+    # complex.
     in_real_dtype = real_pole & real
-    coef = torch.where(real & ~real_pole, 2 * r, r)
     # the next entry's power, 0 past the end
     after = F.pad(power[1:], (0, 1))
 
@@ -773,7 +772,7 @@ def pfefilt(
         u = (x if in_real else x.to(cdtype))[batch_index[i]]
         while N and i.numel():
             b = batch_index[i]
-            a, init, c = p[i], zi[i], coef[i]
+            a, init, c = p[i], zi[i], r[i]
             if in_real:
                 a, init, c = a.real, init.real, c.real
             h = linear_recurrence(a, init, u)
@@ -781,9 +780,9 @@ def pfefilt(
             before = h[:, :-1]
             term0 = c * init
             if real and not in_real:
-                # Re(c h) = Re c Re h - Im c Im h, without the imaginary part
-                cri = torch.stack((c.real, -c.imag), -1).unsqueeze(-1)
-                term, term0 = (torch.view_as_real(before) @ cri).squeeze(-1), term0.real
+                # 2 Re(c h) = 2 (Re c Re h - Im c Im h): the pole and its conjugate
+                cri = torch.stack((2 * c.real, -2 * c.imag), -1).unsqueeze(-1)
+                term, term0 = (torch.view_as_real(before) @ cri).squeeze(-1), 2 * term0.real
             else:
                 term = c.unsqueeze(-1) * before
             y[:, :1].index_add_(0, b, term0.unsqueeze(-1))
