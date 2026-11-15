@@ -173,14 +173,16 @@ def dtw(
             Only with :attr:`x` and :attr:`y`, for DTW and soft-DTW alike,
             which then skips the cells outside it; with a cost, make the cost
             ``inf`` outside it instead. Default: ``None``, no band.
-        checkpoint (int, optional): the number of rows between stored rows of
-            the accumulated costs, which soft-DTW's gradient needs; the rest
-            are recomputed in the backward pass. The rows run along the
-            shorter sequence, :math:`\min(N, M)` of them for the symmetric and
-            orthogonal steps. A smaller value takes less memory, down to a
-            floor near 64 rows, and more time. From :attr:`x` and :attr:`y`
-            only: a cost is as large as the accumulated costs anyway.
-            Default: ``None``, all rows stored.
+        checkpoint (int, optional): the number :math:`k` of rows between
+            stored rows of the accumulated costs, which soft-DTW's gradient
+            needs; the rest are recomputed in the backward pass. The rows run
+            along the shorter sequence, :math:`R = \min(N, M)` of them for the
+            symmetric and orthogonal steps. The memory holds about
+            :math:`R / k` stored rows and :math:`k` recomputed ones, so it is
+            least for :math:`k` near :math:`\sqrt{R}`, and a smaller
+            :math:`k` takes more time. From :attr:`x` and :attr:`y` only: a
+            cost is as large as the accumulated costs anyway. Default:
+            ``None``, all rows stored.
 
     Returns:
         Tensor: the distances, of shape :math:`(B)`, floating: of the dtype of
