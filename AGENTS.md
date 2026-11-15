@@ -87,14 +87,18 @@ Keep the measurements behind an issue, its benchmark or error tables and the scr
 
 - **Coefficients:** the denominator `a` excludes `a0`, so SciPy-equivalent calls prepend `1.0` (in tests, `[1.0] + a.tolist()`). `lfilter_zi` takes `(a, b)`, the reverse of SciPy's order.
 - **Shapes:** LTI functions take static coefficients, e.g. `(N,)` or `(B, N)`. LPV functions take time-varying ones, e.g. `(B, T, M)`. The alignment and estimation APIs are batch first: `(B, T, C)`, not PyTorch's `(T, B, C)`. A function takes exactly the shapes its docstring lists: a batched coefficient (`b`, `a`) has the batch size of `x`, never a batch of one broadcast to it. Code that accepts an unlisted shape is a bug to report, not a feature to keep.
+- **Dtypes and devices:** every tensor that enters a function's arithmetic has the dtype and device of its main input, usually `x`. Where real and complex tensors may mix, as in `pfefilt`, only the precision has to match. A mismatch raises a `ValueError`, listed in `Raises:`. Never promote or downcast silently, and never let a path-dependent `RuntimeError` reach the user. Arguments documented as integer tensors, such as lengths and targets, raise a `ValueError` when they aren't integer tensors.
+- **Empty inputs:** with no steps, no signals, no poles or no taps, a function returns empty outputs. They are built with `new_empty` or `new_zeros`, in the dtype that the non-empty path returns. Don't build them from empty slices of the inputs to keep those in the autograd graph: an empty input's gradient is `None`.
 - **Choices are explicit arguments:**
   - filter forms: `df2`, `tdf2`, `df1`, `tdf1`;
   - LTI `lfilter` backends: `"ssm"`, `"diag_ssm"`;
   - LPV `lfilter` backends: `"ssm"`, `"torchlpc"`.
-- **Docstrings** follow PyTorch's conventions, as detailed in `CONTRIBUTING.md`:
+- **Docstrings** follow PyTorch's form and the content rules in `CONTRIBUTING.md`:
   - Google style, lines of 80 characters or fewer;
   - math in reStructuredText;
   - `Raises:` lists the errors bad input triggers; argument errors are `ValueError`s, not asserts.
+
+  The content rules cover what to leave out, the symbol table, and the check after every edit. They apply to every edit, a trim included. The workflow that applies them is `.agents/skills/philtorch-docstring/SKILL.md`: follow it for every docstring edit. Agents that load skills, such as Copilot, Antigravity and Claude Code (through `.claude/skills/`), find it on their own; any other agent reads the file.
 - **New public functions** need an entry on their page in `docs/api/*.rst`.
 - **Third-party code:** never port GPL or LGPL code, not even into a comment: philtorch is MIT. Take values measured from such a library, or derive them anew, and cite the source; squash-merge a branch whose history held such a port.
 - **Docstring examples:** if a module's docstrings have examples, add the module to `MODULES` in `tests/test_docstrings.py`, or, for Triton code, to `CUDA_MODULES` in `tests/test_docstrings_cuda.py` (checked only on CUDA machines). Load it with `importlib.import_module` when a function of the same name shadows it, as `philtorch.align.dtw` does.

@@ -62,6 +62,35 @@ Public functions follow [PyTorch's docstring conventions](https://github.com/pyt
 - **Differences from SciPy and NumPy:** call out argument-order or convention differences from the SciPy or NumPy function users would compare against, in a `Note:` section or next to the argument.
 - **Examples:** add an `Example::` block with doctest examples where it helps; like PyTorch's, they assume `torch` is imported. Add the module to `MODULES` in `tests/test_docstrings.py`, which runs every example.
 
+### Content
+
+PyTorch's conventions fix a docstring's form. Its content follows these rules.
+
+- **What, not how.** Say what the function computes and returns: the formula, shapes, dtypes, errors, and the caveats that change the output or its accuracy. Leave out how it is computed when that changes nothing the user sees: kernels, scans, trees of products, solves, chunking.
+- **No figures.** Measured errors, timings and speed-ups go in pull requests and issue artifacts. State accuracy qualitatively, as SciPy's `sosfilt` does ("designed to minimize numerical precision errors for high-order filters"). Where accuracy is the point of a function, its example may show it, printing only a result that is the same on every platform, such as `torch.allclose(...)`.
+- **Notes the user can act on.** A `Note:` states a difference from SciPy or NumPy, or the cost of an option the user chooses. It doesn't state a limitation no argument avoids.
+- **Every argument explained.** After any edit, including a trim, read the docstring as a first-time user would. Every argument should say what it does, every pronoun should have an antecedent, and every citation should have its target. Leave no sentence fragments.
+- **Consistent with neighbours.** Use the notation and structure of the docstrings of related functions. Check them before writing.
+
+### Notation
+
+Filter equations follow Julius O. Smith's *Introduction to Digital Filters with Audio Applications*, cited as `` `Introduction to Digital Filters with Audio Applications`_ (Smith, 2007) ``. Write signals with brackets.
+
+| Symbol | Meaning |
+|---|---|
+| `x[n]`, `y[n]` | input and output at sample `n` |
+| `H(z) = B(z) / A(z)` | transfer function, in powers of `z^{-1}` only |
+| `b_i`, `a_j`; `i`, `j` | numerator and denominator coefficients; the indices of their sums, as in `lfilter` |
+| `M`, `M_b`, `M_a` | the order (of a recursion, a numerator, a denominator) |
+| `m` | the index of an FIR sum: `y[n] = sum_{m=0}^{M} b_m x[n - m]` |
+| `K`, `l` | the number of second-order sections, and their index, `l = 1, ..., K` |
+| `g` | a direct gain |
+| `F(z)`, `f_i` | the FIR part of an expansion, and its coefficients |
+| `r_i`, `p_i`, `j_i` | residues, poles and powers of a partial fraction expansion |
+| `D` | a delay in samples |
+
+`k` is only an index, never a gain or a coefficient. The exception is the functions that mirror SciPy (`residuez`, `invresz`), which keep SciPy's `k` for the direct term. Where a function has two forms selected by an argument, such as `delayed_form`, show both equations rather than one parameterized equation.
+
 ## Pull requests
 
 Open pull requests against `dev`, not `main`. A pull request should:
