@@ -636,12 +636,6 @@ def pfefilt(
     where a pole of multiplicity :math:`m` is listed :math:`m` times in a row,
     with the powers :math:`j_i = 1, \dots, m`.
 
-    Each term runs as a first-order recursion, by
-    :func:`~philtorch.lti.linear_recurrence`, a repeated pole's power
-    :math:`j` taking the output of its power :math:`j - 1`. For a real
-    :attr:`k`, each conjugate pair runs as one complex recursion, its term
-    doubled, and each real pole as a real one.
-
     Args:
         r (Tensor): the residues, of shape :math:`(M)` or :math:`(B, M)`.
             Batched :attr:`r`, :attr:`p` and :attr:`k` have one filter per
@@ -670,8 +664,7 @@ def pfefilt(
             rounding (a real pole is its own pair).
 
     Note:
-        The terms that run depend on the values of :attr:`p`, so a compiled
-        call has a graph break.
+        A compiled call has a graph break.
 
     Example::
 

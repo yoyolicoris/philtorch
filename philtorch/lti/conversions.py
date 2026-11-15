@@ -528,22 +528,9 @@ def sos2pfe(
     so that the powers of a pole at 0 are the taps :math:`r_i z^{-j_i}` of an
     FIR filter.
 
-    The poles are the sections' own, in closed form, by the quadratic formula
-    in its stable arrangement. Poles within :attr:`tol` of each other,
-    directly or through a chain of such poles, are one group; a real
-    :attr:`sos`'s groups come in conjugate pairs. For a group of multiplicity
-    :math:`m` at :math:`p`, the term
-    :math:`r_j z^{-j} / (1 - p z^{-1})^j` is :math:`r_j / s^j` at
-    :math:`z = p + s`, so that
-    :math:`F(s) = s^m H(p + s) = \sum_j r_j s^{m-j} + O(s^m)`: the residues
-    are the first :math:`m` Taylor coefficients of :math:`F` at 0. :math:`F` is
-    the product over the sections of their numerators at :math:`p + s`, divided
-    by the factors :math:`(p - p_l + s)` of their poles in other groups, each
-    at its group's value :math:`p_l`, so that the coefficients come from the
-    product of the sections' power series, truncated to :math:`m` terms, found
-    by a tree of :func:`~philtorch.poly.polymul`. There is no polynomial
-    division, root finding of a high-order polynomial or linear solve. Simple
-    and repeated poles take the same path.
+    Poles within :attr:`tol` of each other, directly or through a chain of
+    such poles, are one group; a real :attr:`sos`'s groups come in conjugate
+    pairs.
 
     Args:
         sos (Tensor): the sections, of shape :math:`(K, 5)` or
