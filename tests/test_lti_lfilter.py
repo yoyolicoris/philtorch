@@ -610,7 +610,7 @@ def test_lfilter_rejects_0d_signal(backend: str, a: torch.Tensor):
 @pytest.mark.parametrize("backend", ["ssm", "diag_ssm"])
 @pytest.mark.parametrize("zi_shape", [(0,), (2, 0)])
 def test_lfilter_pure_gain_final_state_keeps_zi_in_the_graph(backend: str, zi_shape):
-    # An empty final state has a zero gradient for zi, not none.
+    # zf is zi expanded to the batch, so zi stays in the graph even when empty.
     zi = torch.zeros(zi_shape, dtype=torch.float64, requires_grad=True)
     b = torch.ones(1, dtype=torch.float64)
     x = torch.randn(2, 4, dtype=torch.float64)
@@ -823,7 +823,7 @@ def test_lfilter_empty_a_rejects_batch_mismatch(backend: str, name: str, num_tap
 
 
 def _assert_every_input_gets_a_gradient(outputs, inputs):
-    """Every non-empty input reaches the outputs, so none gets a gradient of None."""
+    """Every non-empty input reaches the outputs: no gradient is None."""
     inputs = [t for t in inputs if t.numel()]
     flat = [t for t in (outputs if isinstance(outputs, tuple) else (outputs,))]
     total = sum(t.sum() for t in flat)
@@ -842,7 +842,8 @@ def test_fir_empty_signal(transpose: bool, with_zi: bool):
     result = fir(b, x, zi, transpose=transpose)
     y, zf = result if with_zi else (result, None)
     assert y.shape == (2, 0)
-    # Empty inputs are cut from the graph: only zi reaches the final state.
+    # The empty output is a new tensor, outside the graph; only zi reaches the
+    # final state.
     assert not y.requires_grad
     if with_zi:
         torch.testing.assert_close(zf, zi)
@@ -877,6 +878,7 @@ def test_lfilter_every_input_gets_a_gradient(backend, form, num_taps, num_poles,
         inputs.append(kwargs["zi"])
     outputs = lfilter(b, a, x, **kwargs)
     if samples == 0:
+        assert (outputs[0] if takes_zi else outputs).shape == (2, 0)
         if takes_zi and order:
             _assert_every_input_gets_a_gradient(outputs[1], [kwargs["zi"]])
         return

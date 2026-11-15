@@ -685,8 +685,9 @@ def pfefilt(
             :math:`(M)`. A term of power :math:`j > 1` comes right after the
             term of power :math:`j - 1` of the same pole and row: a pole of
             multiplicity :math:`m` is listed :math:`m` times in a row, with the
-            powers :math:`1, \dots, m`, so poles :math:`a, a, b` have
-            ``power = [1, 2, 1]``. Default: ``None``, every term of power 1.
+            powers :math:`1, \dots, m`, so poles :math:`p_1 = p_2 \ne p_3`
+            have ``power = [1, 2, 1]``. Default: ``None``, every term of
+            power 1.
 
     Returns:
         Tensor or tuple of Tensor: the filtered signals, of the shape of

@@ -23,10 +23,9 @@ def find_eigenvectors(A: Tensor, eigenvalues: Tensor) -> Tensor:
 
     Returns:
         Tensor: the eigenvectors, of shape :math:`(*, N, N)`. Column :math:`k`
-        is the eigenvector for ``eigenvalues[..., k]``, and its first
-        component is real and positive. The dtype is the promotion of the
-        inputs' dtypes, so a real :attr:`A` with complex eigenvalues gives
-        complex eigenvectors.
+        is the eigenvector for ``eigenvalues[..., k]``. The dtype is the
+        promotion of the inputs' dtypes, so a real :attr:`A` with complex
+        eigenvalues gives complex eigenvectors.
 
     Raises:
         ValueError: if :attr:`A` is not square or the number of
@@ -228,9 +227,7 @@ def matrices_cumdot(A: Tensor) -> Tensor:
     For matrices :math:`A_1, \dots, A_M` along dimension ``-3``, this computes
 
     .. math::
-        P_k = A_1 A_2 \cdots A_k, \quad k = 1, \dots, M,
-
-    multiplying each new matrix on the right.
+        P_k = A_1 A_2 \cdots A_k, \quad k = 1, \dots, M.
 
     Args:
         A (Tensor): sequences of square matrices of shape :math:`(*, M, N, N)`,

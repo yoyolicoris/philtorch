@@ -119,7 +119,10 @@ def dtw(
     path under the Gibbs distribution; with a diagonal weight :math:`w`, a
     cell entered diagonally counts :math:`w` times. From a cost, both come
     from autograd, with no backtracking. The gradient is itself
-    differentiable, to any order. Costs may be ``inf`` to forbid cells.
+    differentiable, to any order. Costs may be ``inf`` to forbid cells. The
+    accumulated costs are computed in parallel as in `Parallelizing Dynamic
+    Time Warping Algorithm Using Prefix Computations on GPU`_ (Xiao et al.,
+    2013).
 
     From a cost, the memory is that of the cost and the accumulated costs;
     from frames, :math:`O(B (N + M))`, but for soft-DTW's gradient that of the
@@ -170,18 +173,21 @@ def dtw(
             to :math:`(N_b - 1, M_b - 1)`, measured along the longer
             sequence, may be on a path. Where the line is steeper than the
             band allows a step to follow, the band widens to keep a path.
-            Only with :attr:`x` and :attr:`y`, for DTW and soft-DTW alike,
-            which then skips the cells outside it; with a cost, make the cost
+            Only with :attr:`x` and :attr:`y`, for DTW and soft-DTW alike;
+            the cells outside it are then skipped. With a cost, make the cost
             ``inf`` outside it instead. Default: ``None``, no band.
-        checkpoint (int, optional): the number :math:`k` of rows between
+        checkpoint (int, optional): about the number of rows between
             stored rows of the accumulated costs, which soft-DTW's gradient
-            needs; the rest are recomputed in the backward pass. The rows run
-            along the shorter sequence, :math:`R = \min(N, M)` of them for the
-            symmetric and orthogonal steps. The memory holds about
-            :math:`R / k` stored rows and :math:`k` recomputed ones, so it is
-            least for :math:`k` near :math:`\sqrt{R}`, and a smaller
-            :math:`k` takes more time. From :attr:`x` and :attr:`y` only: a
-            cost is as large as the accumulated costs anyway. Default:
+            needs; the rest are recomputed in the backward pass. There is a
+            row per frame of the shorter sequence: :math:`R = \min(N, M)`
+            rows for the symmetric and orthogonal steps, and
+            :math:`\min(M, N - M + 1)` for the asymmetric ones. The memory
+            holds about :math:`R` / :attr:`checkpoint` stored rows and
+            :attr:`checkpoint` recomputed ones, so it is least near
+            :math:`\sqrt{R}`, and a smaller value takes more time. When the
+            longer sequence is long, the value is rounded up to whole blocks
+            of rows, of at least about 62. From :attr:`x` and :attr:`y` only:
+            a cost is as large as the accumulated costs anyway. Default:
             ``None``, all rows stored.
 
     Returns:
@@ -226,6 +232,8 @@ def dtw(
 
     .. _Soft-DTW\: a Differentiable Loss Function for Time-Series:
         https://proceedings.mlr.press/v70/cuturi17a.html
+    .. _Parallelizing Dynamic Time Warping Algorithm Using Prefix Computations on GPU:
+        https://doi.org/10.1109/HPCC.and.EUC.2013.50
     """
     if not gamma >= 0:
         raise ValueError(f"gamma must be non-negative, got {gamma}")

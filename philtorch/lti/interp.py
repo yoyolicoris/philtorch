@@ -183,9 +183,10 @@ def cubic_spline(
             :func:`scipy.signal.cspline1d_eval` on the upsampled grid. If
             ``False``, it is extended like the ``"reflect"`` mode of
             :func:`torch.nn.functional.pad`. Default: ``False``.
-        parallel_form (bool, optional): sum a causal and an anticausal filter
-            for the coefficients if ``True``, or cascade them if ``False``;
-            both give the same result. Default: ``True``.
+        parallel_form (bool, optional): how the spline's coefficients are
+            computed from :attr:`x`: as the sum of a causal and an anticausal
+            filter if ``True``, or as their cascade if ``False``; both give
+            the same result. Default: ``True``.
         lamb (float, optional): the smoothing coefficient; only ``0.0`` is
             implemented. Default: ``0.0``.
 
@@ -373,9 +374,9 @@ def resample(
     :math:`\rho` times the Nyquist frequency, unlike
     :func:`scipy.signal.resample_poly`, which then copies the input.
 
-    A ratio :math:`p / q` in lowest terms whose polyphase filter, of about
-    :math:`p (q + 2 W)` coefficients, would hold more than :math:`2^{22}`
-    raises an error. Raise :attr:`rolloff` or lower
+    The rates are reduced to :math:`r = p / q` in lowest terms. A ratio whose
+    polyphase filter, of about :math:`p (q + 2 W)` coefficients, would hold
+    more than :math:`2^{22}` raises an error: raise :attr:`rolloff` or lower
     :attr:`num_zeros` for fewer taps, or approximate the ratio:
     ``f = Fraction(new_freq, orig_freq).limit_denominator(1000)``, from
     :mod:`fractions`, then ``resample(x, f.denominator, f.numerator)``.

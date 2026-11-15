@@ -75,9 +75,10 @@ def ctc_loss(
             :math:`(B, T, C)` or :math:`(T, C)`, if the other arguments'
             shapes do not match it, if a length is negative or past its
             sequence (or the concatenated targets' lengths do not sum to
-            theirs), if a sequence's grid, :math:`(2S + 2)(T + 1)` cells with
-            :math:`S` the padded targets' width, exceeds :math:`2^{31} - 1`
-            cells, or if :attr:`reduction` is unknown. Lengths given as
+            theirs), if a sequence's grid of states by frames,
+            :math:`(2S + 2)(T + 1)` cells with :math:`S` the padded targets'
+            width, exceeds :math:`2^{31} - 1` cells, or if :attr:`reduction`
+            is unknown. Lengths given as
             tensors are checked only in eager mode: their values would break
             a :func:`torch.compile` graph.
         RuntimeError: if Triton is not installed.
