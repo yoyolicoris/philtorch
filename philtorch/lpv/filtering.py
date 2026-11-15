@@ -23,18 +23,18 @@ def fir(
     coefficients of the output's step:
 
     .. math::
-        y[n] = \sum_{k=0}^{M} b_k[n]\, x[n - k].
+        y[n] = \sum_{m=0}^{M} b_m[n]\, x[n - m].
 
     The transposed direct form weights each input with the coefficients of its
     own step:
 
     .. math::
-        y[n] = \sum_{k=0}^{M} b_k[n - k]\, x[n - k].
+        y[n] = \sum_{m=0}^{M} b_m[n - m]\, x[n - m].
 
     The two agree for constant coefficients.
 
     Args:
-        b (Tensor): coefficients :math:`b_k[n]`, of shape :math:`(B, N, M + 1)`.
+        b (Tensor): coefficients :math:`b_m[n]`, of shape :math:`(B, N, M + 1)`.
         x (Tensor): input signals, of shape :math:`(B, N)`.
         zi (Tensor, optional): initial state, of shape :math:`(B, M)`. With
             ``transpose=True``, the transposed direct-form state; with
@@ -129,18 +129,18 @@ def allpole(
     The direct form, the default, uses the coefficients of the output's step:
 
     .. math::
-        y[n] = x[n] - \sum_{k=1}^{M} a_k[n]\, y[n - k].
+        y[n] = x[n] - \sum_{j=1}^{M} a_j[n]\, y[n - j].
 
     The transposed direct form, ``transpose=True``, uses the coefficients of
     the step each past output was produced at:
 
     .. math::
-        y[n] = x[n] - \sum_{k=1}^{M} a_k[n - k]\, y[n - k].
+        y[n] = x[n] - \sum_{j=1}^{M} a_j[n - j]\, y[n - j].
 
     The two agree for constant coefficients.
 
     Args:
-        a (Tensor): coefficients :math:`a_k[n]`, of shape :math:`(B, N, M)`.
+        a (Tensor): coefficients :math:`a_j[n]`, of shape :math:`(B, N, M)`.
         x (Tensor): input signals, of shape :math:`(B, N)`.
         zi (Tensor, optional): initial state, of shape :math:`(B, M)`. With
             ``transpose=False``, the past outputs newest first,
@@ -227,17 +227,17 @@ def lfilter(
     the forms are different filters:
 
     - ``"df1"``, direct form I:
-      :math:`v[n] = \sum_{k=0}^{M_b} b_k[n]\, x[n - k]` and
-      :math:`y[n] = v[n] - \sum_{k=1}^{M_a} a_k[n]\, y[n - k]`.
+      :math:`v[n] = \sum_{i=0}^{M_b} b_i[n]\, x[n - i]` and
+      :math:`y[n] = v[n] - \sum_{j=1}^{M_a} a_j[n]\, y[n - j]`.
     - ``"df2"``, direct form II:
-      :math:`w[n] = x[n] - \sum_{k=1}^{M_a} a_k[n]\, w[n - k]` and
-      :math:`y[n] = \sum_{k=0}^{M_b} b_k[n]\, w[n - k]`.
+      :math:`w[n] = x[n] - \sum_{j=1}^{M_a} a_j[n]\, w[n - j]` and
+      :math:`y[n] = \sum_{i=0}^{M_b} b_i[n]\, w[n - i]`.
     - ``"tdf2"``, transposed direct form II, with
       :math:`M = \max(M_a, M_b)` states and :math:`s_{M+1} = 0`:
 
       .. math::
           y[n] &= b_0[n]\, x[n] + s_1[n], \\
-          s_k[n + 1] &= s_{k+1}[n] + b_k[n]\, x[n] - a_k[n]\, y[n].
+          s_i[n + 1] &= s_{i+1}[n] + b_i[n]\, x[n] - a_i[n]\, y[n].
 
     - ``"tdf1"``, transposed direct form I: :func:`allpole` then
       :func:`fir`, both with ``transpose=True``.
@@ -246,14 +246,14 @@ def lfilter(
     step.
 
     Args:
-        b (Tensor): numerator coefficients :math:`b_k[n]`, of shape
+        b (Tensor): numerator coefficients :math:`b_i[n]`, of shape
             :math:`(B, N, M_b + 1)`, or :math:`(N, M_b + 1)` to share them.
-        a (Tensor): denominator coefficients :math:`a_k[n]`, without the
+        a (Tensor): denominator coefficients :math:`a_j[n]`, without the
             leading 1, of shape :math:`(B, N, M_a)` or :math:`(N, M_a)`.
         x (Tensor): input signals, of shape :math:`(B, N)` or :math:`(N)`.
         zi (Tensor, optional): initial state, of shape :math:`(B, M)` or
             :math:`(M)`, where :math:`M = \max(M_a, M_b)`. For ``"tdf2"``, the
-            states :math:`s_k[0]`; for ``"df2"``, the past values of :math:`w`
+            states :math:`s_i[0]`; for ``"df2"``, the past values of :math:`w`
             newest first, :math:`w[-1], \dots, w[-M]`. ``"df1"`` and
             ``"tdf1"`` do not take it. Default: ``None``, all zero.
         form (str or None, optional): ``"df2"``, ``"tdf2"``, ``"df1"`` or
