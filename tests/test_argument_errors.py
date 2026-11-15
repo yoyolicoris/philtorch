@@ -493,7 +493,23 @@ _LTI_FILTERING_CASES = [
         "rtype must be one of",
         id="sos2pfe-rtype",
     ),
-    # pfefilt(r, p, k, x, zi): one precision; a real k needs conjugate pairs
+    # pfefilt(r, p, k, x, zi, batch_index, power): flat arguments of one precision; a real k
+    # takes a real x and real residues for real poles
+    pytest.param(
+        lambda: lti.pfefilt(_ones(2), _ones(2), _ones(()), _ones(1, 2, 4)),
+        "x must be 1D or 2D",
+        id="pfefilt-x-3d",
+    ),
+    pytest.param(
+        lambda: lti.pfefilt(_ones(2), _ones(2), _ones(1, 2), _ones(2, 4)),
+        "k must be 0D or 1D",
+        id="pfefilt-k-2d",
+    ),
+    pytest.param(
+        lambda: lti.pfefilt(_ones(2), _ones(1, 2), _ones(()), _ones(4)),
+        "p must be 1D",
+        id="pfefilt-p-2d",
+    ),
     pytest.param(
         lambda: lti.pfefilt(_ones(2), _ones(2), _ones(()), _ones(4).float()),
         "share a precision",
@@ -501,37 +517,35 @@ _LTI_FILTERING_CASES = [
     ),
     pytest.param(
         lambda: lti.pfefilt(_ones(2), _ones(3), _ones(()), _ones(4)),
-        "same length",
+        "must be 1D of length",
         id="pfefilt-length",
     ),
     pytest.param(
-        lambda: lti.pfefilt(_ones(3, 2), _ones(2), _ones(()), _ones(2, 4)),
-        "Batch size of r",
+        lambda: lti.pfefilt(_ones(2), _ones(2), _ones(3), _ones(2, 4)),
+        "A 1D k needs a 2D x of its batch size",
         id="pfefilt-batch",
     ),
     pytest.param(
-        lambda: lti.pfefilt(
-            _ones(1), torch.tensor([0.5 + 0.1j], dtype=torch.complex128), _ones(()), _ones(4)
-        ),
-        "conjugate pairs",
-        id="pfefilt-unpaired-pole",
+        lambda: lti.pfefilt(_ones(2), _ones(2), _ones(()), _ones(2, 4), zi=_ones(2)),
+        "zi must have shape",
+        id="pfefilt-zi-shape",
+    ),
+    pytest.param(
+        lambda: lti.pfefilt(_ones(1), _ones(1), _ones(()), _ones(4).to(torch.complex128)),
+        "takes a real x",
+        id="pfefilt-real-k-complex-x",
+    ),
+    pytest.param(
+        lambda: lti.pfefilt(_ones(1), _ones(1), _ones(()), _ones(4), power=torch.tensor([2])),
+        "Each power above 1",
+        id="pfefilt-power",
     ),
     pytest.param(
         lambda: lti.pfefilt(
-            _ones(2) + _ones(2).cumsum(0),
-            torch.tensor([0.5 + 0.1j, 0.5 - 0.1j], dtype=torch.complex128),
-            _ones(()),
-            _ones(4),
+            torch.tensor([1j], dtype=torch.complex128), _ones(1), _ones(()), _ones(4)
         ),
-        "conjugate pairs",
-        id="pfefilt-unpaired-residue",
-    ),
-    pytest.param(
-        lambda: lti.pfefilt(
-            _ones(1), _ones(1), _ones(()), _ones(4), zi=torch.tensor([1j], dtype=torch.complex128)
-        ),
-        "conjugate pairs",
-        id="pfefilt-complex-state-of-real-pole",
+        "real poles need real residues",
+        id="pfefilt-complex-residue-of-real-pole",
     ),
     # residuez(b, a, tol, rtype, delayed_form): b and a 1D or 2D, of one precision
     pytest.param(

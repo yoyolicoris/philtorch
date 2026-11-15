@@ -93,9 +93,11 @@ def _check_unique_roots(p: np.ndarray, tol: float, rtype: str):
 def test_unique_roots_matches_scipy(rtype):
     # SciPy's docstring example
     _check_unique_roots(np.array([0, 1.3, 1.31, 2.8, 1.25, 2.2, 10.3]), 2e-2, rtype)
-    # a ~ b ~ c, with a and c farther apart than tol: a takes b, c stays alone
-    _check_unique_roots(np.array([0.0, 0.0015, 0.003, 1.0]), 2e-3, rtype)
-    _check_unique_roots(np.array([0.003, 0.0015, 0.0, 1.0]), 2e-3, rtype)
+    # a chain a ~ b ~ c, with a and c farther apart than tol, is one group in
+    # either order, which SciPy's greedy grouping splits
+    for chain in ([0.0, 0.0015, 0.003, 1.0], [0.003, 0.0015, 0.0, 1.0]):
+        _, m = unique_roots(torch.tensor(chain, dtype=F64), tol=2e-3, rtype=rtype)
+        assert m.tolist() == [3, 1]
     # complex roots, compared by real part, then imaginary part
     z = np.array([0.5 + 0.3j, 0.5 - 0.3j, 0.5 + 0.3001j, 0.2j, 0.2 - 0.0004j, 0.5 - 0.2999j])
     _check_unique_roots(z, 1e-2, rtype)
@@ -318,16 +320,22 @@ def test_invresz_without_poles():
 
 def _check_sos2pfe(sos: np.ndarray, atol: float):
     """Compare sos2pfe with SciPy's residue of the sections' product, row by row."""
-    r, p, k = sos2pfe(torch.from_numpy(sos))
-    M = 2 * sos.shape[-2]
-    assert r.shape == p.shape == (*sos.shape[:-2], M)
+    r, p, k, batch_index, power = sos2pfe(torch.from_numpy(sos))
+    M = r.numel()
+    assert r.shape == p.shape == power.shape == (M,)
+    assert (batch_index is None) == (sos.ndim == 2)
+    assert batch_index is None or batch_index.shape == (M,)
     assert k.shape == sos.shape[:-2]
-    rows = zip(
-        sos.reshape(-1, M // 2, 5),
-        r.reshape(-1, M).numpy(),
-        p.reshape(-1, M).numpy(),
-        k.numpy().ravel(),
-    )
+    index = torch.zeros(M, dtype=torch.long) if batch_index is None else batch_index
+    rows = []
+    for b, (row, got_k) in enumerate(zip(sos.reshape(-1, sos.shape[-2], 5), k.numpy().ravel())):
+        got_r, got_p = r[index == b].numpy(), p[index == b].numpy()
+        if sos.dtype.kind != "c":
+            # the half form lists one pole of each conjugate pair
+            pair = got_p.imag != 0
+            got_r = np.concatenate([got_r, got_r[pair].conj()])
+            got_p = np.concatenate([got_p, got_p[pair].conj()])
+        rows.append((row, got_r, got_p, got_k))
     for row, got_r, got_p, got_k in rows:
         expected_r, expected_p, expected_k = signal.residue(
             *signal.sos2tf(np.insert(row, 3, 1.0, axis=-1))
@@ -347,22 +355,28 @@ def test_sos2pfe_matches_scipy_for_simple_poles():
     _check_sos2pfe(sos, 1e-8)
     _check_sos2pfe(np.delete(signal.butter(5, 0.2, output="sos"), 3, 1), 1e-8)
     _check_sos2pfe(_random_sos(K=3) + 0.2j * _random_sos(K=3), 1e-10)
+    # a complex sos with a real pole, whose residue is complex
+    _check_sos2pfe(np.array([[1.0, 1j, 0.0, -0.5, 0.0]]), 1e-12)
 
 
 @pytest.mark.parametrize("rounding", [0.0, 1e-9])
-def test_sos2pfe_conjugate_pair_is_exact(monkeypatch, rounding):
+def test_sos2pfe_lists_one_pole_of_a_conjugate_pair(monkeypatch, rounding):
     # CUDA's complex sqrt of a negative real has a real part that isn't 0 (2e-8 in complex64)
     sqrt = torch.sqrt
     monkeypatch.setattr(torch, "sqrt", lambda z: sqrt(z) + rounding)
-    _, p, _ = sos2pfe(torch.tensor([[1.0, 0.5, 0.2, -0.6, 0.45]], dtype=F64))
-    assert p[0] == p[1].conj() and p[0].imag != 0
+    sos = torch.tensor([[1.0, 0.5, 0.2, -0.6, 0.45]], dtype=F64)
+    r, p, k, _, power = sos2pfe(sos)
+    assert p.shape == (1,) and p[0].imag > 0
+    x = torch.randn(8, dtype=F64)
+    torch.testing.assert_close(pfefilt(r, p, k, x, power=power), sosfilt(sos, x))
 
 
 @pytest.mark.parametrize("dtype", [torch.float32, F64])
 def test_sos2pfe_default_tol_merges_a_double_root_split_by_rounding(dtype):
     # (z - 0.7)^2, whose roots rounding splits by about sqrt(eps)
-    _, p, _ = sos2pfe(torch.tensor([[1.0, 0.3, 0.2, -1.4, 0.49]], dtype=dtype))
+    _, p, _, _, power = sos2pfe(torch.tensor([[1.0, 0.3, 0.2, -1.4, 0.49]], dtype=dtype))
     assert p[0] == p[1]
+    assert power.tolist() == [1, 2]
 
 
 def test_sos2pfe_matches_scipy_for_repeated_poles():
@@ -373,10 +387,11 @@ def test_sos2pfe_matches_scipy_for_repeated_poles():
 
 def test_sos2pfe_fir_section():
     # 1 + 2 / z + 3 / z^2: a double pole at 0 with residues 2 and 3
-    r, p, k = sos2pfe(torch.tensor([[1.0, 2.0, 3.0, 0.0, 0.0]], dtype=F64))
+    r, p, k, batch_index, power = sos2pfe(torch.tensor([[1.0, 2.0, 3.0, 0.0, 0.0]], dtype=F64))
     torch.testing.assert_close(r, torch.tensor([2.0, 3.0], dtype=torch.complex128))
     torch.testing.assert_close(p, torch.zeros(2, dtype=torch.complex128))
     torch.testing.assert_close(k, torch.tensor(1.0, dtype=F64))
+    assert power.tolist() == [1, 2] and batch_index is None
 
 
 def test_sos2pfe_batched_multiplicities():
@@ -399,18 +414,18 @@ def test_sos2pfe_batched_multiplicities():
 )
 def test_sos2pfe_impulse_response_matches_sosfilt(design, atol):
     sos = torch.from_numpy(np.delete(design(), 3, 1))
-    r, p, k = sos2pfe(sos)
-    h = (r[:, None] * p[:, None] ** torch.arange(199)).sum(0).real
-    h = torch.cat([k.unsqueeze(0), h])
+    r, p, k, batch_index, power = sos2pfe(sos)
+    h = pfefilt(r, p, k, torch.eye(1, 200, dtype=F64)[0], batch_index=batch_index, power=power)
     expected = sosfilt(sos, torch.eye(1, 200, dtype=F64)[0])
     assert ((h - expected).abs().max() / expected.abs().max()).item() < atol
 
 
 def test_sos2pfe_groups_a_cluster_of_conjugate_pairs_symmetrically():
-    # pairs 0.5 +- 0.0004j and 0.5006 +- 0.0008j: each pole is within tol of
-    # its conjugate and of the other pair's pole on its side, not across
+    # pairs 0.5 +- 0.0004j and 0.5006 +- 0.0008j: each pole of the second is
+    # within tol of the first's on its side, which are within tol of each
+    # other, so the four are one group, its own conjugate, with a real pole
     poles = [0.5 + 0.0004j, 0.5006 + 0.0008j]
     sos = torch.tensor([[1.0, 0.3, 0.2, -2 * q.real, abs(q) ** 2] for q in poles], dtype=F64)
-    r, p, k = sos2pfe(sos, tol=1e-3)
-    np.testing.assert_array_equal(np.sort_complex(p.numpy()), np.sort_complex(p.numpy().conj()))
-    pfefilt(r, p, k, torch.randn(8, dtype=F64))
+    r, p, k, _, power = sos2pfe(sos, tol=1e-3)
+    assert (p == p[0]).all() and p[0].imag == 0
+    assert power.tolist() == [1, 2, 3, 4]

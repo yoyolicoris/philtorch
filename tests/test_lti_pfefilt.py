@@ -21,7 +21,8 @@ def _expected(sos: np.ndarray, x: np.ndarray) -> np.ndarray:
 
 
 def _check(sos: np.ndarray, x: np.ndarray):
-    y = pfefilt(*sos2pfe(torch.from_numpy(sos)), torch.from_numpy(x))
+    r, p, k, batch_index, power = sos2pfe(torch.from_numpy(sos))
+    y = pfefilt(r, p, k, torch.from_numpy(x), batch_index=batch_index, power=power)
     assert y.dtype == torch.from_numpy(x).dtype
     torch.testing.assert_close(y, torch.from_numpy(_expected(sos, x)), rtol=1e-7, atol=1e-9)
 
@@ -53,8 +54,6 @@ def test_pfefilt_complex_filter_and_input():
     sos = _random_sos(K=3) + 0.2j * _random_sos(K=3)
     x = np.random.randn(64) + 1j * np.random.randn(64)
     _check(sos, x)
-    # a real filter with a complex input
-    _check(_random_real_sos(), x)
 
 
 def test_pfefilt_batched_multiplicities():
@@ -76,13 +75,13 @@ def test_pfefilt_batched_multiplicities():
     ids=["real", "complex"],
 )
 def test_pfefilt_in_chunks_equals_whole(sos):
-    r, p, k = sos2pfe(torch.from_numpy(sos))
+    r, p, k, batch_index, power = sos2pfe(torch.from_numpy(sos))
     x = torch.randn(2, 60, dtype=r.dtype if sos.dtype.kind == "c" else torch.float64)
-    zi = torch.zeros(2, p.size(-1), dtype=p.dtype)
-    whole, zf_whole = pfefilt(r, p, k, x, zi=zi)
+    zi = torch.zeros(2, p.numel(), dtype=p.dtype)
+    whole, zf_whole = pfefilt(r, p, k, x, zi=zi, batch_index=batch_index, power=power)
     ys, zf = [], zi
-    for chunk in x.split([20, 25, 15], dim=-1):
-        y, zf = pfefilt(r, p, k, chunk, zi=zf)
+    for chunk in x.split([20, 0, 25, 15], dim=-1):
+        y, zf = pfefilt(r, p, k, chunk, zi=zf, batch_index=batch_index, power=power)
         ys.append(y)
     torch.testing.assert_close(torch.cat(ys, dim=-1), whole)
     torch.testing.assert_close(zf, zf_whole)
@@ -93,11 +92,3 @@ def test_pfefilt_without_poles():
     empty = torch.zeros(0, dtype=torch.complex128)
     y = pfefilt(empty, empty, torch.tensor(2.0, dtype=torch.float64), x)
     torch.testing.assert_close(y, 2 * x)
-
-
-def test_pfefilt_real_check_scales_with_the_largest_residue():
-    # a real pole's small residue with rounding noise at the scale of the
-    # largest residue, as sos2pfe gives in float32
-    r = torch.tensor([1e4 + 1e3j, 1e4 - 1e3j, -0.026 - 1.1e-5j])
-    p = torch.tensor([0.5 + 0.2j, 0.5 - 0.2j, 0.0038 + 0j])
-    pfefilt(r, p, torch.tensor(1.0), torch.randn(16))

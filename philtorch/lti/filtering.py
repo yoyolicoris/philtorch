@@ -1,8 +1,7 @@
 """IIR and FIR filtering with time-invariant coefficients."""
 
 import operator
-from functools import partial, reduce
-from itertools import product
+from functools import partial
 
 import torch
 import torch.nn.functional as F
@@ -623,185 +622,181 @@ def sosfilt_zi(sos: Tensor) -> Tensor:
 
 
 def pfefilt(
-    r: Tensor, p: Tensor, k: Tensor, x: Tensor, zi: Tensor | None = None
+    r: Tensor,
+    p: Tensor,
+    k: Tensor,
+    x: Tensor,
+    zi: Tensor | None = None,
+    batch_index: Tensor | None = None,
+    power: Tensor | None = None,
 ) -> Tensor | tuple[Tensor, Tensor]:
-    r"""Filter signals with batched filters in parallel form.
+    r"""Filter signals with filters in parallel form.
 
-    The filter is a partial fraction expansion, as :func:`sos2pfe` returns
-    it, a sum of sections:
+    The filter is a partial fraction expansion, a sum of sections:
 
     .. math::
         H(z) = k + \sum_{i=1}^{M} \frac{r_i z^{-j_i}}{(1 - p_i z^{-1})^{j_i}},
 
-    where a pole of multiplicity :math:`m` is listed :math:`m` times in a row,
-    with the powers :math:`j_i = 1, \dots, m`. Term :math:`i` is
+    where :math:`j_i` is the power of term :math:`i`. Term :math:`i` is
     :math:`r_i s_i`, where :math:`s_i` is the output of the first-order
     section
 
     .. math::
         s_i[n + 1] = p_i s_i[n] + u_i[n], \quad s_i[0] = \text{zi}_i,
 
-    whose input :math:`u_i` is :math:`x` for a pole's first power and the
-    previous power's :math:`s` otherwise: the powers of a pole are a chain of
-    sections, each delaying its input by one sample.
+    whose input :math:`u_i` is :math:`x` for power 1, and for a higher power
+    the :math:`s` of the term listed before it: the powers of a repeated pole
+    are a chain of sections, each delaying its input by one sample.
 
-    A real :attr:`k` makes a real filter, whose output is real when
-    :attr:`x` is: its complex poles come in conjugate pairs, with conjugate
-    residues and initial states, each pair summing to a real second-order
-    section, and its real poles have real residues and initial states.
+    A real :attr:`k` makes a real filter, which takes a real :attr:`x`. Each
+    of its terms with a non-real pole stands for itself and its conjugate,
+    the term with the conjugates of :math:`r_i`, :math:`p_i` and
+    :math:`\text{zi}_i`, so that the pair sums to a real second-order section:
+    list one pole of each conjugate pair. Its terms with a real pole need a
+    real residue and initial state. A complex :attr:`k` makes a complex
+    filter, which lists every pole.
 
     Args:
-        r (Tensor): the residues, of shape :math:`(M)` or :math:`(B, M)`.
-            Batched :attr:`r`, :attr:`p` and :attr:`k` have one filter per
-            signal.
-        p (Tensor): the poles, of shape :math:`(M)` or :math:`(B, M)`.
+        r (Tensor): the residues, of shape :math:`(M)`.
+        p (Tensor): the poles, of shape :math:`(M)`.
         k (Tensor): the direct gain, of shape :math:`()` or :math:`(B)`.
         x (Tensor): input signals, of shape :math:`(B, N)` or :math:`(N)`.
-        zi (Tensor, optional): the initial states :math:`s_i[0]`, one per
-            term, in the order of :attr:`r` and :attr:`p`, of shape
-            :math:`(M)` or :math:`(B, M)`. Default: ``None``, all zero.
+        zi (Tensor, optional): the initial states :math:`s_i[0]`, of shape
+            :math:`(M)`, or :math:`(B, M)` for a 2-D :attr:`x` without
+            :attr:`batch_index`. Default: ``None``, all zero.
+        batch_index (Tensor, optional): the row of :attr:`x` each term
+            filters and adds to, of shape :math:`(M)`, from 0 to
+            :math:`B - 1`. Default: ``None``, one filter of all the terms for
+            every row.
+        power (Tensor, optional): the powers :math:`j_i`, of shape
+            :math:`(M)`. A term of power :math:`j > 1` follows the term of
+            power :math:`j - 1` of the same pole and row. Default: ``None``,
+            every term of power 1.
 
     Returns:
         Tensor or tuple of Tensor: the filtered signals, of the shape of
-        :attr:`x`, real when :attr:`k` and :attr:`x` are, and with
-        :attr:`zi`, the final states :math:`s_i[N]`, complex, of shape
-        :math:`(B, M)`, or :math:`(M)` when every input is unbatched. Pass
-        them as the next chunk's :attr:`zi` to filter a signal in chunks.
+        :attr:`x`, real when :attr:`k` is, and with :attr:`zi`, the final
+        states :math:`s_i[N]`, complex, of the shape of :attr:`zi`. Pass them
+        as the next chunk's :attr:`zi` to filter a signal in chunks.
 
     Raises:
-        ValueError: if :attr:`x`, :attr:`r`, :attr:`p` or :attr:`zi` is not
-            1-D or 2-D, :attr:`k` is not 0-D or 1-D, :attr:`r`, :attr:`p` and
-            :attr:`zi` differ in length, a batched input has a batch size
-            other than that of :attr:`x`, the inputs differ in precision or
-            device, or, for a real :attr:`k`, the poles, residues and initial
-            states don't come in conjugate pairs of the same power, up to
-            rounding (a real pole is its own pair).
+        ValueError: if :attr:`x` is not 1-D or 2-D, :attr:`k` is not 0-D or
+            1-D, :attr:`r`, :attr:`p`, :attr:`batch_index` or :attr:`power`
+            is not 1-D of one length, :attr:`zi` or a batched :attr:`k` has
+            the wrong shape, the inputs differ in precision or device, a
+            power doesn't follow the power below it, or :attr:`k` is real and
+            :attr:`x` complex, or a real pole has a complex residue or initial
+            state.
 
     Example::
 
-        >>> from philtorch.lti import pfefilt, sos2pfe, sosfilt
-        >>> sos = torch.tensor([[1.0, 1.0, 0.0, -0.5, 0.0]])
+        >>> from philtorch.lti import pfefilt, sosfilt
+        >>> # 1 / (1 - 0.5 z^-1) as a section and as a term
+        >>> sos = torch.tensor([[1.0, 0.0, 0.0, -0.5, 0.0]])
         >>> x = torch.tensor([1.0, 0.0, 0.0, 0.0])
-        >>> pfefilt(*sos2pfe(sos), x)
-        tensor([1.0000, 1.5000, 0.7500, 0.3750])
+        >>> pfefilt(torch.tensor([0.5]), torch.tensor([0.5]), torch.tensor(1.0), x)
+        tensor([1.0000, 0.5000, 0.2500, 0.1250])
         >>> sosfilt(sos, x)
-        tensor([1.0000, 1.5000, 0.7500, 0.3750])
+        tensor([1.0000, 0.5000, 0.2500, 0.1250])
     """
     if x.dim() not in (1, 2):
         raise ValueError("Input signal x must be 1D or 2D.")
-    for name, t in (("r", r), ("p", p), ("zi", zi)):
-        if t is not None and t.dim() not in (1, 2):
-            raise ValueError(f"{name} must be 1D or 2D.")
     if k.dim() not in (0, 1):
         raise ValueError("Gain k must be 0D or 1D.")
-    M = p.size(-1)
-    if r.size(-1) != M or (zi is not None and zi.size(-1) != M):
+    if p.dim() != 1:
+        raise ValueError("Poles p must be 1D.")
+    M = p.size(0)
+    for name, t in (("r", r), ("batch_index", batch_index), ("power", power)):
+        if t is not None and t.shape != (M,):
+            raise ValueError(f"{name} must be 1D of length {M}, got shape {tuple(t.shape)}.")
+    if k.dim() == 1 and (x.dim() == 1 or k.size(0) != x.size(0)):
         raise ValueError(
-            f"r, p and zi must have the same length, got "
-            f"{[t.size(-1) for t in (r, p, zi) if t is not None]}."
+            f"A 1D k needs a 2D x of its batch size, got k: {tuple(k.shape)}, x: {tuple(x.shape)}"
         )
-    squeeze_first = x.dim() == 1 and r.dim() == p.dim() == 1 and k.dim() == 0
-    squeeze_first &= zi is None or zi.dim() == 1
-    if x.dim() == 1:
-        x = x.unsqueeze(0)
+    batched = x.dim() == 2
+    x = x if batched else x.unsqueeze(0)
     B, N = x.shape
-    for name, t in (("r", r), ("p", p), ("k", k.unsqueeze(-1)), ("zi", zi)):
-        if t is not None and t.dim() == 2 and t.size(0) != B:
-            raise ValueError(
-                f"Batch size of {name} must match batch size of x, got {name}: {t.size(0)}, x: {B}"
-            )
+    shared = batch_index is None
+    zshape = (B, M) if shared and batched else (M,)
+    if zi is not None and zi.shape != zshape:
+        raise ValueError(f"zi must have shape {zshape}, got {tuple(zi.shape)}.")
     given = [t for t in (r, p, k, x, zi) if t is not None]
     if len({(t.dtype.to_real(), t.device) for t in given}) > 1:
         raise ValueError(
             f"r, p, k, x and zi must share a precision and a device, got "
             f"{[(t.dtype, str(t.device)) for t in given]}"
         )
+    real = not k.is_complex()
+    if real and x.is_complex():
+        raise ValueError(
+            "A real k makes a real filter, which takes a real x; filter a complex x "
+            "with a complex k and every pole listed."
+        )
     return_zf = zi is not None
     cdtype = x.dtype.to_complex()
-    r, p = r.to(cdtype).expand(B, M), p.to(cdtype).expand(B, M)
-    zi = x.new_zeros(B, M, dtype=cdtype) if zi is None else zi.to(cdtype).expand(B, M)
-    k = k.expand(B)
+    power = torch.ones(M, dtype=torch.long, device=x.device) if power is None else power
+    if shared:
+        # every row runs every term
+        batch_index = torch.arange(B, device=x.device).repeat_interleave(M)
+        r, p, power = r.repeat(B), p.repeat(B), power.repeat(B)
+    r, p = r.to(cdtype), p.to(cdtype)
+    zi = r.new_zeros(r.shape) if zi is None else zi.to(cdtype).flatten()
 
-    # the power of each term: its position in its run of equal poles, from 1
-    index = torch.arange(M, device=x.device)
-    start = F.pad(p[:, 1:] != p[:, :-1], (1, 0), value=True)
-    power = index - (start * index).cummax(-1).values + 1
-
-    real = not k.is_complex() and not x.is_complex()
-    if not k.is_complex() and M:
-        # each term's conjugate partner: the conjugate pole, exactly, and the
-        # conjugate residue and state, up to rounding of the row's largest
-        rtol = torch.finfo(x.dtype).eps ** 0.5
-        conjugate = (p.conj().unsqueeze(-1) == p.unsqueeze(-2)) & (
-            power.unsqueeze(-1) == power.unsqueeze(-2)
+    valid = (power == 1) | (
+        (power.diff(prepend=power.new_zeros(1)) == 1)
+        & (p.diff(prepend=p[:1]) == 0)
+        & (batch_index.diff(prepend=batch_index[:1]) == 0)
+    )
+    if not valid.all():
+        raise ValueError(
+            "Each power above 1 must follow the power below it, of the same pole and row."
         )
-        for t in (r, zi):
-            atol = rtol * t.abs().amax(-1)[:, None, None]
-            conjugate &= (t.conj().unsqueeze(-1) - t.unsqueeze(-2)).abs() <= atol
-        if not conjugate.any(-1).all():
-            raise ValueError(
-                "A real k makes a real filter, whose poles, residues and initial "
-                "states must be real or come in conjugate pairs of the same power."
-            )
-    # A real filter runs its real poles in the real dtype and one term per
-    # conjugate pair, doubled; a complex one runs every term in complex.
-    real_pole = (p.imag == 0) & real
-    if real:
-        weight = torch.where(p.imag > 0, 2.0, real_pole.to(x.dtype))
-    else:
-        weight = torch.ones_like(p.real)
-    runs = weight != 0
-
-    coef = weight * r
-    xc = x.to(cdtype)
-
-    def stage(carry: tuple, step: tuple[int, bool]):
-        # The terms of power t of one kind, fed by power t - 1 of their pole.
-        # acc sums their weighted states after each input, acc0 before the
-        # first: the output's terms are acc one sample later.
-        acc, acc0, zf, feeds = carry
-        t, in_real = step
-        b, i = (runs & (power == t) & (real_pole == in_real)).nonzero(as_tuple=True)
-        if b.numel() == 0:
-            return carry
-        a, init, c = p[b, i], zi[b, i], coef[b, i]
-        if in_real:
-            a, init, c = a.real, init.real, c.real
-        if t == 1:
-            u = (x if in_real else xc)[b]
-        else:
-            # the previous power's states before each input
-            row, h_prev, init_prev = feeds[in_real]
-            j = row[b, i - 1]
-            u = torch.cat((init_prev[j].unsqueeze(-1), h_prev[j, :-1]), -1)
-        h = linear_recurrence(a, init, u)
-        term0 = c * init
-        if real and not in_real:
-            # Re(c h) = Re c Re h - Im c Im h, without the imaginary part
-            cri = torch.stack((c.real, -c.imag), -1).unsqueeze(-1)
-            term, term0 = (torch.view_as_real(h) @ cri).squeeze(-1), term0.real
-        else:
-            term = c.unsqueeze(-1) * h
-        row = torch.full((B, M), -1, device=x.device)
-        row = row.index_put((b, i), torch.arange(b.numel(), device=x.device))
-        return (
-            acc.index_add(0, b, term),
-            acc0.index_add(0, b, term0),
-            zf.index_put((b, i), h[:, -1].to(cdtype)),
-            {**feeds, in_real: (row, h, init)},
+    real_pole = p.imag == 0
+    if real and (real_pole & ((r.imag != 0) | (zi.imag != 0))).any():
+        raise ValueError(
+            "A real k makes a real filter, whose real poles need real residues and initial states."
         )
+    # A real filter runs its real poles in the real dtype and each listed
+    # non-real pole for its conjugate pair, doubled; a complex one runs every
+    # term in complex.
+    in_real_dtype = real_pole & real
+    coef = torch.where(real & ~real_pole, 2 * r, r)
+    # the next entry's power, 0 past the end
+    after = F.pad(power[1:], (0, 1))
 
-    m = int(power.max()) if M else 0
+    # acc sums the weighted states after each input, acc0 before the first:
+    # the output's terms are acc one sample later. Each round runs one power
+    # of the chains of one kind, from power 1, and passes on the chains that
+    # go on.
     ydtype = x.dtype if real else cdtype
     acc, acc0 = x.new_zeros(B, N, dtype=ydtype), x.new_zeros(B, dtype=ydtype)
-    steps = product(range(1, m + 1), (True, False))
-    acc, acc0, zf, _ = reduce(stage, steps, (acc, acc0, zi, {}))
+    zf = zi.clone()
+    for in_real in (True, False):
+        (i,) = ((power == 1) & (in_real_dtype == in_real)).nonzero(as_tuple=True)
+        u = (x if in_real else x.to(cdtype))[batch_index[i]]
+        while N and i.numel():
+            b = batch_index[i]
+            a, init, c = p[i], zi[i], coef[i]
+            if in_real:
+                a, init, c = a.real, init.real, c.real
+            h = linear_recurrence(a, init, u)
+            term0 = c * init
+            if real and not in_real:
+                # Re(c h) = Re c Re h - Im c Im h, without the imaginary part
+                cri = torch.stack((c.real, -c.imag), -1).unsqueeze(-1)
+                term, term0 = (torch.view_as_real(h) @ cri).squeeze(-1), term0.real
+            else:
+                term = c.unsqueeze(-1) * h
+            acc.index_add_(0, b, term)
+            acc0.index_add_(0, b, term0)
+            zf[i] = h[:, -1].to(cdtype)
+            # the next power takes the states before each input
+            cont = after[i] > 1
+            u = torch.cat((init[cont].unsqueeze(-1), h[cont, :-1]), -1)
+            i = i[cont] + 1
     y = k.unsqueeze(-1) * x + torch.cat((acc0.unsqueeze(-1), acc[:, :-1]), -1)
-    if real and M:
-        # a doubled term's partner has the conjugate state
-        partner = conjugate.to(torch.int8).argmax(-1)
-        zf = torch.where(runs, zf, zf.gather(-1, partner).conj())
-    return _squeeze_first_result((y, zf) if return_zf else y, squeeze_first)
+    y = y if batched else y.squeeze(0)
+    return (y, zf.reshape(zshape)) if return_zf else y
 
 
 # The keyword arguments the general path forwards: ``state_space`` and
