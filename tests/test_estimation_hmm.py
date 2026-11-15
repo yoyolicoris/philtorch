@@ -560,21 +560,19 @@ def test_hmm_two_levels_of_chunks():
 @pytest.mark.cuda
 @pytest.mark.parametrize("trans", ["shared", "time"])
 def test_hmm_empty_sequence(trans):
-    # No steps: zero log-likelihoods and scores that still take gradients,
-    # all zero, with respect to every input, -inf entries included.
+    # No steps: zero log-likelihoods and scores, and no distributions, all
+    # outside the autograd graph.
     log_emit, log_trans, log_init = _model(2, 1, 3, time_varying=trans == "time")
     log_emit = log_emit[:, :0]
-    log_init[0, 0] = float("-inf")
     inputs = tuple(t.requires_grad_() for t in (log_emit, log_trans, log_init))
     ll, filtered = hmm_filter(*inputs)
-    assert filtered.shape == (2, 0, 3) and ll.eq(0).all()
+    assert filtered.shape == (2, 0, 3) and ll.shape == (2,) and ll.eq(0).all()
     smoothed_ll, posteriors = hmm_smoother(*inputs)
-    assert posteriors.shape == (2, 0, 3) and smoothed_ll.eq(0).all()
+    assert posteriors.shape == (2, 0, 3) and smoothed_ll.shape == (2,) and smoothed_ll.eq(0).all()
     score, path = hmm_viterbi(*inputs)
-    assert path.shape == (2, 0) and score.eq(0).all()
-    total = ll.sum() + filtered.sum() + smoothed_ll.sum() + posteriors.sum() + score.sum()
-    for grad, t in zip(torch.autograd.grad(total, inputs), inputs, strict=True):
-        assert grad.shape == t.shape and grad.eq(0).all()
+    assert path.shape == (2, 0) and score.shape == (2,) and score.eq(0).all()
+    for out in (ll, filtered, smoothed_ll, posteriors, score):
+        assert out.dtype == log_emit.dtype and not out.requires_grad
 
 
 @pytest.mark.cuda

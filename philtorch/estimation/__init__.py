@@ -2,8 +2,7 @@
 
 These compute the posterior distributions of a state-space model's states,
 continuous (Kalman) or discrete (hidden Markov models), parallelized over
-time with associative scans, and fit the models' parameters by
-expectation-maximization.
+time, and fit the models' parameters by expectation-maximization.
 """
 
 from ._em import em

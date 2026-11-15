@@ -23,8 +23,7 @@ def comb_filter(a: Tensor, delay: int, x: Tensor, zi: Tensor | None = None, **kw
     .. math::
         y[n] = x[n] - a\, y[n - D],
 
-    the filter :math:`1 / (1 + a z^{-D})` with delay :math:`D`, by running
-    :math:`D` interleaved first-order recurrences.
+    the filter :math:`1 / (1 + a z^{-D})` with delay :math:`D`.
 
     Args:
         a (Tensor): the feedback coefficient, of shape :math:`()` to share it
@@ -244,9 +243,7 @@ def fir(
     This computes
 
     .. math::
-        y[n] = \sum_{k=0}^{M} b_k\, x[n - k]
-
-    with a grouped convolution, one filter per signal.
+        y[n] = \sum_{k=0}^{M} b_k\, x[n - k].
 
     Args:
         b (Tensor): filter coefficients :math:`b_0, \dots, b_M`, of shape
@@ -257,10 +254,8 @@ def fir(
             same as SciPy's ``zi`` and :func:`lfiltic`; with
             ``transpose=False``, the past inputs newest first,
             :math:`x[-1], \dots, x[-M]`. Default: ``None``, all zero.
-        transpose (bool, optional): use the transposed direct form
-            (:func:`torch.nn.functional.conv_transpose1d`) if ``True``, or the
-            direct form (:func:`torch.nn.functional.conv1d`) if ``False``.
-            Default: ``True``.
+        transpose (bool, optional): use the transposed direct form if
+            ``True``, or the direct form if ``False``. Default: ``True``.
 
     Returns:
         Tensor or tuple of Tensor: the filtered signals, of shape
@@ -299,13 +294,12 @@ def fir(
             raise ValueError("The second dimension of zi must match the filter order.")
 
     if N == 0:
-        # The convolutions reject empty signals. With no steps the output is
-        # empty and the state unchanged; the empty slices keep b, x and zi in
-        # the graph, so each gets a zero gradient.
-        gain = b[:, :0].sum(-1, keepdim=True)
+        # The convolutions reject empty signals.
         if zi is None:
-            return x + gain
-        return x + gain + zi[:, :0], zi + gain
+            return x.new_empty(x.shape, dtype=torch.promote_types(x.dtype, b.dtype))
+        dtype = torch.promote_types(zi.dtype, b.dtype)
+        y = x.new_empty(x.shape, dtype=torch.promote_types(x.dtype, dtype))
+        return y, zi.to(dtype, copy=True)
 
     if transpose:
         y = F.conv_transpose1d(
@@ -490,8 +484,6 @@ def sosfilt(sos: Tensor, x: Tensor, zi: Tensor | None = None) -> Tensor | tuple[
         H_l(z) = \frac{b_{l0} + b_{l1} z^{-1} + b_{l2} z^{-2}}
                       {1 + a_{l1} z^{-1} + a_{l2} z^{-2}}.
 
-    Each section runs as one :func:`lfilter` call, as a two-state recursion.
-
     Args:
         sos (Tensor): the sections, of shape :math:`(K, 5)` or
             :math:`(B, K, 5)`, :math:`K \ge 1`. Each row is
@@ -534,6 +526,21 @@ def sosfilt(sos: Tensor, x: Tensor, zi: Tensor | None = None) -> Tensor | tuple[
         ...                     [2.0, 0.0, 0.0, 0.0, 0.0]])
         >>> sosfilt(sos, torch.tensor([1.0, 0.0, 0.0, 0.0]))
         tensor([1.0000, 0.5000, 0.2500, 0.1250])
+        >>> # The step response of 8 sections of unit gain at DC: in float32,
+        >>> # the cascade stays accurate where the expanded polynomials don't
+        >>> from philtorch.lti import lfilter, sos2tf
+        >>> a1 = -torch.linspace(0.05, 0.3, 8, dtype=torch.float64).cos()
+        >>> a2 = torch.full_like(a1, 0.25)
+        >>> b = (1 + a1 + a2) / 4
+        >>> sos = torch.stack([b, 2 * b, b, a1, a2], -1)
+        >>> x = torch.ones(200, dtype=torch.float64)
+        >>> y = sosfilt(sos, x)  # the float64 reference
+        >>> y_sos = sosfilt(sos.float(), x.float())
+        >>> y_tf = lfilter(*sos2tf(sos.float()), x.float())
+        >>> err_sos = (y_sos.double() - y).abs().max()
+        >>> err_tf = (y_tf.double() - y).abs().max()
+        >>> bool(err_sos < err_tf)
+        True
     """
     _check_sos(sos)
     if x.dim() not in (1, 2):
@@ -871,10 +878,8 @@ def _ssm_lfilter(
             raise ValueError(f"Initial conditions zi must be 1D or 2D, got {zi.shape}")
         if zi is not None and zi.size(-1) != 0:
             raise ValueError(f"zi must have 0 states for a pure gain, got {zi.size(-1)}.")
-        # The empty a and the empty final state stay in the graph, so a and zi
-        # get zero gradients, as on the general path.
-        y = b[..., :1] * x + a.sum(-1, keepdim=True).to(x)
-        return y if zi is None else (y, y[:, :0] + zi.expand(y.size(0), 0))
+        y = b[..., :1] * x
+        return y if zi is None else (y, zi.expand(y.size(0), 0))
 
     A = companion(a)
 
@@ -934,12 +939,7 @@ def _diag_ssm_lfilter(
             b = F.pad(b, (0, 1))
         if zi is not None and zi.dim() == 1:
             zi = zi.unsqueeze(0).expand(x.size(0), -1)
-        # The empty a stays in the graph, so it gets a zero gradient.
-        no_poles = a.sum(-1, keepdim=True).to(x)
-        result = fir(b.broadcast_to((x.size(0), -1)), x, zi)
-        if zi is None:
-            return result + no_poles
-        return result[0] + no_poles, result[1]
+        return fir(b.broadcast_to((x.size(0), -1)), x, zi)
 
     if too_long:
         # fir takes one filter per signal.

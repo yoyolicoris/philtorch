@@ -10,10 +10,9 @@ from torch import Tensor
 def find_eigenvectors(A: Tensor, eigenvalues: Tensor) -> Tensor:
     r"""Compute unit-norm eigenvectors of square matrices from eigenvalues.
 
-    For each eigenvalue :math:`\lambda`, this solves
-    :math:`(A - \lambda I) \mathbf{v} = \mathbf{0}` by least squares with the
-    first component of :math:`\mathbf{v}` fixed to 1, then scales
-    :math:`\mathbf{v}` to unit 2-norm.
+    For each eigenvalue :math:`\lambda`, this returns the solution
+    :math:`\mathbf{v}` of :math:`(A - \lambda I) \mathbf{v} = \mathbf{0}`
+    that has unit 2-norm and a real, positive first component.
 
     Args:
         A (Tensor): square matrices of shape :math:`(*, N, N)`, where :math:`*`
@@ -161,9 +160,7 @@ def matrix_power_accumulate(A: Tensor, n: int) -> Tensor:
     r"""Return the powers of square matrices up to :math:`A^n`.
 
     For :math:`n > 0`, this returns :math:`A, A^2, \dots, A^n` stacked along a
-    new dimension. Its longest chain of dependent matrix products is one
-    shorter than the sum of :math:`|n|`'s prime factors, rather than the
-    :math:`|n| - 1` products of computing one power after another.
+    new dimension.
 
     Args:
         A (Tensor): square matrices of shape :math:`(*, N, N)`, where :math:`*`
@@ -233,9 +230,7 @@ def matrices_cumdot(A: Tensor) -> Tensor:
     .. math::
         P_k = A_1 A_2 \cdots A_k, \quad k = 1, \dots, M,
 
-    multiplying each new matrix on the right. Its longest chain of dependent
-    matrix products is one shorter than the sum of :math:`M`'s prime factors,
-    rather than the :math:`M - 1` products of a running loop.
+    multiplying each new matrix on the right.
 
     Args:
         A (Tensor): sequences of square matrices of shape :math:`(*, M, N, N)`,

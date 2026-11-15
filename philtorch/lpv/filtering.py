@@ -84,10 +84,9 @@ def fir(
         return_zf = True
 
     if T == 0:
-        # No input: no outputs, and the state the filter started in. The
-        # outputs come from the inputs' empty slices, so that they take their
-        # promoted dtype and carry their gradients, all zero.
-        y = x + b[..., 0] + zi[:, :0]
+        # No input: no outputs, and the state the filter started in.
+        dtype = torch.promote_types(torch.promote_types(x.dtype, b.dtype), zi.dtype)
+        y = x.new_empty((B, 0), dtype=dtype)
         return (y, zi) if return_zf else y
 
     if b.size(2) == 1:
@@ -138,8 +137,7 @@ def allpole(
     .. math::
         y[n] = x[n] - \sum_{k=1}^{M} a_k[n - k]\, y[n - k].
 
-    The two agree for constant coefficients. Both run the vendored torchlpc
-    kernel.
+    The two agree for constant coefficients.
 
     Args:
         a (Tensor): coefficients :math:`a_k[n]`, of shape :math:`(B, N, M)`.

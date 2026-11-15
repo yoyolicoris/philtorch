@@ -133,12 +133,7 @@ def sos2tf(sos: Tensor) -> tuple[Tensor, Tensor]:
             \frac{b_{k0} + b_{k1} z^{-1} + b_{k2} z^{-2}}
                  {1 + a_{k1} z^{-1} + a_{k2} z^{-2}}
             = \frac{b_0 + b_1 z^{-1} + \cdots + b_{2K} z^{-2K}}
-                   {1 + a_1 z^{-1} + \cdots + a_{2K} z^{-2K}},
-
-    by a tree of :func:`~philtorch.poly.polymul`: pairs of sections are
-    multiplied, then pairs of their products, and so on, so that there are
-    :math:`\lceil \log_2 K \rceil` levels, each one batched product. The
-    products are exact, with no evaluation at points.
+                   {1 + a_1 z^{-1} + \cdots + a_{2K} z^{-2K}}.
 
     Args:
         sos (Tensor): the sections, of shape :math:`(K, 5)` or

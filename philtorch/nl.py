@@ -261,10 +261,9 @@ def newton_solve(
     :func:`philtorch.lpv.state_space_recursion`. A step makes one more
     sample exact, so :math:`T` steps always suffice; a contractive :math:`f`
     needs far fewer. A step is halved until it decreases the norm of the
-    residual :math:`f(y[t - 1], x[t]; \theta) - y[t]`. The gradients come
-    from one more linear recurrence, backward in time, and are themselves
-    differentiable. They are those of the exact solution, taken at the
-    returned trajectory, so they hold for the elements that converged.
+    residual :math:`f(y[t - 1], x[t]; \theta) - y[t]`. The gradients are
+    those of the exact solution, taken at the returned trajectory, so they
+    hold for the elements that converged, and are themselves differentiable.
 
     :attr:`init`, :attr:`x` and :attr:`params` are real floating-point tensors
     with the dtype and device of :attr:`init`.

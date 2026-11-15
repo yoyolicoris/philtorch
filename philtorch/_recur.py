@@ -228,11 +228,9 @@ _KERNELS = (
 
 def _forward(A: Tensor, zi: Tensor, x: Tensor) -> Tensor:
     """The recurrence by the first kernel of _KERNELS that takes the input."""
-    if x.size(0) == 0 or x.size(1) == 0:
-        # Built from empty slices of every input, rather than as a new tensor,
-        # so that compiled code, which runs no Recurrence, keeps them in the
-        # graph and gives them zero gradients.
-        return x + zi[:, :0].sum(-1)[:, None, None] + A[..., :0].sum()
+    if x.size(1) == 0:
+        # Backward runs the recurrence over T - 1 = 0 steps when T = 1.
+        return x.new_empty(x.shape)
     for applies, run in _KERNELS:
         if applies(A, x):
             if x.dtype not in _NATIVE_DTYPES:
@@ -445,6 +443,8 @@ def recurrence(A: Tensor, zi: Tensor, x: Tensor) -> Tensor:
             "A, zi and x must share a dtype and a device, got "
             f"{[(t.dtype, str(t.device)) for t in (A, zi, x)]}"
         )
+    if B == 0 or T == 0:
+        return x.new_empty(x.shape)
     if torch.compiler.is_compiling():
         # Dynamo can't trace an autograd.Function with a jvp: compiled code
         # runs the kernels' ops, which carry their own gradients, without

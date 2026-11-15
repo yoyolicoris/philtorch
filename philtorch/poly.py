@@ -68,10 +68,9 @@ def polymul(a: Tensor, b: Tensor) -> Tensor:
     r"""Multiply polynomials, returning the coefficients of the product.
 
     This computes the product :math:`c(x) = a(x) b(x)` along the last
-    dimension, as the convolution of the coefficients, one grouped
-    :func:`torch.nn.functional.conv1d`. The coefficients run from the highest
-    degree down, as in :func:`numpy.polymul`; a convolution doesn't depend on
-    the order, so ascending coefficients multiply the same way.
+    dimension. The coefficients run from the highest degree down, as in
+    :func:`numpy.polymul`; reversing both inputs reverses the output, so
+    ascending coefficients multiply the same way.
 
     Args:
         a (Tensor): coefficients of the first factor, of shape

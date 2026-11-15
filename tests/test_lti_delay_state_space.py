@@ -1240,9 +1240,9 @@ def test_delay_state_space_validates_absorption(overrides, error, message):
 )
 @pytest.mark.parametrize("x_dim", [2, 3])
 def test_delay_state_space_every_input_gets_a_gradient(samples, absorption, x_dim):
-    # Shortcuts must not drop inputs from the graph: no steps, a pure gain or
-    # an output read only from the initial queues still gives zero gradients,
-    # not None.
+    # Shortcuts (a pure gain, an output read only from the initial queues)
+    # must not drop the non-empty inputs from the graph. Empty inputs are cut
+    # from it, and with no steps only the initial states reach the outputs.
     delays, batch, M = (3, 4), 2, 2
     f64 = dict(dtype=torch.double, requires_grad=True)
     A = (0.4 * torch.randn(batch, M, M, dtype=torch.double)).requires_grad_()
@@ -1264,5 +1264,8 @@ def test_delay_state_space_every_input_gets_a_gradient(samples, absorption, x_di
         )
     y, zf, *azf = delay_state_space(A, x, delays, **kwargs)
     total = y.sum() + sum(q.sum() for q in zf) + sum(t.sum() for t in azf)
+    if samples == 0:
+        inputs = [*zi, *([absorption_zi] if absorption is not None else [])]
+    inputs = [t for t in inputs if t.numel()]
     for grad in torch.autograd.grad(total, inputs, allow_unused=True):
         assert grad is not None

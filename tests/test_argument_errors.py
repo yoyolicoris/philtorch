@@ -8,7 +8,7 @@ import pytest
 import torch
 
 from philtorch import lpv, lti
-from philtorch.estimation import kalman_filter
+from philtorch.estimation import hmm_filter, kalman_filter
 from philtorch.lpv.utils import diag_shift
 from philtorch.mat import companion, find_eigenvectors, matrices_cumdot, matrix_power_accumulate
 from philtorch.poly import polydiv, polymul
@@ -41,6 +41,16 @@ def _kalman_args(**overrides):
     )
     args.update(overrides)
     return args
+
+
+_HMM_CASES = [
+    # hmm_filter(log_emit, log_trans, log_init): one dtype, checked before CUDA
+    pytest.param(
+        lambda: hmm_filter(_zeros(1, 3, 2), _zeros(2, 2).float(), _zeros(2)),
+        "log_emit, log_trans and log_init must share a dtype",
+        id="dtype",
+    ),
+]
 
 
 _KALMAN_CASES = [
@@ -956,6 +966,7 @@ def _group(name, cases):
 @pytest.mark.parametrize(
     "call, match",
     [
+        *_group("hmm", _HMM_CASES),
         *_group("kalman", _KALMAN_CASES),
         *_group("lpv-filtering", _LPV_FILTERING_CASES),
         *_group("lpv-recur", _LPV_RECUR_CASES),
