@@ -166,8 +166,7 @@ def confluent_vandermonde(p: Tensor, e: Tensor, rows: int, start: Tensor | None 
     zero where :math:`n < e_c`: the impulse response of
     :math:`z^{-e_c} / (1 - p_c z^{-1})^{e_c + 1}` from sample :math:`s_c` on.
     With every :math:`e_c = s_c = 0`, it is the Vandermonde matrix of
-    ascending powers. A cumulative product builds each column, so that the
-    binomials are exact up to rounding.
+    ascending powers.
 
     Args:
         p (Tensor): the poles, real or complex, of shape :math:`(*, M)`.
