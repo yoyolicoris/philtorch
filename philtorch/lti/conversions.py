@@ -579,6 +579,17 @@ def sos2pfe(
         tensor([0.5000, 0.0000])
         >>> k
         tensor(1.)
+        >>> # a filter of order 24, 12 sections of unit gain at DC: the
+        >>> # expansion filters as the cascade does
+        >>> from philtorch.lti import pfefilt, sosfilt
+        >>> a1 = -1.9 * torch.linspace(0.05, 0.3, 12, dtype=torch.float64).cos()
+        >>> a2 = torch.full_like(a1, 0.9025)
+        >>> b = (1 + a1 + a2) / 4
+        >>> sos = torch.stack([b, 2 * b, b, a1, a2], -1)
+        >>> x = torch.zeros(200, dtype=torch.float64)
+        >>> x[0] = 1.0
+        >>> torch.allclose(pfefilt(*sos2pfe(sos), x), sosfilt(sos, x))
+        True
     """
     if rtype not in _RTYPES:
         raise ValueError(f"rtype must be one of {_RTYPES}, got {rtype!r}")
