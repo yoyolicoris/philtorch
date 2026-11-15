@@ -677,11 +677,6 @@ def pfefilt(
             states don't come in conjugate pairs of the same power, up to
             rounding (a real pole is its own pair).
 
-    Note:
-        :func:`torch.compile` compiles the call in several pieces, not as one
-        graph, so ``fullgraph=True`` raises an error: which terms run depends
-        on the values of :attr:`p`.
-
     Example::
 
         >>> from philtorch.lti import pfefilt, sos2pfe, sosfilt

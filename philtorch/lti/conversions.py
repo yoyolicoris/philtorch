@@ -581,11 +581,6 @@ def sos2pfe(
           :math:`1.2 \times 10^{-4}` apart, the error above grows from
           :math:`10^{-13}` to :math:`3 \times 10^{-4}`.
 
-    Note:
-        :func:`torch.compile` compiles the call in several pieces, not as one
-        graph, so ``fullgraph=True`` raises an error: the number of groups
-        depends on the values of the poles.
-
     Example::
 
         >>> from philtorch.lti import sos2pfe
