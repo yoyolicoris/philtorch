@@ -209,8 +209,6 @@ def unique_roots(p: Tensor, tol: float = 1e-3, rtype: str = "min") -> tuple[Tens
         Unlike :func:`scipy.signal.unique_roots`, which groups the roots
         greedily in their order, a chain of roots, each within :attr:`tol` of
         the next, is one group even when its ends are farther apart.
-        The number of groups depends on the values of :attr:`p`, so the output
-        shapes do too, and the call can't be compiled without a graph break.
 
     Example::
 
@@ -266,17 +264,6 @@ def residuez(
     sorted by magnitude, ascending, then by angle in :math:`(-\pi, \pi]`, and
     grouped by :func:`unique_roots`.
 
-    Both parts come from the impulse response :math:`h` of :math:`H`, found as
-    the first :math:`D + M` terms of :math:`b / a` by one triangular solve. The
-    impulse response of each fraction is
-    :math:`\binom{n + j_i - 1}{j_i - 1} p_i^n`, so that after the direct term,
-    :math:`h[D + n] = \sum_i V_{D - d + n, i} r_i` with the confluent
-    Vandermonde matrix :math:`V_{ni} = \binom{n + j_i - 1}{j_i - 1} p_i^n`, and
-    one linear solve gives :math:`r`. The direct term is what the fractions
-    leave of the response before,
-    :math:`k_n = h[n] - \sum_i V_{n - d, i} r_i`, which is :math:`h[n]` itself
-    in the delayed form. Simple and repeated poles take the same path.
-
     Args:
         b (Tensor): numerator coefficients, of shape :math:`(L)` or
             :math:`(B, L)`.
@@ -304,19 +291,15 @@ def residuez(
             sizes or precisions differ (real and complex inputs of one
             precision mix), :attr:`rtype` is unknown, or, without
             ``delayed_form``, :math:`L > M` and :math:`a_M = 0` for any filter.
-        torch.linalg.LinAlgError: if the linear system is singular: a pole at 0
-            is repeated, or, without ``delayed_form``, :math:`p_i^D`
-            underflows.
+        torch.linalg.LinAlgError: if a pole at 0 is repeated, or, without
+            ``delayed_form``, :math:`p_i^D` underflows for a pole.
 
     Note:
         Unlike :func:`scipy.signal.residuez`, the denominator omits its leading
         1, and no zero coefficients are trimmed, so the output shapes follow
-        from the input shapes. The poles are grouped after they are sorted,
-        not before, which differs only for a chain of poles each close to the
-        next while the ends are not. Poles of equal magnitude, such as a
-        conjugate pair, are ordered by angle, where SciPy keeps the order of
-        the root finder, which can vary between platforms; magnitudes that
-        differ only by rounding still can.
+        from the input shapes. Poles of equal magnitude, such as a conjugate
+        pair, are ordered by angle, where SciPy keeps the order of its root
+        finder.
 
         A pole at 0 (:math:`a_M = 0`) has the constant fraction :math:`r_i`.
         When :math:`L > M`, that overlaps the direct term, so the expansion
@@ -325,17 +308,9 @@ def residuez(
         tap at delay :math:`D`, which is unique.
 
     Note:
-        Without ``delayed_form``, the residues come from the response after the
-        direct term, from :math:`h[D]` on, where a pole contributes
-        :math:`p_i^D`. If that underflows, as :math:`0.5^{1100}` does in
-        float64, the linear system is singular, and the solve raises an error.
-        The delayed form has no such limit.
-
-    Note:
         The poles are the roots of :attr:`a`, which are ill-conditioned at high
-        orders: for a Butterworth filter of order 12, the expansion's impulse
-        response is off by about :math:`10^{-3}` in float64 (SciPy's by about
-        100%). For a filter given as sections, use :func:`sos2pfe`.
+        orders, and so is the expansion. For a filter given as sections, use
+        :func:`sos2pfe`, whose poles are the sections' own.
 
     Example::
 
@@ -420,12 +395,7 @@ def invresz(
 
     with :math:`d = 0`, or :math:`d = M_k` with ``delayed_form=True``,
     where equal poles are adjacent and have the powers :math:`j_i = 1, 2, \dots`
-    in a row. The denominator is the product of :math:`(1 - p_i z^{-1})` over
-    the poles, by a tree of :func:`~philtorch.poly.polymul`. The numerator is
-    :math:`k` times the denominator plus, delayed by :math:`d`, the fractions'
-    numerator: the first :math:`M` coefficients of the denominator times their
-    impulse response :math:`V r`, with the confluent Vandermonde matrix
-    :math:`V` of :func:`residuez`.
+    in a row.
 
     Args:
         r (Tensor): the residues, of shape :math:`(M)` or :math:`(B, M)`. A
@@ -461,13 +431,7 @@ def invresz(
 
     Note:
         Unlike :func:`scipy.signal.invresz`, the denominator omits its leading
-        1, and no zero coefficients are trimmed. A group of poles has the value
-        that :attr:`rtype` chooses among its members, whereas SciPy reduces
-        copies of the group's first pole, so that its ``rtype`` has no effect.
-        A pole continues a group when it is within :attr:`tol` of the previous
-        pole, whereas SciPy compares it with the group's first pole. That is
-        the same for repeated poles, but a chain in which each pole is close to
-        the next while the ends are not is one group here.
+        1, and no zero coefficients are trimmed.
 
     Example::
 
