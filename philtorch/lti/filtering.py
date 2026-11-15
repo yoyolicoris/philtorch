@@ -477,12 +477,13 @@ def _check_sos(sos: Tensor) -> None:
 def sosfilt(sos: Tensor, x: Tensor, zi: Tensor | None = None) -> Tensor | tuple[Tensor, Tensor]:
     r"""Filter signals with batched cascades of second-order sections.
 
-    The signals go through the :math:`K` sections one after another, each
-    section a biquad
+    The signals go through the :math:`K` sections one after another, so that
+    the cascade's transfer function is the product of the sections':
 
     .. math::
-        H_l(z) = \frac{b_{l0} + b_{l1} z^{-1} + b_{l2} z^{-2}}
-                      {1 + a_{l1} z^{-1} + a_{l2} z^{-2}}.
+        H(z) = \prod_{l=1}^{K}
+            \frac{b_{l0} + b_{l1} z^{-1} + b_{l2} z^{-2}}
+                 {1 + a_{l1} z^{-1} + a_{l2} z^{-2}}.
 
     Args:
         sos (Tensor): the sections, of shape :math:`(K, 5)` or
@@ -589,11 +590,11 @@ def sosfilt_zi(sos: Tensor) -> Tensor:
     r"""Return the initial states of :func:`sosfilt` for a steady step response.
 
     With these states, filtering a constant input of 1 starts every section in
-    steady state. Section :math:`k` gets the state of :func:`lfilter_zi`,
+    steady state. Section :math:`l` gets the state of :func:`lfilter_zi`,
     scaled by the gain at DC of the sections before it,
 
     .. math::
-        \prod_{j < k} \frac{b_{j0} + b_{j1} + b_{j2}}{1 + a_{j1} + a_{j2}}.
+        \prod_{m=1}^{l-1} \frac{b_{m0} + b_{m1} + b_{m2}}{1 + a_{m1} + a_{m2}}.
 
     Args:
         sos (Tensor): the sections, of shape :math:`(K, 5)` or
