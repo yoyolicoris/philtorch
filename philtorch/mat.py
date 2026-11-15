@@ -158,29 +158,25 @@ def vandermonde(poles: Tensor) -> Tensor:
 def confluent_vandermonde(p: Tensor, e: Tensor, rows: int, start: Tensor | None = None) -> Tensor:
     r"""Return the confluent Vandermonde matrix of poles and exponents.
 
-    Column :math:`c` holds the powers of a Jordan chain,
+    Column :math:`c` holds
 
     .. math::
         V_{ic} = \binom{n}{e_c} p_c^{\,n - e_c}, \quad n = i + s_c,
 
-    zero where :math:`n < e_c`: the entry of row :math:`n` of the
-    :math:`e_c`-th derivative of :math:`p^n`, divided by :math:`e_c!`, and the
-    impulse response of :math:`z^{-e_c} / (1 - p_c z^{-1})^{e_c + 1}`. With
-    every :math:`e_c = 0`, it is the Vandermonde matrix of ascending powers.
-    The rows of column :math:`c` start at :math:`n = s_c`: from :math:`s_c =
-    e_c`, the entries are :math:`\binom{i + e_c}{e_c} p_c^{\,i}`, the impulse
-    response of :math:`1 / (1 - p_c z^{-1})^{e_c + 1}`. A cumulative product
-    builds each column from the ratios of consecutive rows, which keeps the
-    binomials exact up to rounding.
+    zero where :math:`n < e_c`: the impulse response of
+    :math:`z^{-e_c} / (1 - p_c z^{-1})^{e_c + 1}` from sample :math:`s_c` on.
+    With every :math:`e_c = s_c = 0`, it is the Vandermonde matrix of
+    ascending powers. A cumulative product builds each column, so that the
+    binomials are exact up to rounding.
 
     Args:
         p (Tensor): the poles, real or complex, of shape :math:`(*, M)`.
-        e (Tensor): the exponents :math:`e_c \ge 0`, integers, of a shape
-            that broadcasts with :attr:`p`.
+        e (Tensor): the exponents :math:`e_c \ge 0`, integers, of shape
+            :math:`(M)` or :math:`(*, M)`.
         rows (int): the number of rows.
-        start (Tensor, optional): the row :math:`s_c` each column starts at,
-            integers with :math:`0 \le s_c \le e_c`, of a shape that
-            broadcasts with :attr:`p`. Default: ``None``, all 0.
+        start (Tensor, optional): the first sample :math:`s_c` of each
+            column, integers with :math:`0 \le s_c \le e_c`, of shape
+            :math:`(M)` or :math:`(*, M)`. Default: ``None``, all 0.
 
     Returns:
         Tensor: the matrix, of shape :math:`(*, \text{rows}, M)`, with the
