@@ -54,6 +54,9 @@ def test_pfefilt_complex_filter_and_input():
     sos = _random_sos(K=3) + 0.2j * _random_sos(K=3)
     x = np.random.randn(64) + 1j * np.random.randn(64)
     _check(sos, x)
+    # a complex filter with a real input
+    y = pfefilt(*sos2pfe(torch.from_numpy(sos))[:3], torch.from_numpy(x.real.copy()))
+    torch.testing.assert_close(y, torch.from_numpy(_expected(sos, x.real.copy())))
 
 
 def test_pfefilt_batched_multiplicities():
@@ -71,13 +74,18 @@ def test_pfefilt_batched_multiplicities():
 
 @pytest.mark.parametrize(
     "sos",
-    [np.stack([PAIR, PAIR, DOUBLE_REAL, OTHER_REAL]), _random_sos(K=2) + 0.2j * _random_sos(K=2)],
-    ids=["real", "complex"],
+    [
+        np.stack([PAIR, PAIR, DOUBLE_REAL, OTHER_REAL]),
+        _random_sos(K=2) + 0.2j * _random_sos(K=2),
+        np.stack([[PAIR, DOUBLE_REAL], [OTHER_REAL, PAIR]]),
+    ],
+    ids=["real", "complex", "batched"],
 )
 def test_pfefilt_in_chunks_equals_whole(sos):
     r, p, k, batch_index, power = sos2pfe(torch.from_numpy(sos))
     x = torch.randn(2, 60, dtype=r.dtype if sos.dtype.kind == "c" else torch.float64)
-    zi = torch.zeros(2, p.numel(), dtype=p.dtype)
+    # one state per term with batch_index, else per term and row
+    zi = torch.zeros((2,) * (batch_index is None) + (p.numel(),), dtype=p.dtype)
     whole, zf_whole = pfefilt(r, p, k, x, zi=zi, batch_index=batch_index, power=power)
     ys, zf = [], zi
     for chunk in x.split([20, 0, 25, 15], dim=-1):

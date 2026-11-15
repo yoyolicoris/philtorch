@@ -332,7 +332,6 @@ def _check_sos2pfe(sos: np.ndarray, atol: float):
     assert batch_index is None or batch_index.shape == (M,)
     assert k.shape == sos.shape[:-2]
     index = torch.zeros(M, dtype=torch.long) if batch_index is None else batch_index
-    rows = []
     for b, (row, got_k) in enumerate(zip(sos.reshape(-1, sos.shape[-2], 5), k.numpy().ravel())):
         got_r, got_p = r[index == b].numpy(), p[index == b].numpy()
         if sos.dtype.kind != "c":
@@ -340,8 +339,6 @@ def _check_sos2pfe(sos: np.ndarray, atol: float):
             pair = got_p.imag != 0
             got_r = np.concatenate([got_r, got_r[pair].conj()])
             got_p = np.concatenate([got_p, got_p[pair].conj()])
-        rows.append((row, got_r, got_p, got_k))
-    for row, got_r, got_p, got_k in rows:
         expected_r, expected_p, expected_k = signal.residue(
             *signal.sos2tf(np.insert(row, 3, 1.0, axis=-1))
         )

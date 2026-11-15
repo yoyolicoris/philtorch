@@ -245,20 +245,24 @@ def residuez(
     For
 
     .. math::
-        H(z) = \frac{b_0 + b_1 z^{-1} + \cdots + b_{L-1} z^{-(L-1)}}
+        H(z) = \frac{B(z)}{A(z)}
+             = \frac{b_0 + b_1 z^{-1} + \cdots + b_{L-1} z^{-(L-1)}}
                     {1 + a_1 z^{-1} + \cdots + a_M z^{-M}},
 
     this returns the residues :math:`r_i`, the poles :math:`p_i` and the direct
     term :math:`k` of
 
     .. math::
-        H(z) = \sum_{n=0}^{D-1} k_n z^{-n}
-            + z^{-d} \sum_{i=1}^{M} \frac{r_i}{(1 - p_i z^{-1})^{j_i}},
-        \quad D = \max(L - M, 0),
+        H(z) = F(z) + \sum_{i=1}^{M} \frac{r_i}{(1 - p_i z^{-1})^{j_i}},
 
-    with the fractions starting with the direct term, :math:`d = 0`, as in
-    SciPy, or, with ``delayed_form=True``, delayed until it has ended,
-    :math:`d = D`. The two agree when :math:`L \le M`. A pole of multiplicity
+    as SciPy does, or, with ``delayed_form=True``, of
+
+    .. math::
+        H(z) = F(z) + z^{-D} \sum_{i=1}^{M} \frac{r_i}{(1 - p_i z^{-1})^{j_i}},
+
+    where :math:`F(z) = k_0 + k_1 z^{-1} + \cdots + k_{D-1} z^{-(D-1)}` is the
+    FIR part, :math:`D = \max(L - M, 0)`. The two agree when :math:`L \le M`.
+    A pole of multiplicity
     :math:`m` is listed :math:`m` times in a row, with the powers
     :math:`j_i = 1, \dots, m`. The poles are the roots of the denominator,
     sorted by magnitude, ascending, then by angle in :math:`(-\pi, \pi]`, and
@@ -292,7 +296,8 @@ def residuez(
             precision mix), :attr:`rtype` is unknown, or, without
             ``delayed_form``, :math:`L > M` and :math:`a_M = 0` for any filter.
         torch.linalg.LinAlgError: if a pole at 0 is repeated, or, without
-            ``delayed_form``, :math:`p_i^D` underflows for a pole.
+            ``delayed_form``, :math:`p_i^D` underflows for a pole, which
+            ``delayed_form=True`` avoids.
 
     Note:
         Unlike :func:`scipy.signal.residuez`, the denominator omits its leading
@@ -390,20 +395,24 @@ def invresz(
     This is the inverse of :func:`residuez`: it multiplies out
 
     .. math::
-        H(z) = \sum_{n=0}^{M_k-1} k_n z^{-n}
-            + z^{-d} \sum_{i=1}^{M} \frac{r_i}{(1 - p_i z^{-1})^{j_i}},
+        H(z) = F(z) + \sum_{i=1}^{M} \frac{r_i}{(1 - p_i z^{-1})^{j_i}},
 
-    with :math:`d = 0`, or :math:`d = M_k` with ``delayed_form=True``,
-    where equal poles are adjacent and have the powers :math:`j_i = 1, 2, \dots`
-    in a row.
+    or, with ``delayed_form=True``,
+
+    .. math::
+        H(z) = F(z) + z^{-D} \sum_{i=1}^{M} \frac{r_i}{(1 - p_i z^{-1})^{j_i}},
+
+    where :math:`F(z) = k_0 + k_1 z^{-1} + \cdots + k_{D-1} z^{-(D-1)}` is the
+    FIR part, and equal poles are adjacent, with the powers
+    :math:`j_i = 1, 2, \dots` in a row.
 
     Args:
         r (Tensor): the residues, of shape :math:`(M)` or :math:`(B, M)`. A
             repeated pole's residues go by ascending power.
         p (Tensor): the poles, of shape :math:`(M)` or :math:`(B, M)`. Equal
             poles must be adjacent.
-        k (Tensor): the direct term, of shape :math:`(M_k)` or
-            :math:`(B, M_k)`, possibly empty. Batched :attr:`r`, :attr:`p` and
+        k (Tensor): the direct term, of shape :math:`(D)` or
+            :math:`(B, D)`, possibly empty. Batched :attr:`r`, :attr:`p` and
             :attr:`k` have the same batch size, and an unbatched one is shared
             by the batch.
         tol (float, optional): the distance within which two adjacent poles
@@ -417,8 +426,8 @@ def invresz(
             Default: ``False``.
 
     Returns:
-        tuple of Tensor: the numerator :math:`b`, of shape :math:`(M + M_k)`
-        or :math:`(B, M + M_k)`, and the denominator :math:`a` without its
+        tuple of Tensor: the numerator :math:`b`, of shape :math:`(M + D)`
+        or :math:`(B, M + D)`, and the denominator :math:`a` without its
         leading 1, of shape :math:`(M)` or :math:`(B, M)`, both complex and in
         ascending powers of :math:`z^{-1}`. The outputs are batched when any
         input is.
@@ -488,12 +497,12 @@ def sos2pfe(
     For the cascade
 
     .. math::
-        H(z) = \prod_{k=1}^{K}
-            \frac{b_{k0} + b_{k1} z^{-1} + b_{k2} z^{-2}}
-                 {1 + a_{k1} z^{-1} + a_{k2} z^{-2}},
+        H(z) = \prod_{l=1}^{K}
+            \frac{b_{l0} + b_{l1} z^{-1} + b_{l2} z^{-2}}
+                 {1 + a_{l1} z^{-1} + a_{l2} z^{-2}},
 
     this returns the residues :math:`r_i`, the poles :math:`p_i`, the direct
-    gain :math:`k = \prod_k b_{k0}` and the powers :math:`j_i` of the delayed
+    gain :math:`k = \prod_l b_{l0}` and the powers :math:`j_i` of the delayed
     form
 
     .. math::
@@ -504,13 +513,16 @@ def sos2pfe(
     :math:`m` is listed :math:`m` times in a row, with the powers
     :math:`j_i = 1, \dots, m`. Each term is delayed by its power, so that the
     powers of a pole at 0 are the taps :math:`r_i z^{-j_i}` of an FIR filter.
-    A real :attr:`sos` lists one pole of each conjugate pair, that of positive
-    imaginary part, which stands for both in :func:`~philtorch.lti.pfefilt`,
-    and its real poles have real residues.
+    For simple poles, this is the delayed form of the partial fraction
+    expansion in `Introduction to Digital Filters
+    <https://ccrma.stanford.edu/~jos/filters/FIR_Part_PFE.html>`__, with the
+    FIR part :math:`k`. A real :attr:`sos` lists one pole of each conjugate
+    pair, that of positive imaginary part, which stands for both in
+    :func:`~philtorch.lti.pfefilt`, and its real poles have real residues. A
+    complex :attr:`sos` lists every pole.
 
     Poles within :attr:`tol` of each other, directly or through a chain of
-    such poles, are one group; a real :attr:`sos`'s groups come in conjugate
-    pairs.
+    such poles, are one group.
 
     Args:
         sos (Tensor): the sections, of shape :math:`(K, 5)` or
@@ -523,11 +535,14 @@ def sos2pfe(
             dtype, enough to merge a double root that rounding splits.
             Default: ``None``.
         rtype (str, optional): how to choose the pole of a group of equal poles,
-            as in :func:`unique_roots`. Default: ``"avg"``.
+            as in :func:`unique_roots`, up to the conjugate symmetry of a real
+            :attr:`sos`. Default: ``"avg"``.
 
     Returns:
         tuple: the residues :math:`r` and the poles :math:`p`, both complex
-        and of shape :math:`(M)`; the direct term :math:`k`, of :attr:`sos`'s
+        and of shape :math:`(M)`, :math:`M` being the number of terms of all
+        the filters: at most :math:`2K` per filter, fewer for a real
+        :attr:`sos`; the direct term :math:`k`, of :attr:`sos`'s
         dtype and of shape :math:`()` or :math:`(B)`; the batch index, the row
         of the filter each term belongs to, of shape :math:`(M)`, or ``None``
         for a 2-D :attr:`sos`; and the powers :math:`j_i`, of shape
@@ -639,7 +654,7 @@ def sos2pfe(
     p, r, power = unique.unsqueeze(-1).expand(-1, m)[keep], f.flip(-1)[keep], power[keep]
     if not sos.is_complex():
         # a real pole's residue is real
-        r = torch.where(p.imag == 0, r.real.to(r.dtype), r)
+        r = torch.where(p.imag == 0, r.real, r)
     k = sos[..., 0].prod(-1)
     if not batched:
         return r, p, k[0], None, power

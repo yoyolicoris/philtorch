@@ -536,6 +536,18 @@ _LTI_FILTERING_CASES = [
         id="pfefilt-real-k-complex-x",
     ),
     pytest.param(
+        lambda: lti.pfefilt(
+            _ones(1), _ones(1), _ones(2), _ones(2, 4), batch_index=torch.tensor([2])
+        ),
+        "batch_index must be from 0",
+        id="pfefilt-batch-index-range",
+    ),
+    pytest.param(
+        lambda: lti.pfefilt(*(t.bfloat16() for t in (_ones(1), _ones(1), _ones(()), _ones(4)))),
+        "bfloat16",
+        id="pfefilt-bfloat16",
+    ),
+    pytest.param(
         lambda: lti.pfefilt(_ones(1), _ones(1), _ones(()), _ones(4), power=torch.tensor([2])),
         "Each power above 1",
         id="pfefilt-power",
