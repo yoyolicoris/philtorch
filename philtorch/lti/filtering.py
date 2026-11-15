@@ -628,13 +628,27 @@ def pfefilt(
     r"""Filter signals with batched filters in parallel form.
 
     The filter is a partial fraction expansion, as :func:`sos2pfe` returns
-    it,
+    it, a sum of sections:
 
     .. math::
         H(z) = k + \sum_{i=1}^{M} \frac{r_i z^{-j_i}}{(1 - p_i z^{-1})^{j_i}},
 
     where a pole of multiplicity :math:`m` is listed :math:`m` times in a row,
-    with the powers :math:`j_i = 1, \dots, m`.
+    with the powers :math:`j_i = 1, \dots, m`. Term :math:`i` is
+    :math:`r_i s_i`, where :math:`s_i` is the output of the first-order
+    section
+
+    .. math::
+        s_i[n + 1] = p_i s_i[n] + u_i[n], \quad s_i[0] = \text{zi}_i,
+
+    whose input :math:`u_i` is :math:`x` for a pole's first power and the
+    previous power's :math:`s` otherwise: the powers of a pole are a chain of
+    sections, each delaying its input by one sample.
+
+    A real :attr:`k` makes a real filter, whose output is real when
+    :attr:`x` is: its complex poles come in conjugate pairs, with conjugate
+    residues and initial states, each pair summing to a real second-order
+    section, and its real poles have real residues and initial states.
 
     Args:
         r (Tensor): the residues, of shape :math:`(M)` or :math:`(B, M)`.
@@ -643,16 +657,16 @@ def pfefilt(
         p (Tensor): the poles, of shape :math:`(M)` or :math:`(B, M)`.
         k (Tensor): the direct gain, of shape :math:`()` or :math:`(B)`.
         x (Tensor): input signals, of shape :math:`(B, N)` or :math:`(N)`.
-        zi (Tensor, optional): the initial state of each term's recursion,
-            of shape :math:`(M)` or :math:`(B, M)`. Default: ``None``, all
-            zero.
+        zi (Tensor, optional): the initial states :math:`s_i[0]`, one per
+            term, in the order of :attr:`r` and :attr:`p`, of shape
+            :math:`(M)` or :math:`(B, M)`. Default: ``None``, all zero.
 
     Returns:
         Tensor or tuple of Tensor: the filtered signals, of the shape of
         :attr:`x`, real when :attr:`k` and :attr:`x` are, and with
-        :attr:`zi`, the final states, complex, of shape :math:`(B, M)`, or
-        :math:`(M)` when every input is unbatched. Pass them as the next
-        chunk's :attr:`zi` to filter a signal in chunks.
+        :attr:`zi`, the final states :math:`s_i[N]`, complex, of shape
+        :math:`(B, M)`, or :math:`(M)` when every input is unbatched. Pass
+        them as the next chunk's :attr:`zi` to filter a signal in chunks.
 
     Raises:
         ValueError: if :attr:`x`, :attr:`r`, :attr:`p` or :attr:`zi` is not
