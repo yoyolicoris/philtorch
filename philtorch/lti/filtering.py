@@ -690,8 +690,8 @@ def pfefilt(
         ValueError: if :attr:`x` is not 1-D or 2-D, :attr:`k` is not 0-D or
             1-D, :attr:`r`, :attr:`p`, :attr:`batch_index` or :attr:`power`
             is not 1-D of one length, :attr:`zi` or a batched :attr:`k` has
-            the wrong shape, :attr:`batch_index` or :attr:`power` doesn't hold
-            integers on :attr:`x`'s device, :attr:`batch_index` is out of
+            the wrong shape, :attr:`batch_index` or :attr:`power` isn't int32
+            or int64 on :attr:`x`'s device, :attr:`batch_index` is out of
             range, the inputs differ in precision or device, are neither
             floating-point nor complex, or are bfloat16, which has no complex
             dtype, a power doesn't follow the power below it, or
@@ -721,8 +721,8 @@ def pfefilt(
         if t is not None and t.shape != (M,):
             raise ValueError(f"{name} must be 1D of length {M}, got shape {tuple(t.shape)}.")
     for name, t in (("batch_index", batch_index), ("power", power)):
-        if t is not None and (t.is_floating_point() or t.is_complex() or t.dtype == torch.bool):
-            raise ValueError(f"{name} must hold integers, got {t.dtype}.")
+        if t is not None and t.dtype not in (torch.int32, torch.int64):
+            raise ValueError(f"{name} must be int32 or int64, got {t.dtype}.")
         if t is not None and t.device != x.device:
             raise ValueError(f"{name} must be on x's device, {x.device}, got {t.device}.")
     if k.dim() == 1 and (x.dim() == 1 or k.size(0) != x.size(0)):

@@ -558,13 +558,20 @@ _LTI_FILTERING_CASES = [
     ),
     pytest.param(
         lambda: lti.pfefilt(_ones(1), _ones(1), _ones(1), _ones(1, 4), batch_index=torch.zeros(1)),
-        "batch_index must hold integers",
+        "batch_index must be int32 or int64",
         id="pfefilt-batch-index-float",
     ),
     pytest.param(
         lambda: lti.pfefilt(_ones(1), _ones(1), _ones(()), _ones(4), power=torch.tensor([True])),
-        "power must hold integers",
+        "power must be int32 or int64",
         id="pfefilt-power-bool",
+    ),
+    pytest.param(
+        lambda: lti.pfefilt(
+            _ones(1), _ones(1), _ones(1), _ones(1, 4), batch_index=torch.zeros(1, dtype=torch.int8)
+        ),
+        "batch_index must be int32 or int64",
+        id="pfefilt-batch-index-int8",
     ),
     pytest.param(
         lambda: lti.pfefilt(_ones(1), _ones(1), _ones(1), _ones(4)),
