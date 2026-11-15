@@ -493,6 +493,110 @@ _LTI_FILTERING_CASES = [
         "rtype must be one of",
         id="sos2pfe-rtype",
     ),
+    # pfefilt(r, p, k, x, zi, batch_index, power): flat arguments of one precision; a real k
+    # takes a real x and real residues for real poles
+    pytest.param(
+        lambda: lti.pfefilt(_ones(2), _ones(2), _ones(()), _ones(1, 2, 4)),
+        "x must be 1D or 2D",
+        id="pfefilt-x-3d",
+    ),
+    pytest.param(
+        lambda: lti.pfefilt(_ones(2), _ones(2), _ones(1, 2), _ones(2, 4)),
+        "k must be 0D or 1D",
+        id="pfefilt-k-2d",
+    ),
+    pytest.param(
+        lambda: lti.pfefilt(_ones(2), _ones(1, 2), _ones(()), _ones(4)),
+        "p must be 1D",
+        id="pfefilt-p-2d",
+    ),
+    pytest.param(
+        lambda: lti.pfefilt(_ones(2), _ones(2), _ones(()), _ones(4).float()),
+        "share a precision",
+        id="pfefilt-precision",
+    ),
+    pytest.param(
+        lambda: lti.pfefilt(_ones(2), _ones(3), _ones(()), _ones(4)),
+        "must be 1D of length",
+        id="pfefilt-length",
+    ),
+    pytest.param(
+        lambda: lti.pfefilt(_ones(2), _ones(2), _ones(3), _ones(2, 4)),
+        "A 1D k needs a 2D x of its batch size",
+        id="pfefilt-batch",
+    ),
+    pytest.param(
+        lambda: lti.pfefilt(_ones(2), _ones(2), _ones(()), _ones(2, 4), zi=_ones(2)),
+        "zi must have shape",
+        id="pfefilt-zi-shape",
+    ),
+    pytest.param(
+        lambda: lti.pfefilt(_ones(1), _ones(1), _ones(()), _ones(4).to(torch.complex128)),
+        "takes a real x",
+        id="pfefilt-real-k-complex-x",
+    ),
+    pytest.param(
+        lambda: lti.pfefilt(
+            _ones(1), _ones(1), _ones(2), _ones(2, 4), batch_index=torch.tensor([2])
+        ),
+        "batch_index must be from 0",
+        id="pfefilt-batch-index-range",
+    ),
+    pytest.param(
+        lambda: lti.pfefilt(*(t.bfloat16() for t in (_ones(1), _ones(1), _ones(()), _ones(4)))),
+        "bfloat16",
+        id="pfefilt-bfloat16",
+    ),
+    pytest.param(
+        lambda: lti.pfefilt(
+            *(torch.ones(1, dtype=torch.long) for _ in range(2)),
+            torch.tensor(1),
+            torch.ones(4, dtype=torch.long),
+        ),
+        "floating-point or complex",
+        id="pfefilt-integer",
+    ),
+    pytest.param(
+        lambda: lti.pfefilt(_ones(1), _ones(1), _ones(1), _ones(1, 4), batch_index=torch.zeros(1)),
+        "batch_index must be int32 or int64",
+        id="pfefilt-batch-index-float",
+    ),
+    pytest.param(
+        lambda: lti.pfefilt(_ones(1), _ones(1), _ones(()), _ones(4), power=torch.tensor([True])),
+        "power must be int32 or int64",
+        id="pfefilt-power-bool",
+    ),
+    pytest.param(
+        lambda: lti.pfefilt(
+            _ones(1), _ones(1), _ones(1), _ones(1, 4), batch_index=torch.zeros(1, dtype=torch.int8)
+        ),
+        "batch_index must be int32 or int64",
+        id="pfefilt-batch-index-int8",
+    ),
+    pytest.param(
+        lambda: lti.pfefilt(_ones(1), _ones(1), _ones(1), _ones(4)),
+        "A 1D k needs a 2D x",
+        id="pfefilt-1d-k-1d-x",
+    ),
+    pytest.param(
+        lambda: lti.pfefilt(
+            _ones(1), _ones(1), _ones(()), _ones(4), zi=torch.tensor([1j], dtype=torch.complex128)
+        ),
+        "real poles need real residues and initial states",
+        id="pfefilt-complex-state-of-real-pole",
+    ),
+    pytest.param(
+        lambda: lti.pfefilt(_ones(1), _ones(1), _ones(()), _ones(4), power=torch.tensor([2])),
+        "Each power above 1",
+        id="pfefilt-power",
+    ),
+    pytest.param(
+        lambda: lti.pfefilt(
+            torch.tensor([1j], dtype=torch.complex128), _ones(1), _ones(()), _ones(4)
+        ),
+        "real poles need real residues",
+        id="pfefilt-complex-residue-of-real-pole",
+    ),
     # residuez(b, a, tol, rtype, delayed_form): b and a 1D or 2D, of one precision
     pytest.param(
         lambda: lti.residuez(_ones(3), _ones(2).float()),
@@ -570,6 +674,11 @@ _LTI_FILTERING_CASES = [
         lambda: lti.unique_roots(_ones(3), rtype="median"),
         "rtype must be one of",
         id="unique_roots-rtype",
+    ),
+    pytest.param(
+        lambda: lti.unique_roots(torch.tensor([1, 1, 3])),
+        "floating-point or complex",
+        id="unique_roots-integer",
     ),
     # filtfilt(b, a, x)
     pytest.param(

@@ -13,12 +13,13 @@ Filtering
    :nosignatures:
 
    lfilter
-   filtfilt
-   fir
+   lfiltic
    lfilter_zi
+   filtfilt
    sosfilt
    sosfilt_zi
-   lfiltic
+   pfefilt
+   fir
    comb_filter
 
 Conversions

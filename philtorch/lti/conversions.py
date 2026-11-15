@@ -56,25 +56,56 @@ def _as_batch(**named: Tensor) -> tuple[list[Tensor], bool]:
     return tensors, batched
 
 
-def _reduce_groups(p: Tensor, member: Tensor, rtype: str) -> Tensor:
-    """Reduce each group of roots to one value.
+def _reduce_groups(p: Tensor, label: Tensor, rtype: str) -> Tensor:
+    """Give each root the value of its group.
 
-    ``member`` of shape (..., M) marks the roots of each group among the M of
-    ``p``, which broadcasts with it, and each group has a member. The result is
-    of shape (...): the value of each group by ``rtype``.
+    ``label`` holds the group of each root of ``p``, both of shape (B, M), as
+    a position from 0 to M - 1. The result has ``p``'s shape: each root's group
+    value by ``rtype``.
     """
+
+    # The groups' values land at their labels, which they all read back.
+    # Workaround of an upstream bug: with include_self=False, the backward of
+    # "amin" and "amax" still splits the gradient with the base wherever the
+    # base equals the result, so the base is NaN, which equals nothing.
+    def by_group(t: Tensor, reduce: str) -> Tensor:
+        base = torch.full_like(t, torch.nan)
+        return base.scatter_reduce(-1, label, t, reduce, include_self=False).gather(-1, label)
+
     if rtype in ("avg", "mean"):
-        return (member * p).sum(-1) / member.sum(-1)
-    # Compare by the real part, then by the imaginary part; a maximum is the
-    # minimum of the negated parts.
-    key = (lambda t: t) if rtype in ("min", "minimum") else torch.neg
-    if p.is_complex():
-        real = torch.where(member, key(p.real), torch.inf)
-        candidate = member & (real == real.amin(-1, keepdim=True))
-        index = torch.where(candidate, key(p.imag), torch.inf).argmin(-1)
-    else:
-        index = torch.where(member, key(p), torch.inf).argmin(-1)
-    return torch.take_along_dim(p, index.unsqueeze(-1), -1).squeeze(-1)
+        # CUDA's scatter_reduce takes no complex tensors
+        if p.is_complex():
+            return torch.complex(by_group(p.real, "mean"), by_group(p.imag, "mean"))
+        return by_group(p, "mean")
+    reduce = "amin" if rtype in ("min", "minimum") else "amax"
+    if not p.is_complex():
+        return by_group(p, reduce)
+    # Compare by the real part, then by the imaginary parts of the roots of
+    # that real part.
+    real = by_group(p.real, reduce)
+    tied = torch.where(p.real == real, p.imag, torch.inf if reduce == "amin" else -torch.inf)
+    return torch.complex(real, by_group(tied, reduce))
+
+
+def _group_roots(roots: Tensor, tol: float) -> tuple[Tensor, Tensor, Tensor, Tensor]:
+    """Group the roots within ``tol`` of each other, directly or through a
+    chain of such roots.
+
+    ``roots`` is of shape (B, M), M >= 1. Returns the group of each root, the
+    position of its first root, of shape (B, M), and the batch index, the
+    position of the first root and the number of roots of each group, of
+    shape (G), the groups in row order.
+    """
+    real = roots.dtype.to_real()
+    near = ((roots.unsqueeze(-1) - roots.unsqueeze(-2)).abs() <= tol).to(real)
+    # each squaring doubles the length of the chains linked
+    steps = range((roots.size(-1) - 1).bit_length())
+    same = reduce(lambda c, _: (c @ c > 0).to(real), steps, near) > 0
+    label = same.to(torch.int8).argmax(-1)
+    M = roots.size(-1)
+    rows = torch.arange(roots.size(0), device=roots.device).unsqueeze(-1)
+    group, multiplicity = (rows * M + label).unique(return_counts=True)
+    return label, group // M, group % M, multiplicity
 
 
 def _vandermonde(p: Tensor, extra: Tensor, rows: int) -> Tensor:
@@ -148,47 +179,16 @@ def sos2tf(sos: Tensor) -> tuple[Tensor, Tensor]:
     return both[..., 0, :], both[..., 1, 1:]
 
 
-def _group(roots: Tensor, tol: float) -> tuple[Tensor, Tensor]:
-    """Group the roots of each row of ``roots``, of shape (B, M), M >= 1.
-
-    Returns the batch index of each group, of shape (U), and the groups' members
-    among the M roots of their rows, a boolean mask of shape (U, M), as
-    :func:`unique_roots` orders them.
-    """
-    B, M = roots.shape
-    close = (roots.unsqueeze(-1) - roots.unsqueeze(-2)).abs() <= tol
-
-    # A root starts a group when no earlier group took it; the group takes the
-    # roots that are close and not yet taken. For booleans, c > u is c & ~u.
-    def take(carry: tuple[Tensor, tuple[Tensor, ...]], i_row: tuple[int, Tensor]):
-        used, used_before = carry
-        i, row = i_row
-        was_used = used[:, i : i + 1]
-        return used | (row > was_used), (*used_before, was_used)
-
-    unused = torch.zeros(B, M, dtype=torch.bool, device=roots.device)
-    _, used_before = reduce(take, enumerate(close.unbind(1)), (unused, ()))
-    leader = ~torch.cat(used_before, 1)
-    # a root belongs to the first leader that is close to it
-    owner = (close & leader.unsqueeze(-1)).to(torch.int8).argmax(1)
-    batch_index, first = leader.nonzero(as_tuple=True)
-    group = owner[batch_index] == first.unsqueeze(-1)
-    return batch_index, group
-
-
 def unique_roots(p: Tensor, tol: float = 1e-3, rtype: str = "min") -> tuple[Tensor, ...]:
     r"""Find the unique roots and their multiplicities.
 
-    The roots are grouped greedily, in the order they are given: each root not
-    yet in a group starts one with every later root within a distance
-    :attr:`tol` of it that is not in a group yet. If :math:`a` is close to
-    :math:`b` and :math:`b` to :math:`c`, :math:`a` and :math:`c` can still be
-    farther apart than :attr:`tol`, so the grouping depends on the order. Each
-    group gives one unique root, chosen by :attr:`rtype`.
+    Roots within a distance :attr:`tol` of each other, directly or through a
+    chain of such roots, are one group, whatever their order. Each group gives
+    one unique root, chosen by :attr:`rtype`.
 
     Args:
-        p (Tensor): the roots, real or complex, of shape :math:`(M)` or
-            :math:`(B, M)`.
+        p (Tensor): the roots, floating-point or complex, of shape
+            :math:`(M)` or :math:`(B, M)`.
         tol (float, optional): the distance within which two roots are
             considered equal. Default: ``1e-3``.
         rtype (str, optional): how to choose the root of a group: ``"max"`` or
@@ -207,12 +207,13 @@ def unique_roots(p: Tensor, tol: float = 1e-3, rtype: str = "min") -> tuple[Tens
         :meth:`torch.Tensor.index_add`.
 
     Raises:
-        ValueError: if :attr:`p` is not 1-D or 2-D, or :attr:`rtype` is
-            unknown.
+        ValueError: if :attr:`p` is not 1-D or 2-D, or neither floating-point
+            nor complex, or :attr:`rtype` is unknown.
 
     Note:
-        The number of groups depends on the values of :attr:`p`, so the output
-        shapes do too, and the call can't be compiled without a graph break.
+        Unlike :func:`scipy.signal.unique_roots`, which groups the roots
+        greedily in their order, a chain of roots, each within :attr:`tol` of
+        the next, is one group even when its ends are farther apart.
 
     Example::
 
@@ -226,16 +227,16 @@ def unique_roots(p: Tensor, tol: float = 1e-3, rtype: str = "min") -> tuple[Tens
         raise ValueError(f"rtype must be one of {_RTYPES}, got {rtype!r}")
     if p.ndim not in (1, 2):
         raise ValueError(f"p must be 1D or 2D, got {p.ndim}D")
+    if not (p.is_floating_point() or p.is_complex()):
+        raise ValueError(f"p must be floating-point or complex, got {p.dtype}")
 
     batched = p.ndim == 2
     roots = p if batched else p.unsqueeze(0)
-    M = roots.size(-1)
-    if M == 0:
+    if roots.size(-1) == 0:
         none = torch.empty(0, dtype=torch.int64, device=p.device)
         return (roots.new_empty(0), none, none) if batched else (roots.new_empty(0), none)
-    batch_index, group = _group(roots, tol)
-    unique = _reduce_groups(roots[batch_index], group, rtype)
-    multiplicity = group.sum(-1)
+    label, batch_index, first, multiplicity = _group_roots(roots, tol)
+    unique = _reduce_groups(roots, label, rtype)[batch_index, first]
     return (unique, multiplicity, batch_index) if batched else (unique, multiplicity)
 
 
@@ -247,35 +248,28 @@ def residuez(
     For
 
     .. math::
-        H(z) = \frac{b_0 + b_1 z^{-1} + \cdots + b_{L-1} z^{-(L-1)}}
+        H(z) = \frac{B(z)}{A(z)}
+             = \frac{b_0 + b_1 z^{-1} + \cdots + b_{L-1} z^{-(L-1)}}
                     {1 + a_1 z^{-1} + \cdots + a_M z^{-M}},
 
     this returns the residues :math:`r_i`, the poles :math:`p_i` and the direct
     term :math:`k` of
 
     .. math::
-        H(z) = \sum_{n=0}^{D-1} k_n z^{-n}
-            + z^{-d} \sum_{i=1}^{M} \frac{r_i}{(1 - p_i z^{-1})^{j_i}},
-        \quad D = \max(L - M, 0),
+        H(z) = F(z) + \sum_{i=1}^{M} \frac{r_i}{(1 - p_i z^{-1})^{j_i}},
 
-    with the fractions starting with the direct term, :math:`d = 0`, as in
-    SciPy, or, with ``delayed_form=True``, delayed until it has ended,
-    :math:`d = D`. The two agree when :math:`L \le M`. A pole of multiplicity
+    as SciPy does, or, with ``delayed_form=True``, of
+
+    .. math::
+        H(z) = F(z) + z^{-D} \sum_{i=1}^{M} \frac{r_i}{(1 - p_i z^{-1})^{j_i}},
+
+    where :math:`F(z) = k_0 + k_1 z^{-1} + \cdots + k_{D-1} z^{-(D-1)}` is the
+    FIR part, :math:`D = \max(L - M, 0)`. The two agree when :math:`L \le M`.
+    A pole of multiplicity
     :math:`m` is listed :math:`m` times in a row, with the powers
     :math:`j_i = 1, \dots, m`. The poles are the roots of the denominator,
     sorted by magnitude, ascending, then by angle in :math:`(-\pi, \pi]`, and
-    grouped in that order by :func:`unique_roots`.
-
-    Both parts come from the impulse response :math:`h` of :math:`H`, found as
-    the first :math:`D + M` terms of :math:`b / a` by one triangular solve. The
-    impulse response of each fraction is
-    :math:`\binom{n + j_i - 1}{j_i - 1} p_i^n`, so that after the direct term,
-    :math:`h[D + n] = \sum_i V_{D - d + n, i} r_i` with the confluent
-    Vandermonde matrix :math:`V_{ni} = \binom{n + j_i - 1}{j_i - 1} p_i^n`, and
-    one linear solve gives :math:`r`. The direct term is what the fractions
-    leave of the response before,
-    :math:`k_n = h[n] - \sum_i V_{n - d, i} r_i`, which is :math:`h[n]` itself
-    in the delayed form. Simple and repeated poles take the same path.
+    grouped by :func:`unique_roots`.
 
     Args:
         b (Tensor): numerator coefficients, of shape :math:`(L)` or
@@ -304,19 +298,16 @@ def residuez(
             sizes or precisions differ (real and complex inputs of one
             precision mix), :attr:`rtype` is unknown, or, without
             ``delayed_form``, :math:`L > M` and :math:`a_M = 0` for any filter.
-        torch.linalg.LinAlgError: if the linear system is singular: a pole at 0
-            is repeated, or, without ``delayed_form``, :math:`p_i^D`
-            underflows.
+        torch.linalg.LinAlgError: if a pole at 0 is repeated, or, without
+            ``delayed_form``, :math:`p_i^D` underflows for a pole, which
+            ``delayed_form=True`` avoids.
 
     Note:
         Unlike :func:`scipy.signal.residuez`, the denominator omits its leading
         1, and no zero coefficients are trimmed, so the output shapes follow
-        from the input shapes. The poles are grouped after they are sorted,
-        not before, which differs only for a chain of poles each close to the
-        next while the ends are not. Poles of equal magnitude, such as a
-        conjugate pair, are ordered by angle, where SciPy keeps the order of
-        the root finder, which can vary between platforms; magnitudes that
-        differ only by rounding still can.
+        from the input shapes. Poles of equal magnitude, such as a conjugate
+        pair, are ordered by angle, where SciPy keeps the order of its root
+        finder.
 
         A pole at 0 (:math:`a_M = 0`) has the constant fraction :math:`r_i`.
         When :math:`L > M`, that overlaps the direct term, so the expansion
@@ -325,18 +316,9 @@ def residuez(
         tap at delay :math:`D`, which is unique.
 
     Note:
-        Without ``delayed_form``, the residues come from the response after the
-        direct term, from :math:`h[D]` on, where a pole contributes
-        :math:`p_i^D`. If that underflows, as :math:`0.5^{1100}` does in
-        float64, the linear system is singular, and the solve raises an error.
-        The delayed form has no such limit.
-
-    Note:
         The poles are the roots of :attr:`a`, which are ill-conditioned at high
-        orders: for a Butterworth filter of order 12, the expansion's impulse
-        response is off by about :math:`10^{-3}` in float64 (SciPy's by about
-        100%). For a filter given as sections, use :func:`sos2pfe`, whose
-        expansion is in positive powers of :math:`z`.
+        orders, and so is the expansion. For a filter given as sections, use
+        :func:`sos2pfe`, whose poles are the sections' own.
 
     Example::
 
@@ -416,25 +398,24 @@ def invresz(
     This is the inverse of :func:`residuez`: it multiplies out
 
     .. math::
-        H(z) = \sum_{n=0}^{M_k-1} k_n z^{-n}
-            + z^{-d} \sum_{i=1}^{M} \frac{r_i}{(1 - p_i z^{-1})^{j_i}},
+        H(z) = F(z) + \sum_{i=1}^{M} \frac{r_i}{(1 - p_i z^{-1})^{j_i}},
 
-    with :math:`d = 0`, or :math:`d = M_k` with ``delayed_form=True``,
-    where equal poles are adjacent and have the powers :math:`j_i = 1, 2, \dots`
-    in a row. The denominator is the product of :math:`(1 - p_i z^{-1})` over
-    the poles, by a tree of :func:`~philtorch.poly.polymul`. The numerator is
-    :math:`k` times the denominator plus, delayed by :math:`d`, the fractions'
-    numerator: the first :math:`M` coefficients of the denominator times their
-    impulse response :math:`V r`, with the confluent Vandermonde matrix
-    :math:`V` of :func:`residuez`.
+    or, with ``delayed_form=True``,
+
+    .. math::
+        H(z) = F(z) + z^{-D} \sum_{i=1}^{M} \frac{r_i}{(1 - p_i z^{-1})^{j_i}},
+
+    where :math:`F(z) = k_0 + k_1 z^{-1} + \cdots + k_{D-1} z^{-(D-1)}` is the
+    FIR part, and equal poles are adjacent, with the powers
+    :math:`j_i = 1, 2, \dots` in a row.
 
     Args:
         r (Tensor): the residues, of shape :math:`(M)` or :math:`(B, M)`. A
             repeated pole's residues go by ascending power.
         p (Tensor): the poles, of shape :math:`(M)` or :math:`(B, M)`. Equal
             poles must be adjacent.
-        k (Tensor): the direct term, of shape :math:`(M_k)` or
-            :math:`(B, M_k)`, possibly empty. Batched :attr:`r`, :attr:`p` and
+        k (Tensor): the direct term, of shape :math:`(D)` or
+            :math:`(B, D)`, possibly empty. Batched :attr:`r`, :attr:`p` and
             :attr:`k` have the same batch size, and an unbatched one is shared
             by the batch.
         tol (float, optional): the distance within which two adjacent poles
@@ -448,8 +429,8 @@ def invresz(
             Default: ``False``.
 
     Returns:
-        tuple of Tensor: the numerator :math:`b`, of shape :math:`(M + M_k)`
-        or :math:`(B, M + M_k)`, and the denominator :math:`a` without its
+        tuple of Tensor: the numerator :math:`b`, of shape :math:`(M + D)`
+        or :math:`(B, M + D)`, and the denominator :math:`a` without its
         leading 1, of shape :math:`(M)` or :math:`(B, M)`, both complex and in
         ascending powers of :math:`z^{-1}`. The outputs are batched when any
         input is.
@@ -462,13 +443,7 @@ def invresz(
 
     Note:
         Unlike :func:`scipy.signal.invresz`, the denominator omits its leading
-        1, and no zero coefficients are trimmed. A group of poles has the value
-        that :attr:`rtype` chooses among its members, whereas SciPy reduces
-        copies of the group's first pole, so that its ``rtype`` has no effect.
-        A pole continues a group when it is within :attr:`tol` of the previous
-        pole, whereas SciPy compares it with the group's first pole. That is
-        the same for repeated poles, but a chain in which each pole is close to
-        the next while the ends are not is one group here.
+        1, and no zero coefficients are trimmed.
 
     Example::
 
@@ -501,10 +476,10 @@ def invresz(
 
     # a run of poles, each within tol of the one before; its powers 1, 2, ...
     starts = F.pad(torch.diff(p).abs() > tol, (1, 0), value=True)
-    run = starts.cumsum(-1)
     index = torch.arange(M, device=p.device)
-    extra = index - (starts * index).cummax(-1).values
-    poles = _reduce_groups(p.unsqueeze(1), run.unsqueeze(-1) == run.unsqueeze(-2), rtype)
+    first = (starts * index).cummax(-1).values
+    extra = index - first
+    poles = _reduce_groups(p, first, rtype)
 
     denominator = _tree_prod(F.pad(-poles.unsqueeze(-1), (1, 0), value=1))
     # k a, then the fractions' numerator, from their first M samples, delayed by
@@ -519,36 +494,37 @@ def invresz(
 
 def sos2pfe(
     sos: Tensor, tol: float | None = None, rtype: str = "avg"
-) -> tuple[Tensor, Tensor, Tensor]:
+) -> tuple[Tensor, Tensor, Tensor, Tensor | None, Tensor]:
     r"""Expand second-order sections into partial fractions.
 
     For the cascade
 
     .. math::
-        H(z) = \prod_{k=1}^{K}
-            \frac{b_{k0} z^2 + b_{k1} z + b_{k2}}{z^2 + a_{k1} z + a_{k2}},
+        H(z) = \prod_{l=1}^{K}
+            \frac{b_{l0} + b_{l1} z^{-1} + b_{l2} z^{-2}}
+                 {1 + a_{l1} z^{-1} + a_{l2} z^{-2}},
 
-    this returns the residues :math:`r_i`, the poles :math:`p_i` and the direct
-    term :math:`k = \prod_k b_{k0}` of
+    this returns the residues :math:`r_i`, the poles :math:`p_i`, the direct
+    gain :math:`k = \prod_l b_{l0}` and the powers :math:`j_i` of the delayed
+    form
 
     .. math::
-        H(z) = k + \sum_{i=1}^{2K} \frac{r_i}{(z - p_i)^{j_i}}.
+        H(z) = k + \sum_{i=1}^{M}
+            \frac{r_i z^{-j_i}}{(1 - p_i z^{-1})^{j_i}},
 
-    A pole of multiplicity :math:`m` is listed :math:`m` times in a row, with
-    the powers :math:`j_i = 1, \dots, m`.
+    as :func:`~philtorch.lti.pfefilt` takes it. A pole of multiplicity
+    :math:`m` is listed :math:`m` times in a row, with the powers
+    :math:`j_i = 1, \dots, m`. Each term is delayed by its power, so that the
+    powers of a pole at 0 are the taps :math:`r_i z^{-j_i}` of an FIR filter.
+    For simple poles, this is the delayed form of the partial fraction
+    expansion in `Introduction to Digital Filters with Audio Applications`_
+    (Smith, 2007), with the FIR part :math:`k`. A real :attr:`sos` lists one
+    pole of each conjugate pair, that of positive imaginary part, which stands
+    for both in :func:`~philtorch.lti.pfefilt`, and its real poles have real
+    residues. A complex :attr:`sos` lists every pole.
 
-    The poles are the sections' own, in closed form, by the quadratic formula
-    in its stable arrangement, and grouped by :func:`unique_roots`. For a group
-    of multiplicity :math:`m` at :math:`p`, let
-    :math:`F(s) = s^m H(p + s) = \sum_j r_j s^{m-j} + O(s^m)`: the residues
-    are the first :math:`m` Taylor coefficients of :math:`F` at 0. :math:`F` is
-    the product over the sections of their numerators at :math:`p + s`, divided
-    by the factors :math:`(p - p_l + s)` of their poles in other groups, each
-    at its group's value :math:`p_l`, so that the coefficients come from the
-    product of the sections' power series, truncated to :math:`m` terms, found
-    by a tree of :func:`~philtorch.poly.polymul`. There is no polynomial
-    division, root finding of a high-order polynomial or linear solve. Simple
-    and repeated poles take the same path.
+    Poles within :attr:`tol` of each other, directly or through a chain of
+    such poles, are one group.
 
     Args:
         sos (Tensor): the sections, of shape :math:`(K, 5)` or
@@ -556,65 +532,71 @@ def sos2pfe(
             :math:`b_0, b_1, b_2, a_1, a_2`, as in
             :func:`~philtorch.lti.sosfilt`.
         tol (float, optional): the distance within which two poles are
-            considered equal, as in :func:`unique_roots`. ``None`` means
-            :math:`10 \sqrt{\epsilon}`, :math:`\epsilon` being the machine
-            epsilon of :attr:`sos`'s dtype. Default: ``None``.
+            considered equal. ``None`` means :math:`10 \sqrt{\epsilon}`,
+            :math:`\epsilon` being the machine epsilon of :attr:`sos`'s
+            dtype, enough to merge a double root that rounding splits.
+            Default: ``None``.
         rtype (str, optional): how to choose the pole of a group of equal poles,
-            as in :func:`unique_roots`. Default: ``"avg"``.
+            as in :func:`unique_roots`, up to the conjugate symmetry of a real
+            :attr:`sos`. Default: ``"avg"``.
 
     Returns:
-        tuple of Tensor: the residues :math:`r` and the poles :math:`p`, both
-        complex and of shape :math:`(2K)` or :math:`(B, 2K)`, and the direct
-        term :math:`k`, of :attr:`sos`'s dtype and of shape :math:`()` or
-        :math:`(B)`. The poles are grouped in the order of their first pole,
-        the sections' poles one section after the other, and each entry of a
-        group holds the group's pole.
+        tuple: the residues :math:`r` and the poles :math:`p`, both complex
+        and of shape :math:`(M)`, :math:`M` being the number of terms of all
+        the filters: at most :math:`2K` per filter, fewer for a real
+        :attr:`sos`; the direct term :math:`k`, of :attr:`sos`'s
+        dtype and of shape :math:`()` or :math:`(B)`; the batch index, the row
+        of the filter each term belongs to, of shape :math:`(M)`, or ``None``
+        for a 2-D :attr:`sos`; and the powers :math:`j_i`, of shape
+        :math:`(M)`. The terms are in the order of the rows, and in a row,
+        grouped in the order of their first pole, the sections' poles one
+        section after the other; each entry of a group holds the group's pole.
 
     Raises:
         ValueError: if :attr:`sos` is not 2-D or 3-D, its last dimension is
             not 5, it has no section, or :attr:`rtype` is unknown.
 
     Note:
-        Compared with :func:`residuez` on :func:`sos2tf`'s output:
-
-        - For simple poles, the expansion is :func:`residuez`'s with
-          ``delayed_form=True``, up to the order of the poles. It also holds a
-          repeated pole at 0 (an FIR section, :math:`a_1 = a_2 = 0`), which
-          :func:`residuez`'s bases can't.
-        - The poles are the sections' own, not the ill-conditioned roots of a
-          high-order denominator. In float64, the expansion's impulse response
-          is off from :func:`~philtorch.lti.sosfilt`'s, relative to its peak,
-          by :math:`10^{-10}`, :math:`4 \times 10^{-12}` and
-          :math:`3 \times 10^{-15}` for SciPy's Butterworth design of order 24,
-          Chebyshev type I of order 24 and elliptic of order 16, where
-          :func:`residuez`'s is off by :math:`10^{-4}`, :math:`10^{25}` and
-          :math:`0.2`.
-        - Rounding splits a section's double root by only about
-          :math:`\sqrt{\epsilon}`, :math:`\epsilon` being the machine epsilon
-          of :attr:`sos`'s dtype, hence the default :attr:`tol` of
-          :math:`10 \sqrt{\epsilon}`: :math:`1.5 \times 10^{-7}` in float64 and
-          :math:`3.5 \times 10^{-3}` in float32. :func:`residuez`'s
-          :math:`10^{-3}` would merge distinct poles of sharp designs: for an
-          elliptic design of order 24 whose closest poles are
-          :math:`1.2 \times 10^{-4}` apart, the error above grows from
-          :math:`10^{-13}` to :math:`3 \times 10^{-4}`.
-
-    Note:
-        The number of groups depends on the values of the poles, so the shapes
-        inside do too, and the call can't be compiled without a graph break.
+        For simple poles, the expansion is that of :func:`residuez` with
+        ``delayed_form=True`` on :func:`sos2tf`'s output, up to the order of
+        the poles and, for a real :attr:`sos`, the conjugates it leaves out;
+        :func:`residuez` can't hold a repeated pole at 0, as an FIR
+        section has.
+        The poles here are the sections' own, not the roots of a high-order
+        denominator, so the expansion stays accurate for high-order filters,
+        where :func:`residuez` loses precision.
 
     Example::
 
         >>> from philtorch.lti import sos2pfe
-        >>> # (z + 1) / (z - 0.5) = 1 + 1.5 / (z - 0.5), with a pole at 0
+        >>> # (1 + z^-1) / (1 - 0.5 z^-1) = 1 + 1.5 z^-1 / (1 - 0.5 z^-1),
+        >>> # and a pole at 0 with residue 0
         >>> sos = torch.tensor([[1.0, 1.0, 0.0, -0.5, 0.0]])
-        >>> r, p, k = sos2pfe(sos)
+        >>> r, p, k, batch_index, power = sos2pfe(sos)
         >>> r.real
         tensor([1.5000, 0.0000])
         >>> p.real
         tensor([0.5000, 0.0000])
         >>> k
         tensor(1.)
+        >>> power
+        tensor([1, 1])
+        >>> # a filter of order 24, 12 sections of unit gain at DC: the
+        >>> # expansion filters as the cascade does
+        >>> from philtorch.lti import pfefilt, sosfilt
+        >>> a1 = -1.9 * torch.linspace(0.05, 0.3, 12, dtype=torch.float64).cos()
+        >>> a2 = torch.full_like(a1, 0.9025)
+        >>> b = (1 + a1 + a2) / 4
+        >>> sos = torch.stack([b, 2 * b, b, a1, a2], -1)
+        >>> x = torch.zeros(200, dtype=torch.float64)
+        >>> x[0] = 1.0
+        >>> r, p, k, batch_index, power = sos2pfe(sos)
+        >>> y = pfefilt(r, p, k, x, batch_index=batch_index, power=power)
+        >>> torch.allclose(y, sosfilt(sos, x))
+        True
+
+    .. _Introduction to Digital Filters with Audio Applications:
+        https://ccrma.stanford.edu/~jos/filters/
     """
     if rtype not in _RTYPES:
         raise ValueError(f"rtype must be one of {_RTYPES}, got {rtype!r}")
@@ -624,25 +606,40 @@ def sos2pfe(
     batched = sos.dim() == 3
     sos = sos if batched else sos.unsqueeze(0)
     B, K, _ = sos.shape
+    if B == 0:
+        none = torch.empty(0, dtype=torch.long, device=sos.device)
+        empty = sos.new_empty(0, dtype=sos.dtype.to_complex())
+        return empty, empty, sos.new_empty(0), none, none
 
     # the roots of z^2 + a1 z + a2: q is the one without cancellation, and the
     # other is a2 / q (q is 0 only where a1 = a2 = 0), or, for a real section,
     # q's conjugate where the roots are conjugates
     a1, a2 = sos[..., 3:].to(sos.dtype.to_complex()).unbind(-1)
-    d = torch.sqrt(a1 * a1 - 4 * a2)
+    disc = a1 * a1 - 4 * a2
+    d = torch.sqrt(disc)
     d = torch.where((a1.conj() * d).real < 0, -d, d)
     q = -(a1 + d) / 2
-    conjugates = (d.real == 0) & (not sos.is_complex())
+    # by the discriminant's sign: sqrt's real part isn't exactly 0 on CUDA
+    conjugates = (disc.real < 0) & (not sos.is_complex())
     poles = torch.stack((q, torch.where(conjugates, q.conj(), a2 / (q + (q == 0)))), -1)
     poles = poles.view(B, 2 * K)
 
-    batch_index, group = _group(poles, tol)
-    unique = _reduce_groups(poles[batch_index], group, rtype)
-    multiplicity = group.sum(-1)
+    # the closure maps the group of p to that of conj(p)
+    label, batch_index, first, multiplicity = _group_roots(poles, tol)
+    # each pole's group value; a real sos's are made exact conjugates
+    value = _reduce_groups(poles, label, rtype)
+    if not sos.is_complex():
+        # a section's conjugate poles are adjacent; a real pole is its own
+        partner = torch.arange(2 * K, device=sos.device) ^ conjugates.repeat_interleave(2, -1)
+        value = (value + value.gather(-1, partner).conj()) / 2
+        # a real sos lists one group of each conjugate pair, that of Im >= 0
+        half = value[batch_index, first].imag >= 0
+        batch_index, first, multiplicity = batch_index[half], first[half], multiplicity[half]
+    unique = value[batch_index, first]
+    group = label[batch_index] == first.unsqueeze(-1)
     m = int(multiplicity.max())
     # each pole's group value minus this group's
-    away = torch.zeros_like(poles).index_add(0, batch_index, group * unique[:, None])
-    away = (away[batch_index] - unique.unsqueeze(-1)).unflatten(-1, (K, 2))
+    away = (value[batch_index] - unique.unsqueeze(-1)).unflatten(-1, (K, 2))
 
     # the first m terms of the series of 1 / (s - away) are -cumprod(1 / away);
     # a member of the group has 1
@@ -660,7 +657,15 @@ def sos2pfe(
     f = _tree_prod(terms.flatten(1, 2), m)
 
     # r_j = f[m - j]: each group's first m terms, reversed
-    keep = torch.arange(m, device=sos.device) >= m - multiplicity.unsqueeze(-1)
-    p, r = torch.stack((unique.unsqueeze(-1).expand(-1, m), f.flip(-1)))[:, keep].view(2, B, 2 * K)
+    power = torch.arange(1 - m, 1, device=sos.device) + multiplicity.unsqueeze(-1)
+    keep = power >= 1
+    p, r, power = unique.unsqueeze(-1).expand(-1, m)[keep], f.flip(-1)[keep], power[keep]
+    if not sos.is_complex():
+        # a real pole's residue is real; r.real is made complex as a workaround
+        # of an upstream bug: torch.where's backward fails for a real and a
+        # complex input
+        r = torch.where(p.imag == 0, r.real.to(r.dtype), r)
     k = sos[..., 0].prod(-1)
-    return (r, p, k) if batched else (r[0], p[0], k[0])
+    if not batched:
+        return r, p, k[0], None, power
+    return r, p, k, batch_index.repeat_interleave(multiplicity), power

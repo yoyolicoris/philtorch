@@ -13,6 +13,7 @@ from .filtering import (
     lfilter,
     lfilter_zi,
     lfiltic,
+    pfefilt,
     sosfilt,
     sosfilt_zi,
 )
@@ -23,6 +24,7 @@ from .ssm import diag_state_space, state_space, state_space_recursion
 __all__ = [
     "lfilter",
     "lfilter_zi",
+    "pfefilt",
     "sosfilt",
     "sosfilt_zi",
     "sos2tf",
