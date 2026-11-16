@@ -10,7 +10,7 @@ import torch
 import torch.nn.functional as F
 from torch import Tensor
 
-from ..mat import companion, confluent_vandermonde
+from ..mat import _confluent_vandermonde, companion
 from ..poly import polymul
 from ..utils import _check_shared
 from .filtering import _check_sos, _sections_by_row
@@ -377,7 +377,7 @@ def residuez(
     # after the direct term, h[D:] = V r, V's rows starting at D - d
     D = N - M
     extra = extra.view(B, M)
-    V = confluent_vandermonde(p, extra, M if delayed_form else N, start=extra)
+    V = _confluent_vandermonde(p, extra, M if delayed_form else N, start=extra)
     r = torch.linalg.solve(V[:, -M:], h[:, D:].to(p.dtype))
     k = h[:, :D]
     if not delayed_form and D > 0:
@@ -482,7 +482,7 @@ def invresz(
     denominator = _tree_prod(F.pad(-poles.unsqueeze(-1), (1, 0), value=1))
     # k a, then the fractions' numerator, from their first M samples, delayed by
     # d; a zero pads k, so that an empty k multiplies too
-    fractions = (confluent_vandermonde(poles, extra, M, start=extra) @ r.unsqueeze(-1)).squeeze(-1)
+    fractions = (_confluent_vandermonde(poles, extra, M, start=extra) @ r.unsqueeze(-1)).squeeze(-1)
     numerator = polymul(denominator, fractions)[..., :M]
     d = k.size(-1) if delayed_form else 0
     b = polymul(F.pad(k, (0, 1)), denominator)[..., :L] + F.pad(numerator, (d, L - M - d))

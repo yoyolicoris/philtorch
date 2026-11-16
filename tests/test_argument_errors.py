@@ -1089,58 +1089,27 @@ _MAT_CASES = [
         "must have square matrices",
         id="cumdot-A-not-square",
     ),
-    # confluent_vandermonde(poles, e, rows, start): poles (*, M); e and start
-    # integers of shape (M) or poles's, start <= e
+    # confluent_vandermonde(poles, e): poles (*, M); e integers >= 0 of shape
+    # (M) or poles's
     pytest.param(
-        lambda: confluent_vandermonde(_zeros(2), _zeros(2), 3),
+        lambda: confluent_vandermonde(_zeros(2), _zeros(2)),
         "e must be an integer tensor",
         id="confluent-e-dtype",
     ),
     pytest.param(
-        lambda: confluent_vandermonde(
-            _zeros(2), torch.zeros(2, dtype=torch.long), 3, start=_zeros(2)
-        ),
-        "start must be an integer tensor",
-        id="confluent-start-dtype",
-    ),
-    pytest.param(
-        lambda: confluent_vandermonde(
-            _zeros(2), torch.zeros(2, dtype=torch.long, device="meta"), 3
-        ),
+        lambda: confluent_vandermonde(_zeros(2), torch.zeros(2, dtype=torch.long, device="meta")),
         "e must be on poles's device",
         id="confluent-e-device",
     ),
     pytest.param(
-        lambda: confluent_vandermonde(
-            _zeros(2),
-            torch.zeros(2, dtype=torch.long),
-            3,
-            start=torch.zeros(2, dtype=torch.long, device="meta"),
-        ),
-        "start must be on poles's device",
-        id="confluent-start-device",
-    ),
-    pytest.param(
-        lambda: confluent_vandermonde(_zeros(3, 2), torch.zeros(1, 2, dtype=torch.long), 3),
+        lambda: confluent_vandermonde(_zeros(3, 2), torch.zeros(1, 2, dtype=torch.long)),
         r"e must be of shape \(2,\) or \(3, 2\)",
         id="confluent-e-shape",
     ),
     pytest.param(
-        lambda: confluent_vandermonde(
-            _zeros(3, 2),
-            torch.zeros(2, dtype=torch.long),
-            3,
-            start=torch.zeros(4, 3, 2, dtype=torch.long),
-        ),
-        r"start must be of shape \(2,\) or \(3, 2\)",
-        id="confluent-start-shape",
-    ),
-    pytest.param(
-        lambda: confluent_vandermonde(
-            _zeros(2), torch.tensor([0, 1]), 3, start=torch.tensor([0, 2])
-        ),
-        "start must not exceed e",
-        id="confluent-start-above-e",
+        lambda: confluent_vandermonde(_zeros(2), torch.tensor([0, -1])),
+        "e must not be negative",
+        id="confluent-e-negative",
     ),
 ]
 

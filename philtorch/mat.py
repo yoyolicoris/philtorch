@@ -157,78 +157,93 @@ def vandermonde(poles: Tensor) -> Tensor:
     return torch.vander(poles).mT
 
 
-def confluent_vandermonde(
-    poles: Tensor, e: Tensor, rows: int, start: Tensor | None = None
-) -> Tensor:
-    r"""Return the confluent Vandermonde matrix of poles and exponents.
+def confluent_vandermonde(poles: Tensor, e: Tensor) -> Tensor:
+    r"""Return the confluent Vandermonde matrix of descending powers of poles.
 
-    For :math:`M` poles :math:`p_c`, row :math:`i = 0, \dots,
-    \text{rows} - 1` and column :math:`c = 0, \dots, M - 1` hold
+    For :math:`M` poles :math:`p_k` with orders :math:`e_k`, row
+    :math:`i = 0, \dots, M - 1` and column :math:`k = 0, \dots, M - 1` hold
 
     .. math::
-        V_{ic} = \binom{n}{e_c} p_c^{\,n - e_c}, \quad n = i + s_c,
+        V_{ik} = \binom{n}{e_k} p_k^{\,n - e_k}, \quad n = M - 1 - i,
 
-    and entries with :math:`n < e_c` are zero. Column :math:`c` is the impulse
-    response of :math:`z^{-e_c} / (1 - p_c z^{-1})^{e_c + 1}` from sample
-    :math:`s_c` on. With every :math:`e_c = s_c = 0`, it is the Vandermonde
-    matrix :math:`V_{ic} = p_c^i`.
+    and entries with :math:`n < e_k` are zero. Column :math:`k` is
+    :math:`\frac{1}{e_k!} \frac{d^{e_k}}{dx^{e_k}} (x^{M-1}, \dots, x, 1)`
+    at :math:`x = p_k`. A column of order 0 is the column of
+    :func:`vandermonde`, so with every order 0, :math:`V` is
+    :func:`vandermonde` of the poles.
+
+    List a pole of multiplicity :math:`m` in :math:`m` adjacent columns, with
+    the orders :math:`0, 1, \dots, m - 1`. Then :math:`C V = V J`, where
+    :math:`C` is the :func:`companion` matrix of the :math:`a` with
+    :math:`1 + \sum_{k=1}^{M} a_k z^{-k} = \prod_{k=0}^{M-1} (1 - p_k z^{-1})`,
+    whose eigenvalues are the poles, and :math:`J` is the Jordan form in the
+    columns' order: :math:`J_{kk} = p_k`, :math:`J_{k-1, k} = 1` where
+    :math:`e_k \ge 1`, and zero elsewhere.
 
     Args:
-        poles (Tensor): the poles :math:`p_c`, real or complex, of shape
+        poles (Tensor): the poles :math:`p_k`, real or complex, of shape
             :math:`(*, M)`.
-        e (Tensor): the exponents :math:`e_c \ge 0`, an integer tensor of
-            shape :math:`(M)` or the shape of :attr:`poles`.
-        rows (int): the number of rows.
-        start (Tensor, optional): the first sample :math:`s_c` of each
-            column, an integer tensor with :math:`s_c \le e_c`, of shape
-            :math:`(M)` or the shape of :attr:`poles`. Default: ``None``,
-            all 0.
+        e (Tensor): the orders :math:`e_k \ge 0`, an integer tensor of shape
+            :math:`(M)` or the shape of :attr:`poles`.
 
     Returns:
-        Tensor: the matrix, of shape :math:`(*, \text{rows}, M)`, with the
-        dtype and device of :attr:`poles`.
+        Tensor: the matrix, of shape :math:`(*, M, M)`, with the dtype and
+        device of :attr:`poles`.
 
     Raises:
-        ValueError: if :attr:`e` or :attr:`start` is not an integer tensor,
-            is not on the device of :attr:`poles`, or has neither shape
-            :math:`(M)` nor that of :attr:`poles`, or
-            if any :math:`s_c > e_c`.
+        ValueError: if :attr:`e` is not an integer tensor, is not on the
+            device of :attr:`poles`, has neither shape :math:`(M)` nor that of
+            :attr:`poles`, or has a negative entry.
 
     Example::
 
-        >>> from philtorch.mat import confluent_vandermonde
-        >>> # a double pole at 0.5: 0.5^n beside n 0.5^(n - 1)
+        >>> from philtorch.mat import companion, confluent_vandermonde
+        >>> # a double pole at 0.5: a = [-1, 0.25], as
+        >>> # 1 - z^-1 + 0.25 z^-2 = (1 - 0.5 z^-1)^2
         >>> poles = torch.tensor([0.5, 0.5])
-        >>> confluent_vandermonde(poles, torch.tensor([0, 1]), 4)
-        tensor([[1.0000, 0.0000],
-                [0.5000, 1.0000],
-                [0.2500, 1.0000],
-                [0.1250, 0.7500]])
+        >>> V = confluent_vandermonde(poles, torch.tensor([0, 1]))
+        >>> V
+        tensor([[0.5000, 1.0000],
+                [1.0000, 0.0000]])
+        >>> C = companion(torch.tensor([-1.0, 0.25]))
+        >>> J = torch.tensor([[0.5, 1.0], [0.0, 0.5]])
+        >>> torch.allclose(C @ V, V @ J)
+        True
     """
-    for name, t in (("e", e), ("start", start)):
-        if t is None:
-            continue
-        _check_integer(name, t)
-        if t.device != poles.device:
-            raise ValueError(f"{name} must be on poles's device, got {t.device}.")
-        if t.shape not in (poles.shape[-1:], poles.shape):
-            raise ValueError(
-                f"{name} must be of shape {tuple(poles.shape[-1:])} or {tuple(poles.shape)}, "
-                f"got {tuple(t.shape)}."
-            )
-    if start is not None and bool((start > e).any()):
-        raise ValueError("start must not exceed e.")
+    _check_integer("e", e)
+    if e.device != poles.device:
+        raise ValueError(f"e must be on poles's device, got {e.device}.")
+    if e.shape not in (poles.shape[-1:], poles.shape):
+        raise ValueError(
+            f"e must be of shape {tuple(poles.shape[-1:])} or {tuple(poles.shape)}, "
+            f"got {tuple(e.shape)}."
+        )
+    if bool((e < 0).any()):
+        raise ValueError("e must not be negative.")
     # float16 and bfloat16 accumulate in float32, complex32 in complex64
     acc = torch.complex64 if poles.dtype == torch.complex32 else _accumulation_dtype(poles.dtype)
-    p = poles.to(acc)
+    V = _confluent_vandermonde(poles.to(acc), e, poles.size(-1))
+    return V.flip(-2).to(poles.dtype)
+
+
+def _confluent_vandermonde(p: Tensor, e: Tensor, rows: int, start: Tensor | None = None) -> Tensor:
+    r"""The confluent Vandermonde matrix of ascending powers, (*, rows, M).
+
+    Entry [i, c] is :math:`\binom{n}{e_c} p_c^{n - e_c}`, zero where
+    :math:`n < e_c`, with :math:`n = i + s_c` and ``start`` :math:`s_c` from 0
+    (the default) to :math:`e_c`. With ``start = e``, column c is the impulse
+    response of :math:`1 / (1 - p_c z^{-1})^{e_c + 1}`, which ``residuez`` and
+    ``invresz`` use. A cumulative product builds each column from the ratios
+    of consecutive rows, which keeps the binomials exact up to rounding.
+    """
     # t = n - e runs from start - e <= 0; the ratio of row t to row t - 1 is
     # p (t + e) / t from t = 1 on, and 1 before, then t < 0 is masked out
     shift = -e if start is None else start - e
-    n = torch.arange(rows, dtype=acc.to_real(), device=p.device)
+    n = torch.arange(rows, dtype=p.dtype.to_real(), device=p.device)
     t = n.unsqueeze(-1) + shift.unsqueeze(-2)
     ratio = p.unsqueeze(-2) * ((t + e.unsqueeze(-2)) / t.clamp(min=1))
     ratio = torch.where(t >= 1, ratio, 1)
-    return (torch.cumprod(ratio, dim=-2) * (t >= 0)).to(poles.dtype)
+    return torch.cumprod(ratio, dim=-2) * (t >= 0)
 
 
 def matrix_power_accumulate(A: Tensor, n: int) -> Tensor:
