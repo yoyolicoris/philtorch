@@ -10,8 +10,8 @@ The rules are in `CONTRIBUTING.md`, "Docstrings": PyTorch's form (sections, role
 ## Steps
 
 1. **Read the neighbours.** Read the docstrings of the related functions, the ones the target calls, sits beside on its `docs/api/*.rst` page, or shares arguments with. List their symbols and check them against the table in `CONTRIBUTING.md`. Match their notation and structure, or, where they break the table, say so to the maintainer.
-2. **Check the reference.** For a filter equation, look the notation up in Smith's book (https://ccrma.stanford.edu/~jos/filters/), keeping `x[n]` brackets. For a SciPy counterpart, read SciPy's docstring: a Note states only the differences that change how a call is written or what it returns.
-3. **Write or edit**, following the content rules: what, not how; no figures; Notes the user can act on.
+2. **Check the reference.** For a filter equation, look the notation up in Smith's book (https://ccrma.stanford.edu/~jos/filters/), keeping `x[n]` brackets. For a SciPy counterpart, read SciPy's docstring: a Note states only the differences that change how a call is written or what it returns, not package conventions, which Args states.
+3. **Write or edit**, following the content rules: what, not how; numbers by example, not in the text; Notes the user can act on; say it once.
 4. **Form.** Apply the form rules in `CONTRIBUTING.md`, "Docstrings".
 5. **Render.** Render the docstring through Napoleon and docutils with no warnings, or build with `pixi run docs`. Run its examples with `tests/test_docstrings.py` (`tests/test_docstrings_cuda.py` for Triton code). An example prints only results that are the same on every platform.
 6. **Fresh reader.** Give a subagent only the signature and the rendered docstring, with no code and no history; an agent that can't spawn one asks the maintainer to read it instead. Ask:
@@ -25,7 +25,10 @@ The rules are in `CONTRIBUTING.md`, "Docstrings": PyTorch's form (sections, role
 ## Don't
 
 - Narrate the implementation: kernels, scans, trees, solves, chunks, launches.
-- Quote measurements: errors, timings, memory figures, speed-ups.
+- Quote measurements in the text: errors, timings, memory figures, speed-ups. Where a numerical difference matters, show it with an example that prints a platform-stable result.
 - Use `k` as a gain, except in functions that mirror SciPy's.
 - Leave a `Note:` about a limitation no argument avoids, such as a graph break.
+- Restate a package convention, or Args, Returns or the main text, in a Note.
+- Write a second `Note:` block.
+- Write a bare `tuple` as a return type: name it in full, as `tuple of Tensor`.
 - Show one equation with a parameter where an argument selects between two forms: show both.

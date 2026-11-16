@@ -59,16 +59,24 @@ Public functions follow [PyTorch's docstring conventions](https://github.com/pyt
 - **References:** refer to arguments with `` :attr:`x` ``, to functions with `` :func:`philtorch.lti.lfilter` ``, and to other code with double backticks. Sphinx renders single backticks as italics, not code.
 - **Args:** write each argument as `name (type): description`, with a lowercase description. Follow PyTorch's type rules: `tuple of int`, `Tensor or None`, `str` rather than `string`, and `optional` after the type for an argument with a default, whose description ends with `Default: ...`.
 - **Returns and Raises:** give the shapes and, when they aren't simply the input's, the dtype and device. List the exceptions a caller can trigger with bad input.
-- **Differences from SciPy and NumPy:** call out argument-order or convention differences from the SciPy or NumPy function users would compare against, in a `Note:` section or next to the argument.
-- **Examples:** add an `Example::` block with doctest examples where it helps; like PyTorch's, they assume `torch` is imported. Add the module to `MODULES` in `tests/test_docstrings.py`, which runs every example.
+  - Name the type in full: `Tensor`, `tuple of Tensor`, or `Tensor or tuple of Tensor` when an optional argument adds outputs. Never write a bare `tuple`.
+  - With an initial state `zi`, the function returns the final state only when `zi` is given. Say so, with its shape and whether a shared `zi` gives one final state per signal.
+  - Say when an output can be empty, such as a direct term of a filter with fewer zeros than poles.
+- **Package conventions:** state them in Args, next to the argument they concern: `a` without its leading 1, batch first and time second, no `axis` argument. Don't repeat them in a Note.
+- **Differences from SciPy and NumPy:** compare as PyTorch does with NumPy. Write either one sentence ("This computes what :func:`scipy.signal.dlsim` does with `x0=zi`."), or one sentence per difference that changes how a call is written or what it returns. Where it helps, add how to recover SciPy's behaviour ("Unlike `numpy.vander`, this function returns the powers of `x` in ascending order."). Don't write paragraphs of explanation.
+- **Examples:** add an `Example::` block with doctest examples where it helps; like PyTorch's, they assume `torch` is imported. Add the module to `MODULES` in `tests/test_docstrings.py`, which runs every example. Start each case with a comment stating it in the docstring's notation, such as `# (1 + z^-1) / (1 - 0.5 z^-1)`.
 
 ### Content
 
 PyTorch's conventions fix a docstring's form. Its content follows these rules.
 
 - **What, not how.** Say what the function computes and returns: the formula, shapes, dtypes, errors, and the caveats that change the output or its accuracy. Leave out how it is computed when that changes nothing the user sees: kernels, scans, trees of products, solves, chunking.
-- **No figures.** Measured errors, timings and speed-ups go in pull requests and issue artifacts. State accuracy qualitatively, as SciPy's `sosfilt` does ("designed to minimize numerical precision errors for high-order filters"). Where accuracy is the point of a function, its example may show it, printing only a result that is the same on every platform, such as `torch.allclose(...)`.
-- **Notes the user can act on.** A `Note:` states a difference from SciPy or NumPy, or the cost of an option the user chooses. It doesn't state a limitation no argument avoids.
+- **Numbers by example, not in the text.** Measured errors, timings and speed-ups go in pull requests and issue artifacts. State accuracy qualitatively in the text, as SciPy's `sosfilt` does ("designed to minimize numerical precision errors for high-order filters"). Where a numerical difference matters to a function, as the cascade's accuracy against the expanded polynomial does to `sosfilt`, show it with an example. The example compares the outputs and prints only a result that is the same on every platform, such as `torch.allclose(...)` or `bool(err_sos < err_tf)`, never the error itself.
+- **Notes the user can act on.** A `Note:` states a difference from SciPy or NumPy that changes a call or its output, or the cost of an option the user chooses.
+  - It doesn't state a limitation that no argument avoids.
+  - It doesn't repeat Args, Returns, Raises, the main text, or a package convention.
+  - A docstring has at most one `Note:` block.
+- **Say it once.** When functions share a point, state it on one of them and refer to it from the others: "as in :func:`sosfilt`". Examples of a shared point are an argument's layout or a precision caveat.
 - **Every argument explained.** After any edit, including a trim, read the docstring as a first-time user would. Every argument should say what it does, every pronoun should have an antecedent, and every citation should have its target. Leave no sentence fragments.
 - **Consistent with neighbours.** Use the notation and structure of the docstrings of related functions. Check them before writing.
 
@@ -89,7 +97,7 @@ Filter equations follow Julius O. Smith's *Introduction to Digital Filters with 
 | `r_i`, `p_i`, `j_i` | residues, poles and powers of a partial fraction expansion |
 | `D` | a delay in samples |
 
-`k` is only an index, never a gain or a coefficient. The exception is the functions that mirror SciPy (`residuez`, `invresz`), which keep SciPy's `k` for the direct term. Where a function has two forms selected by an argument, such as `delayed_form`, show both equations rather than one parameterized equation.
+`k` is only an index, never a gain or a coefficient. The exception is the functions that mirror SciPy (`residuez`, `invresz`), which keep SciPy's `k` for the direct term. Where a function has two forms selected by an argument, such as `delayed_form`, show both equations rather than one parameterized equation. Write a cascade as a plain product over its sections, `H(z) = \prod_{l=1}^{K} ...`, with no intermediate `H_l(z)`. Give a product or sum explicit bounds, not a condition subscript such as `\prod_{j < k}`.
 
 ## Pull requests
 
