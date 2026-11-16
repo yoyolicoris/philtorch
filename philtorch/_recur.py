@@ -310,6 +310,12 @@ def _previous(zi: Tensor, h: Tensor) -> Tensor:
     return torch.cat([zi.unsqueeze(1), h[:, :-1]], 1)
 
 
+def _derivative_dtype(dtype: torch.dtype) -> torch.dtype:
+    """The dtype the derivatives' PyTorch ops run in: complex64 for complex32,
+    which has no matmul, and on CPU no sum or flip of an innermost dimension."""
+    return torch.complex64 if dtype == torch.complex32 else dtype
+
+
 def _gradients(run, A, zi, h, grad, needs_A, needs_zi):
     """The gradients of A, zi and x from h's, ``grad``; ``run`` runs the recurrence.
 
@@ -332,9 +338,7 @@ def _gradients(run, A, zi, h, grad, needs_A, needs_zi):
     A_H = A.mH
     if Ta > 1:
         A_H = A_H.index_select(1, torch.arange(Ta - 1, 0, -1, device=A.device))
-    # complex32 has no matmul, nor, on CPU, a sum or a flip of an innermost
-    # dimension: those run in complex64, in which the kernels accumulate it.
-    acc = torch.complex64 if grad.dtype == torch.complex32 else grad.dtype
+    acc = _derivative_dtype(grad.dtype)
 
     def flip(t):
         return t.to(acc).flip(1).to(t.dtype)
@@ -348,7 +352,7 @@ def _gradients(run, A, zi, h, grad, needs_A, needs_zi):
         # A[0]^H lam[0], summed elementwise: as a batched matmul of small
         # matrices, PyTorch routes it through a Triton kernel whose launch
         # costs more than the product.
-        grad_zi = (A[:, 0].conj() * lam[:, 0].to(acc).unsqueeze(-1)).sum(-2).to(zi.dtype)
+        grad_zi = (A[:, 0].conj().to(acc) * lam[:, 0].to(acc).unsqueeze(-1)).sum(-2).to(zi.dtype)
     return grad_A, grad_zi, lam
 
 
@@ -410,8 +414,7 @@ class Recurrence(torch.autograd.Function):
         # a matmul over each sequence's steps at once.
         tangent = dx
         if dA is not None:
-            # complex32 has no matmul on CPU: the term runs in complex64.
-            acc = torch.complex64 if h.dtype == torch.complex32 else h.dtype
+            acc = _derivative_dtype(h.dtype)
             h_prev, dA_acc = _previous(zi, h).to(acc), dA.to(acc)
             if dA.size(1) == 1:
                 term = h_prev @ dA_acc[:, 0].mT
