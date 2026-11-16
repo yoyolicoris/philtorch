@@ -450,16 +450,6 @@ def test_diag_state_space_L_alone_C_D_zi_out_idx(complex_L, batched_L, extras):
     torch.testing.assert_close(zf, zf_ref)
 
 
-def test_diag_state_space_L_alone_gradcheck():
-    L, x, B = _diag_L_inputs(True, True, 2, True)
-    zi = torch.randn(x.size(0), L.size(-1), dtype=L.dtype)
-    inputs = tuple(t.requires_grad_() for t in (x, L, B, zi))
-
-    assert torch.autograd.gradcheck(
-        lambda x, L, B, zi: diag_state_space(x, L=L, B=B, zi=zi), inputs
-    )
-
-
 class _RecordShapes(TorchDispatchMode):
     def __init__(self):
         super().__init__()

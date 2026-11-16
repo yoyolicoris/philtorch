@@ -13,7 +13,7 @@ from torch import Tensor
 from ..mat import companion
 from ..poly import polymul
 from ..utils import _check_shared
-from .filtering import _check_sos
+from .filtering import _check_sos, _sections_by_row
 
 _RTYPES = ("max", "maximum", "min", "minimum", "avg", "mean")
 
@@ -88,17 +88,24 @@ def _reduce_groups(p: Tensor, label: Tensor, rtype: str) -> Tensor:
     return torch.complex(real, by_group(tied, reduce))
 
 
-def _group_roots(roots: Tensor, tol: float) -> tuple[Tensor, Tensor, Tensor, Tensor]:
+def _group_roots(
+    roots: Tensor, tol: float, live: Tensor | None = None
+) -> tuple[Tensor, Tensor, Tensor, Tensor]:
     """Group the roots within ``tol`` of each other, directly or through a
     chain of such roots.
 
-    ``roots`` is of shape (B, M), M >= 1. Returns the group of each root, the
+    ``roots`` is of shape (B, M), M >= 1. A boolean ``live`` of that shape
+    keeps the roots where it is ``False`` apart from the others: they group
+    only among themselves. Returns the group of each root, the
     position of its first root, of shape (B, M), and the batch index, the
     position of the first root and the number of roots of each group, of
     shape (G), the groups in row order.
     """
     real = roots.dtype.to_real()
-    near = ((roots.unsqueeze(-1) - roots.unsqueeze(-2)).abs() <= tol).to(real)
+    near = (roots.unsqueeze(-1) - roots.unsqueeze(-2)).abs() <= tol
+    if live is not None:
+        near &= live.unsqueeze(-1) == live.unsqueeze(-2)
+    near = near.to(real)
     # each squaring doubles the length of the chains linked
     steps = range((roots.size(-1) - 1).bit_length())
     same = reduce(lambda c, _: (c @ c > 0).to(real), steps, near) > 0
@@ -124,7 +131,7 @@ def _vandermonde(p: Tensor, extra: Tensor, rows: int) -> Tensor:
     return torch.cumprod(F.pad(ratios, (0, 0, 1, 0), value=1), dim=-2)
 
 
-def sos2tf(sos: Tensor) -> tuple[Tensor, Tensor]:
+def sos2tf(sos: Tensor, batch_index: Tensor | None = None) -> tuple[Tensor, Tensor]:
     r"""Convert second-order sections to transfer function coefficients.
 
     This multiplies the sections' numerators and denominators,
@@ -136,22 +143,38 @@ def sos2tf(sos: Tensor) -> tuple[Tensor, Tensor]:
             = \frac{b_0 + b_1 z^{-1} + \cdots + b_{2K} z^{-2K}}
                    {1 + a_1 z^{-1} + \cdots + a_{2K} z^{-2K}}.
 
+    With :attr:`batch_index`, each filter is the product of its own sections,
+    in the order they are listed, and :math:`K` in the shapes below is the
+    most sections of a filter: the coefficients of a filter of fewer
+    sections end in zeros, and a filter without a section is 1.
+
     Args:
-        sos (Tensor): the sections, of shape :math:`(K, 5)` or
-            :math:`(B, K, 5)`, :math:`K \ge 1`. Each row is
-            :math:`b_0, b_1, b_2, a_1, a_2`, as in
-            :func:`~philtorch.lti.sosfilt`.
+        sos (Tensor): the sections, of shape :math:`(K, 5)` for one cascade,
+            :math:`K \ge 1`, or :math:`(S, 5)` with :attr:`batch_index`,
+            :math:`S \ge 1`. Each row is one section,
+            :math:`b_{l0}, b_{l1}, b_{l2}, a_{l1}, a_{l2}`, :math:`l` being its
+            place in its cascade, as in :func:`~philtorch.lti.sosfilt`.
+        batch_index (Tensor, optional): the filter each section belongs to,
+            of shape :math:`(S)`, int32 or int64 on :attr:`sos`'s device and
+            not negative. Sections with the same value are multiplied in the
+            order they are listed; they need not be consecutive. The filters
+            are numbered 0 to :math:`B - 1`, :math:`B` being the largest value
+            plus 1; the filters past it, being 1, are left out. Default:
+            ``None``, one cascade of all the sections.
 
     Returns:
-        tuple of Tensor: the numerator :math:`b`, of shape :math:`(2K + 1)` or
-        :math:`(B, 2K + 1)`, and the denominator :math:`a` without its leading
-        1, of shape :math:`(2K)` or :math:`(B, 2K)`, as
-        :func:`~philtorch.lti.lfilter` takes them, both in ascending powers of
-        :math:`z^{-1}`.
+        tuple of Tensor: the numerator :math:`b`, of shape :math:`(2K + 1)`,
+        and the denominator :math:`a` without its leading 1, of shape
+        :math:`(2K)`, both of :attr:`sos`'s dtype and in ascending powers of
+        :math:`z^{-1}`, as :func:`~philtorch.lti.lfilter` takes them. With
+        :attr:`batch_index`, of shapes :math:`(B, 2K + 1)` and
+        :math:`(B, 2K)`.
 
     Raises:
-        ValueError: if :attr:`sos` is not 2-D or 3-D, its last dimension is
-            not 5, or it has no section.
+        ValueError: if :attr:`sos` is not 2-D, its last dimension is not 5, or
+            it has no section, or :attr:`batch_index` is not of shape
+            :math:`(S)`, not int32 or int64, not on :attr:`sos`'s device, or
+            negative.
 
     Example::
 
@@ -164,8 +187,18 @@ def sos2tf(sos: Tensor) -> tuple[Tensor, Tensor]:
         tensor([ 1.,  0., -1.,  0.,  0.])
         >>> a
         tensor([ 0.0000, -0.2500,  0.0000,  0.0000])
+        >>> # the same sections as two filters of one section each
+        >>> b, a = sos2tf(sos, torch.tensor([0, 1]))
+        >>> b
+        tensor([[ 1.,  1.,  0.],
+                [ 1., -1.,  0.]])
+        >>> a
+        tensor([[-0.5000,  0.0000],
+                [ 0.5000,  0.0000]])
     """
     _check_sos(sos)
+    if batch_index is not None:
+        sos = _sections_by_row(sos, batch_index)[0]
     both = _tree_prod(torch.stack((sos[..., :3], F.pad(sos[..., 3:], (1, 0), value=1)), -3))
     return both[..., 0, :], both[..., 1, 1:]
 
@@ -472,7 +505,10 @@ def invresz(
 
 
 def sos2pfe(
-    sos: Tensor, tol: float | None = None, rtype: str = "avg"
+    sos: Tensor,
+    tol: float | None = None,
+    rtype: str = "avg",
+    batch_index: Tensor | None = None,
 ) -> tuple[Tensor, Tensor, Tensor, Tensor | None, Tensor]:
     r"""Expand second-order sections into partial fractions.
 
@@ -491,9 +527,9 @@ def sos2pfe(
         H(z) = g + \sum_{i=1}^{M}
             \frac{r_i z^{-j_i}}{(1 - p_i z^{-1})^{j_i}},
 
-    as :func:`~philtorch.lti.pfefilt` takes it. A pole of multiplicity
-    :math:`m` is listed :math:`m` times in a row, with the powers
-    :math:`j_i = 1, \dots, m`. Each term is delayed by its power, so that the
+    as :func:`~philtorch.lti.pfefilt` takes it. A repeated pole is listed once
+    per power, in a row, with the powers :math:`j_i` from 1 to its
+    multiplicity. Each term is delayed by its power, so that the
     powers of a pole at 0 are the taps :math:`r_i z^{-j_i}` of an FIR filter.
     For simple poles, this is the delayed form of the partial fraction
     expansion in `Introduction to Digital Filters with Audio Applications`_
@@ -505,11 +541,24 @@ def sos2pfe(
     Poles within :attr:`tol` of each other, directly or through a chain of
     such poles, are one group.
 
+    With :attr:`batch_index`, each filter's cascade, its sections in the order
+    they are listed, is expanded on its own: a filter's expansion is the sum
+    above over the terms whose returned batch index is its number, with its
+    own :math:`g`. Poles of different filters are never one group, and a
+    filter without a section has no term and :math:`g = 1`.
+
+    The outputs aren't differentiable where a section's two poles are exactly
+    equal, :math:`a_{l1}^2 = 4 a_{l2}`, as in every FIR section
+    (:math:`a_{l1} = a_{l2} = 0`): the gradients of that section's
+    :math:`a_{l1}` and :math:`a_{l2}` are then NaN. Poles merged within
+    :attr:`tol`, or repeated across sections, keep finite gradients.
+
     Args:
-        sos (Tensor): the sections, of shape :math:`(K, 5)` or
-            :math:`(B, K, 5)`, :math:`K \ge 1`. Each row is
-            :math:`b_0, b_1, b_2, a_1, a_2`, as in
-            :func:`~philtorch.lti.sosfilt`.
+        sos (Tensor): the sections, of shape :math:`(K, 5)` for one cascade,
+            :math:`K \ge 1`, or :math:`(S, 5)` with :attr:`batch_index`,
+            :math:`S \ge 1`. Each row is one section,
+            :math:`b_{l0}, b_{l1}, b_{l2}, a_{l1}, a_{l2}`, :math:`l` being its
+            place in its cascade, as in :func:`~philtorch.lti.sosfilt`.
         tol (float, optional): the distance within which two poles are
             considered equal. ``None`` means :math:`10 \sqrt{\epsilon}`,
             :math:`\epsilon` being the machine epsilon of :attr:`sos`'s
@@ -518,23 +567,33 @@ def sos2pfe(
         rtype (str, optional): how to choose the pole of a group of equal poles,
             as in :func:`unique_roots`, up to the conjugate symmetry of a real
             :attr:`sos`. Default: ``"avg"``.
+        batch_index (Tensor, optional): the filter each section belongs to,
+            of shape :math:`(S)`, int32 or int64 on :attr:`sos`'s device and
+            not negative, as in :func:`sos2tf`: sections with the same value
+            form one cascade, in the order they are listed. The filters are
+            numbered 0 to :math:`B - 1`, :math:`B` being the largest value
+            plus 1. Default: ``None``, one cascade of all the sections.
 
     Returns:
         tuple: the residues :math:`r` and the poles :math:`p`, both complex
-        and of shape :math:`(M)`, :math:`M` being the number of terms of all
-        the filters: at most :math:`2K` per filter, fewer for a real
-        :attr:`sos`; the direct gain :math:`g`, of :attr:`sos`'s
-        dtype and of shape :math:`()` or :math:`(B)`; the batch index, the row
-        of the filter each term belongs to, of shape :math:`(M)`, or ``None``
-        for a 2-D :attr:`sos`; and the powers :math:`j_i`, of shape
-        :math:`(M)`. The terms are in the order of the rows, and in a row,
-        grouped in the order of their first pole, the sections' poles one
-        section after the other; each entry of a group holds the group's pole.
+        at :attr:`sos`'s precision (complex64 for float32) and of shape
+        :math:`(M)`, :math:`M` being the number of terms of all
+        the filters: at most two per section, a real :attr:`sos` listing one
+        term for a conjugate pair; the direct gain :math:`g`, of
+        :attr:`sos`'s dtype and of shape :math:`()`, or :math:`(B)` with
+        :attr:`batch_index`; the batch index, the filter each term belongs to,
+        int64 and of shape :math:`(M)`, or ``None`` without
+        :attr:`batch_index`; and the powers :math:`j_i`, int64 and of shape
+        :math:`(M)`. The terms are in the order of the filters, and in a
+        filter, grouped in the order of their first pole, the sections' poles
+        one section after the other, a section's pole of larger magnitude
+        first; each entry of a group holds the group's pole.
 
     Raises:
-        ValueError: if :attr:`sos` is not 2-D or 3-D, its last dimension is
-            not 5, it has no section, it is float16 or bfloat16, or
-            :attr:`rtype` is unknown.
+        ValueError: if :attr:`sos` is not 2-D, its last dimension is not 5, it
+            has no section, it is float16 or bfloat16, :attr:`rtype` is
+            unknown, or :attr:`batch_index` is not of shape :math:`(S)`, not
+            int32 or int64, not on :attr:`sos`'s device, or negative.
 
     Note:
         For simple poles, the expansion is that of :func:`residuez` with
@@ -571,6 +630,15 @@ def sos2pfe(
         >>> y = pfefilt(r, p, g, x, batch_index=batch_index, power=power)
         >>> torch.allclose(y, sosfilt(sos, x))
         True
+        >>> # two filters of one section each, the first's as above
+        >>> sos = torch.tensor([[1.0, 1.0, 0.0, -0.5, 0.0],
+        ...                     [1.0, -1.0, 0.0, 0.5, 0.0]])
+        >>> index = torch.tensor([0, 1])
+        >>> r, p, g, batch_index, power = sos2pfe(sos, batch_index=index)
+        >>> r.real
+        tensor([ 1.5000,  0.0000, -1.5000,  0.0000])
+        >>> batch_index
+        tensor([0, 0, 1, 1])
 
     .. _Introduction to Digital Filters with Audio Applications:
         https://ccrma.stanford.edu/~jos/filters/
@@ -582,13 +650,16 @@ def sos2pfe(
         raise ValueError(f"sos can't be float16 or bfloat16, got {sos.dtype}.")
     if tol is None:
         tol = 10 * torch.finfo(sos.dtype).eps ** 0.5
-    batched = sos.dim() == 3
-    sos = sos if batched else sos.unsqueeze(0)
+    if batch_index is None:
+        sos, live = sos.unsqueeze(0), sos.new_ones(1, sos.size(0), dtype=torch.bool)
+    else:
+        # the rows' sections, padded with identity sections, which are not live
+        sos, counts, _ = _sections_by_row(sos, batch_index)
+        live = torch.arange(sos.size(1), device=sos.device) < counts.unsqueeze(-1)
     B, K, _ = sos.shape
-    if B == 0:
-        none = torch.empty(0, dtype=torch.long, device=sos.device)
-        empty = sos.new_empty(0, dtype=sos.dtype.to_complex())
-        return empty, empty, sos.new_empty(0), none, none
+    # a padded section's double pole at 0 gives no term: it groups apart from
+    # the live poles, and its factors of the products are 1
+    live_pole = live.repeat_interleave(2, -1)
 
     # the roots of z^2 + a1 z + a2: q is the one without cancellation, and the
     # other is a2 / q (q is 0 only where a1 = a2 = 0), or, for a real section,
@@ -604,7 +675,8 @@ def sos2pfe(
     poles = poles.view(B, 2 * K)
 
     # the closure maps the group of p to that of conj(p)
-    label, batch_index, first, multiplicity = _group_roots(poles, tol)
+    label, row, first, multiplicity = _group_roots(poles, tol, live_pole)
+    keep = live_pole[row, first]
     # each pole's group value; a real sos's are made exact conjugates
     value = _reduce_groups(poles, label, rtype)
     if not sos.is_complex():
@@ -612,23 +684,25 @@ def sos2pfe(
         partner = torch.arange(2 * K, device=sos.device) ^ conjugates.repeat_interleave(2, -1)
         value = (value + value.gather(-1, partner).conj()) / 2
         # a real sos lists one group of each conjugate pair, that of Im >= 0
-        half = value[batch_index, first].imag >= 0
-        batch_index, first, multiplicity = batch_index[half], first[half], multiplicity[half]
-    unique = value[batch_index, first]
-    group = label[batch_index] == first.unsqueeze(-1)
+        keep &= value[row, first].imag >= 0
+    row, first, multiplicity = row[keep], first[keep], multiplicity[keep]
+    unique = value[row, first]
+    # a padded pole counts as a member, which has the factor 1
+    member = (label[row] == first.unsqueeze(-1)) | ~live_pole[row]
     m = int(multiplicity.max())
     # each pole's group value minus this group's
-    away = (value[batch_index] - unique.unsqueeze(-1)).unflatten(-1, (K, 2))
+    away = (value[row] - unique.unsqueeze(-1)).masked_fill(member, 0).unflatten(-1, (K, 2))
 
     # the first m terms of the series of 1 / (s - away) are -cumprod(1 / away);
     # a member of the group has 1
-    member = group.unflatten(-1, (K, 2))
+    member = member.unflatten(-1, (K, 2))
     series = (
         F.pad(member.unsqueeze(-1), (0, m - 1))
         + torch.cumprod((~member / (away + member)).unsqueeze(-1).expand(-1, -1, -1, m), -1).neg()
     )
-    # the numerators at p + s, in ascending powers of s
-    b0, b1, b2 = sos[batch_index, :, :3].unbind(-1)
+    # the numerators at p + s, in ascending powers of s; a padded section's is 1
+    b = torch.where(live[row].unsqueeze(-1), sos[row, :, :3], sos.new_tensor([0.0, 0.0, 1.0]))
+    b0, b1, b2 = b.unbind(-1)
     u = unique.unsqueeze(-1)
     t = b0 * u + b1
     numerator = torch.stack((t * u + b2, t + b0 * u, b0), -1)
@@ -645,6 +719,6 @@ def sos2pfe(
         # complex input
         r = torch.where(p.imag == 0, r.real.to(r.dtype), r)
     g = sos[..., 0].prod(-1)
-    if not batched:
+    if batch_index is None:
         return r, p, g[0], None, power
-    return r, p, g, batch_index.repeat_interleave(multiplicity), power
+    return r, p, g, row.repeat_interleave(multiplicity), power

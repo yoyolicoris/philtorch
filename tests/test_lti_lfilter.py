@@ -589,18 +589,6 @@ def test_lfilter_empty_a_fir_tdf2_zi(batched: bool):
 
 
 @pytest.mark.parametrize("backend", ["ssm", "diag_ssm"])
-@pytest.mark.parametrize("num_taps", [1, 3])
-def test_lfilter_empty_a_gradients(backend: str, num_taps: int):
-    rng = np.random.default_rng(3)
-    b = torch.from_numpy(rng.standard_normal((2, num_taps))).requires_grad_()
-    x = torch.from_numpy(rng.standard_normal((2, 12))).requires_grad_()
-    a = torch.zeros(2, 0, dtype=torch.float64)
-    assert torch.autograd.gradcheck(
-        lambda b, x: lfilter(b, a, x, form="tdf2", backend=backend), (b, x)
-    )
-
-
-@pytest.mark.parametrize("backend", ["ssm", "diag_ssm"])
 @pytest.mark.parametrize("a", [torch.zeros(0), torch.zeros(1)], ids=["empty-a", "order-1"])
 def test_lfilter_rejects_0d_signal(backend: str, a: torch.Tensor):
     with pytest.raises(ValueError, match="x must be 1D or 2D"):

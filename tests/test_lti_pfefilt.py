@@ -5,7 +5,8 @@ from scipy import signal
 
 from philtorch.lti import pfefilt, sos2pfe
 
-from .test_lti_sosfilt import _random_sos
+from .test_lti_conversions import _ragged_rows
+from .test_lti_sosfilt import _flat, _random_sos
 
 DOUBLE_REAL = [1.0, 0.5, -0.3, -1.0, 0.25]  # (1 - 0.5 z^-1)^2
 OTHER_REAL = [0.7, 0.1, 0.2, -0.3, 0.02]  # poles 0.2 and 0.1
@@ -20,8 +21,18 @@ def _expected(sos: np.ndarray, x: np.ndarray) -> np.ndarray:
     return np.stack([signal.sosfilt(s, xi) for s, xi in zip(full, x)])
 
 
+def _sos2pfe(sos: np.ndarray):
+    """sos2pfe of one cascade, or of one per row of a batch (B, K, 5) as flat sections."""
+    if sos.ndim == 2:
+        return sos2pfe(torch.from_numpy(sos))
+    B, K, _ = sos.shape
+    return sos2pfe(
+        torch.from_numpy(sos.reshape(-1, 5)), batch_index=torch.arange(B).repeat_interleave(K)
+    )
+
+
 def _check(sos: np.ndarray, x: np.ndarray):
-    r, p, g, batch_index, power = sos2pfe(torch.from_numpy(sos))
+    r, p, g, batch_index, power = _sos2pfe(sos)
     y = pfefilt(r, p, g, torch.from_numpy(x), batch_index=batch_index, power=power)
     assert y.dtype == torch.from_numpy(x).dtype
     torch.testing.assert_close(y, torch.from_numpy(_expected(sos, x)), rtol=1e-7, atol=1e-9)
@@ -92,6 +103,20 @@ def test_pfefilt_batched_multiplicities():
     _check(sos, np.random.default_rng(0).standard_normal((4, 64)))
 
 
+def test_pfefilt_ragged_rows_match_scipy():
+    # rows of 3, 1, 0 and 2 sections: the row without any passes x on
+    rows = _ragged_rows()
+    sos, batch_index = _flat(rows, interleave=True)
+    r, p, g, index, power = sos2pfe(sos, batch_index=batch_index)
+    x = np.random.default_rng(0).standard_normal((4, 64))
+    y = pfefilt(r, p, g, torch.from_numpy(x), batch_index=index, power=power)
+    expected = [
+        signal.sosfilt(np.insert(row, 3, 1.0, axis=-1), xi) if len(row) else xi
+        for row, xi in zip(rows, x)
+    ]
+    torch.testing.assert_close(y, torch.from_numpy(np.stack(expected)), rtol=1e-7, atol=1e-9)
+
+
 @pytest.mark.parametrize(
     "sos",
     [
@@ -102,7 +127,7 @@ def test_pfefilt_batched_multiplicities():
     ids=["real", "complex", "batched"],
 )
 def test_pfefilt_in_chunks_equals_whole(sos):
-    r, p, g, batch_index, power = sos2pfe(torch.from_numpy(sos))
+    r, p, g, batch_index, power = _sos2pfe(sos)
     x = torch.randn(2, 60, dtype=r.dtype if sos.dtype.kind == "c" else torch.float64)
     # one state per term with batch_index, else per term and row
     zi = torch.zeros((2,) * (batch_index is None) + (p.numel(),), dtype=p.dtype)

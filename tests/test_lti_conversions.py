@@ -7,6 +7,8 @@ from scipy import signal
 
 from philtorch.lti import invresz, pfefilt, residuez, sos2pfe, sos2tf, sosfilt, unique_roots
 
+from .test_lti_sosfilt import _flat
+
 F64 = torch.float64
 
 
@@ -18,6 +20,15 @@ def _random_sos(*lead: int, K: int) -> np.ndarray:
     a1, a2 = -2 * r * np.cos(theta), r**2
     b = np.random.randn(*shape, 3)
     return np.concatenate([b, a1[..., None], a2[..., None]], axis=-1)
+
+
+def _ragged_rows() -> list[np.ndarray]:
+    """Rows of 3, 1, 0 and 2 sections, with a real section and a section without poles."""
+    np.random.seed(0)
+    rows = [_random_sos(K=3), _random_sos(K=1), np.zeros((0, 5)), _random_sos(K=2)]
+    rows[0][1, 3:] = [-0.8, 0.15]
+    rows[3][0, 3:] = 0.0
+    return rows
 
 
 def _a(*poles: complex) -> np.ndarray:
@@ -138,7 +149,8 @@ def test_unique_roots_batched(rtype, dtype):
 def test_sos2tf_matches_scipy(K, batched):
     np.random.seed(K)
     sos = _random_sos(3, K=K) if batched else _random_sos(K=K)
-    b, a = sos2tf(torch.from_numpy(sos))
+    batch_index = torch.arange(3).repeat_interleave(K) if batched else None
+    b, a = sos2tf(torch.from_numpy(sos.reshape(-1, 5)), batch_index)
     assert b.shape == (*sos.shape[:-2], 2 * K + 1)
     assert a.shape == (*sos.shape[:-2], 2 * K)
     rows = zip(
@@ -148,6 +160,24 @@ def test_sos2tf_matches_scipy(K, batched):
         expected_b, expected_a = signal.sos2tf(np.insert(row, 3, 1.0, axis=-1))
         np.testing.assert_allclose(got_b, expected_b, atol=1e-12)
         np.testing.assert_allclose(got_a, expected_a[1:], atol=1e-12)
+
+
+def test_sos2tf_ragged_rows_equal_each_row_alone_padded_with_zeros():
+    rows = _ragged_rows()
+    b, a = sos2tf(*_flat(rows, interleave=True))
+    assert b.shape == (4, 7) and a.shape == (4, 6)
+    for i, row in enumerate(rows):
+        expected_b, expected_a = (
+            sos2tf(torch.from_numpy(row))
+            if len(row)
+            else (torch.ones(1, dtype=F64), torch.zeros(0, dtype=F64))
+        )
+        torch.testing.assert_close(
+            b[i], torch.nn.functional.pad(expected_b, (0, 7 - expected_b.numel()))
+        )
+        torch.testing.assert_close(
+            a[i], torch.nn.functional.pad(expected_a, (0, 6 - expected_a.numel()))
+        )
 
 
 @pytest.mark.parametrize(
@@ -325,7 +355,13 @@ def test_invresz_without_poles():
 
 def _check_sos2pfe(sos: np.ndarray, atol: float):
     """Compare sos2pfe with SciPy's residue of the sections' product, row by row."""
-    r, p, g, batch_index, power = sos2pfe(torch.from_numpy(sos))
+    flat = torch.from_numpy(sos.reshape(-1, 5))
+    r, p, g, batch_index, power = sos2pfe(
+        flat,
+        batch_index=torch.arange(sos.shape[0]).repeat_interleave(sos.shape[1])
+        if sos.ndim == 3
+        else None,
+    )
     M = r.numel()
     assert r.shape == p.shape == power.shape == (M,)
     assert (batch_index is None) == (sos.ndim == 2)
@@ -396,9 +432,39 @@ def test_sos2pfe_fir_section():
     assert power.tolist() == [1, 2] and batch_index is None
 
 
-def test_sos2pfe_empty_batch():
-    r, p, g, batch_index, power = sos2pfe(torch.zeros(0, 2, 5, dtype=F64))
-    assert r.shape == p.shape == g.shape == batch_index.shape == power.shape == (0,)
+def test_sos2pfe_ragged_rows_equal_each_row_alone():
+    rows = _ragged_rows()
+    sos, batch_index = _flat(rows, interleave=True)
+    r, p, g, index, power = sos2pfe(sos, batch_index=batch_index)
+    assert g.shape == (4,)
+    # the row without a section: no term and a gain of 1
+    assert g[2] == 1 and (index != 2).all()
+    for i, row in enumerate(rows):
+        if not len(row):
+            continue
+        expected_r, expected_p, expected_g, _, expected_power = sos2pfe(torch.from_numpy(row))
+        torch.testing.assert_close(r[index == i], expected_r)
+        torch.testing.assert_close(p[index == i], expected_p)
+        torch.testing.assert_close(g[i], expected_g)
+        assert (power[index == i] == expected_power).all()
+    # in the order of the rows
+    assert (index.diff() >= 0).all()
+
+
+def test_sos2pfe_gives_no_term_for_the_padding_of_a_shorter_row():
+    # one section among rows of 3: padded with identity sections, whose double
+    # pole at 0 must not join a pole at 0 of a live section, which here is
+    # a section without poles
+    np.random.seed(0)
+    live = np.array([[1.0, 2.0, 3.0, 0.0, 0.0]])
+    rows = [_random_sos(K=3), live, _random_sos(K=3)]
+    sos, batch_index = _flat(rows, interleave=True)
+    r, p, g, index, power = sos2pfe(sos, batch_index=batch_index)
+    expected_r, expected_p, _, _, expected_power = sos2pfe(torch.from_numpy(live))
+    torch.testing.assert_close(r[index == 1], expected_r)
+    torch.testing.assert_close(p[index == 1], expected_p)
+    assert (power[index == 1] == expected_power).all()
+    assert (index == 1).sum() == 2
 
 
 def test_sos2pfe_batched_multiplicities():
