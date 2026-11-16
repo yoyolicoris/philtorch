@@ -3,6 +3,7 @@
 // compiles the shader source, binds tensors and dispatches on PyTorch's MPS
 // stream. stable_support.h holds it to the API of the package's floor torch.
 #include "mps_shim.h"
+#include "recur_checks.h"
 
 #include <array>
 #include <limits>
@@ -21,15 +22,18 @@ using torch::stable::Tensor;
 // The kernels' name in errors.
 constexpr const char *OP = "the MPS scalar recurrence";
 
-// Threads per threadgroup and steps per thread, as in scalar_recur_mps.metal.
+// Threads per threadgroup and steps per thread, which the kernels are
+// compiled with.
 constexpr uint64_t THREADS = 256;
 constexpr int64_t STEPS_PER_THREAD = 4;
 
-
 AOTIMetalShaderLibraryHandle library()
 {
-    static const AOTIMetalShaderLibraryHandle handle =
-        philtorch::mps::compile("", SCALAR_RECUR_MPS_METAL);
+    static const AOTIMetalShaderLibraryHandle handle = philtorch::mps::compile(
+        "#define THREADS " + std::to_string(THREADS) +
+            "\n#define STEPS_PER_THREAD " + std::to_string(STEPS_PER_THREAD) +
+            "\n",
+        SCALAR_RECUR_MPS_METAL);
     return handle;
 }
 
@@ -98,12 +102,8 @@ void launch(AOTIMetalKernelFunctionHandle function,
 Tensor scalar_recur_mps(const Tensor &decays, bool varying, int64_t stride_b,
                         const Tensor &zi, const Tensor &x)
 {
-    using philtorch::mps::is_mps;
-    STD_TORCH_CHECK(is_mps(decays) && is_mps(zi) && is_mps(x),
-                    "the coefficients, initial states and inputs must be MPS tensors");
+    check_types_devices(decays, zi, x);
     const ScalarType dtype = x.scalar_type();
-    STD_TORCH_CHECK(decays.scalar_type() == dtype && zi.scalar_type() == dtype,
-                    "the coefficients, initial states and inputs must have the same dtype");
     const Kernels &k = kernels(dtype);
 
     const auto decays_contiguous = torch::stable::contiguous(decays);
@@ -154,23 +154,14 @@ Tensor scalar_recur_mps(const Tensor &decays, bool varying, int64_t stride_b,
 
 Tensor lti_recur_mps(Tensor a, Tensor zi, Tensor x)
 {
-    STD_TORCH_CHECK(a.dim() <= 1, "A must be a vector or a scalar");
-    STD_TORCH_CHECK(x.dim() == 2 && zi.dim() == 1 && zi.size(0) == x.size(0),
-                    "x must be (B, T) and zi (B,)");
-    STD_TORCH_CHECK(x.size(1) > 0, "x must contain at least one time step");
-    const bool per_item = a.dim() == 1 && a.numel() == x.size(0);
-    STD_TORCH_CHECK(per_item || a.numel() == 1, "A must be a scalar or (B,)");
+    const bool per_item = lti_recur_per_item(a, zi, x);
     return scalar_recur_mps(a, false, per_item ? 1 : 0, zi, x);
 }
 
 // h[t] = decay[t] h[t - 1] + impulse[t]: one coefficient per step.
 Tensor scan_mps(Tensor impulse, Tensor decay, Tensor init)
 {
-    STD_TORCH_CHECK(impulse.dim() == 2 && decay.dim() == 2 &&
-                        decay.size(0) == impulse.size(0) &&
-                        decay.size(1) == impulse.size(1) && init.dim() == 1 &&
-                        init.size(0) == impulse.size(0),
-                    "impulse and decay must be (B, T) and init (B,)");
+    check_scan_shapes(impulse, decay, init);
     return scalar_recur_mps(decay, true, impulse.size(1), init, impulse);
 }
 

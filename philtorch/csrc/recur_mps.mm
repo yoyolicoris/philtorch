@@ -3,6 +3,7 @@
 // scalar_recur_mps.mm. The kernels, recur_mps.metal, are compiled once per
 // state size and dtype, on first use.
 #include "mps_shim.h"
+#include "recur_checks.h"
 
 #include <algorithm>
 #include <array>
@@ -172,20 +173,13 @@ Tensor recur_mps(const Tensor &a, int64_t a_batch, int64_t stride_b,
     return out;
 }
 
-void check_inputs(const Tensor &A, const Tensor &zi, const Tensor &x)
+// The checks of recurN (varying) or lti_recurN: the shared ones, then the MPS
+// kernels' own, for dtype, M and step count.
+void check_inputs(const Tensor &A, const Tensor &zi, const Tensor &x, bool varying)
 {
-    using philtorch::mps::is_mps;
-    STD_TORCH_CHECK(is_mps(A) && is_mps(zi) && is_mps(x),
-                    "the coefficients, initial states and inputs must be MPS tensors");
-    STD_TORCH_CHECK(A.scalar_type() == x.scalar_type() &&
-                        zi.scalar_type() == x.scalar_type(),
-                    "the coefficients, initial states and inputs must have the same dtype");
+    check_types_devices(A, zi, x);
     philtorch::mps::metal_type(x.scalar_type(), OP);
-    STD_TORCH_CHECK(x.dim() == 3 && zi.dim() == 2 && zi.size(0) == x.size(0) &&
-                        zi.size(1) == x.size(2),
-                    "x must be (B, T, M) and zi (B, M)");
-    STD_TORCH_CHECK(A.size(-1) == x.size(2) && A.size(-2) == x.size(2),
-                    "the last two dimensions of A must be M, x's last");
+    check_recurN_shapes(A, zi, x, varying);
     const int64_t most =
         x.scalar_type() == ScalarType::ComplexFloat ? MAX_STATES / 2 : MAX_STATES;
     STD_TORCH_CHECK(x.size(2) <= most, "the MPS recurrence takes M up to ",
@@ -199,10 +193,7 @@ void check_inputs(const Tensor &A, const Tensor &zi, const Tensor &x)
 
 Tensor recurN_mps(const Tensor &A, const Tensor &zi, const Tensor &x)
 {
-    STD_TORCH_CHECK(A.dim() == 3 || A.dim() == 4, "A must be a 3D or 4D tensor");
-    check_inputs(A, zi, x);
-    STD_TORCH_CHECK(A.size(-3) == x.size(1), "A must have one matrix per step of x");
-    STD_TORCH_CHECK(A.dim() == 3 || A.size(0) == x.size(0), "A must have x's batch size");
+    check_inputs(A, zi, x, true);
     const int64_t M = x.size(2);
     return recur_mps(torch::stable::contiguous(A), A.dim() == 4 ? x.size(0) : 1,
                      A.dim() == 4 ? x.size(1) * M * M : 0, M * M,
@@ -211,9 +202,7 @@ Tensor recurN_mps(const Tensor &A, const Tensor &zi, const Tensor &x)
 
 Tensor lti_recurN_mps(const Tensor &A, const Tensor &zi, const Tensor &x)
 {
-    STD_TORCH_CHECK(A.dim() == 2 || A.dim() == 3, "A must be a 2D or 3D tensor");
-    check_inputs(A, zi, x);
-    STD_TORCH_CHECK(A.dim() == 2 || A.size(0) == x.size(0), "A must have x's batch size");
+    check_inputs(A, zi, x, false);
     const int64_t M = x.size(2);
     return recur_mps(torch::stable::contiguous(A), A.dim() == 3 ? x.size(0) : 1,
                      A.dim() == 3 ? M * M : 0, 0, torch::stable::contiguous(zi), true,
@@ -226,16 +215,14 @@ Tensor lti_recurN_mps(const Tensor &A, const Tensor &zi, const Tensor &x)
 template <int64_t order>
 Tensor recur_of_order(const Tensor &A, const Tensor &zi, const Tensor &x)
 {
-    STD_TORCH_CHECK(x.dim() == 3 && x.size(2) == order,
-                    "x must be of shape (B, T, ", order, ")");
+    check_order(x, order);
     return recurN_mps(A, zi, x);
 }
 
 template <int64_t order>
 Tensor lti_recur_of_order(const Tensor &A, const Tensor &zi, const Tensor &x)
 {
-    STD_TORCH_CHECK(x.dim() == 3 && x.size(2) == order,
-                    "x must be of shape (B, T, ", order, ")");
+    check_order(x, order);
     return lti_recurN_mps(A, zi, x);
 }
 

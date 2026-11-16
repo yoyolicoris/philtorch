@@ -114,9 +114,4 @@ inline void launch(AOTIMetalKernelFunctionHandle function,
     TORCH_ERROR_CODE_CHECK(arguments.error);
 }
 
-inline bool is_mps(const torch::stable::Tensor &t)
-{
-    return t.device().type() == torch::headeronly::DeviceType::MPS;
-}
-
 } // namespace philtorch::mps
