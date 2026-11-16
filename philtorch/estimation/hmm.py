@@ -66,6 +66,11 @@ def _parse(
         raise ValueError(
             f"log_init must be of shape {(K,)} or {(batch_size, K)}, got {tuple(log_init.shape)}"
         )
+    if not log_emit.dtype == log_trans.dtype == log_init.dtype:
+        raise ValueError(
+            "log_emit, log_trans and log_init must share a dtype, got "
+            f"{[t.dtype for t in (log_emit, log_trans, log_init)]}"
+        )
     check_cuda_triton(name, log_emit, log_trans, log_init)
     # The kernels read each K x K matrix as a contiguous block, where batch
     # and time may broadcast, and the emissions as one contiguous block.
@@ -343,15 +348,12 @@ class _Viterbi(torch.autograd.Function):
         return grad_emit, grad_trans, grad_emit[:, 0]
 
 
-def _empty(log_emit: Tensor, log_trans: Tensor, log_init: Tensor) -> tuple[Tensor, Tensor]:
+def _empty(log_emit: Tensor) -> tuple[Tensor, Tensor]:
     """The results for no steps: a log-likelihood of 0, (B,), and no distributions.
 
-    Built from empty slices of every input, rather than as new tensors, so
-    they stay in the autograd graph and give zero gradients; sums over the
-    empty slices avoid 0 * -inf.
+    They are new tensors, outside the autograd graph.
     """
-    zero = log_emit.sum((1, 2)) + log_init[:, :0].sum(-1) + log_trans[..., :0].sum()
-    return zero, log_emit + zero[:, None, None]
+    return log_emit.new_zeros(log_emit.size(0)), log_emit.new_empty(log_emit.shape)
 
 
 def _predicted_and_backward(
@@ -382,20 +384,16 @@ def hmm_filter(log_emit: Tensor, log_trans: Tensor, log_init: Tensor) -> tuple[T
     from :math:`z[n]` and :math:`N - 1` transitions move :math:`z[n]` to
     :math:`z[n + 1]`, this returns :math:`\log p(y[0], \dots, y[N - 1])` and
     :math:`\log p(z[n] \mid y[0], \dots, y[n])`: the forward algorithm,
-    computed as a scan over time instead of step by step, as in `Temporal
-    Parallelization of Inference in Hidden Markov Models`_ (Hassan et al.,
-    2021).
+    computed in parallel over time as in `Temporal Parallelization of
+    Inference in Hidden Markov Models`_ (Hassan et al., 2021).
 
     The results are differentiable to any order in reverse mode, with
     respect to every input, so the log-likelihood can train the model's
     probabilities, or a network that predicts them; its gradient with respect
     to :attr:`log_emit` is the posteriors of :func:`hmm_smoother`. Forward-mode
-    automatic differentiation is not supported. The scan runs in chunks of
-    steps, a few Triton kernel launches whatever :math:`N` is, with
-    :math:`O(N K^3)` work, and its gradients are scans of the same kind. The
-    posteriors are normalized as in `A Fix for Softmax and Cross-Entropy`_
-    (Barron et al., 2026), so that their gradients keep a near-certain state's
-    share.
+    automatic differentiation is not supported. The posteriors are normalized
+    as in `A Fix for Softmax and Cross-Entropy`_ (Barron et al., 2026), so that
+    their gradients keep a near-certain state's share.
 
     Note:
         Runs only on CUDA GPUs, as Triton kernels: the inputs must be CUDA
@@ -420,8 +418,8 @@ def hmm_filter(log_emit: Tensor, log_trans: Tensor, log_init: Tensor) -> tuple[T
         are the log-probabilities from step :math:`n` on.
 
     Raises:
-        ValueError: if the inputs are not CUDA tensors or have unsupported
-            shapes.
+        ValueError: if the inputs are not CUDA tensors, have unsupported
+            shapes or do not share a dtype.
         RuntimeError: if Triton is not installed.
 
     Example::
@@ -451,7 +449,7 @@ def hmm_filter(log_emit: Tensor, log_trans: Tensor, log_init: Tensor) -> tuple[T
     """
     log_emit, log_trans, log_init = _parse("hmm_filter", log_emit, log_trans, log_init)
     if log_emit.size(1) == 0:
-        return _empty(log_emit, log_trans, log_init)
+        return _empty(log_emit)
     # alpha[n][j] = log p(y[0..n], z[n] = j), from the predicted messages.
     alpha = _LogChain.apply(log_init, log_trans, log_emit[:, :-1]) + log_emit
     dtype = log_emit.dtype
@@ -462,14 +460,14 @@ def hmm_smoother(log_emit: Tensor, log_trans: Tensor, log_init: Tensor) -> tuple
     r"""Smooth a hidden Markov model: forward-backward state posteriors.
 
     For the model of :func:`hmm_filter`, this returns the log-likelihood and
-    :math:`\log p(z[n] \mid y[0], \dots, y[N - 1])`, from a forward and an
-    independent backward scan, as in `Temporal Parallelization of Inference
-    in Hidden Markov Models`_ (Hassan et al., 2021). Its implementation and
-    differentiability are those of :func:`hmm_filter`. The pairwise
-    posteriors :math:`p(z[n] = i, z[n + 1] = j \mid y[0], \dots, y[N - 1])`
-    are the gradient of the summed log-likelihood with respect to a
-    :attr:`log_trans` of shape :math:`(B, N - 1, K, K)`, from which
-    :func:`hmm_em_step` takes its counts.
+    :math:`\log p(z[n] \mid y[0], \dots, y[N - 1])`, computed in parallel
+    over time as in `Temporal Parallelization of Inference in Hidden Markov
+    Models`_ (Hassan et al., 2021). It is differentiable as
+    :func:`hmm_filter` is. The pairwise posteriors
+    :math:`p(z[n] = i, z[n + 1] = j \mid y[0], \dots, y[N - 1])` are the
+    gradient of the summed log-likelihood with respect to a :attr:`log_trans`
+    of shape :math:`(B, N - 1, K, K)`, from which :func:`hmm_em_step` takes
+    its counts.
 
     Note:
         Runs only on CUDA GPUs, as Triton kernels: the inputs must be CUDA
@@ -512,7 +510,7 @@ def hmm_smoother(log_emit: Tensor, log_trans: Tensor, log_init: Tensor) -> tuple
     """
     log_emit, log_trans, log_init = _parse("hmm_smoother", log_emit, log_trans, log_init)
     if log_emit.size(1) == 0:
-        return _empty(log_emit, log_trans, log_init)
+        return _empty(log_emit)
     predicted, beta = _predicted_and_backward(log_emit, log_trans, log_init)
     log_likelihood = _logsumexp(predicted[:, -1] + log_emit[:, -1], dim=-1)
     # Normalize each step by its own sum rather than by the likelihood: the
@@ -528,14 +526,10 @@ def hmm_viterbi(log_emit: Tensor, log_trans: Tensor, log_init: Tensor) -> tuple[
     For the model of :func:`hmm_filter`, this is the Viterbi algorithm with
     both of its passes parallelized over time, as in `On the Temporal
     Parallelisation of the Viterbi Algorithm`_ (Särkkä and García-Fernández,
-    2023): a max-plus scan gives the best score of any path ending in each
-    state and records each state's best predecessor, and the traceback
-    composes those backpointer maps from the best last state, in chunks of
-    steps. So the path is always one of the optimal paths: under ties, the one
-    that prefers lower state indices, as the sequential algorithm's
-    backpointers do. The score's gradient is that of the decoded path: one for
-    its first state's prior and for each of its emissions and transitions; its
-    higher derivatives are zero.
+    2023). The path is always one of the optimal paths: under ties, the one
+    that prefers lower state indices. The score's gradient is that of the
+    decoded path: one for its first state's prior and for each of its emissions
+    and transitions; its higher derivatives are zero.
 
     Note:
         Runs only on CUDA GPUs, as Triton kernels: the inputs must be CUDA
@@ -575,8 +569,7 @@ def hmm_viterbi(log_emit: Tensor, log_trans: Tensor, log_init: Tensor) -> tuple[
     log_emit, log_trans, log_init = _parse("hmm_viterbi", log_emit, log_trans, log_init)
     batch_size, N, _ = log_emit.shape
     if N == 0:
-        score, _ = _empty(log_emit, log_trans, log_init)
-        return score, log_emit.new_zeros(batch_size, 0, dtype=torch.long)
+        return log_emit.new_zeros(batch_size), log_emit.new_zeros(batch_size, 0, dtype=torch.long)
     return _Viterbi.apply(log_emit, log_trans, log_init)
 
 
@@ -590,11 +583,8 @@ def hmm_em_step(
     the initial distribution. Shared parameters are fitted to all signals
     together, per-signal ones to each signal alone. The expected transition
     counts and initial states are the gradients of the log-likelihood with
-    respect to :attr:`log_trans` and :attr:`log_init`, so the E-step is
-    :func:`hmm_filter` and its backward pass, parallel scans as in `Temporal
-    Parallelization of Inference in Hidden Markov Models`_ (Hassan et al.,
-    2021). The M-step normalizes them; a state that is never left keeps its
-    row of :attr:`log_trans`.
+    respect to :attr:`log_trans` and :attr:`log_init`. The M-step normalizes
+    them; a state that is never left keeps its row of :attr:`log_trans`.
 
     The emissions belong to the caller: the state posteriors, the gradient
     with respect to :attr:`log_emit`, are returned to re-estimate their model.
@@ -625,8 +615,8 @@ def hmm_em_step(
         :math:`(B, N, K)`.
 
     Raises:
-        ValueError: if the inputs are not CUDA tensors or have unsupported
-            shapes.
+        ValueError: if the inputs are not CUDA tensors, have unsupported
+            shapes or do not share a dtype.
         RuntimeError: if Triton is not installed.
 
     Example::
@@ -643,9 +633,6 @@ def hmm_em_step(
         >>> log_trans.exp()
         tensor([[0.6742, 0.3258],
                 [0.0328, 0.9672]], device='cuda:0')
-
-    .. _Temporal Parallelization of Inference in Hidden Markov Models:
-        https://doi.org/10.1109/TSP.2021.3103338
     """
     if log_emit.dim() != 3 or log_emit.size(0) < 1 or log_emit.size(1) < 1:
         raise ValueError(f"log_emit must be (B, N, K) with B, N >= 1, got {tuple(log_emit.shape)}")

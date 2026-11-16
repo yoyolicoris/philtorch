@@ -119,18 +119,16 @@ def dtw(
     path under the Gibbs distribution; with a diagonal weight :math:`w`, a
     cell entered diagonally counts :math:`w` times. From a cost, both come
     from autograd, with no backtracking. The gradient is itself
-    differentiable, to any order. Costs may be ``inf`` to forbid cells.
+    differentiable, to any order. Costs may be ``inf`` to forbid cells. The
+    accumulated costs are computed in parallel as in `Parallelizing Dynamic
+    Time Warping Algorithm Using Prefix Computations on GPU`_ (Xiao et al.,
+    2013).
 
-    Rows of the accumulated costs are computed one after another, each with
-    a parallel scan over its cells, after `Parallelizing Dynamic Time
-    Warping Algorithm Using Prefix Computations on GPU`_ (Xiao et al.,
-    2013), in tiles of the grid run as a wavefront, so that a single long
-    pair fills the GPU: :math:`O(BNM)` work. From a cost, the memory is that
-    of the cost and the accumulated costs; from frames, :math:`O(B (N + M))`,
-    but for soft-DTW's gradient that of the accumulated costs (fewer of them
-    with :attr:`checkpoint`). The cost can be any tensor, from any
-    differentiable function of the sequences, such as the squared Euclidean
-    distances between their frames.
+    From a cost, the memory is that of the cost and the accumulated costs;
+    from frames, :math:`O(B (N + M))`, but for soft-DTW's gradient that of the
+    accumulated costs (fewer of them with :attr:`checkpoint`). The cost can be
+    any tensor, from any differentiable function of the sequences, such as the
+    squared Euclidean distances between their frames.
 
     Note:
         Runs only on CUDA GPUs, as Triton kernels: the inputs must be CUDA
@@ -144,11 +142,9 @@ def dtw(
             DTW, positive for soft-DTW. Default: 0.
         x (Tensor, optional): the first sequences' frames, of shape
             :math:`(B, N, F)`. With :attr:`y`, the cost is the squared
-            Euclidean distances between their frames, computed in the kernels
-            from direct differences and never stored, but for soft-DTW's
-            second derivatives, which rebuild them. DTW's gradient is then
-            that of its path's cost, the path found by divide and conquer as
-            :func:`dtw_path` finds it.
+            Euclidean distances between their frames, never stored, but for
+            soft-DTW's second derivatives, which rebuild them. DTW's gradient
+            is then that of its path's cost, the path :func:`dtw_path` finds.
         y (Tensor, optional): the second sequences' frames, of shape
             :math:`(B, M, F)`, with the dtype of :attr:`x`.
         step_pattern (str, optional): the steps a path may take, as (row,
@@ -177,31 +173,22 @@ def dtw(
             to :math:`(N_b - 1, M_b - 1)`, measured along the longer
             sequence, may be on a path. Where the line is steeper than the
             band allows a step to follow, the band widens to keep a path.
-            From :attr:`x` and :attr:`y` only, where the kernels skip the
-            tiles of the grid outside it, for DTW and soft-DTW alike; with a
-            cost, make the cost ``inf`` outside it instead. Default:
-            ``None``, no band.
-        checkpoint (int, optional): the number of rows of the kernels' grid
-            between stored rows of the accumulated costs, which soft-DTW's
-            gradient needs. The grid is :math:`R` by :math:`L` cells, with
-            :math:`R \le L`: :math:`R = \min(N, M)` for the symmetric and
-            orthogonal steps. The accumulated costs are not stored whole,
-            :math:`O(B R L)`, but recomputed in the backward pass. A grid of
-            several tile columns is cut along its wavefront, into strips of
-            tile anti-diagonals of about :math:`k` rows, but of at least 62,
-            so that the strips follow one another along it: with a seed per
-            strip, the cells the next one reads, the memory is
-            :math:`O(B L ((R + L / 8) / k + k))`, for tiles of 256 columns, as
-            for :math:`B < 8` (wider tiles give less than :math:`L / 8`), and
-            the passes take about 1.7 times as long as without
-            :attr:`checkpoint`, plus a few milliseconds of launches per strip
-            (for :math:`B = 1`, :math:`N = M = 16384` and :math:`F = 16`,
-            about 2, 4 and 6 times as long for 1024, 256 and 128 rows). A
-            grid of one tile column is cut into blocks of :math:`k` rows,
-            each a pass of its own, filling the wavefront anew: the memory is
-            :math:`O(B L (R / k + k))`, and a small :math:`k` is much slower.
-            From :attr:`x` and :attr:`y` only: a cost is :math:`O(B R L)`
-            anyway. Default: ``None``, all rows stored.
+            Only with :attr:`x` and :attr:`y`, for DTW and soft-DTW alike;
+            the cells outside it are then skipped. With a cost, make the cost
+            ``inf`` outside it instead. Default: ``None``, no band.
+        checkpoint (int, optional): about the number of rows between
+            stored rows of the accumulated costs, which soft-DTW's gradient
+            needs; the rest are recomputed in the backward pass. There is a
+            row per frame of the shorter sequence: :math:`R = \min(N, M)`
+            rows for the symmetric and orthogonal steps, and
+            :math:`\min(M, N - M + 1)` for the asymmetric ones. The memory
+            holds about :math:`R` / :attr:`checkpoint` stored rows and
+            :attr:`checkpoint` recomputed ones, so it is least near
+            :math:`\sqrt{R}`, and a smaller value takes more time. When the
+            longer sequence is long, the value is rounded up to whole blocks
+            of rows, of at least about 62. From :attr:`x` and :attr:`y` only:
+            a cost is as large as the accumulated costs anyway. Default:
+            ``None``, all rows stored.
 
     Returns:
         Tensor: the distances, of shape :math:`(B)`, floating: of the dtype of
@@ -737,18 +724,12 @@ def dtw_path(
     optimal paths. The distance is :func:`dtw`'s, differentiable to any
     order, its gradient the path.
 
-    From :attr:`cost`, the path is walked back over the forward pass's
-    accumulated costs, up to a block of a row's cells per step, as Viterbi
-    decoding gives a hidden Markov model's states. From :attr:`x` and
-    :attr:`y`, it is found by divide and conquer, after `Exact, Parallelizable
-    Dynamic Time Warping Alignment with Linear Memory`_ (Tralie and Dempsey,
-    2020), in :math:`O(B (N + M))` memory and a few times the forward work:
-    the best crossing of a rectangle's middle rows splits it in two between
-    cells of the path, down to rectangles backtracked whole from each cell's
-    best step back, kept in 2 bits, after `A Study of Parallelizable
+    From :attr:`x` and :attr:`y`, the path is found in :math:`O(B (N + M))`
+    memory, after `Exact, Parallelizable Dynamic Time Warping Alignment with
+    Linear Memory`_ (Tralie and Dempsey, 2020) and `A Study of Parallelizable
     Alternatives to Dynamic Time Warping for Aligning Long Sequences`_ (Yang
-    et al., 2022); the distance is then the path's cost, from the frames,
-    which autograd differentiates.
+    et al., 2022); the distance is then the path's cost, from the frames, which
+    autograd differentiates.
 
     Note:
         Runs only on CUDA GPUs, as Triton kernels: the inputs must be CUDA

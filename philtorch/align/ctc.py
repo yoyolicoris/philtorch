@@ -28,14 +28,10 @@ def ctc_loss(
     :math:`C` classes and a target of :math:`S` labels, `Connectionist
     Temporal Classification`_ (Graves et al., 2006) sums the probabilities of
     every path of :math:`T` frames that reads as the target once repeats are
-    merged and blanks dropped. That sum is soft-DTW with :math:`\gamma = 1`
-    between the frames and the target's :math:`2S + 1` states, its labels with
-    a blank before, between and after them, at the cost :math:`-\log p(k \mid
-    t)` of the state's class at each frame: each frame stays in its state,
-    advances to the next or skips a blank between two different labels. So
-    it runs on the kernels of :func:`dtw`, one state after another, each a
-    parallel scan over the frames: :math:`2S + 1` sequential steps and
-    :math:`O(BTS)` work and memory.
+    merged and blanks dropped. The target's :math:`2S + 1` states are its
+    labels with a blank before, between and after them; each frame stays in its
+    state, advances to the next or skips a blank between two different labels.
+    The loss takes :math:`O(BTS)` memory.
 
     The loss is differentiable to any order in reverse mode. Its gradient
     with respect to :attr:`log_probs` is minus each frame's expected
@@ -79,9 +75,10 @@ def ctc_loss(
             :math:`(B, T, C)` or :math:`(T, C)`, if the other arguments'
             shapes do not match it, if a length is negative or past its
             sequence (or the concatenated targets' lengths do not sum to
-            theirs), if a sequence's grid, :math:`(2S + 2)(T + 1)` cells with
-            :math:`S` the padded targets' width, exceeds :math:`2^{31} - 1`
-            cells, or if :attr:`reduction` is unknown. Lengths given as
+            theirs), if a sequence's grid of states by frames,
+            :math:`(2S + 2)(T + 1)` cells with :math:`S` the padded targets'
+            width, exceeds :math:`2^{31} - 1` cells, or if :attr:`reduction`
+            is unknown. Lengths given as
             tensors are checked only in eager mode: their values would break
             a :func:`torch.compile` graph.
         RuntimeError: if Triton is not installed.
@@ -127,12 +124,9 @@ def forced_align(
     r"""Find each target's most probable CTC alignment to its frames.
 
     As ``torchaudio.functional.forced_align``, but for any batch size, not
-    only 1. Of the paths that :func:`ctc_loss` sums over, the most probable
-    one: CTC Viterbi decoding, the same grid with a hard minimum, each cell's
-    best step back found afterwards from its accumulated costs, over all cells
-    at once, and the traceback of :func:`~philtorch.estimation.hmm_viterbi`,
-    parallel over the frames. Under ties, a frame stays in its state rather
-    than advances, and advances rather than skips a blank.
+    only 1. It finds, of the paths that :func:`ctc_loss` sums over, the
+    most probable one (CTC Viterbi decoding). Under ties, a frame stays in
+    its state rather than advances, and advances rather than skips a blank.
 
     Note:
         Runs only on CUDA GPUs, as Triton kernels: the inputs must be CUDA

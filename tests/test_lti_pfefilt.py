@@ -21,8 +21,8 @@ def _expected(sos: np.ndarray, x: np.ndarray) -> np.ndarray:
 
 
 def _check(sos: np.ndarray, x: np.ndarray):
-    r, p, k, batch_index, power = sos2pfe(torch.from_numpy(sos))
-    y = pfefilt(r, p, k, torch.from_numpy(x), batch_index=batch_index, power=power)
+    r, p, g, batch_index, power = sos2pfe(torch.from_numpy(sos))
+    y = pfefilt(r, p, g, torch.from_numpy(x), batch_index=batch_index, power=power)
     assert y.dtype == torch.from_numpy(x).dtype
     torch.testing.assert_close(y, torch.from_numpy(_expected(sos, x)), rtol=1e-7, atol=1e-9)
 
@@ -82,14 +82,14 @@ def test_pfefilt_batched_multiplicities():
     ids=["real", "complex", "batched"],
 )
 def test_pfefilt_in_chunks_equals_whole(sos):
-    r, p, k, batch_index, power = sos2pfe(torch.from_numpy(sos))
+    r, p, g, batch_index, power = sos2pfe(torch.from_numpy(sos))
     x = torch.randn(2, 60, dtype=r.dtype if sos.dtype.kind == "c" else torch.float64)
     # one state per term with batch_index, else per term and row
     zi = torch.zeros((2,) * (batch_index is None) + (p.numel(),), dtype=p.dtype)
-    whole, zf_whole = pfefilt(r, p, k, x, zi=zi, batch_index=batch_index, power=power)
+    whole, zf_whole = pfefilt(r, p, g, x, zi=zi, batch_index=batch_index, power=power)
     ys, zf = [], zi
     for chunk in x.split([20, 0, 25, 15], dim=-1):
-        y, zf = pfefilt(r, p, k, chunk, zi=zf, batch_index=batch_index, power=power)
+        y, zf = pfefilt(r, p, g, chunk, zi=zf, batch_index=batch_index, power=power)
         ys.append(y)
     torch.testing.assert_close(torch.cat(ys, dim=-1), whole)
     torch.testing.assert_close(zf, zf_whole)

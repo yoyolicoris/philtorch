@@ -325,14 +325,14 @@ def test_invresz_without_poles():
 
 def _check_sos2pfe(sos: np.ndarray, atol: float):
     """Compare sos2pfe with SciPy's residue of the sections' product, row by row."""
-    r, p, k, batch_index, power = sos2pfe(torch.from_numpy(sos))
+    r, p, g, batch_index, power = sos2pfe(torch.from_numpy(sos))
     M = r.numel()
     assert r.shape == p.shape == power.shape == (M,)
     assert (batch_index is None) == (sos.ndim == 2)
     assert batch_index is None or batch_index.shape == (M,)
-    assert k.shape == sos.shape[:-2]
+    assert g.shape == sos.shape[:-2]
     index = torch.zeros(M, dtype=torch.long) if batch_index is None else batch_index
-    for b, (row, got_k) in enumerate(zip(sos.reshape(-1, sos.shape[-2], 5), k.numpy().ravel())):
+    for b, (row, got_g) in enumerate(zip(sos.reshape(-1, sos.shape[-2], 5), g.numpy().ravel())):
         got_r, got_p = r[index == b].numpy(), p[index == b].numpy()
         if sos.dtype.kind != "c":
             # the half form lists one pole of each conjugate pair
@@ -346,7 +346,7 @@ def _check_sos2pfe(sos: np.ndarray, atol: float):
         expected_r, expected_p = _canonical(expected_r, expected_p)
         np.testing.assert_allclose(got_p, expected_p, atol=atol)
         np.testing.assert_allclose(got_r, expected_r, rtol=atol, atol=atol)
-        np.testing.assert_allclose(got_k, expected_k[0], rtol=1e-12)
+        np.testing.assert_allclose(got_g, expected_k[0], rtol=1e-12)
 
 
 def test_sos2pfe_matches_scipy_for_simple_poles():
@@ -367,10 +367,10 @@ def test_sos2pfe_lists_one_pole_of_a_conjugate_pair(monkeypatch, rounding):
     sqrt = torch.sqrt
     monkeypatch.setattr(torch, "sqrt", lambda z: sqrt(z) + rounding)
     sos = torch.tensor([[1.0, 0.5, 0.2, -0.6, 0.45]], dtype=F64)
-    r, p, k, _, power = sos2pfe(sos)
+    r, p, g, _, power = sos2pfe(sos)
     assert p.shape == (1,) and p[0].imag > 0
     x = torch.randn(8, dtype=F64)
-    torch.testing.assert_close(pfefilt(r, p, k, x, power=power), sosfilt(sos, x))
+    torch.testing.assert_close(pfefilt(r, p, g, x, power=power), sosfilt(sos, x))
 
 
 @pytest.mark.parametrize("dtype", [torch.float32, F64])
@@ -389,16 +389,16 @@ def test_sos2pfe_matches_scipy_for_repeated_poles():
 
 def test_sos2pfe_fir_section():
     # 1 + 2 / z + 3 / z^2: a double pole at 0 with residues 2 and 3
-    r, p, k, batch_index, power = sos2pfe(torch.tensor([[1.0, 2.0, 3.0, 0.0, 0.0]], dtype=F64))
+    r, p, g, batch_index, power = sos2pfe(torch.tensor([[1.0, 2.0, 3.0, 0.0, 0.0]], dtype=F64))
     torch.testing.assert_close(r, torch.tensor([2.0, 3.0], dtype=torch.complex128))
     torch.testing.assert_close(p, torch.zeros(2, dtype=torch.complex128))
-    torch.testing.assert_close(k, torch.tensor(1.0, dtype=F64))
+    torch.testing.assert_close(g, torch.tensor(1.0, dtype=F64))
     assert power.tolist() == [1, 2] and batch_index is None
 
 
 def test_sos2pfe_empty_batch():
-    r, p, k, batch_index, power = sos2pfe(torch.zeros(0, 2, 5, dtype=F64))
-    assert r.shape == p.shape == k.shape == batch_index.shape == power.shape == (0,)
+    r, p, g, batch_index, power = sos2pfe(torch.zeros(0, 2, 5, dtype=F64))
+    assert r.shape == p.shape == g.shape == batch_index.shape == power.shape == (0,)
 
 
 def test_sos2pfe_batched_multiplicities():
@@ -421,8 +421,8 @@ def test_sos2pfe_batched_multiplicities():
 )
 def test_sos2pfe_impulse_response_matches_sosfilt(design, atol):
     sos = torch.from_numpy(np.delete(design(), 3, 1))
-    r, p, k, batch_index, power = sos2pfe(sos)
-    h = pfefilt(r, p, k, torch.eye(1, 200, dtype=F64)[0], batch_index=batch_index, power=power)
+    r, p, g, batch_index, power = sos2pfe(sos)
+    h = pfefilt(r, p, g, torch.eye(1, 200, dtype=F64)[0], batch_index=batch_index, power=power)
     expected = sosfilt(sos, torch.eye(1, 200, dtype=F64)[0])
     assert ((h - expected).abs().max() / expected.abs().max()).item() < atol
 
@@ -433,6 +433,6 @@ def test_sos2pfe_groups_a_cluster_of_conjugate_pairs_symmetrically():
     # other, so the four are one group, its own conjugate, with a real pole
     poles = [0.5 + 0.0004j, 0.5006 + 0.0008j]
     sos = torch.tensor([[1.0, 0.3, 0.2, -2 * q.real, abs(q) ** 2] for q in poles], dtype=F64)
-    r, p, k, _, power = sos2pfe(sos, tol=1e-3)
+    r, p, g, _, power = sos2pfe(sos, tol=1e-3)
     assert (p == p[0]).all() and p[0].imag == 0
     assert power.tolist() == [1, 2, 3, 4]

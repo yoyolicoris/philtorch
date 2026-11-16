@@ -313,7 +313,7 @@ def test_recurrence_matches_cpu_gradients(device, M, sharing, dtype, tolerance):
 @pytest.mark.parametrize("device", DEVICES)
 @pytest.mark.parametrize("compiled", [False, True])
 def test_recurrence_empty(device, compiled):
-    # No steps: no states, and zero gradients, compiled or not.
+    # No steps: no states, disconnected from the graph, compiled or not.
     A, zi, x = _problem(2, 5, 3, "one", device=device)
     inputs = [t.requires_grad_() for t in (A, zi, x[:, :0])]
     run = recurrence
@@ -322,8 +322,7 @@ def test_recurrence_empty(device, compiled):
         run = torch.compile(recurrence, backend="aot_eager", fullgraph=True)
     h = run(*inputs)
     assert h.shape == (2, 0, 3)
-    for grad in torch.autograd.grad(h.sum(), inputs):
-        assert not grad.any()
+    assert not h.requires_grad
     if not compiled:
         # Forward mode too: no steps, no tangent.
         tangents = tuple(torch.ones_like(t) for t in inputs)

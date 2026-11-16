@@ -23,8 +23,7 @@ def comb_filter(a: Tensor, delay: int, x: Tensor, zi: Tensor | None = None, **kw
     .. math::
         y[n] = x[n] - a\, y[n - D],
 
-    the filter :math:`1 / (1 + a z^{-D})` with delay :math:`D`, by running
-    :math:`D` interleaved first-order recurrences.
+    the filter :math:`1 / (1 + a z^{-D})` with delay :math:`D`.
 
     Args:
         a (Tensor): the feedback coefficient, of shape :math:`()` to share it
@@ -122,10 +121,6 @@ def lfiltic(b: Tensor, a: Tensor, y: Tensor, x: Tensor | None = None) -> Tensor:
     Raises:
         ValueError: if :attr:`b` or :attr:`a` is 0-D.
 
-    Note:
-        Unlike :func:`scipy.signal.lfiltic`, :attr:`a` omits the leading
-        :math:`a_0 = 1`.
-
     Example::
 
         >>> from philtorch.lti import lfilter, lfiltic
@@ -197,8 +192,8 @@ def lfilter_zi(a: Tensor, b: Tensor | None = None, transpose: bool = True) -> Te
             :attr:`b` is ``None`` or 0-D.
 
     Note:
-        The arguments are ``(a, b)``, the reverse of SciPy's ``(b, a)``, and
-        :attr:`a` omits the leading :math:`a_0 = 1`.
+        Unlike :func:`scipy.signal.lfilter_zi`, the arguments are
+        ``(a, b)``.
 
     Example::
 
@@ -244,9 +239,7 @@ def fir(
     This computes
 
     .. math::
-        y[n] = \sum_{k=0}^{M} b_k\, x[n - k]
-
-    with a grouped convolution, one filter per signal.
+        y[n] = \sum_{m=0}^{M} b_m\, x[n - m].
 
     Args:
         b (Tensor): filter coefficients :math:`b_0, \dots, b_M`, of shape
@@ -257,10 +250,8 @@ def fir(
             same as SciPy's ``zi`` and :func:`lfiltic`; with
             ``transpose=False``, the past inputs newest first,
             :math:`x[-1], \dots, x[-M]`. Default: ``None``, all zero.
-        transpose (bool, optional): use the transposed direct form
-            (:func:`torch.nn.functional.conv_transpose1d`) if ``True``, or the
-            direct form (:func:`torch.nn.functional.conv1d`) if ``False``.
-            Default: ``True``.
+        transpose (bool, optional): use the transposed direct form if
+            ``True``, or the direct form if ``False``. Default: ``True``.
 
     Returns:
         Tensor or tuple of Tensor: the filtered signals, of shape
@@ -270,10 +261,6 @@ def fir(
     Raises:
         ValueError: if :attr:`b`, :attr:`x` or :attr:`zi` is not 2-D or
             their shapes do not match.
-
-    Note:
-        Unlike :func:`lfilter`, :attr:`b` and :attr:`x` must both be 2-D,
-        with one filter per signal.
 
     Example::
 
@@ -299,13 +286,12 @@ def fir(
             raise ValueError("The second dimension of zi must match the filter order.")
 
     if N == 0:
-        # The convolutions reject empty signals. With no steps the output is
-        # empty and the state unchanged; the empty slices keep b, x and zi in
-        # the graph, so each gets a zero gradient.
-        gain = b[:, :0].sum(-1, keepdim=True)
+        # The convolutions reject empty signals.
         if zi is None:
-            return x + gain
-        return x + gain + zi[:, :0], zi + gain
+            return x.new_empty(x.shape, dtype=torch.promote_types(x.dtype, b.dtype))
+        dtype = torch.promote_types(zi.dtype, b.dtype)
+        y = x.new_empty(x.shape, dtype=torch.promote_types(x.dtype, dtype))
+        return y, zi.to(dtype, copy=True)
 
     if transpose:
         y = F.conv_transpose1d(
@@ -419,11 +405,6 @@ def lfilter(
         TypeError: if a keyword argument is not one the backend takes, or
             ``unroll_factor`` is not an integer.
 
-    Note:
-        Unlike :func:`scipy.signal.lfilter`, :attr:`a` omits the leading
-        :math:`a_0`, which is taken to be 1, so normalize the coefficients
-        first. There is no ``axis`` argument.
-
     Example::
 
         >>> from philtorch.lti import lfilter
@@ -483,14 +464,13 @@ def _check_sos(sos: Tensor) -> None:
 def sosfilt(sos: Tensor, x: Tensor, zi: Tensor | None = None) -> Tensor | tuple[Tensor, Tensor]:
     r"""Filter signals with batched cascades of second-order sections.
 
-    The signals go through the :math:`K` sections one after another, each
-    section a biquad
+    The signals go through the :math:`K` sections one after another, so that
+    the cascade's transfer function is the product of the sections':
 
     .. math::
-        H_l(z) = \frac{b_{l0} + b_{l1} z^{-1} + b_{l2} z^{-2}}
-                      {1 + a_{l1} z^{-1} + a_{l2} z^{-2}}.
-
-    Each section runs as one :func:`lfilter` call, as a two-state recursion.
+        H(z) = \prod_{l=1}^{K}
+            \frac{b_{l0} + b_{l1} z^{-1} + b_{l2} z^{-2}}
+                 {1 + a_{l1} z^{-1} + a_{l2} z^{-2}}.
 
     Args:
         sos (Tensor): the sections, of shape :math:`(K, 5)` or
@@ -519,13 +499,6 @@ def sosfilt(sos: Tensor, x: Tensor, zi: Tensor | None = None) -> Tensor | tuple[
             size other than that of :attr:`x`, or :attr:`sos` or :attr:`zi`
             has a dtype or device other than that of :attr:`x`.
 
-    Note:
-        Unlike :func:`scipy.signal.sosfilt`, the rows of :attr:`sos` omit the
-        column :math:`a_0`, which is taken to be 1, as the denominator of
-        :func:`lfilter` does, and :attr:`zi` is batch first, of shape
-        :math:`(B, K, 2)` instead of :math:`(K, B, 2)`. There is no ``axis``
-        argument.
-
     Example::
 
         >>> from philtorch.lti import sosfilt
@@ -534,6 +507,21 @@ def sosfilt(sos: Tensor, x: Tensor, zi: Tensor | None = None) -> Tensor | tuple[
         ...                     [2.0, 0.0, 0.0, 0.0, 0.0]])
         >>> sosfilt(sos, torch.tensor([1.0, 0.0, 0.0, 0.0]))
         tensor([1.0000, 0.5000, 0.2500, 0.1250])
+        >>> # The step response of 8 sections of unit gain at DC: in float32,
+        >>> # the cascade stays accurate where the expanded polynomials don't
+        >>> from philtorch.lti import lfilter, sos2tf
+        >>> a1 = -torch.linspace(0.05, 0.3, 8, dtype=torch.float64).cos()
+        >>> a2 = torch.full_like(a1, 0.25)
+        >>> b = (1 + a1 + a2) / 4
+        >>> sos = torch.stack([b, 2 * b, b, a1, a2], -1)
+        >>> x = torch.ones(200, dtype=torch.float64)
+        >>> y = sosfilt(sos, x)  # the float64 reference
+        >>> y_sos = sosfilt(sos.float(), x.float())
+        >>> y_tf = lfilter(*sos2tf(sos.float()), x.float())
+        >>> err_sos = (y_sos.double() - y).abs().max()
+        >>> err_tf = (y_tf.double() - y).abs().max()
+        >>> bool(err_sos < err_tf)
+        True
     """
     _check_sos(sos)
     if x.dim() not in (1, 2):
@@ -581,12 +569,13 @@ def sosfilt(sos: Tensor, x: Tensor, zi: Tensor | None = None) -> Tensor | tuple[
 def sosfilt_zi(sos: Tensor) -> Tensor:
     r"""Return the initial states of :func:`sosfilt` for a steady step response.
 
-    With these states, filtering a constant input of 1 starts every section in
-    steady state. Section :math:`k` gets the state of :func:`lfilter_zi`,
-    scaled by the gain at DC of the sections before it,
+    With these states, as with :func:`scipy.signal.sosfilt_zi`, filtering a
+    constant input of 1 starts every section in steady state. Section
+    :math:`l` gets the state of :func:`lfilter_zi`, scaled by the gain at DC
+    of the sections before it,
 
     .. math::
-        \prod_{j < k} \frac{b_{j0} + b_{j1} + b_{j2}}{1 + a_{j1} + a_{j2}}.
+        \prod_{m=1}^{l-1} \frac{b_{m0} + b_{m1} + b_{m2}}{1 + a_{m1} + a_{m2}}.
 
     Args:
         sos (Tensor): the sections, of shape :math:`(K, 5)` or
@@ -599,11 +588,6 @@ def sosfilt_zi(sos: Tensor) -> Tensor:
     Raises:
         ValueError: if :attr:`sos` is not 2-D or 3-D, its last dimension is
             not 5, or it has no section.
-
-    Note:
-        As in :func:`sosfilt`, the rows of :attr:`sos` omit the column
-        :math:`a_0`, and the states of batched sections are batch first. The
-        states are those of :func:`scipy.signal.sosfilt_zi`.
 
     Example::
 
@@ -625,7 +609,7 @@ def sosfilt_zi(sos: Tensor) -> Tensor:
 def pfefilt(
     r: Tensor,
     p: Tensor,
-    k: Tensor,
+    g: Tensor,
     x: Tensor,
     zi: Tensor | None = None,
     batch_index: Tensor | None = None,
@@ -636,7 +620,7 @@ def pfefilt(
     The filter is a partial fraction expansion, a sum of sections:
 
     .. math::
-        H(z) = k + \sum_{i=1}^{M} \frac{r_i z^{-j_i}}{(1 - p_i z^{-1})^{j_i}},
+        H(z) = g + \sum_{i=1}^{M} \frac{r_i z^{-j_i}}{(1 - p_i z^{-1})^{j_i}},
 
     where :math:`j_i` is the power of term :math:`i`. :func:`sos2pfe` expands
     second-order sections into this form, with the :attr:`batch_index` and
@@ -651,19 +635,19 @@ def pfefilt(
     the :math:`s` of the term listed before it: the powers of a repeated pole
     are a chain of sections, each delaying its input by one sample.
 
-    A real :attr:`k` makes a real filter, which takes a real :attr:`x`. Each
+    A real :attr:`g` makes a real filter, which takes a real :attr:`x`. Each
     of its terms with a non-real pole stands for itself and its conjugate,
     the term with the conjugates of :math:`r_i`, :math:`p_i` and
     :math:`\text{zi}_i`, so that the pair sums to a real second-order section:
     list one pole of each conjugate pair, as :func:`sos2pfe` does, not both,
     as :func:`residuez` does. Its terms with a real pole need a real residue
     and initial state. For a complex :attr:`x`, filter its real and imaginary
-    parts. A complex :attr:`k` makes a complex filter, which lists every pole.
+    parts. A complex :attr:`g` makes a complex filter, which lists every pole.
 
     Args:
         r (Tensor): the residues, real or complex, of shape :math:`(M)`.
         p (Tensor): the poles, real or complex, of shape :math:`(M)`.
-        k (Tensor): the direct gain, of shape :math:`()` or :math:`(B)`.
+        g (Tensor): the direct gain, of shape :math:`()` or :math:`(B)`.
         x (Tensor): input signals, of shape :math:`(B, N)` or :math:`(N)`.
         zi (Tensor, optional): the initial states :math:`s_i[0]`, of shape
             :math:`(M)`, or :math:`(B, M)` for a 2-D :attr:`x` without
@@ -677,25 +661,26 @@ def pfefilt(
             :math:`(M)`. A term of power :math:`j > 1` comes right after the
             term of power :math:`j - 1` of the same pole and row: a pole of
             multiplicity :math:`m` is listed :math:`m` times in a row, with the
-            powers :math:`1, \dots, m`, so poles :math:`a, a, b` have
-            ``power = [1, 2, 1]``. Default: ``None``, every term of power 1.
+            powers :math:`1, \dots, m`, so poles :math:`p_1 = p_2 \ne p_3`
+            have ``power = [1, 2, 1]``. Default: ``None``, every term of
+            power 1.
 
     Returns:
         Tensor or tuple of Tensor: the filtered signals, of the shape of
-        :attr:`x`, real when :attr:`k` is, and with :attr:`zi`, the final
+        :attr:`x`, real when :attr:`g` is, and with :attr:`zi`, the final
         states :math:`s_i[N]`, complex, of the shape of :attr:`zi`. Pass them
         as the next chunk's :attr:`zi` to filter a signal in chunks.
 
     Raises:
-        ValueError: if :attr:`x` is not 1-D or 2-D, :attr:`k` is not 0-D or
+        ValueError: if :attr:`x` is not 1-D or 2-D, :attr:`g` is not 0-D or
             1-D, :attr:`r`, :attr:`p`, :attr:`batch_index` or :attr:`power`
-            is not 1-D of one length, :attr:`zi` or a batched :attr:`k` has
+            is not 1-D of one length, :attr:`zi` or a batched :attr:`g` has
             the wrong shape, :attr:`batch_index` or :attr:`power` isn't int32
             or int64 on :attr:`x`'s device, :attr:`batch_index` is out of
             range, the inputs differ in precision or device, are neither
             floating-point nor complex, or are bfloat16, which has no complex
             dtype, a power doesn't follow the power below it, or
-            :attr:`k` is real and :attr:`x` complex, or a real pole has a
+            :attr:`g` is real and :attr:`x` complex, or a real pole has a
             complex residue or initial state.
 
     Example::
@@ -712,8 +697,8 @@ def pfefilt(
     """
     if x.dim() not in (1, 2):
         raise ValueError("Input signal x must be 1D or 2D.")
-    if k.dim() not in (0, 1):
-        raise ValueError("Gain k must be 0D or 1D.")
+    if g.dim() not in (0, 1):
+        raise ValueError("Gain g must be 0D or 1D.")
     if p.dim() != 1:
         raise ValueError("Poles p must be 1D.")
     M = p.size(0)
@@ -725,9 +710,9 @@ def pfefilt(
             raise ValueError(f"{name} must be int32 or int64, got {t.dtype}.")
         if t is not None and t.device != x.device:
             raise ValueError(f"{name} must be on x's device, {x.device}, got {t.device}.")
-    if k.dim() == 1 and (x.dim() == 1 or k.size(0) != x.size(0)):
+    if g.dim() == 1 and (x.dim() == 1 or g.size(0) != x.size(0)):
         raise ValueError(
-            f"A 1D k needs a 2D x of its batch size, got k: {tuple(k.shape)}, x: {tuple(x.shape)}"
+            f"A 1D g needs a 2D x of its batch size, got g: {tuple(g.shape)}, x: {tuple(x.shape)}"
         )
     batched = x.dim() == 2
     x = x if batched else x.unsqueeze(0)
@@ -738,10 +723,10 @@ def pfefilt(
         raise ValueError(f"zi must have shape {zshape}, got {tuple(zi.shape)}.")
     if not shared and ((batch_index < 0) | (batch_index >= B)).any():
         raise ValueError(f"batch_index must be from 0 to B - 1 = {B - 1}.")
-    given = [t for t in (r, p, k, x, zi) if t is not None]
+    given = [t for t in (r, p, g, x, zi) if t is not None]
     if len({(t.dtype.to_real(), t.device) for t in given}) > 1:
         raise ValueError(
-            f"r, p, k, x and zi must share a precision and a device, got "
+            f"r, p, g, x and zi must share a precision and a device, got "
             f"{[(t.dtype, str(t.device)) for t in given]}"
         )
     if not (x.is_floating_point() or x.is_complex()) or x.dtype == torch.bfloat16:
@@ -749,10 +734,10 @@ def pfefilt(
             f"pfefilt takes floating-point or complex inputs other than bfloat16, which "
             f"has no complex dtype, got {x.dtype}."
         )
-    real = not k.is_complex()
+    real = not g.is_complex()
     if real and x.is_complex():
         raise ValueError(
-            "A real k makes a real filter, which takes a real x; filter the real and "
+            "A real g makes a real filter, which takes a real x; filter the real and "
             "imaginary parts of a complex x."
         )
     return_zf = zi is not None
@@ -777,7 +762,7 @@ def pfefilt(
     real_pole = p.imag == 0
     if real and (real_pole & ((r.imag != 0) | (zi.imag != 0))).any():
         raise ValueError(
-            "A real k makes a real filter, whose real poles need real residues and initial states."
+            "A real g makes a real filter, whose real poles need real residues and initial states."
         )
     # A real filter runs its real poles in the real dtype and each listed
     # non-real pole for its conjugate pair; a complex one runs every term in
@@ -788,7 +773,7 @@ def pfefilt(
 
     # Each round runs one power of the chains of one kind, from power 1, adds
     # their terms to the output, and passes on the chains that go on.
-    y = k.unsqueeze(-1) * x
+    y = g.unsqueeze(-1) * x
     zf = zi.clone()
     for in_real in (True, False):
         (i,) = ((power == 1) & (in_real_dtype == in_real)).nonzero(as_tuple=True)
@@ -871,10 +856,8 @@ def _ssm_lfilter(
             raise ValueError(f"Initial conditions zi must be 1D or 2D, got {zi.shape}")
         if zi is not None and zi.size(-1) != 0:
             raise ValueError(f"zi must have 0 states for a pure gain, got {zi.size(-1)}.")
-        # The empty a and the empty final state stay in the graph, so a and zi
-        # get zero gradients, as on the general path.
-        y = b[..., :1] * x + a.sum(-1, keepdim=True).to(x)
-        return y if zi is None else (y, y[:, :0] + zi.expand(y.size(0), 0))
+        y = b[..., :1] * x
+        return y if zi is None else (y, zi.expand(y.size(0), 0))
 
     A = companion(a)
 
@@ -934,12 +917,7 @@ def _diag_ssm_lfilter(
             b = F.pad(b, (0, 1))
         if zi is not None and zi.dim() == 1:
             zi = zi.unsqueeze(0).expand(x.size(0), -1)
-        # The empty a stays in the graph, so it gets a zero gradient.
-        no_poles = a.sum(-1, keepdim=True).to(x)
-        result = fir(b.broadcast_to((x.size(0), -1)), x, zi)
-        if zi is None:
-            return result + no_poles
-        return result[0] + no_poles, result[1]
+        return fir(b.broadcast_to((x.size(0), -1)), x, zi)
 
     if too_long:
         # fir takes one filter per signal.

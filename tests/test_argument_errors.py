@@ -8,7 +8,7 @@ import pytest
 import torch
 
 from philtorch import lpv, lti
-from philtorch.estimation import kalman_filter
+from philtorch.estimation import hmm_filter, kalman_filter
 from philtorch.lpv.utils import diag_shift
 from philtorch.mat import companion, find_eigenvectors, matrices_cumdot, matrix_power_accumulate
 from philtorch.poly import polydiv, polymul
@@ -41,6 +41,16 @@ def _kalman_args(**overrides):
     )
     args.update(overrides)
     return args
+
+
+_HMM_CASES = [
+    # hmm_filter(log_emit, log_trans, log_init): one dtype, checked before CUDA
+    pytest.param(
+        lambda: hmm_filter(_zeros(1, 3, 2), _zeros(2, 2).float(), _zeros(2)),
+        "log_emit, log_trans and log_init must share a dtype",
+        id="dtype",
+    ),
+]
 
 
 _KALMAN_CASES = [
@@ -493,7 +503,7 @@ _LTI_FILTERING_CASES = [
         "rtype must be one of",
         id="sos2pfe-rtype",
     ),
-    # pfefilt(r, p, k, x, zi, batch_index, power): flat arguments of one precision; a real k
+    # pfefilt(r, p, g, x, zi, batch_index, power): flat arguments of one precision; a real g
     # takes a real x and real residues for real poles
     pytest.param(
         lambda: lti.pfefilt(_ones(2), _ones(2), _ones(()), _ones(1, 2, 4)),
@@ -502,8 +512,8 @@ _LTI_FILTERING_CASES = [
     ),
     pytest.param(
         lambda: lti.pfefilt(_ones(2), _ones(2), _ones(1, 2), _ones(2, 4)),
-        "k must be 0D or 1D",
-        id="pfefilt-k-2d",
+        "g must be 0D or 1D",
+        id="pfefilt-g-2d",
     ),
     pytest.param(
         lambda: lti.pfefilt(_ones(2), _ones(1, 2), _ones(()), _ones(4)),
@@ -522,7 +532,7 @@ _LTI_FILTERING_CASES = [
     ),
     pytest.param(
         lambda: lti.pfefilt(_ones(2), _ones(2), _ones(3), _ones(2, 4)),
-        "A 1D k needs a 2D x of its batch size",
+        "A 1D g needs a 2D x of its batch size",
         id="pfefilt-batch",
     ),
     pytest.param(
@@ -533,7 +543,7 @@ _LTI_FILTERING_CASES = [
     pytest.param(
         lambda: lti.pfefilt(_ones(1), _ones(1), _ones(()), _ones(4).to(torch.complex128)),
         "takes a real x",
-        id="pfefilt-real-k-complex-x",
+        id="pfefilt-real-g-complex-x",
     ),
     pytest.param(
         lambda: lti.pfefilt(
@@ -575,8 +585,8 @@ _LTI_FILTERING_CASES = [
     ),
     pytest.param(
         lambda: lti.pfefilt(_ones(1), _ones(1), _ones(1), _ones(4)),
-        "A 1D k needs a 2D x",
-        id="pfefilt-1d-k-1d-x",
+        "A 1D g needs a 2D x",
+        id="pfefilt-1d-g-1d-x",
     ),
     pytest.param(
         lambda: lti.pfefilt(
@@ -956,6 +966,7 @@ def _group(name, cases):
 @pytest.mark.parametrize(
     "call, match",
     [
+        *_group("hmm", _HMM_CASES),
         *_group("kalman", _KALMAN_CASES),
         *_group("lpv-filtering", _LPV_FILTERING_CASES),
         *_group("lpv-recur", _LPV_RECUR_CASES),

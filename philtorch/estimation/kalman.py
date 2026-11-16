@@ -301,14 +301,11 @@ def kalman_filter(
     :math:`\mathbf{x}[n]` predicted from the earlier measurements. The
     log-likelihood is differentiable, for fitting the model's matrices by
     gradient ascent, including matrices predicted by a network. These are the
-    results of the sequential Kalman filter, computed instead with an
-    associative scan of depth :math:`O(\log N)`, as in `Temporal
-    Parallelization of Bayesian Smoothers`_ (Särkkä and García-Fernández,
-    2021), whose performance on GPUs `On The Performance of Prefix-Sum
+    results of the sequential Kalman filter, computed in parallel over time
+    as in `Temporal Parallelization of Bayesian Smoothers`_ (Särkkä and
+    García-Fernández, 2021); see also `On The Performance of Prefix-Sum
     Parallel Kalman Filters and Smoothers on GPUs`_ (Särkkä and
-    García-Fernández, 2025) studies. The scan is PyTorch's
-    :func:`associative_scan <torch._higher_order_ops.associative_scan.associative_scan>`
-    in its generic mode.
+    García-Fernández, 2025).
 
     Each of :attr:`A`, :attr:`C`, :attr:`Q` and :attr:`R` may be constant or
     time-varying, and shared or one per signal, as listed below. When a 3-D
@@ -414,14 +411,14 @@ def kalman_smoother(
     covariance of each state given all the measurements, the lag-one
     cross-covariances :math:`\mathrm{Cov}(\mathbf{x}[n + 1], \mathbf{x}[n]
     \mid \mathbf{y})`, and :func:`kalman_filter`'s log-likelihood: the
-    results of the Rauch--Tung--Striebel smoother, computed with a reverse
-    associative scan after the filter's, as in `Temporal Parallelization of
-    Bayesian Smoothers`_ (Särkkä and García-Fernández, 2021) and `On The
-    Performance of Prefix-Sum Parallel Kalman Filters and Smoothers on GPUs`_
-    (Särkkä and García-Fernández, 2025). The cross-covariances come from the
-    smoother's gains, :math:`\mathrm{Cov}(\mathbf{x}[n], \mathbf{x}[n + 1]
-    \mid \mathbf{y}) = E[n] \, \mathrm{Cov}(\mathbf{x}[n + 1] \mid
-    \mathbf{y})`.
+    results of the Rauch--Tung--Striebel smoother, computed in parallel over
+    time as in `Temporal Parallelization of Bayesian Smoothers`_ (Särkkä and
+    García-Fernández, 2021); see also `On The Performance of Prefix-Sum
+    Parallel Kalman Filters and Smoothers on GPUs`_ (Särkkä and
+    García-Fernández, 2025). The cross-covariances satisfy
+    :math:`\mathrm{Cov}(\mathbf{x}[n], \mathbf{x}[n + 1] \mid \mathbf{y}) =
+    E[n] \, \mathrm{Cov}(\mathbf{x}[n + 1] \mid \mathbf{y})`, with
+    :math:`E[n]` the smoother's gain.
 
     These are the expectations of the E-step of expectation-maximization;
     :func:`kalman_em_step` runs its closed-form M-step.

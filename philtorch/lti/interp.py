@@ -167,11 +167,11 @@ def cubic_spline(
 ) -> Tensor:
     """Upsample signals by an integer factor with cubic B-spline interpolation.
 
-    This computes the cubic B-spline coefficients of :attr:`x` by recursive
-    filtering, as in M. Unser, "B-Spline Signal Processing: Part II---Efficient
-    Design and Applications," IEEE Transactions on Signal Processing, 1993,
-    and evaluates the spline at :attr:`m` points per sample interval. The
-    spline passes through the original samples.
+    This interpolates :attr:`x` with cubic B-splines, as in M. Unser,
+    "B-Spline Signal Processing: Part II---Efficient Design and Applications,"
+    IEEE Transactions on Signal Processing, 1993, and evaluates the spline at
+    :attr:`m` points per sample interval. The spline passes through the
+    original samples.
 
     Args:
         x (Tensor): signals, of shape :math:`(B, L)`. Unlike SciPy, the batch
@@ -183,9 +183,10 @@ def cubic_spline(
             :func:`scipy.signal.cspline1d_eval` on the upsampled grid. If
             ``False``, it is extended like the ``"reflect"`` mode of
             :func:`torch.nn.functional.pad`. Default: ``False``.
-        parallel_form (bool, optional): sum a causal and an anticausal filter
-            for the coefficients if ``True``, or cascade them if ``False``;
-            both give the same result. Default: ``True``.
+        parallel_form (bool, optional): how the spline's coefficients are
+            computed from :attr:`x`: as the sum of a causal and an anticausal
+            filter if ``True``, or as their cascade if ``False``; both give
+            the same result. Default: ``True``.
         lamb (float, optional): the smoothing coefficient; only ``0.0`` is
             implemented. Default: ``0.0``.
 
@@ -373,20 +374,17 @@ def resample(
     :math:`\rho` times the Nyquist frequency, unlike
     :func:`scipy.signal.resample_poly`, which then copies the input.
 
-    The rates are reduced by their greatest common divisor to :math:`q \to p`,
-    and the weights are evaluated exactly, at each call, in ``float64``, as a
-    polyphase filter of about :math:`p (q + 2 N_z / c)` coefficients, at most
-    :math:`2^{22}`. Beyond that, raise :attr:`rolloff` or lower
+    The rates are reduced to :math:`r = p / q` in lowest terms. A ratio whose
+    polyphase filter, of about :math:`p (q + 2 W)` coefficients, would hold
+    more than :math:`2^{22}` raises an error: raise :attr:`rolloff` or lower
     :attr:`num_zeros` for fewer taps, or approximate the ratio:
     ``f = Fraction(new_freq, orig_freq).limit_denominator(1000)``, from
     :mod:`fractions`, then ``resample(x, f.denominator, f.numerator)``.
 
     The presets of :attr:`quality` realise the passband, stopband and
-    precision targets of ``libsoxr`` with one Kaiser-windowed sinc stage, not
-    soxr's multi-stage design, so the outputs are not bit-identical to soxr's.
-    ``float32`` accumulation gives errors of around -110 dB to -140 dB. That
-    can miss the 20-bit target of ``"HQ"``, about -126 dB, and misses the
-    28-bit target of ``"VHQ"``, about -175 dB: use ``float64`` for them.
+    precision targets of ``libsoxr``, but the outputs are not bit-identical to
+    soxr's. ``float32`` accumulation may miss the precision targets of
+    ``"HQ"`` and ``"VHQ"``: use ``float64`` for them.
 
     Derivatives of any order exist in :attr:`x`, and in :attr:`rolloff` and
     :attr:`beta` when they are 0-D tensors. :attr:`rolloff`'s value sets the
@@ -452,6 +450,10 @@ def resample(
         >>> y = resample(x, 44100, 48000)
         >>> y.shape
         torch.Size([1, 480])
+        >>> # float32 agrees with float64 to well within 1e-5 here
+        >>> y32 = resample(x.float(), 44100, 48000)
+        >>> torch.allclose(y32.double(), y, atol=1e-5)
+        True
     """
     if x.dim() != 2:
         raise ValueError(f"x must be 2D (B, T), got {x.dim()}D")

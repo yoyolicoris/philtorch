@@ -31,13 +31,12 @@ def state_space_recursion(
     first state only: :math:`\mathbf{x}[n] = x[n] \mathbf{e}_1`.
 
     With the default ``unroll_factor=None``, this runs a kernel chosen by
-    device, dtype and :math:`M`: native ones on CPU, CUDA and MPS, and
-    raises where none takes the input, such as :math:`M > 128` (64 complex)
-    on CUDA and MPS. On any device, ``unroll_factor=1`` runs the sequential
-    PyTorch loop, and so does one of :math:`N` or more; an
-    :attr:`unroll_factor` from 2 to :math:`N - 1` runs a block-unrolled
-    PyTorch recursion instead. Both take the dtypes PyTorch's matrix products
-    take on the device: integers on CPU, but not on CUDA.
+    device, dtype and :math:`M`, and raises where none takes the input, such
+    as :math:`M > 128` (64 complex) on CUDA and MPS. On any device,
+    ``unroll_factor=1`` runs the sequential PyTorch loop, and so does one of
+    :math:`N` or more; an :attr:`unroll_factor` from 2 to :math:`N - 1` runs a
+    block-unrolled PyTorch recursion instead. Both take the dtypes PyTorch's
+    matrix products take on the device: integers on CPU, but not on CUDA.
 
     Args:
         A (Tensor): state matrices, of shape :math:`(M, M)` or
@@ -163,8 +162,8 @@ def state_space(
             :attr:`out_idx` or the states, or if the other shapes do not match.
 
     Note:
-        This computes the same as :func:`scipy.signal.dlsim` with
-        ``x0=zi``, batched, without the time vector or the state sequence.
+        This computes what :func:`scipy.signal.dlsim` does with ``x0=zi``,
+        without the time vector or the state sequence.
 
     Example::
 
