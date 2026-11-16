@@ -120,11 +120,11 @@ def test_recurrence_overflows_to_inf_not_nan(M):
     "device, M, T",
     # On CUDA, 24 and 40 states are padded to 32 and 64, above the 16 at which
     # 16-bit inputs are held as stored in the kernel's ring, and 100, to 128,
-    # takes the most passes over the columns of a chunk's maps (complex64
-    # takes 64 at most); 300 steps are several chunks. The Metal kernels take
+    # takes the most passes over the columns of a chunk's maps (complex takes
+    # 64 at most); 300 steps are several chunks. The Metal kernels take
     # M = 1 in tiles of 1024 steps, and M > 1 in chunks of 64: 301 and 2049
     # steps end mid-tile and mid-chunk. 6 and 20 states leave lanes idle, and
-    # 64 is complex64's most.
+    # 64 is complex's most.
     [pytest.param("cuda", M, 300, marks=pytest.mark.cuda) for M in (1, 2, 3, 6, 12, 24, 40, 100)]
     + [pytest.param("mps", M, T, marks=MPS) for M in (1, 2, 3, 6, 20, 32, 64) for T in (301, 2049)],
 )
@@ -314,10 +314,10 @@ def test_recurrence_matches_cpu_gradients(device, M, sharing, dtype, tolerance):
 @pytest.mark.parametrize("device", [*DEVICES, pytest.param("mps", marks=MPS)])
 @pytest.mark.parametrize("M", [1, 3])
 @pytest.mark.parametrize("sharing", ["one", "both"])
-def test_recurrence_gradients_in_complex32(device, M, sharing):
+def test_recurrence_derivatives_in_complex32(device, M, sharing):
     # complex32 has no matmul, and on CPU no sum and no flip of an innermost
-    # dimension (M = 1), which the gradients run in complex64: they match
-    # complex128's on the same inputs to complex32's rounding.
+    # dimension (M = 1), which the derivatives run in complex64: in both
+    # modes, they match complex128's on the same inputs to complex32's rounding.
     inputs = [t.requires_grad_() for t in _problem(3, 300, M, sharing, torch.complex32, device)]
     wide = [t.detach().cpu().to(torch.complex128).requires_grad_() for t in inputs]
     g = torch.randn(3, 300, M, dtype=torch.complex128, generator=torch.Generator().manual_seed(1))
@@ -326,6 +326,14 @@ def test_recurrence_gradients_in_complex32(device, M, sharing):
     for a, e in zip(actual, expected):
         assert a.dtype == torch.complex32
         assert (a.cpu().to(e.dtype) - e).norm() / e.norm() < 3e-3
+    _, actual = torch.func.jvp(
+        recurrence, tuple(t.detach() for t in inputs), tuple(torch.ones_like(t) for t in inputs)
+    )
+    _, expected = torch.func.jvp(
+        recurrence, tuple(t.detach() for t in wide), tuple(torch.ones_like(t) for t in wide)
+    )
+    assert actual.dtype == torch.complex32
+    assert (actual.cpu().to(expected.dtype) - expected).norm() / expected.norm() < 3e-3
 
 
 @pytest.mark.parametrize("device", DEVICES)
@@ -745,7 +753,7 @@ LOW_PRECISION_OPERATORS = [
     "dtype, tolerance",
     [(torch.float16, 2**-11), (torch.bfloat16, 2**-8), (torch.complex32, 2**-11)],
 )
-def test_native_kernels_accumulate_low_precision_in_float32(
+def test_native_kernels_accumulate_low_precision_in_32_bits(
     time_invariant, M, device, kernel, batched_A, dtype, tolerance
 ):
     # The kernels' state is float32 (complex64 for complex32): the error is

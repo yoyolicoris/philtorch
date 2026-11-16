@@ -71,7 +71,12 @@ def test_pfefilt_float16_with_a_conjugate_pair():
     expected = torch.from_numpy(_expected(sos, x))
     assert (y.double() - expected).abs().max() / expected.abs().max() < 2e-3
     y.sum().backward()
-    assert x16.grad.dtype == torch.float16 and x16.grad.isfinite().all()
+    x64 = x16.detach().double().requires_grad_()
+    pfefilt(
+        r.to(torch.complex32).cdouble(), p.to(torch.complex32).cdouble(), g.half().double(), x64
+    ).sum().backward()
+    assert x16.grad.dtype == torch.float16
+    assert (x16.grad.double() - x64.grad).abs().max() / x64.grad.abs().max() < 2e-3
 
 
 def test_pfefilt_batched_multiplicities():

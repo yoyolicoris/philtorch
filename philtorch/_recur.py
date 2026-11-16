@@ -410,11 +410,14 @@ class Recurrence(torch.autograd.Function):
         # a matmul over each sequence's steps at once.
         tangent = dx
         if dA is not None:
-            h_prev = _previous(zi, h)
+            # complex32 has no matmul on CPU: the term runs in complex64.
+            acc = torch.complex64 if h.dtype == torch.complex32 else h.dtype
+            h_prev, dA_acc = _previous(zi, h).to(acc), dA.to(acc)
             if dA.size(1) == 1:
-                term = h_prev @ dA[:, 0].mT
+                term = h_prev @ dA_acc[:, 0].mT
             else:
-                term = (dA @ h_prev.unsqueeze(-1)).squeeze(-1)
+                term = (dA_acc @ h_prev.unsqueeze(-1)).squeeze(-1)
+            term = term.to(h.dtype)
             tangent = term if tangent is None else tangent + term
         if tangent is None:
             tangent = torch.zeros_like(h)
