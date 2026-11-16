@@ -518,47 +518,55 @@ def sosfilt(
 ) -> Tensor | tuple[Tensor, Tensor]:
     r"""Filter signals with cascades of second-order sections.
 
-    The signals go through the :math:`K` sections one after another, so that
-    the cascade's transfer function is the product of the sections':
+    A signal goes through the :math:`K` sections of its cascade one after
+    another, so that the cascade's transfer function is the product of the
+    sections':
 
     .. math::
         H(z) = \prod_{l=1}^{K}
             \frac{b_{l0} + b_{l1} z^{-1} + b_{l2} z^{-2}}
                  {1 + a_{l1} z^{-1} + a_{l2} z^{-2}}.
 
+    Without :attr:`batch_index`, every signal goes through all the sections.
+    With it, a signal's cascade is the sections listed for it, in the order
+    they are listed, and :math:`K` is their number; a signal without a
+    section comes out unchanged.
+
     Args:
-        sos (Tensor): the sections, of shape :math:`(K, 5)`, :math:`K \ge 1`,
-            or :math:`(S, 5)` with :attr:`batch_index`. Each row is
-            :math:`b_0, b_1, b_2, a_1, a_2`. Without :attr:`batch_index`,
-            they are one cascade that filters every signal.
+        sos (Tensor): the sections, of shape :math:`(K, 5)` for one cascade,
+            :math:`K \ge 1`, or :math:`(S, 5)` with :attr:`batch_index`,
+            :math:`S \ge 1`. Each row is one section,
+            :math:`b_{l0}, b_{l1}, b_{l2}, a_{l1}, a_{l2}`, :math:`l` being its
+            place in its cascade.
         x (Tensor): input signals, of shape :math:`(B, N)` or :math:`(N)`.
         zi (Tensor, optional): the initial state of each section, of the
-            dtype of :attr:`x` and of shape :math:`(S, 2)` with
-            :attr:`batch_index`; otherwise :math:`(B, K, 2)` for a 2-D
-            :attr:`x`, and :math:`(K, 2)` for a 1-D one. It is SciPy's
-            ``zi``, the state of the transposed direct form II (see
-            :func:`sosfilt_zi`). Default: ``None``, all zero.
+            dtype of :attr:`x`: of shape :math:`(B, K, 2)` for a 2-D
+            :attr:`x` and :math:`(K, 2)` for a 1-D one, or :math:`(S, 2)`
+            with :attr:`batch_index`. Each section's state is that of SciPy's
+            ``zi``, of the transposed direct form II. Without
+            :attr:`batch_index` and with a 2-D :attr:`x`, expand
+            :func:`sosfilt_zi`'s :math:`(K, 2)` states to :math:`(B, K, 2)`.
+            Default: ``None``, all zero.
         batch_index (Tensor, optional): the signal each section filters, of
             shape :math:`(S)`, int32 or int64 on :attr:`x`'s device, from 0 to
-            :math:`B - 1`, where :math:`B = 1` for a 1-D :attr:`x`. The
-            sections of one signal run in the order they are listed, which
-            need not be consecutive, and a signal without a section comes out
-            unchanged. Default: ``None``, one cascade of all the sections for
-            every signal.
+            :math:`B - 1`, where :math:`B = 1` for a 1-D :attr:`x`. Sections of
+            the same signal need not be consecutive rows; they run in the
+            order they are listed. Default: ``None``, one cascade of all the
+            sections for every signal.
 
     Returns:
         Tensor or tuple of Tensor: the filtered signals, of the shape of
         :attr:`x`, and with :attr:`zi`, the final states, of the shape of
-        :attr:`zi`. Pass them as the next chunk's :attr:`zi` to filter a
-        signal in chunks.
+        :attr:`zi`. Pass the final states as the next chunk's :attr:`zi` to
+        filter a signal in chunks.
 
     Raises:
         ValueError: if :attr:`sos` is not 2-D, its last dimension is not 5, or
-            it has no section, :attr:`x` is not 1-D or 2-D, :attr:`zi` does not
-            have the shape above, :attr:`batch_index` is not of shape
-            :math:`(S)`, not int32 or int64 on :attr:`sos`'s device, or out of
-            range, or :attr:`sos` or :attr:`zi` has a dtype or device other
-            than that of :attr:`x`.
+            it has no section, :attr:`x` is not 1-D or 2-D, :attr:`zi` is not
+            of the shape given for it above, :attr:`batch_index` is not of
+            shape :math:`(S)`, not int32 or int64, not on :attr:`x`'s device,
+            or not from 0 to :math:`B - 1`, or :attr:`sos` or :attr:`zi` has a
+            dtype or device other than that of :attr:`x`.
 
     Example::
 
@@ -568,7 +576,8 @@ def sosfilt(
         ...                     [2.0, 0.0, 0.0, 0.0, 0.0]])
         >>> sosfilt(sos, torch.tensor([1.0, 0.0, 0.0, 0.0]))
         tensor([1.0000, 0.5000, 0.2500, 0.1250])
-        >>> # the first section for row 0, both for row 1, none for row 2
+        >>> # the first section for signal 0, both for signal 1, none for
+        >>> # signal 2, which comes out unchanged
         >>> batch_index = torch.tensor([0, 1, 1])
         >>> sos3 = torch.cat([sos[:1], sos])
         >>> x = torch.tensor([[1.0, 0.0, 0.0]] * 3)
@@ -657,28 +666,37 @@ def sosfilt_zi(sos: Tensor, batch_index: Tensor | None = None) -> Tensor:
 
     With these states, as with :func:`scipy.signal.sosfilt_zi`, filtering a
     constant input of 1 starts every section in steady state. Section
-    :math:`l` gets the state of :func:`lfilter_zi`, scaled by the gain at DC
-    of the sections before it,
+    :math:`l` gets the state :func:`lfilter_zi` gives for its own
+    coefficients, scaled by the gain at DC of the sections before it in its
+    cascade,
 
     .. math::
         \prod_{m=1}^{l-1} \frac{b_{m0} + b_{m1} + b_{m2}}{1 + a_{m1} + a_{m2}}.
 
+    With :attr:`batch_index`, a section's cascade is the sections listed for
+    the same signal, in the order they are listed, :math:`l` and :math:`m`
+    counting places in it.
+
     Args:
-        sos (Tensor): the sections, of shape :math:`(K, 5)`, :math:`K \ge 1`,
-            or :math:`(S, 5)` with :attr:`batch_index`, as in :func:`sosfilt`.
+        sos (Tensor): the sections, of shape :math:`(K, 5)` for one cascade,
+            :math:`K \ge 1`, or :math:`(S, 5)` with :attr:`batch_index`,
+            :math:`S \ge 1`, as in :func:`sosfilt`.
         batch_index (Tensor, optional): the signal each section filters, of
-            shape :math:`(S)`, as in :func:`sosfilt`. Only the sections of the
-            same signal, listed before a section, scale its state. Default:
-            ``None``, one cascade of all the sections.
+            shape :math:`(S)`, int32 or int64 on :attr:`sos`'s device and not
+            negative, as in :func:`sosfilt`, which checks it against its
+            signals. Default: ``None``, one cascade of all the sections.
 
     Returns:
-        Tensor: the initial states, of shape :math:`(K, 2)`, or :math:`(S, 2)`
-        with :attr:`batch_index`.
+        Tensor: the initial states, of :attr:`sos`'s dtype and of shape
+        :math:`(K, 2)`, or :math:`(S, 2)` with :attr:`batch_index`, as
+        :func:`sosfilt` takes them for a 1-D signal or with
+        :attr:`batch_index`. For :math:`B` signals in a 2-D tensor and without
+        :attr:`batch_index`, expand them to :math:`(B, K, 2)`.
 
     Raises:
         ValueError: if :attr:`sos` is not 2-D, its last dimension is not 5, or
             it has no section, or :attr:`batch_index` is not of shape
-            :math:`(S)`, not int32 or int64 on :attr:`sos`'s device, or
+            :math:`(S)`, not int32 or int64, not on :attr:`sos`'s device, or
             negative.
 
     Example::
@@ -689,8 +707,9 @@ def sosfilt_zi(sos: Tensor, batch_index: Tensor | None = None) -> Tensor:
         >>> y, _ = sosfilt(sos, torch.ones(4), zi=sosfilt_zi(sos))
         >>> y
         tensor([2., 2., 2., 2.])
-        >>> # two sections of gain 2 at DC: the second's state doubles in a
-        >>> # cascade, and doesn't for another signal
+        >>> # two sections of gain 2 at DC: in one cascade, the second
+        >>> # section's state is doubled; as the only section of a second
+        >>> # signal, it is not
         >>> sos = torch.tensor([[1.0, 0.0, 0.0, -0.5, 0.0]] * 2)
         >>> sosfilt_zi(sos)
         tensor([[1., 0.],
