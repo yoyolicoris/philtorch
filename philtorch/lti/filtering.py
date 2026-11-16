@@ -457,16 +457,66 @@ def lfilter(
 
 
 def _check_sos(sos: Tensor) -> None:
-    if sos.dim() not in (2, 3):
-        raise ValueError("Sections sos must be 2D or 3D.")
+    if sos.dim() != 2:
+        raise ValueError(
+            "Sections sos must be 2D: (K, 5) for one cascade, or (S, 5) with a "
+            f"batch_index for one per row, got shape {tuple(sos.shape)}."
+        )
     if sos.size(-1) != 5:
         raise ValueError(f"The last dimension of sos must be 5, got {sos.size(-1)}.")
     if sos.size(-2) == 0:
         raise ValueError("sos must have at least one section.")
 
 
-def sosfilt(sos: Tensor, x: Tensor, zi: Tensor | None = None) -> Tensor | tuple[Tensor, Tensor]:
-    r"""Filter signals with batched cascades of second-order sections.
+def _sections_by_row(
+    sos: Tensor, batch_index: Tensor, batch_size: int | None = None
+) -> tuple[Tensor, Tensor, Tensor]:
+    """Group flat sections by their row, keeping their listed order in each.
+
+    Args:
+        sos: the sections, (S, 5), checked by :func:`_check_sos`.
+        batch_index: the row of each section, (S,).
+        batch_size: the number of rows B; ``None`` takes max(batch_index) + 1.
+
+    Returns:
+        The sections padded with identity sections [1, 0, 0, 0, 0] to
+        (B, K, 5), K being the most sections of a row; each row's number of
+        sections, (B,); and each section's place in the padded rows flattened
+        to (B * K,), (S,).
+
+    Raises:
+        ValueError: if ``batch_index`` is not of shape (S,), not int32 or int64,
+            not on sos's device, or out of range.
+    """
+    S = sos.size(0)
+    if batch_index.shape != (S,):
+        raise ValueError(f"batch_index must be of shape ({S},), got {tuple(batch_index.shape)}.")
+    if batch_index.dtype not in (torch.int32, torch.int64):
+        raise ValueError(f"batch_index must be int32 or int64, got {batch_index.dtype}.")
+    if batch_index.device != sos.device:
+        raise ValueError(
+            f"batch_index must be on sos's device, {sos.device}, got {batch_index.device}."
+        )
+    if batch_size is None:
+        batch_size = int(batch_index.max()) + 1
+    if ((batch_index < 0) | (batch_index >= batch_size)).any():
+        raise ValueError(f"batch_index must be from 0 to B - 1 = {batch_size - 1}.")
+    batch_index = batch_index.long()
+    counts = torch.bincount(batch_index, minlength=batch_size)
+    K = int(counts.max())
+    order = torch.argsort(batch_index, stable=True)
+    rows = batch_index[order]
+    position = torch.arange(S, device=sos.device) - (counts.cumsum(0) - counts)[rows]
+    place = torch.empty_like(order).index_copy_(0, order, rows * K + position)
+    identity = sos.new_tensor([1.0, 0.0, 0.0, 0.0, 0.0]).expand(batch_size * K, 5)
+    padded = identity.index_copy(0, place, sos).view(batch_size, K, 5)
+    return padded, counts, place
+
+
+def sosfilt(
+    sos: Tensor, x: Tensor, zi: Tensor | None = None, batch_index: Tensor | None = None
+) -> Tensor | tuple[Tensor, Tensor]:
+    r"""Filter signals with cascades of second-order sections.
 
     The signals go through the :math:`K` sections one after another, so that
     the cascade's transfer function is the product of the sections':
@@ -477,31 +527,38 @@ def sosfilt(sos: Tensor, x: Tensor, zi: Tensor | None = None) -> Tensor | tuple[
                  {1 + a_{l1} z^{-1} + a_{l2} z^{-2}}.
 
     Args:
-        sos (Tensor): the sections, of shape :math:`(K, 5)` or
-            :math:`(B, K, 5)`, :math:`K \ge 1`. Each row is
-            :math:`b_0, b_1, b_2, a_1, a_2`. A batched :attr:`sos` has one
-            cascade per signal.
+        sos (Tensor): the sections, of shape :math:`(K, 5)`, :math:`K \ge 1`,
+            or :math:`(S, 5)` with :attr:`batch_index`. Each row is
+            :math:`b_0, b_1, b_2, a_1, a_2`. Without :attr:`batch_index`,
+            they are one cascade that filters every signal.
         x (Tensor): input signals, of shape :math:`(B, N)` or :math:`(N)`.
-        zi (Tensor, optional): the initial state of each section, of shape
-            :math:`(K, 2)` or :math:`(B, K, 2)` and the dtype of :attr:`x`.
-            It is SciPy's ``zi``, the state of the transposed direct form II
-            (see :func:`sosfilt_zi`). Default: ``None``, all zero.
+        zi (Tensor, optional): the initial state of each section, of the
+            dtype of :attr:`x` and of shape :math:`(S, 2)` with
+            :attr:`batch_index`; otherwise :math:`(B, K, 2)` for a 2-D
+            :attr:`x`, and :math:`(K, 2)` for a 1-D one. It is SciPy's
+            ``zi``, the state of the transposed direct form II (see
+            :func:`sosfilt_zi`). Default: ``None``, all zero.
+        batch_index (Tensor, optional): the signal each section filters, of
+            shape :math:`(S)`, int32 or int64 on :attr:`x`'s device, from 0 to
+            :math:`B - 1`, where :math:`B = 1` for a 1-D :attr:`x`. The
+            sections of one signal run in the order they are listed, which
+            need not be consecutive, and a signal without a section comes out
+            unchanged. Default: ``None``, one cascade of all the sections for
+            every signal.
 
     Returns:
         Tensor or tuple of Tensor: the filtered signals, of the shape of
-        :attr:`x`, and with :attr:`zi`, the final states, of shape
-        :math:`(B, K, 2)`, or :math:`(K, 2)` when :attr:`sos`, :attr:`x` and
-        :attr:`zi` are all unbatched; a shared :attr:`zi` with batched signals
-        still gives one final state per signal. Pass them as the next chunk's
-        :attr:`zi` to filter a signal in chunks.
+        :attr:`x`, and with :attr:`zi`, the final states, of the shape of
+        :attr:`zi`. Pass them as the next chunk's :attr:`zi` to filter a
+        signal in chunks.
 
     Raises:
-        ValueError: if :attr:`sos` is not 2-D or 3-D, its last dimension is
-            not 5, or it has no section, :attr:`x` is not 1-D or 2-D,
-            :attr:`zi` is not 2-D or 3-D or its last two dimensions are not
-            :math:`(K, 2)`, a batched :attr:`sos` or :attr:`zi` has a batch
-            size other than that of :attr:`x`, or :attr:`sos` or :attr:`zi`
-            has a dtype or device other than that of :attr:`x`.
+        ValueError: if :attr:`sos` is not 2-D, its last dimension is not 5, or
+            it has no section, :attr:`x` is not 1-D or 2-D, :attr:`zi` does not
+            have the shape above, :attr:`batch_index` is not of shape
+            :math:`(S)`, not int32 or int64 on :attr:`sos`'s device, or out of
+            range, or :attr:`sos` or :attr:`zi` has a dtype or device other
+            than that of :attr:`x`.
 
     Example::
 
@@ -511,6 +568,14 @@ def sosfilt(sos: Tensor, x: Tensor, zi: Tensor | None = None) -> Tensor | tuple[
         ...                     [2.0, 0.0, 0.0, 0.0, 0.0]])
         >>> sosfilt(sos, torch.tensor([1.0, 0.0, 0.0, 0.0]))
         tensor([1.0000, 0.5000, 0.2500, 0.1250])
+        >>> # the first section for row 0, both for row 1, none for row 2
+        >>> batch_index = torch.tensor([0, 1, 1])
+        >>> sos3 = torch.cat([sos[:1], sos])
+        >>> x = torch.tensor([[1.0, 0.0, 0.0]] * 3)
+        >>> sosfilt(sos3, x, batch_index=batch_index)
+        tensor([[0.5000, 0.2500, 0.1250],
+                [1.0000, 0.5000, 0.2500],
+                [1.0000, 0.0000, 0.0000]])
         >>> # The step response of 8 sections of unit gain at DC: in float32,
         >>> # the cascade stays accurate where the expanded polynomials don't
         >>> from philtorch.lti import lfilter, sos2tf
@@ -530,43 +595,64 @@ def sosfilt(sos: Tensor, x: Tensor, zi: Tensor | None = None) -> Tensor | tuple[
     _check_sos(sos)
     if x.dim() not in (1, 2):
         raise ValueError("Input signal x must be 1D or 2D.")
-    K = sos.size(-2)
-    if zi is not None:
-        if zi.dim() not in (2, 3):
-            raise ValueError("Initial states zi must be 2D or 3D.")
-        if zi.shape[-2:] != (K, 2):
-            raise ValueError(
-                f"The last two dimensions of zi must be (K, 2) = ({K}, 2), "
-                f"got {tuple(zi.shape[-2:])}."
-            )
-    squeeze_first = x.dim() == 1 and sos.dim() == 2 and (zi is None or zi.dim() == 2)
-    if x.dim() == 1:
-        x = x.unsqueeze(0)
-    for name, t in (("sos", sos), ("zi", zi)):
-        if t is not None and t.dim() == 3 and t.size(0) != x.size(0):
-            raise ValueError(
-                f"Batch size of {name} must match batch size of x, "
-                f"got {name}: {t.size(0)}, x: {x.size(0)}"
-            )
+    batched = x.dim() == 2
+    x = x if batched else x.unsqueeze(0)
+    B = x.size(0)
+    shared = batch_index is None
+    K = sos.size(0)
+    zshape = (B, K, 2) if shared and batched else (K, 2)
+    if zi is not None and zi.shape != zshape:
+        raise ValueError(f"zi must have shape {zshape}, got {tuple(zi.shape)}.")
     _check_shared(sos=sos, zi=zi, x=x)
 
+    if shared:
+        rows, live = sos, [B] * K
+    else:
+        # The rows sorted by their number of sections, most first, so that
+        # the rows with a section at each position are a prefix; live counts
+        # them at each position.
+        padded, counts, place = _sections_by_row(sos, batch_index, B)
+        order = counts.argsort(descending=True, stable=True)
+        rows, x = padded[order], x[order]
+        positions = torch.arange(padded.size(1), device=counts.device)
+        live = (counts > positions.unsqueeze(-1)).sum(-1).tolist()
+    _, a, C, D = _ssm.direct_form(rows[..., :3], rows[..., 3:])
+    A = companion(a)
+    if not shared:
+        # by position first, each position contiguous
+        A, C, D = (t.movedim(1, 0).contiguous() for t in (A, C, D))
+    if zi is not None:
+        if shared:
+            z = (zi if batched else zi.unsqueeze(0)).movedim(1, 0)
+        else:
+            z = zi.new_zeros(B * A.size(0), 2).index_copy(0, place, zi)
+            z = z.view(B, -1, 2)[order].movedim(1, 0).contiguous()
+
+    y, done, zfs = x, [], []
+    for pos, n in enumerate(live):
+        if n < y.size(0):  # the rows without a section here are finished
+            done.append(y[n:])
+            y = y[:n]
+        at = (lambda t: t[pos]) if shared else (lambda t: t[pos, :n])
+        out = state_space(
+            at(A).mT, y, B=at(C), D=at(D), zi=at(z) if zi is not None else None, out_idx=0
+        )
+        y, zf = out if zi is not None else (out, None)
+        zfs.append(zf)
+    y = torch.cat([y, *done[::-1]]) if done else y
+    if not shared:
+        y = y[order.argsort()]
+    y = y if batched else y.squeeze(0)
     if zi is None:
-        sections = (partial(lfilter, s[..., :3], s[..., 3:]) for s in sos.unbind(-2))
-        return _squeeze_first_result(chain_functions(*sections)(x), squeeze_first)
-
-    def section(s, z):
-        # passes on the output and the final states of the sections so far
-        def run(y, *zfs):
-            y, zf = lfilter(s[..., :3], s[..., 3:], y, zi=z)
-            return y, *zfs, zf
-
-        return run
-
-    y, *zfs = chain_functions(*map(section, sos.unbind(-2), zi.unbind(-2)))(x)
-    return _squeeze_first_result((y, torch.stack(zfs, dim=-2)), squeeze_first)
+        return y
+    # the final states of each position, over the rows that ran it
+    zf = torch.stack([F.pad(f, (0, 0, 0, B - f.size(0))) for f in zfs], 1)
+    if shared:
+        return y, zf if batched else zf.squeeze(0)
+    return y, zf[order.argsort()].reshape(-1, 2)[place]
 
 
-def sosfilt_zi(sos: Tensor) -> Tensor:
+def sosfilt_zi(sos: Tensor, batch_index: Tensor | None = None) -> Tensor:
     r"""Return the initial states of :func:`sosfilt` for a steady step response.
 
     With these states, as with :func:`scipy.signal.sosfilt_zi`, filtering a
@@ -578,16 +664,22 @@ def sosfilt_zi(sos: Tensor) -> Tensor:
         \prod_{m=1}^{l-1} \frac{b_{m0} + b_{m1} + b_{m2}}{1 + a_{m1} + a_{m2}}.
 
     Args:
-        sos (Tensor): the sections, of shape :math:`(K, 5)` or
-            :math:`(B, K, 5)`, :math:`K \ge 1`, as in :func:`sosfilt`.
+        sos (Tensor): the sections, of shape :math:`(K, 5)`, :math:`K \ge 1`,
+            or :math:`(S, 5)` with :attr:`batch_index`, as in :func:`sosfilt`.
+        batch_index (Tensor, optional): the signal each section filters, of
+            shape :math:`(S)`, as in :func:`sosfilt`. Only the sections of the
+            same signal, listed before a section, scale its state. Default:
+            ``None``, one cascade of all the sections.
 
     Returns:
-        Tensor: the initial states, of shape :math:`(K, 2)` or
-        :math:`(B, K, 2)`.
+        Tensor: the initial states, of shape :math:`(K, 2)`, or :math:`(S, 2)`
+        with :attr:`batch_index`.
 
     Raises:
-        ValueError: if :attr:`sos` is not 2-D or 3-D, its last dimension is
-            not 5, or it has no section.
+        ValueError: if :attr:`sos` is not 2-D, its last dimension is not 5, or
+            it has no section, or :attr:`batch_index` is not of shape
+            :math:`(S)`, not int32 or int64 on :attr:`sos`'s device, or
+            negative.
 
     Example::
 
@@ -597,13 +689,27 @@ def sosfilt_zi(sos: Tensor) -> Tensor:
         >>> y, _ = sosfilt(sos, torch.ones(4), zi=sosfilt_zi(sos))
         >>> y
         tensor([2., 2., 2., 2.])
+        >>> # two sections of gain 2 at DC: the second's state doubles in a
+        >>> # cascade, and doesn't for another signal
+        >>> sos = torch.tensor([[1.0, 0.0, 0.0, -0.5, 0.0]] * 2)
+        >>> sosfilt_zi(sos)
+        tensor([[1., 0.],
+                [2., 0.]])
+        >>> sosfilt_zi(sos, torch.tensor([0, 1]))
+        tensor([[1., 0.],
+                [1., 0.]])
     """
     _check_sos(sos)
-    b, a = sos[..., :3], sos[..., 3:]
+    if batch_index is None:
+        padded = sos
+    else:
+        padded, _, place = _sections_by_row(sos, batch_index)
+    b, a = padded[..., :3], padded[..., 3:]
     gain = b.sum(-1) / (1 + a.sum(-1))
     # the gains of the sections before each one, the first having none
     before = torch.cumprod(F.pad(gain, (1, 0), value=1.0)[..., :-1], dim=-1)
-    return lfilter_zi(a, b) * before.unsqueeze(-1)
+    zi = lfilter_zi(a, b) * before.unsqueeze(-1)
+    return zi if batch_index is None else zi.reshape(-1, 2)[place]
 
 
 def pfefilt(

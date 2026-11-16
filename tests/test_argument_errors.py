@@ -506,11 +506,12 @@ _LTI_FILTERING_CASES = [
         "backend='diag_ssm' takes floating-point or complex",
         id="lfilter-diag_ssm-integer",
     ),
-    # sosfilt(sos, x, zi): sos (K, 5) or (B, K, 5), x (B, N) or (N), zi (K, 2) or (B, K, 2).
+    # sosfilt(sos, x, zi, batch_index): sos (K, 5), or (S, 5) with batch_index (S,);
+    # x (B, N) or (N); zi (B, K, 2) for a 2-D x, (K, 2) for a 1-D one, (S, 2) with batch_index.
     pytest.param(
-        lambda: lti.sosfilt(_ones(5), _ones(4)),
-        "sos must be 2D or 3D",
-        id="sosfilt-sos-1d",
+        lambda: lti.sosfilt(_ones(2, 1, 5), _ones(2, 4)),
+        "sos must be 2D",
+        id="sosfilt-sos-3d",
     ),
     pytest.param(
         lambda: lti.sosfilt(_ones(1, 6), _ones(4)),
@@ -528,35 +529,52 @@ _LTI_FILTERING_CASES = [
         id="sosfilt-x-3d",
     ),
     pytest.param(
-        lambda: lti.sosfilt(_ones(1, 5), _ones(4), zi=_zeros(2)),
-        "zi must be 2D or 3D",
-        id="sosfilt-zi-1d",
-    ),
-    pytest.param(
         lambda: lti.sosfilt(_ones(2, 5), _ones(4), zi=_zeros(1, 2)),
-        "last two dimensions of zi",
+        r"zi must have shape \(2, 2\)",
         id="sosfilt-zi-sections-mismatch",
     ),
     pytest.param(
-        lambda: lti.sosfilt(_ones(2, 1, 5), _ones(3, 4)),
-        "Batch size of sos must match batch size of x",
-        id="sosfilt-sos-batch-mismatch",
+        lambda: lti.sosfilt(_ones(2, 5), _ones(3, 4), zi=_zeros(2, 2)),
+        r"zi must have shape \(3, 2, 2\)",
+        id="sosfilt-zi-shared-for-2d-x",
+    ),
+    pytest.param(
+        lambda: lti.sosfilt(_ones(2, 5), _ones(3, 4), batch_index=torch.tensor([0, 1, 2])),
+        r"batch_index must be of shape \(2,\)",
+        id="sosfilt-batch_index-length",
+    ),
+    pytest.param(
+        lambda: lti.sosfilt(_ones(2, 5), _ones(3, 4), batch_index=_zeros(2)),
+        "batch_index must be int32 or int64",
+        id="sosfilt-batch_index-dtype",
+    ),
+    pytest.param(
+        lambda: lti.sosfilt(
+            _ones(2, 5), _ones(3, 4), batch_index=torch.zeros(2, dtype=torch.long, device="meta")
+        ),
+        "batch_index must be on sos's device",
+        id="sosfilt-batch_index-device",
+    ),
+    pytest.param(
+        lambda: lti.sosfilt(_ones(2, 5), _ones(3, 4), batch_index=torch.tensor([0, 3])),
+        r"batch_index must be from 0 to B - 1 = 2",
+        id="sosfilt-batch_index-range",
     ),
     pytest.param(
         lambda: lti.sosfilt(_ones(1, 5).float(), _ones(4)),
         "sos and x must share a dtype",
         id="sosfilt-sos-dtype",
     ),
-    # sosfilt_zi(sos), with sosfilt's check of sos
+    # sosfilt_zi(sos, batch_index), with sosfilt's checks of sos and batch_index
     pytest.param(
         lambda: lti.sosfilt_zi(_ones(5)),
-        "sos must be 2D or 3D",
+        "sos must be 2D",
         id="sosfilt_zi-sos-1d",
     ),
-    # sos2tf(sos), with sosfilt's check of sos
+    # sos2tf(sos, batch_index), with sosfilt's checks of sos and batch_index
     pytest.param(
         lambda: lti.sos2tf(_ones(5)),
-        "sos must be 2D or 3D",
+        "sos must be 2D",
         id="sos2tf-sos-1d",
     ),
     pytest.param(
@@ -569,7 +587,8 @@ _LTI_FILTERING_CASES = [
         "at least one section",
         id="sos2tf-sos-no-sections",
     ),
-    # sos2pfe(sos, tol, rtype): sos is checked as sos2tf's is, rtype as residuez's
+    # sos2pfe(sos, tol, rtype, batch_index): sos and batch_index are checked as sos2tf's are,
+    # rtype as residuez's
     pytest.param(
         lambda: lti.sos2pfe(_ones(1, 5), rtype="median"),
         "rtype must be one of",
