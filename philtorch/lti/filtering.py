@@ -439,8 +439,8 @@ def lfilter(
                 f"Batch size of {name} must match batch size of x, "
                 f"got {name}: {t.size(0)}, x: {x.size(0)}"
             )
-    # An empty a holds no values, so it may have another dtype: pure gains take
-    # a bare ``torch.tensor([])``.
+    # An empty a holds no values, so it may have any dtype, as a bare
+    # ``torch.tensor([])`` does.
     _check_shared(b=b, a=a if a.size(-1) else None, zi=zi, x=x)
 
     match backend:
@@ -892,7 +892,7 @@ def _diag_ssm_lfilter(
         )
     # The eigendecomposition is complex for complex poles, but a real filter
     # still has a real output and state.
-    real = not any(t.is_complex() for t in (b, a, x) + (() if zi is None else (zi,)))
+    real = not x.is_complex()
 
     if form not in ("df2", "tdf2"):
         raise ValueError(f"Unknown filter form: {form}")

@@ -284,9 +284,9 @@ def lfilter(
         ValueError: if :attr:`b`, :attr:`a`, :attr:`zi` and :attr:`x` don't
             share a dtype and a device, :attr:`x` has more than 2 dimensions,
             :attr:`form` or :attr:`backend` is unknown, :attr:`zi` is given
-            with ``"df1"`` or ``"tdf1"``, a batched :attr:`b` or :attr:`a` has a batch size
-            other than that of a batched :attr:`x`, or the other shapes do
-            not match.
+            with ``"df1"`` or ``"tdf1"``, a batched :attr:`b` or :attr:`a`
+            has a batch size other than that of a batched :attr:`x`, or the
+            other shapes do not match.
         NotImplementedError: with ``backend="torchlpc"``, for ``form="tdf2"``
             or an :attr:`x` that is floating point or complex but not float32,
             float64, complex64 or complex128.

@@ -496,7 +496,9 @@ def test_diag_state_space_L_alone_allocates_no_M_by_M_tensor():
 
 
 # The outputs and final state are real exactly when every tensor given is.
-@pytest.mark.parametrize("system, complex_arg", [("A", "x"), ("A", "D"), ("L", "D"), ("L", "C")])
+@pytest.mark.parametrize(
+    "system, complex_arg", [("A", "x"), ("A", "D"), ("L", "x"), ("L", "D"), ("L", "C")]
+)
 def test_diag_state_space_complex_input_gives_complex_outputs(system, complex_arg):
     if system == "A":
         A = _generate_diagonalizable_matrix((2, 2)).double()

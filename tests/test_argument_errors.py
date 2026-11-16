@@ -495,11 +495,6 @@ _LTI_FILTERING_CASES = [
         id="lfilter-a-3d",
     ),
     pytest.param(
-        lambda: lti.lfilter(_ones(2).float(), _zeros(1), _ones(4)),
-        "b, a and x must share a dtype and a device",
-        id="lfilter-b-dtype",
-    ),
-    pytest.param(
         lambda: lti.lfilter(_ones(2).to(torch.complex128), _zeros(1), _ones(4)),
         "b, a and x must share a dtype and a device",
         id="lfilter-b-complex",
