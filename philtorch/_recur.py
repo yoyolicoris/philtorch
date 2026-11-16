@@ -310,12 +310,6 @@ def _previous(zi: Tensor, h: Tensor) -> Tensor:
     return torch.cat([zi.unsqueeze(1), h[:, :-1]], 1)
 
 
-def _derivative_dtype(dtype: torch.dtype) -> torch.dtype:
-    """The dtype the derivatives' PyTorch ops run in: complex64 for complex32,
-    which has no matmul, and on CPU no sum or flip of an innermost dimension."""
-    return torch.complex64 if dtype == torch.complex32 else dtype
-
-
 def _gradients(run, A, zi, h, grad, needs_A, needs_zi):
     """The gradients of A, zi and x from h's, ``grad``; ``run`` runs the recurrence.
 
@@ -338,21 +332,29 @@ def _gradients(run, A, zi, h, grad, needs_A, needs_zi):
     A_H = A.mH
     if Ta > 1:
         A_H = A_H.index_select(1, torch.arange(Ta - 1, 0, -1, device=A.device))
-    acc = _derivative_dtype(grad.dtype)
+    # complex32 has no matmul, nor, on CPU, a sum or a flip of an innermost
+    # dimension: those ops run in complex64, in which the kernels accumulate
+    # it, and the adjoint recurrence in complex32. Other dtypes aren't cast.
+    low = grad.dtype == torch.complex32
+
+    def wide(t):
+        return t.to(torch.complex64) if low else t
+
+    def narrow(t):
+        return t.to(torch.complex32) if low else t
 
     def flip(t):
-        return t.to(acc).flip(1).to(t.dtype)
+        return narrow(wide(t).flip(1))
 
     lam = torch.cat([flip(run(A_H, grad[:, -1], flip(grad[:, :-1]))), grad[:, -1:]], 1)
     grad_A = grad_zi = None
     if needs_A:
-        grad_A = _sum_outer(lam.to(acc), _previous(zi.conj(), h.conj()).to(acc), Ba, Ta)
-        grad_A = grad_A.to(A.dtype)
+        grad_A = narrow(_sum_outer(wide(lam), wide(_previous(zi.conj(), h.conj())), Ba, Ta))
     if needs_zi:
         # A[0]^H lam[0], summed elementwise: as a batched matmul of small
         # matrices, PyTorch routes it through a Triton kernel whose launch
         # costs more than the product.
-        grad_zi = (A[:, 0].conj().to(acc) * lam[:, 0].to(acc).unsqueeze(-1)).sum(-2).to(zi.dtype)
+        grad_zi = narrow((wide(A[:, 0].conj()) * wide(lam[:, 0]).unsqueeze(-1)).sum(-2))
     return grad_A, grad_zi, lam
 
 
@@ -414,13 +416,16 @@ class Recurrence(torch.autograd.Function):
         # a matmul over each sequence's steps at once.
         tangent = dx
         if dA is not None:
-            acc = _derivative_dtype(h.dtype)
-            h_prev, dA_acc = _previous(zi, h).to(acc), dA.to(acc)
+            h_prev = _previous(zi, h)
+            low = h.dtype == torch.complex32  # no matmul on CPU: run it in complex64
+            if low:
+                h_prev, dA = h_prev.to(torch.complex64), dA.to(torch.complex64)
             if dA.size(1) == 1:
-                term = h_prev @ dA_acc[:, 0].mT
+                term = h_prev @ dA[:, 0].mT
             else:
-                term = (dA_acc @ h_prev.unsqueeze(-1)).squeeze(-1)
-            term = term.to(h.dtype)
+                term = (dA @ h_prev.unsqueeze(-1)).squeeze(-1)
+            if low:
+                term = term.to(torch.complex32)
             tangent = term if tangent is None else tangent + term
         if tangent is None:
             tangent = torch.zeros_like(h)
