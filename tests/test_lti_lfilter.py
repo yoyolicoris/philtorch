@@ -268,8 +268,8 @@ def test_tdf2_zi(num_order: int, den_order: int):
     ],
 )
 @pytest.mark.parametrize("form", ["df2", "tdf2"])
-@pytest.mark.parametrize("enable_L", [True, False])
-@pytest.mark.parametrize("enable_V", [True, False])
+# V and Vinv need L.
+@pytest.mark.parametrize(("enable_L", "enable_V"), [(True, True), (True, False), (False, False)])
 def test_diag_ssm_backend(
     B: int,
     T: int,
@@ -728,15 +728,16 @@ def test_lfilter_pure_gain_rejects_dtype_and_device(form: str, case: str):
         lfilter(b, a, x, form=form, backend="ssm", **kwargs)
 
 
+@pytest.mark.parametrize("num_taps", [1, 3])
 @pytest.mark.parametrize("form", ["df2", "tdf2", "df1", "tdf1"])
-def test_lfilter_pure_gain_accepts_empty_a_of_another_dtype(form: str):
+def test_lfilter_accepts_empty_a_of_another_dtype(form: str, num_taps: int):
     # torch.tensor([]) is float32, but an empty a holds no values.
     rng = np.random.default_rng(0)
-    b = torch.from_numpy(rng.standard_normal(1))
+    b = torch.from_numpy(rng.standard_normal(num_taps))
     x = torch.from_numpy(rng.standard_normal((3, 10)))
     y = lfilter(b, torch.tensor([]), x, form=form, backend="ssm")
     assert y.dtype == torch.float64
-    assert torch.allclose(y, b[0] * x)
+    torch.testing.assert_close(y, lfilter(b, x.new_zeros(0), x, form=form, backend="ssm"))
 
 
 @pytest.mark.parametrize(("backend", "num_taps"), [("ssm", 1), ("diag_ssm", 1), ("diag_ssm", 3)])

@@ -905,6 +905,11 @@ _LTI_SSM_CASES = [
         id="diag-C-complex",
     ),
     pytest.param(
+        lambda: lti.diag_state_space(_ones(1, 4), A=_eye(2), V=_eye(2)),
+        "V and Vinv need L",
+        id="diag-V-without-L",
+    ),
+    pytest.param(
         lambda: lti.diag_state_space(_ones(1, 4), L=_zeros(2), V=_eye(2) + 0j),
         "L and V must share a dtype and a device",
         id="diag-V-dtype",

@@ -392,7 +392,8 @@ def diag_state_space(
         the outputs and final state are real.
 
     Raises:
-        ValueError: if neither :attr:`L` nor :attr:`A` is given, if both
+        ValueError: if neither :attr:`L` nor :attr:`A` is given, if
+            :attr:`V` or :attr:`Vinv` is given without :attr:`L`, if both
             :attr:`C` and :attr:`out_idx` are given, if :attr:`A`, :attr:`B`,
             :attr:`C`, :attr:`D` and :attr:`zi` don't have the dtype and
             device of :attr:`x`, if :attr:`L`, :attr:`V` and :attr:`Vinv`
@@ -425,6 +426,8 @@ def diag_state_space(
     if L is None:
         if A is None:
             raise ValueError("Either L or A must be provided")
+        if V is not None or Vinv is not None:
+            raise ValueError("V and Vinv need L")
         _check_A(A, x)
         L = torch.linalg.eigvals(A)
         V = Vinv = None

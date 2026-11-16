@@ -442,6 +442,8 @@ def lfilter(
     # An empty a holds no values, so it may have any dtype, as a bare
     # ``torch.tensor([])`` does.
     _check_shared(b=b, a=a if a.size(-1) else None, zi=zi, x=x)
+    if a.size(-1) == 0:
+        a = x.new_zeros(a.shape)
 
     match backend:
         case "ssm":
