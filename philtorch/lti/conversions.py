@@ -152,11 +152,6 @@ def sos2tf(sos: Tensor) -> tuple[Tensor, Tensor]:
         ValueError: if :attr:`sos` is not 2-D or 3-D, its last dimension is
             not 5, or it has no section.
 
-    Note:
-        Unlike :func:`scipy.signal.sos2tf`, the rows of :attr:`sos` omit the
-        column :math:`a_0`, which is taken to be 1, and the returned
-        denominator omits its leading 1.
-
     Example::
 
         >>> from philtorch.lti import sos2tf
@@ -298,19 +293,11 @@ def residuez(
             ``delayed_form=True`` avoids.
 
     Note:
-        Unlike :func:`scipy.signal.residuez`, the denominator omits its leading
-        1, and no zero coefficients are trimmed, so the output shapes follow
-        from the input shapes. Poles of equal magnitude, such as a conjugate
-        pair, are ordered by angle, where SciPy keeps the order of its root
-        finder.
+        Unlike :func:`scipy.signal.residuez`, no zero coefficients are
+        trimmed, so the output shapes follow from the input shapes: where
+        SciPy trims a pole at 0 from :attr:`a` when :math:`L > M`, this raises
+        an error, unless ``delayed_form=True``.
 
-        A pole at 0 (:math:`a_M = 0`) has the constant fraction :math:`r_i`.
-        When :math:`L > M`, that overlaps the direct term, so the expansion
-        isn't unique: SciPy trims the pole from :math:`a`, changing the
-        shapes, where this raises an error. In the delayed form, the pole is a
-        tap at delay :math:`D`, which is unique.
-
-    Note:
         The poles are the roots of :attr:`a`, which are ill-conditioned at high
         orders, and so is the expansion. For a filter given as sections, use
         :func:`sos2pfe`, whose poles are the sections' own.
@@ -437,8 +424,8 @@ def invresz(
             :attr:`rtype` is unknown.
 
     Note:
-        Unlike :func:`scipy.signal.invresz`, the denominator omits its leading
-        1, and no zero coefficients are trimmed.
+        Unlike :func:`scipy.signal.invresz`, no zero coefficients are
+        trimmed.
 
     Example::
 
@@ -557,9 +544,6 @@ def sos2pfe(
         the poles and, for a real :attr:`sos`, the conjugates it leaves out;
         :func:`residuez` can't hold a repeated pole at 0, as an FIR
         section has.
-        The poles here are the sections' own, not the roots of a high-order
-        denominator, so the expansion stays accurate for high-order filters,
-        where :func:`residuez` loses precision.
 
     Example::
 

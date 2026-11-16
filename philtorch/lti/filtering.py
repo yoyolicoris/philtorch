@@ -121,10 +121,6 @@ def lfiltic(b: Tensor, a: Tensor, y: Tensor, x: Tensor | None = None) -> Tensor:
     Raises:
         ValueError: if :attr:`b` or :attr:`a` is 0-D.
 
-    Note:
-        Unlike :func:`scipy.signal.lfiltic`, :attr:`a` omits the leading
-        :math:`a_0 = 1`.
-
     Example::
 
         >>> from philtorch.lti import lfilter, lfiltic
@@ -196,8 +192,8 @@ def lfilter_zi(a: Tensor, b: Tensor | None = None, transpose: bool = True) -> Te
             :attr:`b` is ``None`` or 0-D.
 
     Note:
-        The arguments are ``(a, b)``, the reverse of SciPy's ``(b, a)``, and
-        :attr:`a` omits the leading :math:`a_0 = 1`.
+        Unlike :func:`scipy.signal.lfilter_zi`, the arguments are
+        ``(a, b)``.
 
     Example::
 
@@ -265,10 +261,6 @@ def fir(
     Raises:
         ValueError: if :attr:`b`, :attr:`x` or :attr:`zi` is not 2-D or
             their shapes do not match.
-
-    Note:
-        Unlike :func:`lfilter`, :attr:`b` and :attr:`x` must both be 2-D,
-        with one filter per signal.
 
     Example::
 
@@ -413,11 +405,6 @@ def lfilter(
         TypeError: if a keyword argument is not one the backend takes, or
             ``unroll_factor`` is not an integer.
 
-    Note:
-        Unlike :func:`scipy.signal.lfilter`, :attr:`a` omits the leading
-        :math:`a_0`, which is taken to be 1, so normalize the coefficients
-        first. There is no ``axis`` argument.
-
     Example::
 
         >>> from philtorch.lti import lfilter
@@ -512,13 +499,6 @@ def sosfilt(sos: Tensor, x: Tensor, zi: Tensor | None = None) -> Tensor | tuple[
             size other than that of :attr:`x`, or :attr:`sos` or :attr:`zi`
             has a dtype or device other than that of :attr:`x`.
 
-    Note:
-        Unlike :func:`scipy.signal.sosfilt`, the rows of :attr:`sos` omit the
-        column :math:`a_0`, which is taken to be 1, as the denominator of
-        :func:`lfilter` does, and :attr:`zi` is batch first, of shape
-        :math:`(B, K, 2)` instead of :math:`(K, B, 2)`. There is no ``axis``
-        argument.
-
     Example::
 
         >>> from philtorch.lti import sosfilt
@@ -589,9 +569,10 @@ def sosfilt(sos: Tensor, x: Tensor, zi: Tensor | None = None) -> Tensor | tuple[
 def sosfilt_zi(sos: Tensor) -> Tensor:
     r"""Return the initial states of :func:`sosfilt` for a steady step response.
 
-    With these states, filtering a constant input of 1 starts every section in
-    steady state. Section :math:`l` gets the state of :func:`lfilter_zi`,
-    scaled by the gain at DC of the sections before it,
+    With these states, as with :func:`scipy.signal.sosfilt_zi`, filtering a
+    constant input of 1 starts every section in steady state. Section
+    :math:`l` gets the state of :func:`lfilter_zi`, scaled by the gain at DC
+    of the sections before it,
 
     .. math::
         \prod_{m=1}^{l-1} \frac{b_{m0} + b_{m1} + b_{m2}}{1 + a_{m1} + a_{m2}}.
@@ -607,11 +588,6 @@ def sosfilt_zi(sos: Tensor) -> Tensor:
     Raises:
         ValueError: if :attr:`sos` is not 2-D or 3-D, its last dimension is
             not 5, or it has no section.
-
-    Note:
-        As in :func:`sosfilt`, the rows of :attr:`sos` omit the column
-        :math:`a_0`, and the states of batched sections are batch first. The
-        states are those of :func:`scipy.signal.sosfilt_zi`.
 
     Example::
 

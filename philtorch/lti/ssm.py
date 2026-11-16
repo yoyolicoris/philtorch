@@ -162,8 +162,8 @@ def state_space(
             :attr:`out_idx` or the states, or if the other shapes do not match.
 
     Note:
-        This computes the same as :func:`scipy.signal.dlsim` with
-        ``x0=zi``, batched, without the time vector or the state sequence.
+        This computes what :func:`scipy.signal.dlsim` does with ``x0=zi``,
+        without the time vector or the state sequence.
 
     Example::
 

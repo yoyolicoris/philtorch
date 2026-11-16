@@ -287,11 +287,6 @@ def lfilter(
             or an :attr:`x` that is floating point or complex but not float32,
             float64, complex64 or complex128.
 
-    Note:
-        Unlike :func:`philtorch.lti.lfilter`, :attr:`b` and :attr:`a` always
-        have a time dimension. As there, :attr:`a` omits the leading
-        :math:`a_0 = 1`.
-
     Example::
 
         >>> from philtorch.lpv import lfilter
