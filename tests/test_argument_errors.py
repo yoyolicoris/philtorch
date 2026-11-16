@@ -1092,6 +1092,16 @@ _MAT_CASES = [
     # confluent_vandermonde(poles, e): poles (*, M); e integers >= 0 of shape
     # (M) or poles's
     pytest.param(
+        lambda: confluent_vandermonde(_zeros(()), torch.zeros((), dtype=torch.long)),
+        "poles must be at least 1-D",
+        id="confluent-poles-0d",
+    ),
+    pytest.param(
+        lambda: confluent_vandermonde(torch.tensor([1, 2]), torch.zeros(2, dtype=torch.long)),
+        "poles must be floating or complex",
+        id="confluent-poles-dtype",
+    ),
+    pytest.param(
         lambda: confluent_vandermonde(_zeros(2), _zeros(2)),
         "e must be an integer tensor",
         id="confluent-e-dtype",

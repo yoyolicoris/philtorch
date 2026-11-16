@@ -3,6 +3,7 @@
 from itertools import accumulate
 
 import torch
+import torch.nn.functional as F
 from sympy.ntheory import factorint
 from torch import Tensor
 
@@ -181,8 +182,8 @@ def confluent_vandermonde(poles: Tensor, e: Tensor) -> Tensor:
     :math:`e_k \ge 1`, and zero elsewhere.
 
     Args:
-        poles (Tensor): the poles :math:`p_k`, real or complex, of shape
-            :math:`(*, M)`.
+        poles (Tensor): the poles :math:`p_k`, a floating or complex tensor
+            of shape :math:`(*, M)`.
         e (Tensor): the orders :math:`e_k \ge 0`, an integer tensor of shape
             :math:`(M)` or the shape of :attr:`poles`.
 
@@ -191,6 +192,7 @@ def confluent_vandermonde(poles: Tensor, e: Tensor) -> Tensor:
         device of :attr:`poles`.
 
     Raises:
+        ValueError: if :attr:`poles` is 0-D or not floating or complex.
         ValueError: if :attr:`e` is not an integer tensor, is not on the
             device of :attr:`poles`, has neither shape :math:`(M)` nor that of
             :attr:`poles`, or has a negative entry.
@@ -210,6 +212,10 @@ def confluent_vandermonde(poles: Tensor, e: Tensor) -> Tensor:
         >>> torch.allclose(C @ V, V @ J)
         True
     """
+    if poles.dim() == 0:
+        raise ValueError("poles must be at least 1-D.")
+    if not (poles.is_floating_point() or poles.is_complex()):
+        raise ValueError(f"poles must be floating or complex, got {poles.dtype}.")
     _check_integer("e", e)
     if e.device != poles.device:
         raise ValueError(f"e must be on poles's device, got {e.device}.")
@@ -220,30 +226,29 @@ def confluent_vandermonde(poles: Tensor, e: Tensor) -> Tensor:
         )
     if bool((e < 0).any()):
         raise ValueError("e must not be negative.")
-    # float16 and bfloat16 accumulate in float32, complex32 in complex64
-    acc = torch.complex64 if poles.dtype == torch.complex32 else _accumulation_dtype(poles.dtype)
-    V = _confluent_vandermonde(poles.to(acc), e, poles.size(-1))
-    return V.flip(-2).to(poles.dtype)
+    p = poles.to(_accumulation_dtype(poles.dtype))
+    # row i of column k is row n - e_k of the matrix read from row e,
+    # n = M - 1 - i, and zero where n < e_k
+    M = poles.size(-1)
+    row = torch.arange(M - 1, -1, -1, device=p.device).unsqueeze(-1) - e.unsqueeze(-2)
+    H = _confluent_vandermonde(p, e, M)
+    V = H.gather(-2, row.clamp(min=0).expand_as(H)) * (row >= 0)
+    return V.to(poles.dtype)
 
 
-def _confluent_vandermonde(p: Tensor, e: Tensor, rows: int, start: Tensor | None = None) -> Tensor:
-    r"""The confluent Vandermonde matrix of ascending powers, (*, rows, M).
+def _confluent_vandermonde(p: Tensor, e: Tensor, rows: int) -> Tensor:
+    r"""The confluent Vandermonde matrix of ascending powers from row
+    :math:`e`, of shape (*, rows, M).
 
-    Entry [i, c] is :math:`\binom{n}{e_c} p_c^{n - e_c}`, zero where
-    :math:`n < e_c`, with :math:`n = i + s_c` and ``start`` :math:`s_c` from 0
-    (the default) to :math:`e_c`. With ``start = e``, column c is the impulse
-    response of :math:`1 / (1 - p_c z^{-1})^{e_c + 1}`, which ``residuez`` and
-    ``invresz`` use. A cumulative product builds each column from the ratios
-    of consecutive rows, which keeps the binomials exact up to rounding.
+    Entry [i, k] is :math:`\binom{i + e_k}{e_k} p_k^i`, the impulse response
+    of :math:`1 / (1 - p_k z^{-1})^{e_k + 1}`, which ``residuez`` and
+    ``invresz`` use. A cumulative product builds it from the ratios
+    :math:`p_k (i + e_k) / i` of consecutive rows, which keeps the binomials
+    exact up to rounding, with no gamma functions.
     """
-    # t = n - e runs from start - e <= 0; the ratio of row t to row t - 1 is
-    # p (t + e) / t from t = 1 on, and 1 before, then t < 0 is masked out
-    shift = -e if start is None else start - e
-    n = torch.arange(rows, dtype=p.dtype.to_real(), device=p.device)
-    t = n.unsqueeze(-1) + shift.unsqueeze(-2)
-    ratio = p.unsqueeze(-2) * ((t + e.unsqueeze(-2)) / t.clamp(min=1))
-    ratio = torch.where(t >= 1, ratio, 1)
-    return torch.cumprod(ratio, dim=-2) * (t >= 0)
+    n = torch.arange(1, rows, dtype=p.dtype.to_real(), device=p.device).unsqueeze(-1)
+    ratios = p.unsqueeze(-2) * ((n + e.unsqueeze(-2)) / n)
+    return torch.cumprod(F.pad(ratios, (0, 0, 1, 0), value=1), dim=-2)
 
 
 def matrix_power_accumulate(A: Tensor, n: int) -> Tensor:

@@ -52,7 +52,9 @@ def _squeeze_first_result(
 
 def _accumulation_dtype(dtype: torch.dtype) -> torch.dtype:
     """The dtype that values of ``dtype`` accumulate in: float32 for float16 and
-    bfloat16, and ``dtype`` itself otherwise."""
+    bfloat16, complex64 for complex32, and ``dtype`` itself otherwise."""
+    if dtype == torch.complex32:
+        return torch.complex64
     return torch.float32 if dtype in (torch.float16, torch.bfloat16) else dtype
 
 
