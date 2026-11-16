@@ -12,6 +12,7 @@ from torch import Tensor
 
 from ..mat import companion
 from ..poly import polymul
+from ..utils import _check_shared
 from .filtering import _check_sos
 
 _RTYPES = ("max", "maximum", "min", "minimum", "avg", "mean")
@@ -285,8 +286,8 @@ def residuez(
 
     Raises:
         ValueError: if :attr:`b` or :attr:`a` is not 1-D or 2-D, their batch
-            sizes or precisions differ (real and complex inputs of one
-            precision mix), :attr:`rtype` is unknown, or, without
+            sizes, precisions or devices differ (real and complex inputs of
+            one precision mix), :attr:`rtype` is unknown, or, without
             ``delayed_form``, :math:`L > M` and :math:`a_M = 0` for any filter.
         torch.linalg.LinAlgError: if a pole at 0 is repeated, or, without
             ``delayed_form``, :math:`p_i^D` underflows for a pole, which
@@ -318,8 +319,7 @@ def residuez(
     if rtype not in _RTYPES:
         raise ValueError(f"rtype must be one of {_RTYPES}, got {rtype!r}")
     (b, a), batched = _as_batch(b=b, a=a)
-    if b.dtype.to_real() != a.dtype.to_real():
-        raise ValueError(f"b and a must share a precision, got {b.dtype} and {a.dtype}")
+    _check_shared(precision=True, b=b, a=a)
     # a real one is made complex, at its own precision, with a complex other
     dtype = b.dtype.to_complex() if b.is_complex() or a.is_complex() else b.dtype
     b, a = b.to(dtype), a.to(dtype)
@@ -419,9 +419,9 @@ def invresz(
 
     Raises:
         ValueError: if :attr:`r`, :attr:`p` or :attr:`k` is not 1-D or 2-D,
-            their batch sizes or precisions differ (real and complex inputs of
-            one precision mix), :attr:`r` and :attr:`p` differ in length, or
-            :attr:`rtype` is unknown.
+            their batch sizes, precisions or devices differ (real and complex
+            inputs of one precision mix), :attr:`r` and :attr:`p` differ in
+            length, or :attr:`rtype` is unknown.
 
     Note:
         Unlike :func:`scipy.signal.invresz`, no zero coefficients are
@@ -443,10 +443,7 @@ def invresz(
     (r, p, k), batched = _as_batch(r=r, p=p, k=k)
     if r.size(-1) != p.size(-1):
         raise ValueError(f"r and p must have the same length, got {r.size(-1)} and {p.size(-1)}.")
-    if len({t.dtype.to_real() for t in (r, p, k)}) > 1:
-        raise ValueError(
-            f"r, p and k must share a precision, got {r.dtype}, {p.dtype} and {k.dtype}"
-        )
+    _check_shared(precision=True, r=r, p=p, k=k)
     # real inputs are made complex at their own precision
     cdtype = r.dtype.to_complex()
     r, p, k = r.to(cdtype), p.to(cdtype), k.to(cdtype)
@@ -536,7 +533,8 @@ def sos2pfe(
 
     Raises:
         ValueError: if :attr:`sos` is not 2-D or 3-D, its last dimension is
-            not 5, it has no section, or :attr:`rtype` is unknown.
+            not 5, it has no section, it is float16 or bfloat16, or
+            :attr:`rtype` is unknown.
 
     Note:
         For simple poles, the expansion is that of :func:`residuez` with
@@ -580,6 +578,8 @@ def sos2pfe(
     if rtype not in _RTYPES:
         raise ValueError(f"rtype must be one of {_RTYPES}, got {rtype!r}")
     _check_sos(sos)
+    if sos.dtype in (torch.float16, torch.bfloat16):
+        raise ValueError(f"sos can't be float16 or bfloat16, got {sos.dtype}.")
     if tol is None:
         tol = 10 * torch.finfo(sos.dtype).eps ** 0.5
     batched = sos.dim() == 3

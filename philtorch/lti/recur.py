@@ -3,7 +3,7 @@
 from torch import Tensor
 
 from .. import _ssm
-from ..utils import _check_scalar_batch
+from ..utils import _check_scalar_batch, _check_shared
 
 
 def linear_recurrence(
@@ -36,10 +36,12 @@ def linear_recurrence(
         Tensor: :math:`h[1], \dots, h[N]`, of shape :math:`(B, N)`.
 
     Raises:
-        ValueError: if :attr:`x` is not 2-D, if :attr:`unroll_factor` is 0 or
-            negative, or, with an integer :attr:`unroll_factor`, if :attr:`a`
-            or :attr:`init` is not 0-D or 1-D, or either has a batch size
-            other than 1 or that of :attr:`x`.
+        ValueError: if :attr:`x` is not 2-D, if :attr:`a`, :attr:`init` and
+            :attr:`x` don't share a dtype and a device, if
+            :attr:`unroll_factor` is 0 or negative, or, with an integer
+            :attr:`unroll_factor`, if :attr:`a` or :attr:`init` is not 0-D or
+            1-D, or either has a batch size other than 1 or that of
+            :attr:`x`.
         RuntimeError: with ``unroll_factor=None``, for the same batch-size
             mismatch.
         NotImplementedError: with ``unroll_factor=None``, if no kernel takes
@@ -55,6 +57,7 @@ def linear_recurrence(
     """
     if x.dim() != 2:
         raise ValueError(f"Input x must be 2D, got {x.shape}")
+    _check_shared(a=a, init=init, x=x)
     if unroll_factor is None:
         return _ssm.scalar_recursion(a.broadcast_to(x.shape[0])[:, None], init, x)
 

@@ -10,6 +10,7 @@ import torch.nn.functional as F
 from torch import Tensor
 
 from .._triton import check_cuda_triton
+from ..utils import _check_integer
 
 
 def ctc_loss(
@@ -75,7 +76,9 @@ def ctc_loss(
             :math:`(B, T, C)` or :math:`(T, C)`, if the other arguments'
             shapes do not match it, if a length is negative or past its
             sequence (or the concatenated targets' lengths do not sum to
-            theirs), if a sequence's grid of states by frames,
+            theirs), if :attr:`targets` or a tensor of lengths is not of an
+            integer dtype, if a length given as a tuple is not an integer, if
+            a sequence's grid of states by frames,
             :math:`(2S + 2)(T + 1)` cells with :math:`S` the padded targets'
             width, exceeds :math:`2^{31} - 1` cells, or if :attr:`reduction`
             is unknown. Lengths given as
@@ -186,13 +189,16 @@ def forced_align(
     return (path[0], scores[0]) if unbatched else (path, scores)
 
 
-def _lengths(lengths: Tensor | Sequence[int] | int) -> tuple[Tensor, list[int] | None]:
+def _lengths(name: str, lengths: Tensor | Sequence[int] | int) -> tuple[Tensor, list[int] | None]:
     """Lengths as a 1-D long tensor, and as a list of ints if they were given
     as ints."""
     if isinstance(lengths, Tensor):
+        _check_integer(name, lengths)
         return lengths.long().reshape(-1), None
     if isinstance(lengths, numbers.Integral):
         lengths = (lengths,)
+    if not all(isinstance(n, numbers.Integral) for n in lengths):
+        raise ValueError(f"{name} must be integers, got {lengths}")
     values = [int(n) for n in lengths]  # a sequence, or a NumPy array
     return torch.tensor(values, dtype=torch.long), values
 
@@ -204,8 +210,9 @@ def _prepare(name, log_probs, targets, input_lengths, target_lengths, blank):
         raise ValueError(f"log_probs must be (B, T, C) or (T, C), got {tuple(log_probs.shape)}")
     unbatched = log_probs.dim() == 2
     device = log_probs.device
-    frames, frame_values = _lengths(input_lengths)
-    labels, label_values = _lengths(target_lengths)
+    _check_integer("targets", targets)
+    frames, frame_values = _lengths("input_lengths", input_lengths)
+    labels, label_values = _lengths("target_lengths", target_lengths)
     if unbatched:
         log_probs, targets = log_probs[None], targets.reshape(1, -1)
     N, T, _ = log_probs.shape

@@ -176,6 +176,8 @@ import triton
 import triton.language as tl
 from torch import Tensor
 
+from ..utils import _accumulation_dtype
+
 _INF = float("inf")
 _STEPS = {"orthogonal": 0, "symmetric": 1, "ctc": 2}
 # Triton kernels can only read module constants made with tl.constexpr.
@@ -1360,7 +1362,7 @@ def _(
 
 def _acc(t: Tensor) -> torch.dtype:
     """The dtype ``t``'s values accumulate in: float32 for half and bfloat16."""
-    return torch.promote_types(t.dtype, torch.float32)
+    return _accumulation_dtype(t.dtype)
 
 
 def _empty(t: Tensor, *_, **__) -> Tensor:

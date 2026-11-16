@@ -413,7 +413,7 @@ def _diag_L_reference(L, x, B, **kwargs):
     """state_space with A = diag(L), and B = ones for the 2-D x it feeds to
     every state."""
     if B is None and x.dim() == 2:
-        B = torch.ones(L.shape, dtype=x.dtype)
+        B = torch.ones(L.shape, dtype=L.dtype)
     if L.is_complex():
         x = x.to(L.dtype)
         kwargs = {k: v.to(L.dtype) if torch.is_tensor(v) else v for k, v in kwargs.items()}

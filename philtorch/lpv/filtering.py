@@ -9,7 +9,7 @@ from torch import Tensor
 from .. import _ssm
 from .._torchlpc import lpc
 from ..mat import companion
-from ..utils import _squeeze_first_result, chain_functions
+from ..utils import _check_shared, _squeeze_first_result, chain_functions
 from .ssm import state_space, state_space_recursion
 from .utils import diag_shift
 
@@ -49,7 +49,8 @@ def fir(
         convention, of shape :math:`(B, M)`.
 
     Raises:
-        ValueError: if the shapes do not match.
+        ValueError: if :attr:`b`, :attr:`zi` and :attr:`x` don't share a dtype
+            and a device, or the shapes do not match.
 
     Example::
 
@@ -65,6 +66,7 @@ def fir(
         raise ValueError("Numerator coefficients b must be 3D.")
     if x.dim() != 2:
         raise ValueError("Input signal x must be 2D.")
+    _check_shared(b=b, zi=zi, x=x)
 
     B, T = x.shape
     if b.shape[:2] != x.shape:
@@ -85,8 +87,7 @@ def fir(
 
     if T == 0:
         # No input: no outputs, and the state the filter started in.
-        dtype = torch.promote_types(torch.promote_types(x.dtype, b.dtype), zi.dtype)
-        y = x.new_empty((B, 0), dtype=dtype)
+        y = x.new_empty((B, 0))
         return (y, zi) if return_zf else y
 
     if b.size(2) == 1:
@@ -155,7 +156,8 @@ def allpole(
         convention, of shape :math:`(B, M)`.
 
     Raises:
-        ValueError: if the shapes do not match.
+        ValueError: if :attr:`a`, :attr:`zi` and :attr:`x` don't share a dtype
+            and a device, or the shapes do not match.
         NotImplementedError: if :attr:`x` is floating point or complex but not
             float32, float64, complex64 or complex128.
 
@@ -170,6 +172,7 @@ def allpole(
         raise ValueError("Denominator coefficients a must be 3D.")
     if x.dim() != 2:
         raise ValueError("Input signal x must be 2D.")
+    _check_shared(a=a, zi=zi, x=x)
     B, T = x.shape
     if a.shape[:2] != x.shape:
         raise ValueError("The first two dimensions of a must match the shape of x.")
@@ -278,9 +281,10 @@ def lfilter(
         to carry the batch dimension then.
 
     Raises:
-        ValueError: if :attr:`x` has more than 2 dimensions, :attr:`form` or
-            :attr:`backend` is unknown, :attr:`zi` is given with ``"df1"``
-            or ``"tdf1"``, a batched :attr:`b` or :attr:`a` has a batch size
+        ValueError: if :attr:`b`, :attr:`a`, :attr:`zi` and :attr:`x` don't
+            share a dtype and a device, :attr:`x` has more than 2 dimensions,
+            :attr:`form` or :attr:`backend` is unknown, :attr:`zi` is given
+            with ``"df1"`` or ``"tdf1"``, a batched :attr:`b` or :attr:`a` has a batch size
             other than that of a batched :attr:`x`, or the other shapes do
             not match.
         NotImplementedError: with ``backend="torchlpc"``, for ``form="tdf2"``
@@ -318,6 +322,7 @@ def lfilter(
         raise ValueError("Numerator coefficients b must be 2D or 3D.")
     if a.dim() not in (2, 3):
         raise ValueError("Denominator coefficients a must be 2D or 3D.")
+    _check_shared(b=b, a=a, zi=zi, x=x)
 
     if form is None:
         form = "df2" if backend == "torchlpc" else "tdf2"

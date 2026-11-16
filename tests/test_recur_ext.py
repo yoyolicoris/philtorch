@@ -82,7 +82,8 @@ def test_mps_scalar_recur_block_chunks(op: str, dtype: torch.dtype):
     zi = torch.randn(batch_size, generator=gen, dtype=wide)
     x = torch.randn(batch_size, samples, generator=gen, dtype=wide)
     args = (a, zi, x) if op == "lti_recur" else (x, a, zi)
-    expected = _MPS_OPS[op](*(arg.to(torch.promote_types(dtype, torch.float64)) for arg in args))
+    reference = torch.complex128 if dtype.is_complex else torch.float64
+    expected = _MPS_OPS[op](*(arg.to(reference) for arg in args))
     actual = _MPS_OPS[op](*(arg.to("mps", dtype) for arg in args))
     torch.testing.assert_close(actual.cpu().to(expected.dtype), expected, rtol=1e-5, atol=1e-3)
 

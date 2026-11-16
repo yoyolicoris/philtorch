@@ -3,7 +3,7 @@
 from torch import Tensor
 
 from .. import _ssm
-from ..utils import _check_scalar_batch
+from ..utils import _check_scalar_batch, _check_shared
 
 
 def linear_recurrence(
@@ -36,10 +36,12 @@ def linear_recurrence(
         Tensor: :math:`h[1], \dots, h[N]`, of shape :math:`(B, N)`.
 
     Raises:
-        ValueError: if :attr:`x` is not 2-D, if a 2-D :attr:`a` has a batch
-            size other than that of :attr:`x`, if :attr:`unroll_factor` is 0
-            or negative, or, with an integer :attr:`unroll_factor`, if :attr:`a`
-            is not 1-D or 2-D, or :attr:`init` is not 0-D or 1-D.
+        ValueError: if :attr:`x` is not 2-D, if :attr:`a`, :attr:`init` and
+            :attr:`x` don't share a dtype and a device, if a 2-D :attr:`a` has
+            a batch size other than that of :attr:`x`, if
+            :attr:`unroll_factor` is 0 or negative, or, with an integer
+            :attr:`unroll_factor`, if :attr:`a` is not 1-D or 2-D, or
+            :attr:`init` is not 0-D or 1-D.
         ValueError or RuntimeError: if :attr:`a` or :attr:`init` does not
             match :attr:`x`; which one depends on :attr:`unroll_factor`.
         NotImplementedError: with ``unroll_factor=None``, if no kernel takes
@@ -57,6 +59,7 @@ def linear_recurrence(
 
     if x.dim() != 2:
         raise ValueError(f"Input x must be 2D, got {x.shape}")
+    _check_shared(a=a, init=init, x=x)
     if a.dim() == 2 and a.size(0) != x.size(0):
         raise ValueError(
             f"Batch size of a must match batch size of x, got a: {a.size(0)}, x: {x.size(0)}"

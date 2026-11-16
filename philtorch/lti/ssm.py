@@ -7,6 +7,7 @@ from torch import Tensor
 
 from .. import _ssm
 from ..mat import find_eigenvectors
+from ..utils import _check_shared
 from .recur import linear_recurrence
 
 
@@ -55,8 +56,9 @@ def state_space_recursion(
         shape :math:`(B, N, M)`, or :math:`(B, N)` with :attr:`out_idx`.
 
     Raises:
-        ValueError: if the shapes do not match, or :attr:`unroll_factor` is
-            0 or negative.
+        ValueError: if :attr:`A`, :attr:`zi` and :attr:`x` don't share a dtype
+            and a device, if the shapes do not match, or :attr:`unroll_factor`
+            is 0 or negative.
         NotImplementedError: with ``unroll_factor=None``, if no kernel takes
             the input; an integer :attr:`unroll_factor` runs PyTorch ops, on
             any device.
@@ -77,6 +79,7 @@ def state_space_recursion(
     """
     if x.dim() not in (2, 3):
         raise ValueError(f"Input signal must be 2D or 3D (batch, time, [features]), got {x.shape}")
+    _check_shared(A=A, zi=zi, x=x)
     _check_A(A, x)
     if x.dim() == 3 and A.size(-1) != x.size(-1):
         raise ValueError(
@@ -157,6 +160,8 @@ def state_space(
 
     Raises:
         ValueError: if both :attr:`C` and :attr:`out_idx` are given, if
+            :attr:`A`, :attr:`B`, :attr:`C`, :attr:`D`, :attr:`zi` and
+            :attr:`x` don't share a dtype and a device, if
             :attr:`B`, :attr:`C` or :attr:`D` has an unsupported shape, if
             :attr:`D` gives a different number of outputs from :attr:`C`,
             :attr:`out_idx` or the states, or if the other shapes do not match.
@@ -175,6 +180,7 @@ def state_space(
         tensor([[0., 1., 1., 2., 3., 5., 8.]])
     """
     _ssm.check_arguments(x, C, out_idx)
+    _check_shared(A=A, B=B, C=C, D=D, zi=zi, x=x)
     # A first, so that a fault in A isn't reported as one in B, sized by A.
     _check_A(A, x)
 
@@ -389,9 +395,11 @@ def diag_state_space(
 
     Raises:
         ValueError: if neither :attr:`L` nor :attr:`A` is given, if both
-            :attr:`C` and :attr:`out_idx` are given, if :attr:`D` gives a
-            different number of outputs from :attr:`C`, :attr:`out_idx` or the
-            states, or if the shapes do not match.
+            :attr:`C` and :attr:`out_idx` are given, if :attr:`x`, :attr:`L`,
+            :attr:`V`, :attr:`Vinv`, :attr:`A`, :attr:`B`, :attr:`C`,
+            :attr:`D` and :attr:`zi` don't share a precision and a device, if
+            :attr:`D` gives a different number of outputs from :attr:`C`,
+            :attr:`out_idx` or the states, or if the shapes do not match.
 
     Example::
 
@@ -404,6 +412,8 @@ def diag_state_space(
         True
     """
     _ssm.check_arguments(x, C, out_idx)
+    # Real and complex tensors mix, so only the precision has to match.
+    _check_shared(precision=True, L=L, V=V, Vinv=Vinv, A=A, B=B, C=C, D=D, zi=zi, x=x)
     # A real system has real outputs, even through complex eigenvalues.
     real = not any(t is not None and t.is_complex() for t in (x, L, V, Vinv, A, B, C, D, zi))
 
@@ -488,7 +498,9 @@ def diag_state_space(
     zi, return_zf = _ssm.initial_state(x, zi, M)
 
     x_orig, zi_orig = x, zi
-    if (L if Vinv is None else Vinv).is_complex():
+    if any(t is not None and t.is_complex() for t in (L if Vinv is None else Vinv, x, zi, B)):
+        if not L.is_complex():
+            L = L + 0j  # the recurrence takes the dtype of its input
         if not zi.is_complex():
             zi = zi + 0j  # Ensure zi is complex if the states are
         if not x.is_complex():

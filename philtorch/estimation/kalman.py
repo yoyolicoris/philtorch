@@ -13,6 +13,8 @@ from typing import NamedTuple
 import torch
 from torch import Tensor
 
+from ..utils import _check_shared
+
 try:
     from torch._higher_order_ops.associative_scan import associative_scan as _associative_scan
 except ImportError:  # pragma: no cover - PyTorch without associative_scan
@@ -53,6 +55,7 @@ def _parse(
     y: Tensor, A: Tensor, C: Tensor, Q: Tensor, R: Tensor, m0: Tensor, P0: Tensor
 ) -> tuple[Tensor, ...]:
     """Validate the model: A and Q of its N - 1 transitions, C and R of its N measurements."""
+    _check_shared(A=A, C=C, Q=Q, R=R, m0=m0, P0=P0, y=y)
     if y.dim() != 3:
         raise ValueError(f"Measurements y must be 3D (batch, time, features), got {y.shape}")
     batch_size, N, P = y.shape
@@ -376,8 +379,10 @@ def kalman_filter(
         log-likelihood, of shape :math:`(B)`.
 
     Raises:
-        ValueError: if :attr:`y` is not 3-D, :attr:`A` is not square, or a
-            coefficient has an unsupported shape.
+        ValueError: if :attr:`y` is not 3-D, :attr:`A` is not square, a
+            coefficient has an unsupported shape, or :attr:`A`, :attr:`C`,
+            :attr:`Q`, :attr:`R`, :attr:`m0`, :attr:`P0` and :attr:`y` don't
+            share a dtype and a device.
 
     Example::
 
@@ -509,7 +514,9 @@ def kalman_em_step(
         ValueError: if :attr:`y` has no signal or fewer than two steps, or a
             parameter is not of a shape listed above, or :attr:`A` and
             :attr:`Q`, :attr:`C` and :attr:`R`, or :attr:`m0` and :attr:`P0`
-            differ in layout.
+            differ in layout, or if :attr:`A`, :attr:`C`, :attr:`Q`,
+            :attr:`R`, :attr:`m0`, :attr:`P0` and :attr:`y` don't share a
+            dtype and a device.
 
     Example::
 

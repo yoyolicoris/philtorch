@@ -3,6 +3,7 @@
 from collections.abc import Callable
 from functools import reduce
 
+import torch
 from torch import Tensor
 
 
@@ -47,6 +48,39 @@ def _squeeze_first_result(
     if isinstance(y, tuple):
         return y[0].squeeze(0), y[1].squeeze(0)
     return y.squeeze(0)
+
+
+def _accumulation_dtype(dtype: torch.dtype) -> torch.dtype:
+    """The dtype that values of ``dtype`` accumulate in: float32 for float16 and
+    bfloat16, and ``dtype`` itself otherwise."""
+    return torch.float32 if dtype in (torch.float16, torch.bfloat16) else dtype
+
+
+def _check_shared(precision: bool = False, **tensors: Tensor | None) -> None:
+    """Check that the given tensors share a dtype and a device.
+
+    Args:
+        precision: compare only the real dtype, for functions that let real
+            and complex tensors mix.
+        **tensors: the tensors by their argument names; ``None`` is skipped.
+
+    Raises:
+        ValueError: if the tensors differ in dtype (or precision) or device.
+    """
+    named = {name: t for name, t in tensors.items() if t is not None}
+    kind = "precision" if precision else "dtype"
+    if len({(t.dtype.to_real() if precision else t.dtype, t.device) for t in named.values()}) > 1:
+        *head, last = named
+        got = ", ".join(f"{name}: {t.dtype} on {t.device}" for name, t in named.items())
+        raise ValueError(
+            f"{', '.join(head)} and {last} must share a {kind} and a device, got {got}"
+        )
+
+
+def _check_integer(name: str, t: Tensor) -> None:
+    """Raise a ValueError unless ``t`` is an integer tensor (not bool)."""
+    if t.is_floating_point() or t.is_complex() or t.dtype == torch.bool:
+        raise ValueError(f"{name} must be an integer tensor, got {t.dtype}")
 
 
 def _check_scalar_batch(t: Tensor, label: str, name: str, x: Tensor) -> None:
