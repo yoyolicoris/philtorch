@@ -561,6 +561,11 @@ _LTI_FILTERING_CASES = [
         id="sosfilt-batch_index-range",
     ),
     pytest.param(
+        lambda: lti.sos2tf(_ones(2, 5), batch_index=torch.tensor([-1, 0])),
+        "batch_index must not be negative",
+        id="sos2tf-batch_index-negative",
+    ),
+    pytest.param(
         lambda: lti.sosfilt(_ones(1, 5).float(), _ones(4)),
         "sos and x must share a dtype",
         id="sosfilt-sos-dtype",

@@ -527,9 +527,9 @@ def sos2pfe(
         H(z) = g + \sum_{i=1}^{M}
             \frac{r_i z^{-j_i}}{(1 - p_i z^{-1})^{j_i}},
 
-    as :func:`~philtorch.lti.pfefilt` takes it. A pole of multiplicity
-    :math:`m` is listed :math:`m` times in a row, with the powers
-    :math:`j_i = 1, \dots, m`. Each term is delayed by its power, so that the
+    as :func:`~philtorch.lti.pfefilt` takes it. A repeated pole is listed once
+    per power, in a row, with the powers :math:`j_i` from 1 to its
+    multiplicity. Each term is delayed by its power, so that the
     powers of a pole at 0 are the taps :math:`r_i z^{-j_i}` of an FIR filter.
     For simple poles, this is the delayed form of the partial fraction
     expansion in `Introduction to Digital Filters with Audio Applications`_
@@ -576,7 +576,8 @@ def sos2pfe(
 
     Returns:
         tuple: the residues :math:`r` and the poles :math:`p`, both complex
-        and of shape :math:`(M)`, :math:`M` being the number of terms of all
+        at :attr:`sos`'s precision (complex64 for float32) and of shape
+        :math:`(M)`, :math:`M` being the number of terms of all
         the filters: at most two per section, a real :attr:`sos` listing one
         term for a conjugate pair; the direct gain :math:`g`, of
         :attr:`sos`'s dtype and of shape :math:`()`, or :math:`(B)` with
@@ -585,8 +586,8 @@ def sos2pfe(
         :attr:`batch_index`; and the powers :math:`j_i`, int64 and of shape
         :math:`(M)`. The terms are in the order of the filters, and in a
         filter, grouped in the order of their first pole, the sections' poles
-        one section after the other; each entry of a group holds the group's
-        pole.
+        one section after the other, a section's pole of larger magnitude
+        first; each entry of a group holds the group's pole.
 
     Raises:
         ValueError: if :attr:`sos` is not 2-D, its last dimension is not 5, it

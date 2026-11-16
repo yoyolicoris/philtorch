@@ -165,7 +165,7 @@ def test_sosfilt_zi_batch_index_matches_each_row():
 
 def test_sosfilt_batch_index_gradients():
     counts, N = [2, 0, 3, 1], 12
-    sos, batch_index, rows = _ragged(counts, interleave=True)
+    sos, batch_index, _ = _ragged(counts, interleave=True)
     sos.requires_grad_()
     x = torch.randn(len(counts), N, dtype=F64, requires_grad=True)
     zi = torch.randn(sos.size(0), 2, dtype=F64, requires_grad=True)

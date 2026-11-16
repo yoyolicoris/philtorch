@@ -497,9 +497,11 @@ def _sections_by_row(
         raise ValueError(
             f"batch_index must be on sos's device, {sos.device}, got {batch_index.device}."
         )
+    if (batch_index < 0).any():
+        raise ValueError("batch_index must not be negative.")
     if batch_size is None:
         batch_size = int(batch_index.max()) + 1
-    if ((batch_index < 0) | (batch_index >= batch_size)).any():
+    elif (batch_index >= batch_size).any():
         raise ValueError(f"batch_index must be from 0 to B - 1 = {batch_size - 1}.")
     batch_index = batch_index.long()
     counts = torch.bincount(batch_index, minlength=batch_size)
@@ -634,7 +636,7 @@ def sosfilt(
         if shared:
             z = (zi if batched else zi.unsqueeze(0)).movedim(1, 0)
         else:
-            z = zi.new_zeros(B * A.size(0), 2).index_copy(0, place, zi)
+            z = zi.new_zeros(B * padded.size(1), 2).index_copy(0, place, zi)
             z = z.view(B, -1, 2)[order].movedim(1, 0).contiguous()
 
     y, done, zfs = x, [], []
@@ -649,16 +651,19 @@ def sosfilt(
         y, zf = out if zi is not None else (out, None)
         zfs.append(zf)
     y = torch.cat([y, *done[::-1]]) if done else y
-    if not shared:
-        y = y[order.argsort()]
-    y = y if batched else y.squeeze(0)
+    if shared:
+        y = y if batched else y.squeeze(0)
+        if zi is None:
+            return y
+        zf = torch.stack(zfs, 1)
+        return y, zf if batched else zf.squeeze(0)
+    inverse = order.argsort()
+    y = y[inverse] if batched else y[inverse].squeeze(0)
     if zi is None:
         return y
     # the final states of each position, over the rows that ran it
     zf = torch.stack([F.pad(f, (0, 0, 0, B - f.size(0))) for f in zfs], 1)
-    if shared:
-        return y, zf if batched else zf.squeeze(0)
-    return y, zf[order.argsort()].reshape(-1, 2)[place]
+    return y, zf[inverse].reshape(-1, 2)[place]
 
 
 def sosfilt_zi(sos: Tensor, batch_index: Tensor | None = None) -> Tensor:
@@ -667,15 +672,15 @@ def sosfilt_zi(sos: Tensor, batch_index: Tensor | None = None) -> Tensor:
     With these states, as with :func:`scipy.signal.sosfilt_zi`, filtering a
     constant input of 1 starts every section in steady state. Section
     :math:`l` gets the state :func:`lfilter_zi` gives for its own
-    coefficients, scaled by the gain at DC of the sections before it in its
-    cascade,
+    coefficients, scaled by :math:`G_1 G_2 \cdots G_{l-1}`, the gain at DC of
+    the sections before it in its cascade, where section :math:`l`'s is
 
     .. math::
-        \prod_{m=1}^{l-1} \frac{b_{m0} + b_{m1} + b_{m2}}{1 + a_{m1} + a_{m2}}.
+        G_l = \frac{b_{l0} + b_{l1} + b_{l2}}{1 + a_{l1} + a_{l2}}.
 
     With :attr:`batch_index`, a section's cascade is the sections listed for
-    the same signal, in the order they are listed, :math:`l` and :math:`m`
-    counting places in it.
+    the same signal, in the order they are listed, :math:`l` counting places
+    in it.
 
     Args:
         sos (Tensor): the sections, of shape :math:`(K, 5)` for one cascade,
