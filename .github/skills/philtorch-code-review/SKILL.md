@@ -19,7 +19,7 @@ The rules are in `AGENTS.md` and, for docstrings, `CONTRIBUTING.md`; where this 
 - **Efficient?** Passes, allocations or buffers that a view, a reshape or one fused pass avoids. A memory saving must not cost speed, and a speed-up needs a benchmark of each step, kept on the issue.
 - **Consistent?** Before accepting a fix, check how the sibling kernels and functions handle the same case. Carry over what earlier reviews and Copilot found in similar code.
 - **Tests?**
-  - One test per path, covering each new behaviour and each new `ValueError`.
+  - One test per path, covering each new behaviour and each new `ValueError`. Each new tensor argument has a mismatch case in `tests/test_argument_errors.py`.
   - A new device or dtype extends the existing tests. Parametrize only over values that reach distinct paths.
   - No test of an impossible branch or that restates the implementation. Gradchecks only for native ops, `custom_op`s and `autograd.Function`s.
   - A removed test names the test that still covers its path.
