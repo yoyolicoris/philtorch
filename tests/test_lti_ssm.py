@@ -399,9 +399,7 @@ def _diag_L_inputs(complex_L, batched_L, x_dim, with_B):
     L = 0.9 * torch.rand((batch, M) if batched_L else (M,), dtype=torch.double)
     if complex_L:
         L = torch.polar(L, torch.rand_like(L) * 6.0)
-    x = torch.randn(
-        (batch, N) if x_dim == 2 else (batch, N, F if with_B else M), dtype=torch.double
-    )
+    x = torch.randn((batch, N) if x_dim == 2 else (batch, N, F if with_B else M), dtype=L.dtype)
     B = None
     if with_B:
         shape = {2: (M,), 3: (M, F)}[x_dim]
@@ -414,9 +412,6 @@ def _diag_L_reference(L, x, B, **kwargs):
     every state."""
     if B is None and x.dim() == 2:
         B = torch.ones(L.shape, dtype=L.dtype)
-    if L.is_complex():
-        x = x.to(L.dtype)
-        kwargs = {k: v.to(L.dtype) if torch.is_tensor(v) else v for k, v in kwargs.items()}
     return state_space(torch.diag_embed(L), x, B=B, **kwargs)
 
 
@@ -439,11 +434,11 @@ def test_diag_state_space_L_alone_C_D_zi_out_idx(complex_L, batched_L, extras):
     L, x, B = _diag_L_inputs(complex_L, batched_L, 3, True)
     batch, _, F = x.shape
     M = L.size(-1)
-    kwargs = {"zi": torch.randn(batch, M, dtype=torch.double)}
+    kwargs = {"zi": torch.randn(batch, M, dtype=L.dtype)}
     if extras == "C_D_zi":
         kwargs |= {
-            "C": torch.randn(2, M, dtype=torch.double),
-            "D": torch.randn(2, F, dtype=torch.double),
+            "C": torch.randn(2, M, dtype=L.dtype),
+            "D": torch.randn(2, F, dtype=L.dtype),
         }
     else:
         kwargs["out_idx"] = 2
@@ -451,14 +446,13 @@ def test_diag_state_space_L_alone_C_D_zi_out_idx(complex_L, batched_L, extras):
     y, zf = diag_state_space(x, L=L, B=B, **kwargs)
     y_ref, zf_ref = _diag_L_reference(L, x, B, **kwargs)
 
-    # A complex L makes the outputs complex, even with a real C.
     torch.testing.assert_close(y, y_ref)
     torch.testing.assert_close(zf, zf_ref)
 
 
 def test_diag_state_space_L_alone_gradcheck():
     L, x, B = _diag_L_inputs(True, True, 2, True)
-    zi = torch.randn(x.size(0), L.size(-1), dtype=torch.double)
+    zi = torch.randn(x.size(0), L.size(-1), dtype=L.dtype)
     inputs = tuple(t.requires_grad_() for t in (x, L, B, zi))
 
     assert torch.autograd.gradcheck(
@@ -480,7 +474,7 @@ class _RecordShapes(TorchDispatchMode):
 def test_diag_state_space_L_alone_allocates_no_M_by_M_tensor():
     M = 64
     L = 0.5 * torch.rand(1, M, dtype=torch.cdouble)
-    x = torch.randn(1, 4, M, dtype=torch.double)
+    x = torch.randn(1, 4, M, dtype=torch.cdouble)
     B = torch.randn(1, M, dtype=torch.cdouble)
     C = torch.randn(M, dtype=torch.cdouble)
     zi = torch.randn(1, M, dtype=torch.cdouble)
@@ -495,43 +489,34 @@ def test_diag_state_space_L_alone_allocates_no_M_by_M_tensor():
     assert max(recorder.numels) < M * M
 
 
-# The outputs and final state are real exactly when every tensor given is.
-@pytest.mark.parametrize(
-    "system, complex_arg", [("A", "x"), ("A", "D"), ("L", "x"), ("L", "D"), ("L", "C")]
-)
-def test_diag_state_space_complex_input_gives_complex_outputs(system, complex_arg):
+# A complex model runs in complex and gives complex outputs.
+@pytest.mark.parametrize("system", ["A", "L"])
+def test_diag_state_space_complex_model_gives_complex_outputs(system):
     if system == "A":
-        A = _generate_diagonalizable_matrix((2, 2)).double()
+        A = _generate_diagonalizable_matrix((2, 2)).double() + 0j
         given, B = {"A": A}, None
     else:
-        L = 0.9 * torch.rand(2, dtype=torch.double)
-        A, given, B = torch.diag(L), {"L": L}, torch.ones(2, dtype=torch.double)
+        L = 0.9 * torch.rand(2, dtype=torch.double) * (1 + 0.5j)
+        A, given, B = torch.diag(L), {"L": L}, torch.ones(2, dtype=torch.cdouble)
     kwargs = {
-        "x": torch.randn(3, 9, dtype=torch.double),
-        "C": torch.randn(2, dtype=torch.double),
-        "D": torch.tensor(0.5, dtype=torch.double),
-        "zi": torch.randn(3, 2, dtype=torch.double),
+        "x": torch.randn(3, 9, dtype=torch.cdouble),
+        "C": torch.randn(2, dtype=torch.cdouble),
+        "D": torch.tensor(0.5, dtype=torch.cdouble),
+        "zi": torch.randn(3, 2, dtype=torch.cdouble),
     }
-    kwargs[complex_arg] = kwargs[complex_arg] * (1 + 1j)
 
-    y, zf = diag_state_space(**given, **kwargs)
-    cast = {k: v + 0j for k, v in kwargs.items()}
-    y_ref, zf_ref = state_space(A + 0j, B=None if B is None else B + 0j, **cast)
+    y, zf = diag_state_space(**given, B=B, **kwargs)
+    y_ref, zf_ref = state_space(A, B=B, **kwargs)
 
-    assert y.is_complex() and zf.is_complex()
     torch.testing.assert_close(y, y_ref)
     torch.testing.assert_close(zf, zf_ref)
 
 
-@pytest.mark.parametrize("complex_C", [False, True])
-def test_diag_state_space_real_eigenvectors_with_C(complex_C):
+def test_diag_state_space_real_eigenvectors_with_C():
     # A symmetric A has real eigenvalues and eigenvectors: real states.
     A = torch.tensor([[0.5, 0.2], [0.2, -0.3]], dtype=torch.double)
     L, V = torch.linalg.eigh(A)
     x = torch.randn(3, 9, dtype=torch.double)
-    C = torch.randn(2, dtype=torch.cdouble if complex_C else torch.double)
+    C = torch.randn(2, dtype=torch.double)
 
-    y = diag_state_space(x, L=L, V=V, C=C)
-
-    A, x = (A + 0j, x + 0j) if complex_C else (A, x)
-    torch.testing.assert_close(y, state_space(A, x, C=C))
+    torch.testing.assert_close(diag_state_space(x, L=L, V=V, C=C), state_space(A, x, C=C))

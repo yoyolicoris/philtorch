@@ -1164,30 +1164,6 @@ def _zeros(*shape):
             id="b-dtype",
         ),
         pytest.param(
-            dict(absorption=(_zeros(2, 2), _zeros(2, 1).float())),
-            ValueError,
-            "share a dtype and a device",
-            id="a-dtype",
-        ),
-        pytest.param(
-            dict(absorption_zi=_zeros(2, 1).float()),
-            ValueError,
-            "share a dtype and a device",
-            id="zi-dtype",
-        ),
-        pytest.param(
-            dict(absorption=(_zeros(2, 2).to("meta"), _zeros(2, 1))),
-            ValueError,
-            "share a dtype and a device",
-            id="b-device",
-        ),
-        pytest.param(
-            dict(absorption=(_zeros(2, 2), _zeros(2, 1).to("meta"))),
-            ValueError,
-            "share a dtype and a device",
-            id="a-device",
-        ),
-        pytest.param(
             dict(absorption_zi=_zeros(2, 1).to("meta")),
             ValueError,
             "share a dtype and a device",

@@ -31,7 +31,7 @@ The rules are in `AGENTS.md` and, for docstrings, `CONTRIBUTING.md`; where this 
 
 - **`philtorch/csrc/`:** `AGENTS.md`, "Native ops". Also reads and writes at the edges of a sequence, a chunk and a partial block, synchronization between a kernel's phases, and stream use.
 - **Autograd, `_ops.py`, `_recur.py`:** "Native ops". No backward-only kernel; gradients to any order; the eager and compiled paths agree.
-- **Public functions:** "Conventions" and "Architecture". Shapes, dtypes and devices, empty inputs, coefficients, explicit choices; no fallback that hides the `NotImplementedError`; an integer `unroll_factor` gives the kernels' results and gradients; functions, not stateful classes; a SciPy mirror tested against SciPy.
+- **Public functions:** "Conventions" and "Architecture". Shapes, dtypes and devices, empty inputs, coefficients, explicit choices; for a function that mixes real and complex, run each combination its checks accept and confirm it is listed and computed right; no fallback that hides the `NotImplementedError`; an integer `unroll_factor` gives the kernels' results and gradients; functions, not stateful classes; a SciPy mirror tested against SciPy.
 - **Triton kernels:** "Architecture". `_*_kernels.py` names, `check_cuda_triton`, `custom_op`s with differentiable backward passes.
 - **Tests:** "Tests and CI". `cuda` marks and the CUDA path filter; subprocesses run with `cwd=tmp_path`.
 - **Docstrings:** `CONTRIBUTING.md`, "Docstrings", as the `philtorch-docstring` skill applies it. A new public function is in `docs/api/*.rst`; a module with examples is in `tests/test_docstrings.py`.

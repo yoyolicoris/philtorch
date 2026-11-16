@@ -897,9 +897,25 @@ _LTI_SSM_CASES = [
         "Either L or A must be provided",
         id="diag-no-L-or-A",
     ),
-    # Only the precision has to match, as real and complex tensors mix.
+    # The model has x's dtype, and so has the decomposition, except that a real
+    # A's may be complex.
+    pytest.param(
+        lambda: lti.diag_state_space(_ones(1, 4), L=_zeros(2), C=_ones(2) + 0j),
+        "C and x must share a dtype and a device",
+        id="diag-C-complex",
+    ),
+    pytest.param(
+        lambda: lti.diag_state_space(_ones(1, 4), L=_zeros(2), V=_eye(2) + 0j),
+        "L and V must share a dtype and a device",
+        id="diag-V-dtype",
+    ),
     pytest.param(
         lambda: lti.diag_state_space(_ones(1, 4), L=_zeros(2).float()),
+        "L and x must share a dtype and a device",
+        id="diag-L-dtype",
+    ),
+    pytest.param(
+        lambda: lti.diag_state_space(_ones(1, 4), L=_zeros(2).to(torch.complex64), A=_eye(2)),
         "L and x must share a precision and a device",
         id="diag-L-precision",
     ),

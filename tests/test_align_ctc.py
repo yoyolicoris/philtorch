@@ -168,6 +168,8 @@ def test_ctc_rejects_bad_arguments():
         ctc_loss(logits, targets, torch.tensor([5.0, 5.0]), (2, 2))
     with pytest.raises(ValueError, match="input_lengths must be integers"):
         ctc_loss(logits, targets, (5.5, 4.5), (2, 2))
+    with pytest.raises(ValueError, match="target_lengths must be integers"):
+        ctc_loss(logits, targets, (5, 5), (True, True))
     with pytest.raises(ValueError, match="ctc_loss runs Triton kernels on CUDA GPUs only"):
         ctc_loss(logits, targets, *lengths)
 

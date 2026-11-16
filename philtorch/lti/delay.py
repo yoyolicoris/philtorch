@@ -308,8 +308,7 @@ def delay_state_space(
             f"Last dimension of x must match the number of delays when B is None, "
             f"got x: {x.size(-1)}, delays: {M}"
         )
-    matrices = {"A": A, "B": B, "C": C, "D": D}
-    _check_shared(**matrices, x=x)
+    _check_shared(A=A, B=B, C=C, D=D, x=x)
     Bx = _ssm_B(B, x, batch_size, M)
     if absorb:
         filter_A, filter_B, filter_D, K, absorption_state = _absorption_filters(

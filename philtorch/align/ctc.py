@@ -197,7 +197,7 @@ def _lengths(name: str, lengths: Tensor | Sequence[int] | int) -> tuple[Tensor, 
         return lengths.long().reshape(-1), None
     if isinstance(lengths, numbers.Integral):
         lengths = (lengths,)
-    if not all(isinstance(n, numbers.Integral) for n in lengths):
+    if not all(isinstance(n, numbers.Integral) and not isinstance(n, bool) for n in lengths):
         raise ValueError(f"{name} must be integers, got {lengths}")
     values = [int(n) for n in lengths]  # a sequence, or a NumPy array
     return torch.tensor(values, dtype=torch.long), values
