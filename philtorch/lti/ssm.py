@@ -7,6 +7,7 @@ from torch import Tensor
 
 from .. import _ssm
 from ..mat import find_eigenvectors
+from ..utils import _check_shared
 from .recur import linear_recurrence
 
 
@@ -55,8 +56,9 @@ def state_space_recursion(
         shape :math:`(B, N, M)`, or :math:`(B, N)` with :attr:`out_idx`.
 
     Raises:
-        ValueError: if the shapes do not match, or :attr:`unroll_factor` is
-            0 or negative.
+        ValueError: if :attr:`A`, :attr:`zi` and :attr:`x` don't share a dtype
+            and a device, if the shapes do not match, or :attr:`unroll_factor`
+            is 0 or negative.
         NotImplementedError: with ``unroll_factor=None``, if no kernel takes
             the input; an integer :attr:`unroll_factor` runs PyTorch ops, on
             any device.
@@ -77,6 +79,7 @@ def state_space_recursion(
     """
     if x.dim() not in (2, 3):
         raise ValueError(f"Input signal must be 2D or 3D (batch, time, [features]), got {x.shape}")
+    _check_shared(A=A, zi=zi, x=x)
     _check_A(A, x)
     if x.dim() == 3 and A.size(-1) != x.size(-1):
         raise ValueError(
@@ -157,6 +160,8 @@ def state_space(
 
     Raises:
         ValueError: if both :attr:`C` and :attr:`out_idx` are given, if
+            :attr:`A`, :attr:`B`, :attr:`C`, :attr:`D`, :attr:`zi` and
+            :attr:`x` don't share a dtype and a device, if
             :attr:`B`, :attr:`C` or :attr:`D` has an unsupported shape, if
             :attr:`D` gives a different number of outputs from :attr:`C`,
             :attr:`out_idx` or the states, or if the other shapes do not match.
@@ -175,6 +180,7 @@ def state_space(
         tensor([[0., 1., 1., 2., 3., 5., 8.]])
     """
     _ssm.check_arguments(x, C, out_idx)
+    _check_shared(A=A, B=B, C=C, D=D, zi=zi, x=x)
     # A first, so that a fault in A isn't reported as one in B, sized by A.
     _check_A(A, x)
 
@@ -232,11 +238,6 @@ def _ssm_B(B, x, batch_size, M):
         case 3, (b, m, f) if (b, m, f) == (batch_size, M, features):
             return x @ B.mT
     raise _ssm_B_shape_error(B, x, batch_size, M)
-
-
-def _complex_as(t, other):
-    """``t``, as complex at its own precision when ``other`` is complex."""
-    return t + 0j if other.is_complex() and not t.is_complex() else t
 
 
 def _ssm_B_shape_error(B, x, batch_size, M):
@@ -359,6 +360,11 @@ def diag_state_space(
       :attr:`x` without :attr:`B` drives every state, unlike
       :func:`state_space`, whose default feeds the first state only.
 
+    :attr:`x`, :attr:`zi`, :attr:`A`, :attr:`B`, :attr:`C` and :attr:`D` share
+    one dtype, and so do :attr:`L`, :attr:`V` and :attr:`Vinv`: that of
+    :attr:`x`, or, with a real :attr:`A`, its complex dtype for complex
+    eigenvalues.
+
     Args:
         x (Tensor): inputs, of shape :math:`(B, N, F)` or :math:`(B, N)`.
         L (Tensor, optional): the eigenvalues :math:`\boldsymbol{\lambda}`,
@@ -380,18 +386,21 @@ def diag_state_space(
             Default: ``None``.
 
     Returns:
-        Tensor or tuple of Tensor: as :func:`state_space`. With complex
-        eigenvalues, for example a real filter with complex poles, the
-        computation is complex; the outputs and final state are real when
-        every tensor given (:attr:`x`, :attr:`L`, :attr:`V`, :attr:`Vinv`,
-        :attr:`A`, :attr:`B`, :attr:`C`, :attr:`D` and :attr:`zi`) is real,
-        and complex otherwise.
+        Tensor or tuple of Tensor: as :func:`state_space`, in the dtype of
+        :attr:`x`. With complex eigenvalues of a real :attr:`A`, for example
+        a real filter with complex poles, the computation is complex, but
+        the outputs and final state are real.
 
     Raises:
-        ValueError: if neither :attr:`L` nor :attr:`A` is given, if both
-            :attr:`C` and :attr:`out_idx` are given, if :attr:`D` gives a
-            different number of outputs from :attr:`C`, :attr:`out_idx` or the
-            states, or if the shapes do not match.
+        ValueError: if neither :attr:`L` nor :attr:`A` is given, if
+            :attr:`V` or :attr:`Vinv` is given without :attr:`L`, if both
+            :attr:`C` and :attr:`out_idx` are given, if :attr:`A`, :attr:`B`,
+            :attr:`C`, :attr:`D` and :attr:`zi` don't have the dtype and
+            device of :attr:`x`, if :attr:`L`, :attr:`V` and :attr:`Vinv`
+            don't share a dtype and a device, or have neither the dtype of
+            :attr:`x` nor, with a real :attr:`A`, its complex dtype, if
+            :attr:`D` gives a different number of outputs from :attr:`C`,
+            :attr:`out_idx` or the states, or if the shapes do not match.
 
     Example::
 
@@ -404,14 +413,21 @@ def diag_state_space(
         True
     """
     _ssm.check_arguments(x, C, out_idx)
-    # A real system has real outputs, even through complex eigenvalues.
-    real = not any(t is not None and t.is_complex() for t in (x, L, V, Vinv, A, B, C, D, zi))
+    _check_shared(A=A, B=B, C=C, D=D, zi=zi, x=x)
+    _check_shared(L=L, V=V, Vinv=Vinv)
+    if L is not None:
+        # Without A, the decomposition is the model; a real A's may be complex.
+        _check_shared(precision=A is not None and not A.is_complex(), L=L, x=x)
+    # A real model has real outputs, even through complex eigenvalues.
+    real = not x.is_complex()
 
     batch_size = x.size(0)
 
     if L is None:
         if A is None:
             raise ValueError("Either L or A must be provided")
+        if V is not None or Vinv is not None:
+            raise ValueError("V and Vinv need L")
         _check_A(A, x)
         L = torch.linalg.eigvals(A)
         V = Vinv = None
@@ -487,16 +503,9 @@ def diag_state_space(
 
     zi, return_zf = _ssm.initial_state(x, zi, M)
 
+    # A real model with complex eigenvalues runs in the eigenvalues' dtype.
     x_orig, zi_orig = x, zi
-    if (L if Vinv is None else Vinv).is_complex():
-        if not zi.is_complex():
-            zi = zi + 0j  # Ensure zi is complex if the states are
-        if not x.is_complex():
-            x = x + 0j  # Ensure x is complex if the states are
-        if B is not None and not B.is_complex():
-            B = B + 0j
-        if not real and C is not None and not C.is_complex():
-            C = C + 0j
+    x, zi, B = (t if t is None else t.to(L.dtype) for t in (x, zi, B))
 
     # Vinv is None (the identity), or 2-D or 3-D: as given and checked, or as
     # computed.
@@ -555,30 +564,23 @@ def diag_state_space(
         # A real system's states are real: their imaginary part is rounding.
         return h.real if real else h
 
-    zi = zi_orig if real else zi
+    x, zi = x_orig, zi_orig
     if C is None:
         h, zf = _ssm.states(run, zi, out_idx=out_idx, final_state=return_zf)
-        y = _ssm_C_D(h, x_orig, None, D, batch_size, M)
+        y = _ssm_C_D(h, x, None, D, batch_size, M)
     else:
         # y[n] = C h[n] = C_hat h_hat[n], with C_hat = C V: the states stay in
         # the eigenbasis, and the shift moves C h, of P values per step,
         # rather than the M states. h[0] = zi is in the original basis.
         N = Vinvh.size(-1)
         zf = (run(None, Vinvh[..., -1:])[:, 0] if N else zi) if return_zf else None
-        # A complex C on real states, or a real C on complex ones: each
-        # product is taken in complex, its operands keeping their precision.
-        Czi = _ssm_C_D(_complex_as(zi.unsqueeze(1), C), x_orig, C, None, batch_size, M)
-        C_hat = C
+        Czi = _ssm_C_D(zi.unsqueeze(1), x, C, None, batch_size, M)
+        C_hat = C.to(L.dtype)
         if V is not None:
-            C_hat, V_ = _complex_as(C, V), _complex_as(V, C)
             # A (B, M) C is a row per signal, as _ssm_C_D reads it.
             per_signal = V.dim() == 3 and C.dim() == 2 and C.size(0) == batch_size
-            C_hat = (C_hat.unsqueeze(-2) @ V_).squeeze(-2) if per_signal else C_hat @ V_
-        h_hat = _complex_as(Vinvh.mT[:, :-1], C_hat)
-        Ch = _ssm_C_D(h_hat, x_orig, C_hat, None, batch_size, M)
+            C_hat = (C_hat.unsqueeze(-2) @ V).squeeze(-2) if per_signal else C_hat @ V
+        Ch = _ssm_C_D(Vinvh.mT[:, :-1], x, C_hat, None, batch_size, M)
         Ch = torch.cat([Czi, Ch.real if real else Ch], dim=1)[:, :N]
-        y = _ssm.outputs(Ch, None if D is None else _ssm_D(D, x_orig, batch_size))
-    if return_zf:
-        # Real states with only C or D complex: the final state is complex too.
-        return y, zf if real or zf.is_complex() else zf + 0j
-    return y
+        y = _ssm.outputs(Ch, None if D is None else _ssm_D(D, x, batch_size))
+    return (y, zf) if return_zf else y

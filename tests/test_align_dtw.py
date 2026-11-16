@@ -200,6 +200,10 @@ def test_dtw_rejects_bad_arguments():
         soft_dtw_divergence(cost, cost, cost, 0.0)
     with pytest.raises(ValueError, match="cost_xx and cost_yy must be"):
         soft_dtw_divergence(cost.expand(2, -1, -1), cost, cost.expand(2, -1, -1), 0.5)
+    with pytest.raises(ValueError, match=r"lengths\[0\] must be an integer tensor"):
+        dtw(cost, lengths=(torch.tensor([3.0]), torch.tensor([3])))
+    with pytest.raises(ValueError, match="cost_xx, cost_yy and cost_xy must share a dtype"):
+        soft_dtw_divergence(cost.float(), cost.float(), cost, 0.5)
 
 
 @pytest.mark.cuda

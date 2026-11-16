@@ -17,6 +17,7 @@ import torch.nn.functional as F
 from . import _ssm
 from ._recur import _forward, _gradients
 from ._torchlpc import _lpc_gradients
+from .utils import _accumulation_dtype
 
 
 def _recurrence_gradients(A, zi, h, grad, needs_A, needs_zi):
@@ -211,7 +212,7 @@ def _resample_table_gradient(x, grad, table, q):
     p, taps = table.shape
     B, out_len = grad.shape
     # The op accumulates in float32 for the 16-bit dtypes.
-    acc = torch.promote_types(x.dtype, torch.float32)
+    acc = _accumulation_dtype(x.dtype)
     xp, width, frames = _conv_input(x.to(acc), p, q, taps, out_len)
     g = F.pad(grad.to(acc), (0, frames * p - out_len)).reshape(B, frames, p).mT
     dense = torch.nn.grad.conv1d_weight(xp, (p, 1, width), g, stride=q).squeeze(1)

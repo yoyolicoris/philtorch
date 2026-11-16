@@ -35,6 +35,7 @@ import torch
 from torch import Tensor
 
 from .._triton import check_cuda_triton
+from ..utils import _accumulation_dtype, _check_shared
 
 
 def _parse(
@@ -66,11 +67,7 @@ def _parse(
         raise ValueError(
             f"log_init must be of shape {(K,)} or {(batch_size, K)}, got {tuple(log_init.shape)}"
         )
-    if not log_emit.dtype == log_trans.dtype == log_init.dtype:
-        raise ValueError(
-            "log_emit, log_trans and log_init must share a dtype, got "
-            f"{[t.dtype for t in (log_emit, log_trans, log_init)]}"
-        )
+    _check_shared(log_trans=log_trans, log_init=log_init, log_emit=log_emit)
     check_cuda_triton(name, log_emit, log_trans, log_init)
     # The kernels read each K x K matrix as a contiguous block, where batch
     # and time may broadcast, and the emissions as one contiguous block.
@@ -191,7 +188,7 @@ def _run_chain(
 
     B, T, K = log_emit.shape
     # Half and bfloat16 inputs accumulate in float32: their messages are float32.
-    y0 = y0.to(torch.promote_types(log_emit.dtype, torch.float32))
+    y0 = y0.to(_accumulation_dtype(log_emit.dtype))
     out = y0.new_empty(B, T + 1, K)
     start, _, _, steps = _positions(adjoint)
     out[:, start] = y0
@@ -308,7 +305,7 @@ def _viterbi_chain(log_emit: Tensor, log_trans: Tensor, log_init: Tensor) -> tup
 @_viterbi_chain.register_fake
 def _(log_emit, log_trans, log_init):
     B, N, K = log_emit.shape
-    acc = torch.promote_types(log_emit.dtype, torch.float32)
+    acc = _accumulation_dtype(log_emit.dtype)
     return log_init.new_empty(B, N, K, dtype=acc), log_emit.new_empty(B, N, K, dtype=torch.int32)
 
 
@@ -419,7 +416,7 @@ def hmm_filter(log_emit: Tensor, log_trans: Tensor, log_init: Tensor) -> tuple[T
 
     Raises:
         ValueError: if the inputs are not CUDA tensors, have unsupported
-            shapes or do not share a dtype.
+            shapes or do not share a dtype and a device.
         RuntimeError: if Triton is not installed.
 
     Example::
@@ -616,7 +613,7 @@ def hmm_em_step(
 
     Raises:
         ValueError: if the inputs are not CUDA tensors, have unsupported
-            shapes or do not share a dtype.
+            shapes or do not share a dtype and a device.
         RuntimeError: if Triton is not installed.
 
     Example::

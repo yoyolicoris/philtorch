@@ -9,6 +9,7 @@ from torch import Tensor
 from torch.nn.functional import pad
 
 from .._triton import check_cuda_triton
+from ..utils import _accumulation_dtype, _check_integer, _check_shared
 
 StepPattern = Literal["symmetric", "asymmetric", "orthogonal"]
 
@@ -208,8 +209,8 @@ def dtw(
             :attr:`diagonal_weight` is not positive, or not 1 with steps that
             have no weighted diagonal, if :attr:`gamma` or :attr:`band` is
             negative, if :attr:`lengths` are not of shape
-            :math:`(B)` within :math:`1 \le N_b \le N` and
-            :math:`1 \le M_b \le M`, if :attr:`band` comes with
+            :math:`(B)` of an integer dtype within :math:`1 \le N_b \le N`
+            and :math:`1 \le M_b \le M`, if :attr:`band` comes with
             :attr:`cost`, or if :attr:`checkpoint` is not an integer of at
             least 1 or comes with :attr:`cost`. The lengths' values are
             checked only in eager mode, as they would break a
@@ -277,6 +278,8 @@ def _validate(
         raise ValueError(f"diagonal_weight needs the symmetric steps, not {step_pattern!r}.")
     if lengths is not None:
         n_len, m_len = lengths
+        _check_integer("lengths[0]", n_len)
+        _check_integer("lengths[1]", m_len)
         if n_len.shape != (B,) or m_len.shape != (B,):
             raise ValueError(f"lengths must be two tensors of shape ({B},)")
         # In eager mode only: the values would break a torch.compile graph.
@@ -327,7 +330,7 @@ def _grid(cost, x, y, gamma, step_pattern, diagonal_weight, lengths, band) -> _G
     # arithmetic finite; a path sums at most w (N + M) of them, in the dtype the
     # kernels accumulate in (float32 for half and bfloat16).
     dtype = ref.dtype if ref.is_floating_point() else torch.get_default_dtype()
-    dtype = torch.promote_types(dtype, torch.float32)
+    dtype = _accumulation_dtype(dtype)
     big = torch.finfo(dtype).max / (8 * max(diagonal_weight, 1.0) * (N + M))
     window = None
     if features:
@@ -394,7 +397,7 @@ def _dtw(
             for t, n in zip((x, y), lengths)
         ]
         with torch.no_grad():
-            acc = torch.promote_types(x.dtype, torch.float32)
+            acc = _accumulation_dtype(x.dtype)
             total = sum(torch.where(v, t, 0).sum(1, dtype=acc) for v, t in zip(valid, (x, y)))
             mean = (total / sum(v.sum(1) for v in valid)).to(x.dtype)
         x, y = (torch.where(v, t, mean[:, None]) for v, t in zip(valid, (x, y)))
@@ -854,7 +857,8 @@ def soft_dtw_divergence(
         ValueError: if :attr:`gamma` is missing or not positive, if not either
             all three costs or both :attr:`x` and :attr:`y` are given, if
             :attr:`cost_xx` and :attr:`cost_yy` are not of shapes
-            :math:`(B, N, N)` and :math:`(B, M, M)`, or as :func:`dtw` does.
+            :math:`(B, N, N)` and :math:`(B, M, M)`, if the three costs
+            don't share a dtype and a device, or as :func:`dtw` does.
         RuntimeError: if Triton is not installed.
 
     Example::
@@ -875,6 +879,7 @@ def soft_dtw_divergence(
     _check_features(name, cost_xy, x, y)
     _check_features(name, cost_xx, x, x)
     _check_features(name, cost_yy, y, y)
+    _check_shared(cost_xx=cost_xx, cost_yy=cost_yy, cost_xy=cost_xy)
     if x is None:
         if cost_xy.dim() == 3:
             B, N, M = cost_xy.shape

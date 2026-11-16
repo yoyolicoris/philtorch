@@ -10,6 +10,7 @@ from torch.autograd import Function
 
 from .lpv.recur import linear_recurrence
 from .lpv.ssm import state_space_recursion
+from .utils import _check_shared
 
 __all__ = ["newton_solve"]
 
@@ -265,8 +266,8 @@ def newton_solve(
     those of the exact solution, taken at the returned trajectory, so they
     hold for the elements that converged, and are themselves differentiable.
 
-    :attr:`init`, :attr:`x` and :attr:`params` are real floating-point tensors
-    with the dtype and device of :attr:`init`.
+    :attr:`init` is a real floating-point tensor, and :attr:`y0` has its
+    dtype and device.
 
     Batch elements are solved independently. One is done when it converges,
     once :math:`|f(y[t - 1], x[t]; \theta) - y[t]| \le \text{atol} +
@@ -329,8 +330,9 @@ def newton_solve(
             tensors, :attr:`init` is not 1-D or 2-D, a tensor of
             :attr:`x` has fewer than 2 dimensions or a length :math:`T` of
             0, the tensors of :attr:`x` differ in batch size or length,
-            :attr:`init`'s batch size differs from :attr:`x`'s, or
-            :attr:`y0` is not of the shape of the output.
+            :attr:`init`'s batch size differs from :attr:`x`'s,
+            :attr:`y0` is not of the shape of the output, or :attr:`y0` and
+            :attr:`init` don't share a dtype and a device.
 
     Example::
 
@@ -378,6 +380,8 @@ def newton_solve(
 
     if not isinstance(params, tuple) or not all(isinstance(p, Tensor) for p in params):
         raise ValueError("params must be a tuple of Tensors")
+
+    _check_shared(y0=y0, init=init)
 
     all_tensors = x_tensors + tuple(params)
     options = _Options(

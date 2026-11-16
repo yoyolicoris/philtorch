@@ -4,6 +4,8 @@ import torch
 import torch.nn.functional as F
 from torch import Tensor
 
+from .utils import _check_shared
+
 
 def polydiv(u: Tensor, v: Tensor) -> tuple[Tensor, Tensor]:
     r"""Divide polynomials, returning the quotient and the remainder.
@@ -30,8 +32,10 @@ def polydiv(u: Tensor, v: Tensor) -> tuple[Tensor, Tensor]:
         remainder, of shape :math:`(*, N)`.
 
     Raises:
-        ValueError: if :attr:`u` or :attr:`v` is 0-D.
-        RuntimeError: if :math:`N > M`, or if :attr:`u` has an integer dtype.
+        ValueError: if :attr:`u` or :attr:`v` is 0-D, :attr:`u` and :attr:`v`
+            don't share a dtype and a device, or :attr:`u` has an integer
+            dtype.
+        RuntimeError: if :math:`N > M`.
 
     Note:
         Unlike :func:`numpy.polydiv`, the remainder always has :math:`N`
@@ -48,6 +52,9 @@ def polydiv(u: Tensor, v: Tensor) -> tuple[Tensor, Tensor]:
     """
     if u.ndim < 1 or v.ndim < 1:
         raise ValueError(f"u and v must be at least 1D, got {tuple(u.shape)} and {tuple(v.shape)}")
+    _check_shared(u=u, v=v)
+    if not (u.is_floating_point() or u.is_complex()):
+        raise ValueError(f"u must be floating-point or complex, got {u.dtype}")
 
     m = u.size(-1) - 1
     n = v.size(-1) - 1
@@ -85,8 +92,8 @@ def polymul(a: Tensor, b: Tensor) -> Tensor:
         :math:`(*, M + N + 1)`.
 
     Raises:
-        ValueError: if :attr:`a` or :attr:`b` is 0-D.
-        RuntimeError: if :attr:`a` and :attr:`b` differ in dtype.
+        ValueError: if :attr:`a` or :attr:`b` is 0-D, or :attr:`a` and
+            :attr:`b` don't share a dtype and a device.
 
     Example::
 
@@ -97,6 +104,7 @@ def polymul(a: Tensor, b: Tensor) -> Tensor:
     """
     if a.ndim < 1 or b.ndim < 1:
         raise ValueError(f"a and b must be at least 1D, got {tuple(a.shape)} and {tuple(b.shape)}")
+    _check_shared(a=a, b=b)
 
     # conv1d correlates, so the weights are flipped; the batch is one group each
     batch = torch.broadcast_shapes(a.shape[:-1], b.shape[:-1])

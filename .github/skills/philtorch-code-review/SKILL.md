@@ -19,7 +19,7 @@ The rules are in `AGENTS.md` and, for docstrings, `CONTRIBUTING.md`; where this 
 - **Efficient?** Passes, allocations or buffers that a view, a reshape or one fused pass avoids. A memory saving must not cost speed, and a speed-up needs a benchmark of each step, kept on the issue.
 - **Consistent?** Before accepting a fix, check how the sibling kernels and functions handle the same case. Carry over what earlier reviews and Copilot found in similar code.
 - **Tests?**
-  - One test per path, covering each new behaviour and each new `ValueError`.
+  - One test per path, covering each new behaviour and each new `ValueError`. Each new tensor argument has a mismatch case in `tests/test_argument_errors.py`.
   - A new device or dtype extends the existing tests. Parametrize only over values that reach distinct paths.
   - No test of an impossible branch or that restates the implementation. Gradchecks only for native ops, `custom_op`s and `autograd.Function`s.
   - A removed test names the test that still covers its path.
@@ -31,7 +31,7 @@ The rules are in `AGENTS.md` and, for docstrings, `CONTRIBUTING.md`; where this 
 
 - **`philtorch/csrc/`:** `AGENTS.md`, "Native ops". Also reads and writes at the edges of a sequence, a chunk and a partial block, synchronization between a kernel's phases, and stream use.
 - **Autograd, `_ops.py`, `_recur.py`:** "Native ops". No backward-only kernel; gradients to any order; the eager and compiled paths agree.
-- **Public functions:** "Conventions" and "Architecture". Shapes, dtypes and devices, empty inputs, coefficients, explicit choices; no fallback that hides the `NotImplementedError`; an integer `unroll_factor` gives the kernels' results and gradients; functions, not stateful classes; a SciPy mirror tested against SciPy.
+- **Public functions:** "Conventions" and "Architecture". Shapes, dtypes and devices, empty inputs, coefficients, explicit choices; for a function that mixes real and complex, run each combination its checks accept and confirm it is listed and computed right; no fallback that hides the `NotImplementedError`; an integer `unroll_factor` gives the kernels' results and gradients; functions, not stateful classes; a SciPy mirror tested against SciPy.
 - **Triton kernels:** "Architecture". `_*_kernels.py` names, `check_cuda_triton`, `custom_op`s with differentiable backward passes.
 - **Tests:** "Tests and CI". `cuda` marks and the CUDA path filter; subprocesses run with `cwd=tmp_path`.
 - **Docstrings:** `CONTRIBUTING.md`, "Docstrings", as the `philtorch-docstring` skill applies it. A new public function is in `docs/api/*.rst`; a module with examples is in `tests/test_docstrings.py`.

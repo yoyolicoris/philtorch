@@ -11,6 +11,7 @@ from philtorch import lpv, lti
 from philtorch.estimation import hmm_filter, kalman_filter
 from philtorch.lpv.utils import diag_shift
 from philtorch.mat import companion, find_eigenvectors, matrices_cumdot, matrix_power_accumulate
+from philtorch.nl import newton_solve
 from philtorch.poly import polydiv, polymul
 
 F64 = torch.float64
@@ -47,7 +48,7 @@ _HMM_CASES = [
     # hmm_filter(log_emit, log_trans, log_init): one dtype, checked before CUDA
     pytest.param(
         lambda: hmm_filter(_zeros(1, 3, 2), _zeros(2, 2).float(), _zeros(2)),
-        "log_emit, log_trans and log_init must share a dtype",
+        "log_trans, log_init and log_emit must share a dtype",
         id="dtype",
     ),
 ]
@@ -68,6 +69,11 @@ _KALMAN_CASES = [
         lambda: kalman_filter(**_kalman_args(A=_zeros(2))),
         "A must be square",
         id="A-1d",
+    ),
+    pytest.param(
+        lambda: kalman_filter(**_kalman_args(A=_eye(2).float())),
+        "A, C, Q, R, m0, P0 and y must share a dtype and a device",
+        id="dtype",
     ),
 ]
 
@@ -104,6 +110,12 @@ _LPV_FILTERING_CASES = [
         "second dimension of zi",
         id="fir-zi-order-mismatch",
     ),
+    # One tap: no state, and the path that used to promote b's dtype.
+    pytest.param(
+        lambda: lpv.fir(_ones(1, 4, 1).float(), _ones(1, 4)),
+        "b and x must share a dtype and a device",
+        id="fir-b-dtype",
+    ),
     # allpole: a (B, T, M), x (B, T), zi (B, M).
     pytest.param(
         lambda: lpv.allpole(_zeros(4, 1), _ones(1, 4)),
@@ -134,6 +146,11 @@ _LPV_FILTERING_CASES = [
         lambda: lpv.allpole(_zeros(1, 4, 1), _ones(1, 4), zi=_zeros(1, 2)),
         "second dimension of zi",
         id="allpole-zi-order-mismatch",
+    ),
+    pytest.param(
+        lambda: lpv.allpole(_zeros(1, 4, 1), _ones(1, 4), zi=_zeros(1, 1).float()),
+        "a, zi and x must share a dtype and a device",
+        id="allpole-zi-dtype",
     ),
     # lfilter: b (T, Mb + 1) or (B, T, Mb + 1), a (T, Ma) or (B, T, Ma).
     pytest.param(
@@ -179,6 +196,11 @@ _LPV_FILTERING_CASES = [
         "zi must match filter order",
         id="torchlpc-2d-zi-order-mismatch",
     ),
+    pytest.param(
+        lambda: lpv.lfilter(_ones(4, 2).float(), _zeros(4, 1), _ones(4)),
+        "b, a and x must share a dtype and a device",
+        id="lfilter-b-dtype",
+    ),
 ]
 
 
@@ -202,6 +224,12 @@ _LPV_RECUR_CASES = [
         lambda: lpv.linear_recurrence(_zeros(1, 4), _zeros(()), _ones(3, 4)),
         "Batch size of a must match batch size of x",
         id="a-batch-of-one",
+    ),
+    # The sequential loop used to promote a's dtype.
+    pytest.param(
+        lambda: lpv.linear_recurrence(_zeros(4).float(), _zeros(()), _ones(1, 4), unroll_factor=1),
+        "a, init and x must share a dtype and a device",
+        id="a-dtype",
     ),
 ]
 
@@ -239,6 +267,18 @@ _LPV_SSM_CASES = [
         lambda: lpv.state_space(_LPV_A, _LPV_X2, C=_ones(2), out_idx=0),
         "C and out_idx cannot be used together",
         id="C-and-out_idx",
+    ),
+    pytest.param(
+        lambda: lpv.state_space(_LPV_A, _LPV_X2, D=torch.zeros((), dtype=torch.float32)),
+        "A, D and x must share a dtype and a device",
+        id="D-dtype",
+    ),
+    pytest.param(
+        lambda: lpv.state_space_recursion(
+            _LPV_A.float(), _zeros(3, 2), _ones(3, 4, 2), unroll_factor=1
+        ),
+        "A, zi and x must share a dtype and a device",
+        id="recursion-A-dtype",
     ),
     # B of a shape that only takes a 2-D x, given a 3-D x (F = 5): the message
     # lists the shapes a 3-D x takes.
@@ -365,6 +405,11 @@ _LTI_FILTERING_CASES = [
         "first dimension of a must match the batch size",
         id="comb-a-batch-mismatch",
     ),
+    pytest.param(
+        lambda: lti.comb_filter(_zeros(()).float(), 2, _ones(1, 4)),
+        "a and x must share a dtype and a device",
+        id="comb-a-dtype",
+    ),
     # lfiltic(b, a, y)
     pytest.param(
         lambda: lti.lfiltic(_ones(()), _zeros(1), _zeros(1)),
@@ -376,6 +421,11 @@ _LTI_FILTERING_CASES = [
         "a must be at least 1D",
         id="lfiltic-a-0d",
     ),
+    pytest.param(
+        lambda: lti.lfiltic(_ones(2), _zeros(1), _zeros(1).float()),
+        "b, a and y must share a dtype and a device",
+        id="lfiltic-y-dtype",
+    ),
     # lfilter_zi(a, b)
     pytest.param(
         lambda: lti.lfilter_zi(_zeros(()), _ones(2)),
@@ -386,6 +436,11 @@ _LTI_FILTERING_CASES = [
         lambda: lti.lfilter_zi(_zeros(1), _ones(())),
         "b must be at least 1D",
         id="lfilter_zi-b-0d",
+    ),
+    pytest.param(
+        lambda: lti.lfilter_zi(_zeros(1), _ones(2).float()),
+        "b and a must share a dtype and a device",
+        id="lfilter_zi-b-dtype",
     ),
     # fir: b (B, M + 1), x (B, T), zi (B, M).
     pytest.param(
@@ -418,6 +473,11 @@ _LTI_FILTERING_CASES = [
         "second dimension of zi",
         id="fir-zi-order-mismatch",
     ),
+    pytest.param(
+        lambda: lti.fir(_ones(1, 2), _ones(1, 4), zi=_zeros(1, 1).float()),
+        "b, zi and x must share a dtype and a device",
+        id="fir-zi-dtype",
+    ),
     # lfilter(b, a, x)
     pytest.param(
         lambda: lti.lfilter(_ones(2), _zeros(1), _ones(1, 1, 4)),
@@ -433,6 +493,18 @@ _LTI_FILTERING_CASES = [
         lambda: lti.lfilter(_ones(2), _zeros(1, 1, 1), _ones(4)),
         "a must be 1D or 2D",
         id="lfilter-a-3d",
+    ),
+    pytest.param(
+        lambda: lti.lfilter(_ones(2).to(torch.complex128), _zeros(1), _ones(4)),
+        "b, a and x must share a dtype and a device",
+        id="lfilter-b-complex",
+    ),
+    pytest.param(
+        lambda: lti.lfilter(
+            *(torch.ones(n, dtype=torch.long) for n in (2, 1, 4)), backend="diag_ssm"
+        ),
+        "backend='diag_ssm' takes floating-point or complex",
+        id="lfilter-diag_ssm-integer",
     ),
     # sosfilt(sos, x, zi): sos (K, 5) or (B, K, 5), x (B, N) or (N), zi (K, 2) or (B, K, 2).
     pytest.param(
@@ -472,7 +544,7 @@ _LTI_FILTERING_CASES = [
     ),
     pytest.param(
         lambda: lti.sosfilt(_ones(1, 5).float(), _ones(4)),
-        "sos, zi and x must share a dtype",
+        "sos and x must share a dtype",
         id="sosfilt-sos-dtype",
     ),
     # sosfilt_zi(sos), with sosfilt's check of sos
@@ -502,6 +574,11 @@ _LTI_FILTERING_CASES = [
         lambda: lti.sos2pfe(_ones(1, 5), rtype="median"),
         "rtype must be one of",
         id="sos2pfe-rtype",
+    ),
+    pytest.param(
+        lambda: lti.sos2pfe(_ones(1, 5).bfloat16()),
+        "sos can't be float16 or bfloat16",
+        id="sos2pfe-bfloat16",
     ),
     # pfefilt(r, p, g, x, zi, batch_index, power): flat arguments of one precision; a real g
     # takes a real x and real residues for real poles
@@ -701,6 +778,11 @@ _LTI_FILTERING_CASES = [
         "must be greater than pad length 6",
         id="filtfilt-x-too-short",
     ),
+    pytest.param(
+        lambda: lti.filtfilt(_ones(2).float(), _zeros(1), _ones(16)),
+        "b, a and x must share a dtype and a device",
+        id="filtfilt-b-dtype",
+    ),
 ]
 
 
@@ -750,6 +832,12 @@ _LTI_RECUR_CASES = [
         "Initial state init must be 1D or 0D",
         id="init-2d",
     ),
+    # The sequential loop used to promote a's dtype.
+    pytest.param(
+        lambda: lti.linear_recurrence(_zeros(()).float(), _zeros(()), _ones(1, 4), unroll_factor=1),
+        "a, init and x must share a dtype and a device",
+        id="a-dtype",
+    ),
 ]
 
 
@@ -780,6 +868,19 @@ _LTI_SSM_CASES = [
         "C and out_idx cannot be used together",
         id="ss-C-and-out_idx",
     ),
+    # A 0-D D used to be cast down silently.
+    pytest.param(
+        lambda: lti.state_space(_eye(2), _ones(1, 4), D=torch.zeros((), dtype=torch.float32)),
+        "A, D and x must share a dtype and a device",
+        id="ss-D-dtype",
+    ),
+    pytest.param(
+        lambda: lti.state_space_recursion(
+            _eye(2).float(), _zeros(1, 2), _ones(1, 4), unroll_factor=1
+        ),
+        "A, zi and x must share a dtype and a device",
+        id="recursion-A-dtype",
+    ),
     # diag_state_space(x, L, V, Vinv, A), with A given alone.
     pytest.param(
         lambda: lti.diag_state_space(_ones(4), A=_eye(2)),
@@ -795,6 +896,33 @@ _LTI_SSM_CASES = [
         lambda: lti.diag_state_space(_ones(1, 4)),
         "Either L or A must be provided",
         id="diag-no-L-or-A",
+    ),
+    # The model has x's dtype, and so has the decomposition, except that a real
+    # A's may be complex.
+    pytest.param(
+        lambda: lti.diag_state_space(_ones(1, 4), L=_zeros(2), C=_ones(2) + 0j),
+        "C and x must share a dtype and a device",
+        id="diag-C-complex",
+    ),
+    pytest.param(
+        lambda: lti.diag_state_space(_ones(1, 4), A=_eye(2), V=_eye(2)),
+        "V and Vinv need L",
+        id="diag-V-without-L",
+    ),
+    pytest.param(
+        lambda: lti.diag_state_space(_ones(1, 4), L=_zeros(2), V=_eye(2) + 0j),
+        "L and V must share a dtype and a device",
+        id="diag-V-dtype",
+    ),
+    pytest.param(
+        lambda: lti.diag_state_space(_ones(1, 4), L=_zeros(2).float()),
+        "L and x must share a dtype and a device",
+        id="diag-L-dtype",
+    ),
+    pytest.param(
+        lambda: lti.diag_state_space(_ones(1, 4), L=_zeros(2).to(torch.complex64), A=_eye(2)),
+        "L and x must share a precision and a device",
+        id="diag-L-precision",
     ),
     pytest.param(
         lambda: lti.diag_state_space(_ones(1, 4), A=_zeros(2)),
@@ -934,6 +1062,17 @@ _MAT_CASES = [
 ]
 
 
+_NL_CASES = [
+    pytest.param(
+        lambda: newton_solve(
+            lambda y, x: torch.tanh(0.5 * y + x), _ones(1, 3), _zeros(1), y0=_zeros(1, 3).float()
+        ),
+        "y0 and init must share a dtype and a device",
+        id="newton_solve-y0-dtype",
+    ),
+]
+
+
 _POLY_CASES = [
     pytest.param(
         lambda: polydiv(_ones(()), _ones(2)),
@@ -954,6 +1093,21 @@ _POLY_CASES = [
         lambda: polymul(_ones(3), _ones(())),
         "a and b must be at least 1D",
         id="polymul-b-0d",
+    ),
+    pytest.param(
+        lambda: polydiv(_ones(3), _ones(2).float()),
+        "u and v must share a dtype and a device",
+        id="polydiv-dtype",
+    ),
+    pytest.param(
+        lambda: polydiv(torch.tensor([1, 2, 3]), torch.tensor([1, 2])),
+        "u must be floating-point or complex",
+        id="polydiv-integer",
+    ),
+    pytest.param(
+        lambda: polymul(_ones(2), _ones(2).float()),
+        "a and b must share a dtype and a device",
+        id="polymul-dtype",
     ),
 ]
 
@@ -977,6 +1131,7 @@ def _group(name, cases):
         *_group("lti-recur", _LTI_RECUR_CASES),
         *_group("lti-ssm", _LTI_SSM_CASES),
         *_group("mat", _MAT_CASES),
+        *_group("nl", _NL_CASES),
         *_group("poly", _POLY_CASES),
     ],
 )

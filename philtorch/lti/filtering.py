@@ -10,7 +10,7 @@ from torch import Tensor
 from .. import _ssm
 from ..mat import companion
 from ..poly import polydiv
-from ..utils import _squeeze_first_result, chain_functions
+from ..utils import _check_shared, _squeeze_first_result, chain_functions
 from .recur import linear_recurrence
 from .ssm import diag_state_space, state_space, state_space_recursion
 
@@ -42,7 +42,8 @@ def comb_filter(a: Tensor, delay: int, x: Tensor, zi: Tensor | None = None, **kw
 
     Raises:
         ValueError: if :attr:`delay` is less than 1, :attr:`a` has the
-            wrong shape, or :attr:`x` is not 2-D.
+            wrong shape, :attr:`x` is not 2-D, or :attr:`a` or :attr:`zi`
+            doesn't share a dtype and a device with :attr:`x`.
 
     Example::
 
@@ -60,6 +61,7 @@ def comb_filter(a: Tensor, delay: int, x: Tensor, zi: Tensor | None = None, **kw
     if a.dim() == 1:
         if a.size(0) != x.size(0):
             raise ValueError("The first dimension of a must match the batch size of x.")
+    _check_shared(a=a, zi=zi, x=x)
 
     remainder = x.size(1) % delay
     if remainder != 0:
@@ -119,7 +121,9 @@ def lfiltic(b: Tensor, a: Tensor, y: Tensor, x: Tensor | None = None) -> Tensor:
         Tensor: the initial state, of shape :math:`(*, \max(M_a, M_b))`.
 
     Raises:
-        ValueError: if :attr:`b` or :attr:`a` is 0-D.
+        ValueError: if :attr:`b` or :attr:`a` is 0-D, or :attr:`b`,
+            :attr:`a` and :attr:`y` (and :attr:`x`) don't share a dtype and a
+            device.
 
     Example::
 
@@ -138,6 +142,7 @@ def lfiltic(b: Tensor, a: Tensor, y: Tensor, x: Tensor | None = None) -> Tensor:
         raise ValueError("Numerator coefficients b must be at least 1D.")
     if a.dim() < 1:
         raise ValueError("Denominator coefficients a must be at least 1D.")
+    _check_shared(b=b, a=a, y=y, x=x)
 
     n = a.size(-1)
     m = b.size(-1) - 1
@@ -189,7 +194,8 @@ def lfilter_zi(a: Tensor, b: Tensor | None = None, transpose: bool = True) -> Te
 
     Raises:
         ValueError: if :attr:`a` is 0-D, or, with ``transpose=True``, if
-            :attr:`b` is ``None`` or 0-D.
+            :attr:`b` is ``None`` or 0-D, or doesn't share a dtype and a
+            device with :attr:`a`.
 
     Note:
         Unlike :func:`scipy.signal.lfilter_zi`, the arguments are
@@ -205,6 +211,7 @@ def lfilter_zi(a: Tensor, b: Tensor | None = None, transpose: bool = True) -> Te
     """
     if a.dim() < 1:
         raise ValueError("Denominator coefficients a must be at least 1D.")
+    _check_shared(b=b if transpose else None, a=a)
 
     if not transpose:
         n = a.size(-1) + 1
@@ -259,8 +266,9 @@ def fir(
         convention, of shape :math:`(B, M)`.
 
     Raises:
-        ValueError: if :attr:`b`, :attr:`x` or :attr:`zi` is not 2-D or
-            their shapes do not match.
+        ValueError: if :attr:`b`, :attr:`x` or :attr:`zi` is not 2-D,
+            their shapes do not match, or :attr:`b` or :attr:`zi` doesn't
+            share a dtype and a device with :attr:`x`.
 
     Example::
 
@@ -284,14 +292,12 @@ def fir(
             raise ValueError("The first dimension of zi must match the batch size.")
         if zi.size(1) != M:
             raise ValueError("The second dimension of zi must match the filter order.")
+    _check_shared(b=b, zi=zi, x=x)
 
     if N == 0:
         # The convolutions reject empty signals.
-        if zi is None:
-            return x.new_empty(x.shape, dtype=torch.promote_types(x.dtype, b.dtype))
-        dtype = torch.promote_types(zi.dtype, b.dtype)
-        y = x.new_empty(x.shape, dtype=torch.promote_types(x.dtype, dtype))
-        return y, zi.to(dtype, copy=True)
+        y = x.new_empty(x.shape)
+        return y if zi is None else (y, zi.clone())
 
     if transpose:
         y = F.conv_transpose1d(
@@ -398,10 +404,11 @@ def lfilter(
             than 2 dimensions, :attr:`zi` is not 1-D or 2-D or is given to a
             form or backend that does not take it, ``unroll_factor`` is below
             1, a batched :attr:`b`, :attr:`a` or :attr:`zi` has a batch size
-            other than that of :attr:`x`, :attr:`a` (:attr:`b` when :attr:`a`
-            is empty) or :attr:`zi` has a dtype or device other than that of
-            :attr:`x`, or :attr:`zi` has states for a pure gain (one
-            coefficient in :attr:`b` and an empty :attr:`a`).
+            other than that of :attr:`x`, :attr:`b`, a non-empty :attr:`a` or
+            :attr:`zi` has a dtype or device other than that of :attr:`x`,
+            ``backend`` is ``"diag_ssm"`` and :attr:`x` is neither
+            floating-point nor complex, or :attr:`zi` has states for a pure
+            gain (one coefficient in :attr:`b` and an empty :attr:`a`).
         TypeError: if a keyword argument is not one the backend takes, or
             ``unroll_factor`` is not an integer.
 
@@ -432,14 +439,11 @@ def lfilter(
                 f"Batch size of {name} must match batch size of x, "
                 f"got {name}: {t.size(0)}, x: {x.size(0)}"
             )
-    # a, or b when a is empty (an empty a holds no values), and zi must share
-    # x's dtype and device.
-    coeffs, name = (b, "b") if a.size(-1) == 0 else (a, "a")
-    if any(t is not None and (t.dtype != x.dtype or t.device != x.device) for t in (coeffs, zi)):
-        raise ValueError(
-            f"{name}, zi and x must share a dtype and a device, got "
-            f"{[(t.dtype, str(t.device)) for t in (coeffs, zi, x) if t is not None]}"
-        )
+    # An empty a holds no values, so it may have any dtype, as a bare
+    # ``torch.tensor([])`` does.
+    _check_shared(b=b, a=a if a.size(-1) else None, zi=zi, x=x)
+    if a.size(-1) == 0:
+        a = x.new_zeros(a.shape)
 
     match backend:
         case "ssm":
@@ -544,11 +548,7 @@ def sosfilt(sos: Tensor, x: Tensor, zi: Tensor | None = None) -> Tensor | tuple[
                 f"Batch size of {name} must match batch size of x, "
                 f"got {name}: {t.size(0)}, x: {x.size(0)}"
             )
-    if any(t is not None and (t.dtype != x.dtype or t.device != x.device) for t in (sos, zi)):
-        raise ValueError(
-            f"sos, zi and x must share a dtype and a device, got "
-            f"{[(t.dtype, str(t.device)) for t in (sos, zi, x) if t is not None]}"
-        )
+    _check_shared(sos=sos, zi=zi, x=x)
 
     if zi is None:
         sections = (partial(lfilter, s[..., :3], s[..., 3:]) for s in sos.unbind(-2))
@@ -723,12 +723,7 @@ def pfefilt(
         raise ValueError(f"zi must have shape {zshape}, got {tuple(zi.shape)}.")
     if not shared and ((batch_index < 0) | (batch_index >= B)).any():
         raise ValueError(f"batch_index must be from 0 to B - 1 = {B - 1}.")
-    given = [t for t in (r, p, g, x, zi) if t is not None]
-    if len({(t.dtype.to_real(), t.device) for t in given}) > 1:
-        raise ValueError(
-            f"r, p, g, x and zi must share a precision and a device, got "
-            f"{[(t.dtype, str(t.device)) for t in given]}"
-        )
+    _check_shared(precision=True, r=r, p=p, g=g, zi=zi, x=x)
     if not (x.is_floating_point() or x.is_complex()) or x.dtype == torch.bfloat16:
         raise ValueError(
             f"pfefilt takes floating-point or complex inputs other than bfloat16, which "
@@ -892,9 +887,14 @@ def _diag_ssm_lfilter(
     **kwargs,
 ) -> Tensor | tuple[Tensor, Tensor]:
     """Run :func:`lfilter` with the ``"diag_ssm"`` backend."""
+    if not (x.is_floating_point() or x.is_complex()):
+        raise ValueError(
+            f"backend='diag_ssm' takes floating-point or complex inputs, got {x.dtype}; "
+            "use backend='ssm'."
+        )
     # The eigendecomposition is complex for complex poles, but a real filter
     # still has a real output and state.
-    real = not any(t.is_complex() for t in (b, a, x) + (() if zi is None else (zi,)))
+    real = not x.is_complex()
 
     if form not in ("df2", "tdf2"):
         raise ValueError(f"Unknown filter form: {form}")
@@ -1010,8 +1010,9 @@ def filtfilt(
 
     Raises:
         ValueError: if :attr:`method` is not ``"pad"`` or ``"gust"``,
-            :attr:`x` is not longer than the padding, or :attr:`form` is not
-            ``"df2"`` or ``"tdf2"``.
+            :attr:`x` is not longer than the padding, :attr:`form` is not
+            ``"df2"`` or ``"tdf2"``, or :attr:`b` or :attr:`a` doesn't share
+            a dtype and a device with :attr:`x`.
         NotImplementedError: if :attr:`method` is ``"gust"``.
 
     Note:
@@ -1035,6 +1036,7 @@ def filtfilt(
         raise NotImplementedError("Gustafsson's method is not implemented yet.")
     if form not in ("df2", "tdf2"):
         raise ValueError(f"filtfilt needs form 'df2' or 'tdf2', got {form!r}.")
+    _check_shared(b=b, a=a, x=x)
 
     if padmode is None:
         padlen = 0

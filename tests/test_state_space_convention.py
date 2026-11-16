@@ -453,8 +453,7 @@ def test_state_spaces_take_empty_inputs(batch, steps):
         assert y.shape == (batch, steps)
         torch.testing.assert_close(zf, zi)
 
-    # lpv.fir's outputs: no steps, no graph; no signals, zero gradients. And
-    # zi's dtype among those promoted.
+    # lpv.fir's outputs: no steps, no graph; no signals, zero gradients.
     inputs = [t.requires_grad_() for t in (b.expand(batch, steps, 2).clone(), x.clone())]
     y = lpv.fir(*inputs)
     assert y.requires_grad == (steps > 0)
@@ -462,8 +461,6 @@ def test_state_spaces_take_empty_inputs(batch, steps):
         (grad_b, grad_x) = torch.autograd.grad(y.sum(), inputs)
         torch.testing.assert_close(grad_b, torch.zeros_like(inputs[0]))
         torch.testing.assert_close(grad_x, torch.zeros_like(inputs[1]))
-    y, _ = lpv.fir(inputs[0].detach(), x, zi=zi.to(torch.complex128))
-    assert y.dtype == torch.complex128
 
 
 @pytest.mark.parametrize("module", [lti, lpv], ids=["lti", "lpv"])

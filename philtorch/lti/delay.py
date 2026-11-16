@@ -10,6 +10,7 @@ from torch import Tensor
 
 from .. import _ssm
 from ..mat import companion
+from ..utils import _check_shared
 from .ssm import _ssm_B, _ssm_C_D, state_space
 
 _OUTPUT_CHUNK = 4096
@@ -46,10 +47,7 @@ def _initial_queues(
             raise TypeError(f"zi[{index}] must be a Tensor")
         if state.dim() not in (1, 2):
             raise ValueError(f"Initial delay state zi[{index}] must be 1D or 2D, got {state.shape}")
-        if state.dtype != x.dtype:
-            raise ValueError(
-                f"zi[{index}] must have the dtype of x, got {state.dtype}, x: {x.dtype}"
-            )
+        _check_shared(**{f"zi[{index}]": state}, x=x)
         if state.size(-1) != delay:
             raise ValueError(
                 f"Last dimension of zi[{index}] must match delay {delay}, got {state.size(-1)}"
@@ -98,12 +96,7 @@ def _absorption_filters(
             )
     if absorption[0].size(-1) == 0:
         raise ValueError("absorption b must have at least one coefficient")
-    if any(t.dtype != x.dtype or t.device != x.device for t in named.values()):
-        got = ", ".join(f"{name}: {t.dtype} on {t.device}" for name, t in named.items())
-        raise ValueError(
-            "absorption b, a and absorption_zi must have the dtype and device of x, "
-            f"got {got}, x: {x.dtype} on {x.device}"
-        )
+    _check_shared(**named, x=x)
 
     b, a = (c.expand(batch_size, M, -1).reshape(batch_size * M, c.size(-1)) for c in absorption)
     K = max(b.size(-1) - 1, a.size(-1))
@@ -240,8 +233,9 @@ def delay_state_space(
             the states, if :attr:`absorption` is not a pair of tensors, if
             its coefficients or :attr:`absorption_zi` are not 2-D or 3-D or
             do not match :math:`M`, the batch size or :math:`K`, if
-            :math:`b` is empty, if the coefficients or :attr:`absorption_zi`
-            differ from :attr:`x` in dtype or device, if
+            :math:`b` is empty, if :attr:`A`, :attr:`B`, :attr:`C`,
+            :attr:`D`, a queue in :attr:`zi`, the coefficients or
+            :attr:`absorption_zi` differ from :attr:`x` in dtype or device, if
             :attr:`unroll_factor` is not ``None`` or an integer of at least 1,
             if :attr:`absorption_zi`, :attr:`absorption_after_matrix` or
             :attr:`unroll_factor` is given without :attr:`absorption`, or if
@@ -314,10 +308,7 @@ def delay_state_space(
             f"Last dimension of x must match the number of delays when B is None, "
             f"got x: {x.size(-1)}, delays: {M}"
         )
-    matrices = {"A": A, "B": B, "C": C, "D": D}
-    if any(t is not None and t.dtype != x.dtype for t in matrices.values()):
-        got = ", ".join(f"{name}: {t.dtype}" for name, t in matrices.items() if t is not None)
-        raise ValueError(f"A, B, C and D must have the dtype of x, got {got}, x: {x.dtype}")
+    _check_shared(A=A, B=B, C=C, D=D, x=x)
     Bx = _ssm_B(B, x, batch_size, M)
     if absorb:
         filter_A, filter_B, filter_D, K, absorption_state = _absorption_filters(

@@ -40,6 +40,7 @@ import torch.nn.functional as F
 from torch import Tensor
 
 from ._ssm import to_lpv, to_lti
+from .utils import _check_shared
 
 # Each kernel is a condition on the input, (A, x), and a launch, (A, zi, x),
 # listed in _KERNELS in order of preference. The native kernels take A as one
@@ -438,11 +439,7 @@ def recurrence(A: Tensor, zi: Tensor, x: Tensor) -> Tensor:
         )
     if zi.shape != (B, M):
         raise ValueError(f"zi must be ({B}, {M}), got {tuple(zi.shape)}")
-    if not A.dtype == zi.dtype == x.dtype or not A.device == zi.device == x.device:
-        raise ValueError(
-            "A, zi and x must share a dtype and a device, got "
-            f"{[(t.dtype, str(t.device)) for t in (A, zi, x)]}"
-        )
+    _check_shared(A=A, zi=zi, x=x)
     if B == 0 or T == 0:
         return x.new_empty(x.shape)
     if torch.compiler.is_compiling():
