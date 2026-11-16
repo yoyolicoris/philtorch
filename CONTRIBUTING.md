@@ -62,8 +62,8 @@ Public functions follow [PyTorch's docstring conventions](https://github.com/pyt
   - Name the type in full: `Tensor`, `tuple of Tensor`, or `Tensor or tuple of Tensor` when an optional argument adds outputs. Never write a bare `tuple`.
   - With an initial state `zi`, the function returns the final state only when `zi` is given. Say so, with its shape and whether a shared `zi` gives one final state per signal.
   - Say when an output can be empty, such as a direct term of a filter with fewer zeros than poles.
-- **Package conventions:** state them in Args, next to the argument they concern: `a` without its leading 1, batch first and time second, no `axis` argument. Don't repeat them in a Note.
-- **Differences from SciPy and NumPy:** compare as PyTorch does with NumPy. Write either one sentence ("This computes what :func:`scipy.signal.dlsim` does with `x0=zi`."), or one sentence per difference that changes how a call is written or what it returns. Where it helps, add how to recover SciPy's behaviour ("Unlike `numpy.vander`, this function returns the powers of `x` in ascending order."). Don't write paragraphs of explanation.
+- **Package conventions:** state them in Args, next to the argument they concern: `a` without its leading 1, and shapes batch first and time second. Don't repeat them in a Note, and don't mention the missing `axis` argument.
+- **Differences from SciPy and NumPy:** compare as PyTorch does with NumPy. Write either one sentence ("This computes what :func:`scipy.signal.dlsim` does with ``x0=zi``."), or one sentence per difference that changes how a call is written or what it returns. Where it helps, add how to recover SciPy's behaviour ("Unlike :func:`numpy.vander`, this function returns the powers of :attr:`x` in ascending order."). Don't write paragraphs of explanation.
 - **Examples:** add an `Example::` block with doctest examples where it helps; like PyTorch's, they assume `torch` is imported. Add the module to `MODULES` in `tests/test_docstrings.py`, which runs every example. Start each case with a comment stating it in the docstring's notation, such as `# (1 + z^-1) / (1 - 0.5 z^-1)`.
 
 ### Content
@@ -72,8 +72,7 @@ PyTorch's conventions fix a docstring's form. Its content follows these rules.
 
 - **What, not how.** Say what the function computes and returns: the formula, shapes, dtypes, errors, and the caveats that change the output or its accuracy. Leave out how it is computed when that changes nothing the user sees: kernels, scans, trees of products, solves, chunking.
 - **Numbers by example, not in the text.** Measured errors, timings and speed-ups go in pull requests and issue artifacts. State accuracy qualitatively in the text, as SciPy's `sosfilt` does ("designed to minimize numerical precision errors for high-order filters").
-  - Where the function is the stabler of two ways to compute something, an example may compare them, as SciPy's `sosfilt` example compares `sosfilt` with `lfilter`. Run both on a case where the difference shows, and print each one's error against a reference, or their outputs, so that the reader sees which one stays accurate.
-  - Print values that are the same on every platform.
+  - Where the function is the stabler of two ways to compute something, an example may compare them, as SciPy's `sosfilt` example compares `sosfilt` with `lfilter`. Run both on a case where the difference shows, and print a result that shows which one stays accurate, such as `bool(err_sos < err_tf)`.
   - Don't show tolerances or thresholds, such as `atol` or `err < 1e-6`.
 - **Notes the user can act on.** A `Note:` states a difference from SciPy or NumPy that changes a call or its output, or the cost of an option the user chooses.
   - It doesn't state a limitation that no argument avoids.

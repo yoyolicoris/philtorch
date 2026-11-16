@@ -22,11 +22,11 @@ The maintainer asks the same questions of every pull request, of its code, tests
 - **Is it efficient?** Flag passes, allocations or buffers that a view, a reshape or one fused pass avoids, such as summing tangents from several forward passes where one pass takes them all. A change meant to save memory must not cost speed, and one meant to be faster needs a benchmark of each step, kept on the issue.
 - **Is it consistent with its neighbours?** Before accepting a fix, check how the sibling kernels or functions handle the same case, such as clamping, streams or empty sizes. Carry over what earlier reviews and Copilot found in similar code.
 - **Are the tests minimal and sufficient?**
-  - One test per path, and each new behaviour and each new `ValueError` covered.
+  - One test per path.
   - A new device or dtype extends the existing tests rather than adding parallel ones. Parametrize only over values that reach distinct paths.
   - No test of a branch that can't happen, and no test that restates the implementation. Gradchecks only for native ops, `custom_op`s and `autograd.Function`s, not for compositions of PyTorch ops.
   - A removed test leaves no path uncovered: name the test that still covers it.
-- **Do the docs serve the user?** Docstrings follow the `philtorch-docstring` skill.
+- **Do the docs serve the user?**
   - Comments and docstrings are compact, with no long descriptions, tuning history or benchmark tables. Measurements go on issue artifacts.
   - After a trim, a first-time user can still tell what each argument does, what is returned, and how its parts connect, such as which sections a filter has and how its initial state maps to them.
   - A method from a paper cites it.
@@ -54,7 +54,7 @@ Check each changed file against the section of `AGENTS.md` that governs it.
   - A new public function has an entry in `docs/api/*.rst`.
   - A module with examples is listed in `tests/test_docstrings.py`.
 - **Anything ported or adapted** from SciPy, soxr or another library: check its licence; no GPL or LGPL code, not even in a comment.
-- **Scope:** the pull request targets `dev`, follows `.github/pull_request_template.md`, and leaves out unrelated changes.
+- **Scope:** the pull request targets `dev` and follows `.github/pull_request_template.md`.
 
 ## Before reporting
 

@@ -13,7 +13,7 @@ The rules are in `CONTRIBUTING.md`, "Docstrings": PyTorch's form (sections, role
 2. **Check the reference.** For a filter equation, look the notation up in Smith's book (https://ccrma.stanford.edu/~jos/filters/), keeping `x[n]` brackets. For a SciPy counterpart, read SciPy's docstring: a Note states only the differences that change how a call is written or what it returns, not package conventions, which Args states.
 3. **Write or edit**, following the content rules: what, not how; numbers by example, not in the text; Notes the user can act on; say it once.
 4. **Form.** Apply the form rules in `CONTRIBUTING.md`, "Docstrings".
-5. **Render.** Render the docstring through Napoleon and docutils with no warnings, or build with `pixi run docs`. Run its examples with `tests/test_docstrings.py` (`tests/test_docstrings_cuda.py` for Triton code). An example prints only results that are the same on every platform.
+5. **Render.** Render the docstring through Napoleon and docutils with no warnings, or build with `pixi run docs`. Run its examples with `tests/test_docstrings.py` (`tests/test_docstrings_cuda.py` for Triton code).
 6. **Fresh reader.** Give a subagent only the signature and the rendered docstring, with no code and no history; an agent that can't spawn one asks the maintainer to read it instead. Ask:
    - which argument's effect, or which returned value, it can't work out from the text;
    - which sentence is a fragment, or refers to something not on the page;
@@ -22,14 +22,6 @@ The rules are in `CONTRIBUTING.md`, "Docstrings": PyTorch's form (sections, role
    Fix what it finds, and repeat until it finds nothing.
 7. **Diff against the old version** (`git show <base>:<path>`). Every argument the old text explained is still explained, every citation keeps its target, and nothing that changes the output was cut.
 
-## Don't
+## Last check
 
-- Narrate the implementation: kernels, scans, trees, solves, chunks, launches.
-- Quote measurements in the text: errors, timings, memory figures, speed-ups. To show that the function is the stabler of two ways, compare them in an example, as `CONTRIBUTING.md` says.
-- Show a tolerance or a threshold in an example.
-- Use `k` as a gain, except in functions that mirror SciPy's.
-- Leave a `Note:` about a limitation no argument avoids, such as a graph break.
-- Restate a package convention, or Args, Returns or the main text, in a Note.
-- Write a second `Note:` block.
-- Write a bare `tuple` as a return type: name it in full, as `tuple of Tensor`.
-- Show one equation with a parameter where an argument selects between two forms: show both.
+Check the result against each rule in `CONTRIBUTING.md`'s Form, Content and Notation sections: this skill doesn't restate them.
