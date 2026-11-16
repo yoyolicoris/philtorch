@@ -169,7 +169,7 @@ The dominant traffic is reading `x` (and per-step coefficients) twice and writin
 | SIMD groups per tile | 8 |
 | Metal dispatches | 3, or 1 for sequences of one tile |
 
-The host code sets the threads per threadgroup and the steps per thread, `THREADS` and `STEPS_PER_THREAD`, and compiles the Metal source with them defined, so the two can't disagree; the Metal source derives the tile, `THREADS * K`, and the SIMD groups from them, and sets `TOTALS` itself.
+The host code sets the threads per threadgroup and the steps per thread, `THREADS` and `STEPS_PER_THREAD`, and compiles the Metal source with them defined, so the two can't disagree; `load4` and `store4` move 4 steps at a time, which the shader asserts. The Metal source derives the tile, `THREADS * K`, and the SIMD groups from them, and sets `TOTALS` itself.
 Every kernel declares 256 threads as its maximum per threadgroup (`max_total_threads_per_threadgroup`), so the compiler guarantees that size; every Apple GPU has 32-wide SIMD groups, which the kernels assume, as the shim gives no way to query the width.
 Each kernel indexes the steps of a sequence in 32 bits, as 64-bit integer arithmetic is emulated on the GPU: per-sequence pointers are computed once per thread, and the host rejects sequences of 2^32 - 1024 steps or more.
 

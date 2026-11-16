@@ -3,7 +3,7 @@
 #include "stable_support.h"
 
 // The dtype and device checks of the recurrence ops: A, zi and x of one dtype,
-// on x's device.
+// on x's device. On MPS, x's device is MPS, as the call reached the MPS kernel.
 inline void check_types_devices(const torch::stable::Tensor &A,
                                 const torch::stable::Tensor &zi,
                                 const torch::stable::Tensor &x)

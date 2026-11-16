@@ -102,7 +102,6 @@ void launch(AOTIMetalKernelFunctionHandle function,
 Tensor scalar_recur_mps(const Tensor &decays, bool varying, int64_t stride_b,
                         const Tensor &zi, const Tensor &x)
 {
-    // On x's device, which is then MPS, as the call reached this kernel.
     check_types_devices(decays, zi, x);
     const ScalarType dtype = x.scalar_type();
     const Kernels &k = kernels(dtype);

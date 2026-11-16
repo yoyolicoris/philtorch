@@ -15,8 +15,10 @@
 // Every kernel runs THREADS threads per threadgroup, which each declares as
 // its maximum so that the compiler guarantees it, in SIMD groups.
 constant constexpr uint SIMD_GROUPS = THREADS / SIMD_WIDTH;
-// Consecutive steps per thread, read and written as one vector.
+// Consecutive steps per thread, read and written as one vector by load4 and
+// store4.
 constant constexpr uint K = STEPS_PER_THREAD;
+static_assert(K == 4, "load4 and store4 move 4 steps per thread");
 constant constexpr uint TILE = THREADS * K;
 // Tile totals per thread in the scan of the tiles.
 constant constexpr uint TOTALS = 2;

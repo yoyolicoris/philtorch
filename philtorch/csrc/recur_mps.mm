@@ -173,11 +173,10 @@ Tensor recur_mps(const Tensor &a, int64_t a_batch, int64_t stride_b,
     return out;
 }
 
-// The checks of recurN (varying) and lti_recurN, those of every kernel and
-// the MPS kernels' own: their dtypes, M and steps.
+// The checks of recurN (varying) or lti_recurN: the shared ones, then the MPS
+// kernels' own, for dtype, M and step count.
 void check_inputs(const Tensor &A, const Tensor &zi, const Tensor &x, bool varying)
 {
-    // On x's device, which is then MPS, as the call reached this kernel.
     check_types_devices(A, zi, x);
     philtorch::mps::metal_type(x.scalar_type(), OP);
     check_recurN_shapes(A, zi, x, varying);

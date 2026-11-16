@@ -231,6 +231,35 @@ def test_mps_scalar_recur_rejects_int64(op: str):
         _MPS_OPS[op](*args)
 
 
+_MPS_SHAPES = {
+    "lti_recur": ((2,), (2,), (2, 5)),
+    "scan": ((2, 5), (2, 5), (2,)),
+    "lti_recurN": ((3, 3), (2, 3), (2, 5, 3)),
+    "recurN": ((5, 3, 3), (2, 3), (2, 5, 3)),
+}
+
+
+@MPS
+@pytest.mark.parametrize("op", list(_MPS_SHAPES))
+@pytest.mark.parametrize(
+    "change, match",
+    [(dict(device="cpu"), "same device"), (dict(dtype=torch.float16), "same scalar type")],
+)
+def test_mps_ops_reject_an_initial_state_of_another_device_or_dtype(op, change, match):
+    args = [torch.ones(s, device="mps") for s in _MPS_SHAPES[op]]
+    zi = 2 if op == "scan" else 1
+    args[zi] = args[zi].to(**change)
+    with pytest.raises(RuntimeError, match=match):
+        _MPS_OPS[op](*args)
+
+
+@MPS
+def test_mps_recur_n_rejects_coefficients_of_another_batch():
+    A, zi, x = (torch.ones(s, device="mps") for s in ((3, 5, 3, 3), (2, 3), (2, 5, 3)))
+    with pytest.raises(RuntimeError, match="batch size of x"):
+        _MPS_OPS["recurN"](A, zi, x)
+
+
 def _cuda_scan_case(name: str):
     """Return an op, its CPU arguments, and the output it should give."""
     B, T = 4, 4096
