@@ -112,6 +112,7 @@ def test_recurrence_overflows_to_inf_not_nan(M):
         (torch.complex64, 1e-5),
         (torch.float16, 3e-3),
         (torch.bfloat16, 2e-2),
+        (torch.complex32, 3e-3),
     ],
 )
 @pytest.mark.parametrize("sharing", SHARING)
@@ -128,7 +129,7 @@ def test_recurrence_overflows_to_inf_not_nan(M):
     + [pytest.param("mps", M, T, marks=MPS) for M in (1, 2, 3, 6, 20, 32, 64) for T in (301, 2049)],
 )
 def test_recurrence_low_precision(dtype, tolerance, sharing, device, M, T):
-    if dtype == torch.complex64 and device == "cuda" and M > 64:
+    if dtype.is_complex and device == "cuda" and M > 64:
         pytest.skip("past the CUDA kernels' complex states")
     A, zi, x = _problem(4, T, M, sharing, dtype, device)
     # The reference on CPU, as MPS has no float64.
@@ -310,6 +311,23 @@ def test_recurrence_matches_cpu_gradients(device, M, sharing, dtype, tolerance):
         torch.testing.assert_close(other.cpu(), cpu, **tolerance)
 
 
+@pytest.mark.parametrize("device", [*DEVICES, pytest.param("mps", marks=MPS)])
+@pytest.mark.parametrize("M", [1, 3])
+@pytest.mark.parametrize("sharing", ["one", "both"])
+def test_recurrence_gradients_in_complex32(device, M, sharing):
+    # complex32 has no matmul, and on CPU no sum and no flip of an innermost
+    # dimension (M = 1), which the gradients run in complex64: they match
+    # complex128's on the same inputs to complex32's rounding.
+    inputs = [t.requires_grad_() for t in _problem(3, 300, M, sharing, torch.complex32, device)]
+    wide = [t.detach().cpu().to(torch.complex128).requires_grad_() for t in inputs]
+    g = torch.randn(3, 300, M, dtype=torch.complex128, generator=torch.Generator().manual_seed(1))
+    actual = torch.autograd.grad(recurrence(*inputs), inputs, g.to(device, torch.complex32))
+    expected = torch.autograd.grad(recurrence(*wide), wide, g)
+    for a, e in zip(actual, expected):
+        assert a.dtype == torch.complex32
+        assert (a.cpu().to(e.dtype) - e).norm() / e.norm() < 3e-3
+
+
 @pytest.mark.parametrize("device", DEVICES)
 @pytest.mark.parametrize("compiled", [False, True])
 def test_recurrence_empty(device, compiled):
@@ -389,6 +407,10 @@ DISPATCH = [
             (False, 2, torch.complex128, "cuda", "_recurN"),
             (False, 3, torch.float16, "cuda", "_recur3"),
             (False, 3, torch.complex128, "cuda", "_recurN"),
+            (True, 3, torch.complex32, "cuda", "_lti_recurN"),
+            (False, 1, torch.complex32, "cuda", "_recurN"),
+            (False, 2, torch.complex32, "cuda", "_recur2"),
+            (False, 3, torch.complex32, "cuda", "_recur3"),
         ]
     ),
 ]
@@ -412,7 +434,7 @@ INTEGER_DISPATCH = [
 ]
 
 
-# The Metal kernels, which take these four dtypes: the scalar ones M = 1, and
+# The Metal kernels, which take these five dtypes: the scalar ones M = 1, and
 # those of order M the rest.
 MPS_DISPATCH = [
     pytest.param(*case, marks=MPS)
@@ -423,7 +445,13 @@ MPS_DISPATCH = [
             (1, "_lti_recur" if time_invariant else "_scan"),
             (2, "_lti_recurN" if time_invariant else "_recurN"),
         )
-        for dtype in (torch.float32, torch.float16, torch.bfloat16, torch.complex64)
+        for dtype in (
+            torch.float32,
+            torch.float16,
+            torch.bfloat16,
+            torch.complex64,
+            torch.complex32,
+        )
     ]
 ]
 
@@ -463,7 +491,7 @@ def test_recurrence_compiles(time_invariant, M, dtype, device, kernel, per_item)
     torch._dynamo.reset()
     compiled = torch.compile(recurrence, backend="aot_eager", fullgraph=True)
     expected_h, actual_h = recurrence(*inputs), compiled(*inputs)
-    low = dtype in (torch.float16, torch.bfloat16)
+    low = dtype in (torch.float16, torch.bfloat16, torch.complex32)
     tolerance = {"rtol": 1e-2, "atol": 1e-2} if low else {}
     torch.testing.assert_close(actual_h, expected_h, **tolerance)
     expected = torch.autograd.grad(expected_h.abs().square().sum(), inputs)
@@ -713,11 +741,15 @@ LOW_PRECISION_OPERATORS = [
 
 @pytest.mark.parametrize("time_invariant, M, device, kernel", LOW_PRECISION_OPERATORS)
 @pytest.mark.parametrize("batched_A", [False, True])
-@pytest.mark.parametrize("dtype, tolerance", [(torch.float16, 2**-11), (torch.bfloat16, 2**-8)])
+@pytest.mark.parametrize(
+    "dtype, tolerance",
+    [(torch.float16, 2**-11), (torch.bfloat16, 2**-8), (torch.complex32, 2**-11)],
+)
 def test_native_kernels_accumulate_low_precision_in_float32(
     time_invariant, M, device, kernel, batched_A, dtype, tolerance
 ):
-    # The kernels' state is float32: the error is that of rounding each output once.
+    # The kernels' state is float32 (complex64 for complex32): the error is
+    # that of rounding each output once.
     sharing = (
         ("per_item" if batched_A else "one")
         if time_invariant
@@ -725,9 +757,10 @@ def test_native_kernels_accumulate_low_precision_in_float32(
     )
     A, zi, x = _near_unit_problem(4, 4000, M, sharing, dtype, device)
     assert _kernel(time_invariant, M, dtype, device) is getattr(_recur, kernel)
-    # The reference runs in float64 on the same 16-bit inputs.
-    expected = _sequential(*(t.cpu().double() for t in (A, zi, x)))
+    # The reference runs in double precision on the same 16-bit inputs.
+    wide = torch.complex128 if dtype.is_complex else torch.float64
+    expected = _sequential(*(t.cpu().to(wide) for t in (A, zi, x)))
     actual = recurrence(A, zi, x)
     assert actual.dtype == dtype
-    error = (actual.cpu().double() - expected).norm() / expected.norm()
+    error = (actual.cpu().to(wide) - expected).norm() / expected.norm()
     assert error < tolerance

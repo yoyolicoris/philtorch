@@ -97,16 +97,16 @@ template <typename T> inline void store4(device T *p, thread const T *v)
     *(device packed_vec<T, 4> *)p = packed_vec<T, 4>(v[0], v[1], v[2], v[3]);
 }
 // complex64, whose float2 has no packed vector of 4.
-inline void load4(const device float2 *p, thread float2 *v)
+template <typename R> inline void load4(const device vec<R, 2> *p, thread vec<R, 2> *v)
 {
-    const float4 a = float4(((const device packed_float4 *)p)[0]);
-    const float4 b = float4(((const device packed_float4 *)p)[1]);
+    const vec<R, 4> a = vec<R, 4>(((const device packed_vec<R, 4> *)p)[0]);
+    const vec<R, 4> b = vec<R, 4>(((const device packed_vec<R, 4> *)p)[1]);
     v[0] = a.xy; v[1] = a.zw; v[2] = b.xy; v[3] = b.zw;
 }
-inline void store4(device float2 *p, thread const float2 *v)
+template <typename R> inline void store4(device vec<R, 2> *p, thread const vec<R, 2> *v)
 {
-    ((device packed_float4 *)p)[0] = packed_float4(v[0].x, v[0].y, v[1].x, v[1].y);
-    ((device packed_float4 *)p)[1] = packed_float4(v[2].x, v[2].y, v[3].x, v[3].y);
+    ((device packed_vec<R, 4> *)p)[0] = packed_vec<R, 4>(v[0].x, v[0].y, v[1].x, v[1].y);
+    ((device packed_vec<R, 4> *)p)[1] = packed_vec<R, 4>(v[2].x, v[2].y, v[3].x, v[3].y);
 }
 
 template <typename T, bool VARYING, typename A = typename Acc<T>::type>
@@ -307,5 +307,6 @@ DEFINE_KERNELS(float, float)
 DEFINE_KERNELS(half, half)
 DEFINE_KERNELS(bfloat, bfloat)
 DEFINE_KERNELS(float2, float2)
+DEFINE_KERNELS(half2, half2)
 DEFINE_SCAN(float, float)
 DEFINE_SCAN(float2, float2)

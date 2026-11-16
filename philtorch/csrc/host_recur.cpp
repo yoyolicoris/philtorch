@@ -84,7 +84,7 @@ void matmul(const x_t *X, const acc_t *Y, acc_t *out, int M)
     for (int i = 0; i < M; ++i)
         for (int k = 0; k < M; ++k)
             for (int j = 0; j < M; ++j)
-                out[i * M + j] += X[i * M + k] * Y[k * M + j];
+                out[i * M + j] += static_cast<acc_t>(X[i * M + k]) * Y[k * M + j];
 }
 
 // Phi = A[e - 1] ... A[s], row-major. A constant A (stride_t == 0) gives
@@ -256,7 +256,8 @@ Tensor recur_cpu_launch(const Tensor &A, const Tensor &zi,
                       zi_contiguous.const_data_ptr<scalar_t>(),
                       out.mutable_data_ptr<scalar_t>(), x.size(0), x.size(1),
                       static_cast<int>(M)); }),
-        AT_FLOATING_TYPES, AT_COMPLEX_TYPES, S::Long, S::Half, S::BFloat16);
+        AT_FLOATING_TYPES, AT_COMPLEX_TYPES, S::Long, S::Half, S::BFloat16,
+        S::ComplexHalf);
     return out;
 }
 

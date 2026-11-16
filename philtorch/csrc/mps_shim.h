@@ -33,8 +33,8 @@ inline AOTIMetalShaderLibraryHandle compile(const std::string &definitions,
     return created;
 }
 
-// The Metal type of the dtypes the kernels take, float2 being complex64;
-// `op` names the kernels in the error for the others.
+// The Metal type of the dtypes the kernels take, float2 and half2 being
+// complex64 and complex32; `op` names the kernels in the error for the others.
 inline const char *metal_type(ScalarType dtype, const char *op)
 {
     switch (dtype)
@@ -45,17 +45,24 @@ inline const char *metal_type(ScalarType dtype, const char *op)
         return "half";
     case ScalarType::BFloat16:
         return "bfloat";
+    case ScalarType::ComplexHalf:
+        return "half2";
     default:
         STD_TORCH_CHECK(dtype == ScalarType::ComplexFloat, op,
-                        " takes float32, float16, bfloat16 and complex64");
+                        " takes float32, float16, bfloat16, complex64 and complex32");
         return "float2";
     }
+}
+
+inline bool is_complex(ScalarType dtype)
+{
+    return dtype == ScalarType::ComplexFloat || dtype == ScalarType::ComplexHalf;
 }
 
 // The dtype the kernels accumulate dtype in: float32, or complex64.
 inline ScalarType accumulation_type(ScalarType dtype)
 {
-    return dtype == ScalarType::ComplexFloat ? dtype : ScalarType::Float;
+    return is_complex(dtype) ? ScalarType::ComplexFloat : ScalarType::Float;
 }
 
 inline AOTIMetalKernelFunctionHandle

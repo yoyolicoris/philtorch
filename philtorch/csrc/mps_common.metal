@@ -8,7 +8,7 @@ using namespace metal;
 constant constexpr uint SIMD_WIDTH = 32;
 
 // The accumulation type: float for float, half and bfloat; float2, a complex
-// number, for complex64.
+// number, for complex64 (float2) and complex32 (half2).
 template <typename T> struct Acc
 {
     using type = float;
@@ -18,6 +18,12 @@ template <> struct Acc<float2>
 {
     using type = float2;
     // float2(1.0f) would be 1 + i.
+    static float2 one() { return float2(1.0f, 0.0f); }
+};
+// As Acc<float2>, written out: Metal has no derived classes.
+template <> struct Acc<half2>
+{
+    using type = float2;
     static float2 one() { return float2(1.0f, 0.0f); }
 };
 

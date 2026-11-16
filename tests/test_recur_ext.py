@@ -146,7 +146,9 @@ def test_lti_recur_mps_grad_equiv(
 
 @MPS
 @pytest.mark.parametrize("time_invariant", [True, False])
-@pytest.mark.parametrize("dtype, M", [(torch.float32, 129), (torch.complex64, 65)])
+@pytest.mark.parametrize(
+    "dtype, M", [(torch.float32, 129), (torch.complex64, 65), (torch.complex32, 65)]
+)
 def test_mps_recurrence_rejects_m_above_128(time_invariant: bool, dtype: torch.dtype, M: int):
     B, T = 2, 5
     A = torch.zeros(1, 1 if time_invariant else T, M, M, dtype=dtype, device="mps")
@@ -189,7 +191,7 @@ def test_mps_recur_of_order(order: int, time_invariant: bool, batched: bool):
         (op, dtype, M, match)
         for op in ("lti_recurN", "recurN")
         for dtype, M, match in [
-            (torch.int64, 3, "takes float32, float16, bfloat16 and complex64"),
+            (torch.int64, 3, "takes float32, float16, bfloat16, complex64 and complex32"),
             (torch.float32, 129, "takes M up to 128 .*, got 129"),
             (torch.complex64, 65, "takes M up to 128 .*, got 65"),
         ]

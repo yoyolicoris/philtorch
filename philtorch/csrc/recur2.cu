@@ -8,7 +8,8 @@ struct recur2_dispatch
         using S = torch::headeronly::ScalarType;
         THO_DISPATCH_V2(
             type, "recur2", AT_WRAP([&] { f(scalar_t{}); }),
-            AT_FLOATING_TYPES, AT_COMPLEX_TYPES, S::Long, S::Half, S::BFloat16);
+            AT_FLOATING_TYPES, AT_COMPLEX_TYPES, S::Long, S::Half, S::BFloat16,
+            S::ComplexHalf);
     }
 };
 
