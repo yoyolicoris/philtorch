@@ -286,7 +286,7 @@ Lane `j` holds state `j` and reads column `j` of each step's matrix, so that a v
 A step forms each lane's share of every row, the products of its columns by its states, and a butterfly of `log2(LANES)` rounds of `simd_shuffle_xor` sums the shares over the lanes, a block of `LANES` rows at a time: each round, a lane keeps the half of the rows its lane's bit selects and adds its partner's other half, until it holds its own row's sum.
 The first round is taken as the shares are formed, so that a lane holds half a block's at most, and every shuffle exchanges lanes by a mask shared by all lanes.
 
-**Maps.** A map's `P` runs 8 columns at a time on a SIMD group, as the product of the chunk's matrices by those columns of the identity: the `M x 8` block `X <- A[t] X`, in tiles of 8 x 8, by `simdgroup_multiply_accumulate`, the Metal counterpart of a tensor-core product, in float32, complex64 as four real products; maps of up to 4 states share a tile, 8 / M of them.
+**Maps.** A map's `P` runs 8 columns at a time on a SIMD group, as the product of the chunk's matrices by those columns of the identity: the `M x 8` block `X <- A[t] X`, in tiles of 8 x 8, by `simdgroup_multiply_accumulate`, the Metal counterpart of a tensor-core product, in float32, complex as four real products; maps of up to 4 states share a tile, 8 / M of them.
 The tiles of `A[t]` are read entry by entry into `thread_elements()`, converted to the accumulation type.
 A block's columns evolve apart from the others', so it needs only its own `2 ceil(M / 8)` floats a lane, in registers whatever `M`.
 

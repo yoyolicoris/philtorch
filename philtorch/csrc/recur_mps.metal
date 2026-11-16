@@ -252,8 +252,8 @@ template <typename R> inline void store_entry(device vec<R, 2> *p, float re, flo
 }
 
 // X <- A X for a SIMD group's block X, in tiles Xr and Xi, its real and
-// imaginary parts, A the step's matrix at m (see load_tile); complex64 as
-// four real products.
+// imaginary parts, A the step's matrix at m (see load_tile); complex64 and
+// complex32 as four real products.
 inline void multiply(const device T *m, thread simdgroup_float8x8 *Xr,
                      thread simdgroup_float8x8 *Xi, uint2 e, uint packed)
 {

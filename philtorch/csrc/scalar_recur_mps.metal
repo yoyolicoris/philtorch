@@ -96,7 +96,7 @@ template <typename T> inline void store4(device T *p, thread const T *v)
 {
     *(device packed_vec<T, 4> *)p = packed_vec<T, 4>(v[0], v[1], v[2], v[3]);
 }
-// complex64, whose float2 has no packed vector of 4.
+// complex64 and complex32, whose float2 and half2 have no packed vector of 4.
 template <typename R> inline void load4(const device vec<R, 2> *p, thread vec<R, 2> *v)
 {
     const vec<R, 4> a = vec<R, 4>(((const device packed_vec<R, 4> *)p)[0]);

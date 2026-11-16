@@ -727,7 +727,8 @@ def _near_unit_problem(B, T, M, sharing, dtype, device):
     return (t.to(device, dtype) for t in (A, zi, x))
 
 
-# Operators whose kernels take float16 and bfloat16: (time_invariant, M, device, kernel).
+# Operators whose kernels take float16, bfloat16 and complex32: (time_invariant, M, device,
+# kernel).
 LOW_PRECISION_OPERATORS = [
     (True, 1, "cpu", "_lti_recur"),
     (True, 2, "cpu", "_lti_recurN"),
