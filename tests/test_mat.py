@@ -19,18 +19,38 @@ def test_matrices_cumdot(M: int):
     assert torch.allclose(matrices_cumdot(A), expected)
 
 
-@pytest.mark.parametrize("dtype", [torch.float64, torch.complex128])
+# bfloat16 and complex32 run in float32 and complex64; bfloat16 alone would
+# miscount n above 256
+@pytest.mark.parametrize(
+    "dtype", [torch.float64, torch.complex128, torch.bfloat16, torch.complex32]
+)
 @pytest.mark.parametrize("from_e", [False, True])
 def test_confluent_vandermonde(dtype, from_e):
-    p = torch.tensor([0.5, 0.5, 0.5, -0.3, 0.0, 0.0], dtype=torch.float64)
-    p = p * (1 + 0.5j) if dtype.is_complex else p
+    rows = 300
+    p = torch.tensor([0.99, 0.99, 0.99, -0.3, 0.0, 0.0], dtype=torch.float64)
+    p = p * (1 + 0.005j) if dtype.is_complex else p
+    p = p.to(dtype).to(p.dtype)  # the reference takes the poles as rounded
     e = torch.tensor([0, 1, 2, 0, 0, 1])
     start = e if from_e else None
-    V = confluent_vandermonde(p, e, 6, start=start)
-    expected = torch.zeros(6, 6, dtype=dtype)
+    V = confluent_vandermonde(p.to(dtype), e, rows, start=start)
+    expected = torch.zeros(rows, 6, dtype=p.dtype)
     for c, (pc, ec) in enumerate(zip(p.tolist(), e.tolist())):
-        for i in range(6):
+        for i in range(rows):
             n = i + (ec if from_e else 0)
             if n >= ec:
                 expected[i, c] = comb(n, ec) * pc ** (n - ec)
+    assert V.dtype == dtype
+    low = dtype in (torch.bfloat16, torch.complex32)
+    tol = dict(rtol=1e-2, atol=1e-2) if low else {}
+    torch.testing.assert_close(V.to(p.dtype), expected, **tol)
+
+
+@pytest.mark.parametrize("batched_e", [False, True])
+def test_confluent_vandermonde_batched(batched_e):
+    poles = torch.tensor([[0.5, 0.5, -0.3], [0.2, 0.9, 0.9]], dtype=torch.float64)
+    e = torch.tensor([[0, 1, 0], [0, 0, 1]]) if batched_e else torch.tensor([0, 1, 0])
+    V = confluent_vandermonde(poles, e, 4, start=e)
+    expected = torch.stack(
+        [confluent_vandermonde(p, ei, 4, start=ei) for p, ei in zip(poles, e.expand_as(poles))]
+    )
     torch.testing.assert_close(V, expected)

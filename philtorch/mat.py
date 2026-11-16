@@ -6,6 +6,8 @@ import torch
 from sympy.ntheory import factorint
 from torch import Tensor
 
+from .utils import _accumulation_dtype, _check_integer
+
 
 def find_eigenvectors(A: Tensor, eigenvalues: Tensor) -> Tensor:
     r"""Compute unit-norm eigenvectors of square matrices from eigenvalues.
@@ -155,51 +157,78 @@ def vandermonde(poles: Tensor) -> Tensor:
     return torch.vander(poles).mT
 
 
-def confluent_vandermonde(p: Tensor, e: Tensor, rows: int, start: Tensor | None = None) -> Tensor:
+def confluent_vandermonde(
+    poles: Tensor, e: Tensor, rows: int, start: Tensor | None = None
+) -> Tensor:
     r"""Return the confluent Vandermonde matrix of poles and exponents.
 
-    Column :math:`c` holds
+    For :math:`M` poles :math:`p_c`, row :math:`i = 0, \dots,
+    \text{rows} - 1` and column :math:`c = 0, \dots, M - 1` hold
 
     .. math::
         V_{ic} = \binom{n}{e_c} p_c^{\,n - e_c}, \quad n = i + s_c,
 
-    zero where :math:`n < e_c`: the impulse response of
-    :math:`z^{-e_c} / (1 - p_c z^{-1})^{e_c + 1}` from sample :math:`s_c` on.
-    With every :math:`e_c = s_c = 0`, it is the Vandermonde matrix of
-    ascending powers.
+    and entries with :math:`n < e_c` are zero. Column :math:`c` is the impulse
+    response of :math:`z^{-e_c} / (1 - p_c z^{-1})^{e_c + 1}` from sample
+    :math:`s_c` on. With every :math:`e_c = s_c = 0`, it is the Vandermonde
+    matrix :math:`V_{ic} = p_c^i`.
 
     Args:
-        p (Tensor): the poles, real or complex, of shape :math:`(*, M)`.
-        e (Tensor): the exponents :math:`e_c \ge 0`, integers, of shape
-            :math:`(M)` or :math:`(*, M)`.
+        poles (Tensor): the poles :math:`p_c`, real or complex, of shape
+            :math:`(*, M)`.
+        e (Tensor): the exponents :math:`e_c \ge 0`, an integer tensor of
+            shape :math:`(M)` or the shape of :attr:`poles`.
         rows (int): the number of rows.
         start (Tensor, optional): the first sample :math:`s_c` of each
-            column, integers with :math:`0 \le s_c \le e_c`, of shape
-            :math:`(M)` or :math:`(*, M)`. Default: ``None``, all 0.
+            column, an integer tensor with :math:`s_c \le e_c`, of shape
+            :math:`(M)` or the shape of :attr:`poles`. Default: ``None``,
+            all 0.
 
     Returns:
         Tensor: the matrix, of shape :math:`(*, \text{rows}, M)`, with the
-        dtype and device of :attr:`p`.
+        dtype and device of :attr:`poles`.
+
+    Raises:
+        ValueError: if :attr:`e` or :attr:`start` is not an integer tensor,
+            is not on the device of :attr:`poles`, or has neither shape
+            :math:`(M)` nor that of :attr:`poles`, or
+            if any :math:`s_c > e_c`.
 
     Example::
 
         >>> from philtorch.mat import confluent_vandermonde
-        >>> # a double pole at 0.5: n 0.5^(n - 1) beside 0.5^n
-        >>> p = torch.tensor([0.5, 0.5])
-        >>> confluent_vandermonde(p, torch.tensor([0, 1]), 4)
+        >>> # a double pole at 0.5: 0.5^n beside n 0.5^(n - 1)
+        >>> poles = torch.tensor([0.5, 0.5])
+        >>> confluent_vandermonde(poles, torch.tensor([0, 1]), 4)
         tensor([[1.0000, 0.0000],
                 [0.5000, 1.0000],
                 [0.2500, 1.0000],
                 [0.1250, 0.7500]])
     """
+    for name, t in (("e", e), ("start", start)):
+        if t is None:
+            continue
+        _check_integer(name, t)
+        if t.device != poles.device:
+            raise ValueError(f"{name} must be on poles's device, got {t.device}.")
+        if t.shape not in (poles.shape[-1:], poles.shape):
+            raise ValueError(
+                f"{name} must be of shape {tuple(poles.shape[-1:])} or {tuple(poles.shape)}, "
+                f"got {tuple(t.shape)}."
+            )
+    if start is not None and bool((start > e).any()):
+        raise ValueError("start must not exceed e.")
+    # float16 and bfloat16 accumulate in float32, complex32 in complex64
+    acc = torch.complex64 if poles.dtype == torch.complex32 else _accumulation_dtype(poles.dtype)
+    p = poles.to(acc)
     # t = n - e runs from start - e <= 0; the ratio of row t to row t - 1 is
     # p (t + e) / t from t = 1 on, and 1 before, then t < 0 is masked out
     shift = -e if start is None else start - e
-    n = torch.arange(rows, dtype=p.dtype.to_real(), device=p.device)
+    n = torch.arange(rows, dtype=acc.to_real(), device=p.device)
     t = n.unsqueeze(-1) + shift.unsqueeze(-2)
     ratio = p.unsqueeze(-2) * ((t + e.unsqueeze(-2)) / t.clamp(min=1))
     ratio = torch.where(t >= 1, ratio, 1)
-    return torch.cumprod(ratio, dim=-2) * (t >= 0)
+    return (torch.cumprod(ratio, dim=-2) * (t >= 0)).to(poles.dtype)
 
 
 def matrix_power_accumulate(A: Tensor, n: int) -> Tensor:
