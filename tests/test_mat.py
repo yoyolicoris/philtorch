@@ -52,3 +52,11 @@ def test_confluent_vandermonde_batched(batched_e):
         [confluent_vandermonde(p, ei) for p, ei in zip(poles, e.expand_as(poles))]
     )
     torch.testing.assert_close(V, expected)
+
+
+def test_confluent_vandermonde_unsigned_orders():
+    # orders of an unsigned dtype once wrapped when negated
+    poles = torch.tensor([0.5, 0.5, -0.3], dtype=torch.float64)
+    e = torch.tensor([0, 1, 0])
+    expected = confluent_vandermonde(poles, e)
+    torch.testing.assert_close(confluent_vandermonde(poles, e.to(torch.uint8)), expected)

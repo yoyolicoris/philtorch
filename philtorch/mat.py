@@ -161,30 +161,31 @@ def vandermonde(poles: Tensor) -> Tensor:
 def confluent_vandermonde(poles: Tensor, e: Tensor) -> Tensor:
     r"""Return the confluent Vandermonde matrix of descending powers of poles.
 
-    For :math:`M` poles :math:`p_k` with orders :math:`e_k`, row
-    :math:`i = 0, \dots, M - 1` and column :math:`k = 0, \dots, M - 1` hold
+    For :math:`M` poles :math:`p_i` with orders :math:`e_i`,
+    :math:`i = 0, \dots, M - 1`, column :math:`i` holds in row
+    :math:`M - 1 - n`, for :math:`n = 0, \dots, M - 1`,
 
     .. math::
-        V_{ik} = \binom{n}{e_k} p_k^{\,n - e_k}, \quad n = M - 1 - i,
+        V_{M - 1 - n, i} = \binom{n}{e_i} p_i^{\,n - e_i},
 
-    and entries with :math:`n < e_k` are zero. Column :math:`k` is
-    :math:`\frac{1}{e_k!} \frac{d^{e_k}}{dx^{e_k}} (x^{M-1}, \dots, x, 1)`
-    at :math:`x = p_k`. A column of order 0 is the column of
+    which is zero where :math:`n < e_i`. Column :math:`i` is
+    :math:`\frac{1}{e_i!} \frac{d^{e_i}}{dx^{e_i}} (x^{M-1}, \dots, x, 1)`
+    at :math:`x = p_i`. A column of order 0 is the column of
     :func:`vandermonde`, so with every order 0, :math:`V` is
-    :func:`vandermonde` of the poles.
+    :func:`vandermonde` of each row of poles.
 
-    List a pole of multiplicity :math:`m` in :math:`m` adjacent columns, with
-    the orders :math:`0, 1, \dots, m - 1`. Then :math:`C V = V J`, where
+    Where each pole of multiplicity :math:`m` is listed in :math:`m` adjacent
+    columns, in the orders :math:`0, 1, \dots, m - 1`, :math:`C V = V J`:
     :math:`C` is the :func:`companion` matrix of the :math:`a` with
-    :math:`1 + \sum_{k=1}^{M} a_k z^{-k} = \prod_{k=0}^{M-1} (1 - p_k z^{-1})`,
+    :math:`1 + \sum_{j=1}^{M} a_j z^{-j} = \prod_{i=0}^{M-1} (1 - p_i z^{-1})`,
     whose eigenvalues are the poles, and :math:`J` is the Jordan form in the
-    columns' order: :math:`J_{kk} = p_k`, :math:`J_{k-1, k} = 1` where
-    :math:`e_k \ge 1`, and zero elsewhere.
+    columns' order: :math:`J_{ii} = p_i`, :math:`J_{i-1, i} = 1` where
+    :math:`e_i \ge 1`, and zero elsewhere.
 
     Args:
-        poles (Tensor): the poles :math:`p_k`, a floating or complex tensor
+        poles (Tensor): the poles :math:`p_i`, a floating or complex tensor
             of shape :math:`(*, M)`.
-        e (Tensor): the orders :math:`e_k \ge 0`, an integer tensor of shape
+        e (Tensor): the orders :math:`e_i \ge 0`, an integer tensor of shape
             :math:`(M)` or the shape of :attr:`poles`.
 
     Returns:
