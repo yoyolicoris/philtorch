@@ -1,6 +1,6 @@
 // The Metal kernels of the scalar recurrence, scalar_recur_mps.mm's: setup.py
 // embeds this file in the extension, which compiles it after
-// mps_common.metal on first use.
+// mps_common.metal on first use, with THREADS and STEPS_PER_THREAD defined.
 //
 // h[b, t] = a h[b, t - 1] + x[b, t], h[b, -1] = zi[b], with a one coefficient
 // per step (time-varying, lpv) or per sequence (time-invariant, lti), as a
@@ -14,10 +14,9 @@
 
 // Every kernel runs THREADS threads per threadgroup, which each declares as
 // its maximum so that the compiler guarantees it, in SIMD groups.
-constant constexpr uint THREADS = 256;
 constant constexpr uint SIMD_GROUPS = THREADS / SIMD_WIDTH;
 // Consecutive steps per thread, read and written as one vector.
-constant constexpr uint K = 4;
+constant constexpr uint K = STEPS_PER_THREAD;
 constant constexpr uint TILE = THREADS * K;
 // Tile totals per thread in the scan of the tiles.
 constant constexpr uint TOTALS = 2;

@@ -2,8 +2,8 @@
 
 #include "stable_support.h"
 
-// The dtype and device checks of the recurrence ops (CPU and CUDA): A, zi and
-// x of one dtype, on x's device.
+// The dtype and device checks of the recurrence ops: A, zi and x of one dtype,
+// on x's device.
 inline void check_types_devices(const torch::stable::Tensor &A,
                                 const torch::stable::Tensor &zi,
                                 const torch::stable::Tensor &x)
@@ -31,9 +31,9 @@ inline bool lti_recur_per_item(const torch::stable::Tensor &a,
     return per_item;
 }
 
-// The checks of scan: impulse and decay (B, T) and init (B,), in torchlpc's
-// dtypes; the recurrence kernels it runs also take integers and half precision.
-inline void check_scan_inputs(const torch::stable::Tensor &impulse,
+// The shape checks of scan (all its kernels): impulse and decay (B, T) and
+// init (B,).
+inline void check_scan_shapes(const torch::stable::Tensor &impulse,
                               const torch::stable::Tensor &decay,
                               const torch::stable::Tensor &init)
 {
@@ -42,6 +42,15 @@ inline void check_scan_inputs(const torch::stable::Tensor &impulse,
                         decay.size(1) == impulse.size(1) &&
                         init.dim() == 1 && init.size(0) == impulse.size(0),
                     "impulse and decay must be (B, T) and init (B,)");
+}
+
+// The checks of scan on CPU and CUDA: its shapes, in torchlpc's dtypes; the
+// recurrence kernels it runs also take integers and half precision.
+inline void check_scan_inputs(const torch::stable::Tensor &impulse,
+                              const torch::stable::Tensor &decay,
+                              const torch::stable::Tensor &init)
+{
+    check_scan_shapes(impulse, decay, init);
     using S = torch::headeronly::ScalarType;
     const auto type = impulse.scalar_type();
     STD_TORCH_CHECK(type == S::Float || type == S::Double ||
@@ -56,7 +65,7 @@ inline void check_order(const torch::stable::Tensor &x, int64_t M)
     STD_TORCH_CHECK(x.dim() == 3 && x.size(2) == M, "x must be of shape (B, T, ", M, ")");
 }
 
-// The shape checks of recurN and lti_recurN (the CPU and CUDA kernels): A is
+// The shape checks of recurN and lti_recurN (all their kernels): A is
 // (M, M) or (B, M, M), or when varying (T, M, M) or (B, T, M, M).
 inline void check_recurN_shapes(const torch::stable::Tensor &A,
                                 const torch::stable::Tensor &zi,

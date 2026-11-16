@@ -19,7 +19,7 @@ One three-pass design serves every input: reduce each tile, scan the tile totals
 | --- | --- |
 | [`ops.cpp`](ops.cpp) | Creates the `philtorch._C` module and defines the dispatcher schemas of the recurrence ops, `philtorch::lti_recur`, `philtorch::scan` and `philtorch::lpc` among them. |
 | [`host_recur.cpp`](host_recur.cpp) | CPU kernels of the recurrence ops, `philtorch::scan` included, split over time when a batch has fewer sequences than threads, long enough for the split to pay. |
-| [`recur_checks.h`](recur_checks.h) | The input checks the CPU and CUDA kernels of the recurrence ops share, and those of `lpc`. |
+| [`recur_checks.h`](recur_checks.h) | The input checks the CPU, CUDA and MPS kernels of the recurrence ops share, and those of `lpc`. |
 | [`stable_support.h`](stable_support.h) | What every source needs beyond torch's stable C++ API, which they use alone (`torch/csrc/stable`, `torch/headeronly`): the target version, `build_support.MIN_TORCH`, `opmath_type`, `ceil_div`, dtype predicates, `current_cuda_stream`, and, for CUDA sources, the `USE_CUDA` definition. |
 | [`host_dot.h`](host_dot.h) | The dot product of the CPU kernels of the recurrence ops and of `lpc`, vectorized for float and double from size 8. |
 | [`torchlpc_shim.cpp`](torchlpc_shim.cpp) | The CPU kernel of `lpc`, one sequence per thread. |
@@ -169,7 +169,7 @@ The dominant traffic is reading `x` (and per-step coefficients) twice and writin
 | SIMD groups per tile | 8 |
 | Metal dispatches | 3, or 1 for sequences of one tile |
 
-The tile, threadgroup, SIMD and vector constants are coupled: `THREADS`, `K` and `TOTALS` in the Metal source, `THREADS` and `STEPS_PER_THREAD` in the host code.
+The host code sets the threads per threadgroup and the steps per thread, `THREADS` and `STEPS_PER_THREAD`, and compiles the Metal source with them defined, so the two can't disagree; the Metal source derives the tile, `THREADS * K`, and the SIMD groups from them, and sets `TOTALS` itself.
 Every kernel declares 256 threads as its maximum per threadgroup (`max_total_threads_per_threadgroup`), so the compiler guarantees that size; every Apple GPU has 32-wide SIMD groups, which the kernels assume, as the shim gives no way to query the width.
 Each kernel indexes the steps of a sequence in 32 bits, as 64-bit integer arithmetic is emulated on the GPU: per-sequence pointers are computed once per thread, and the host rejects sequences of 2^32 - 1024 steps or more.
 
