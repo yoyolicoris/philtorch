@@ -3,8 +3,11 @@
 from itertools import accumulate
 
 import torch
+import torch.nn.functional as F
 from sympy.ntheory import factorint
 from torch import Tensor
+
+from .utils import _accumulation_dtype, _check_integer
 
 
 def find_eigenvectors(A: Tensor, eigenvalues: Tensor) -> Tensor:
@@ -153,6 +156,100 @@ def vandermonde(poles: Tensor) -> Tensor:
     if poles.size(-1) == 1:
         return torch.ones_like(poles).unsqueeze(-1)
     return torch.vander(poles).mT
+
+
+def confluent_vandermonde(poles: Tensor, e: Tensor) -> Tensor:
+    r"""Return the confluent Vandermonde matrix of descending powers of poles.
+
+    For :math:`M` poles :math:`p_i` with orders :math:`e_i`,
+    :math:`i = 0, \dots, M - 1`, column :math:`i` holds in row
+    :math:`M - 1 - n`, for :math:`n = 0, \dots, M - 1`,
+
+    .. math::
+        V_{M - 1 - n, i} = \binom{n}{e_i} p_i^{\,n - e_i},
+
+    which is zero where :math:`n < e_i`. Column :math:`i` is
+    :math:`\frac{1}{e_i!} \frac{d^{e_i}}{dx^{e_i}} (x^{M-1}, \dots, x, 1)`
+    at :math:`x = p_i`. A column of order 0 is the column of
+    :func:`vandermonde`, so with every order 0, :math:`V` is
+    :func:`vandermonde` of each row of poles.
+
+    Where each pole of multiplicity :math:`m` is listed in :math:`m` adjacent
+    columns, in the orders :math:`0, 1, \dots, m - 1`, :math:`C V = V J`:
+    :math:`C` is the :func:`companion` matrix of the :math:`a` with
+    :math:`1 + \sum_{j=1}^{M} a_j z^{-j} = \prod_{i=0}^{M-1} (1 - p_i z^{-1})`,
+    whose eigenvalues are the poles, and :math:`J` is the Jordan form in the
+    columns' order: :math:`J_{ii} = p_i`, :math:`J_{i-1, i} = 1` where
+    :math:`e_i \ge 1`, and zero elsewhere.
+
+    Args:
+        poles (Tensor): the poles :math:`p_i`, a floating or complex tensor
+            of shape :math:`(*, M)`.
+        e (Tensor): the orders :math:`e_i \ge 0`, an integer tensor of shape
+            :math:`(M)` or the shape of :attr:`poles`.
+
+    Returns:
+        Tensor: the matrix, of shape :math:`(*, M, M)`, with the dtype and
+        device of :attr:`poles`.
+
+    Raises:
+        ValueError: if :attr:`poles` is 0-D or not floating or complex.
+        ValueError: if :attr:`e` is not an integer tensor, is not on the
+            device of :attr:`poles`, has neither shape :math:`(M)` nor that of
+            :attr:`poles`, or has a negative entry.
+
+    Example::
+
+        >>> from philtorch.mat import companion, confluent_vandermonde
+        >>> # a double pole at 0.5: a = [-1, 0.25], as
+        >>> # 1 - z^-1 + 0.25 z^-2 = (1 - 0.5 z^-1)^2
+        >>> poles = torch.tensor([0.5, 0.5])
+        >>> V = confluent_vandermonde(poles, torch.tensor([0, 1]))
+        >>> V
+        tensor([[0.5000, 1.0000],
+                [1.0000, 0.0000]])
+        >>> C = companion(torch.tensor([-1.0, 0.25]))
+        >>> J = torch.tensor([[0.5, 1.0], [0.0, 0.5]])
+        >>> torch.allclose(C @ V, V @ J)
+        True
+    """
+    if poles.dim() == 0:
+        raise ValueError("poles must be at least 1-D.")
+    if not (poles.is_floating_point() or poles.is_complex()):
+        raise ValueError(f"poles must be floating or complex, got {poles.dtype}.")
+    _check_integer("e", e)
+    if e.device != poles.device:
+        raise ValueError(f"e must be on poles's device, got {e.device}.")
+    if e.shape not in (poles.shape[-1:], poles.shape):
+        raise ValueError(
+            f"e must be of shape {tuple(poles.shape[-1:])} or {tuple(poles.shape)}, "
+            f"got {tuple(e.shape)}."
+        )
+    if bool((e < 0).any()):
+        raise ValueError("e must not be negative.")
+    p = poles.to(_accumulation_dtype(poles.dtype))
+    # row i of column k is row n - e_k of the matrix read from row e,
+    # n = M - 1 - i, and zero where n < e_k
+    M = poles.size(-1)
+    row = torch.arange(M - 1, -1, -1, device=p.device).unsqueeze(-1) - e.unsqueeze(-2)
+    H = _confluent_vandermonde(p, e, M)
+    V = H.gather(-2, row.clamp(min=0).expand_as(H)) * (row >= 0)
+    return V.to(poles.dtype)
+
+
+def _confluent_vandermonde(p: Tensor, e: Tensor, rows: int) -> Tensor:
+    r"""The confluent Vandermonde matrix of ascending powers from row
+    :math:`e`, of shape (*, rows, M).
+
+    Entry [i, k] is :math:`\binom{i + e_k}{e_k} p_k^i`, the impulse response
+    of :math:`1 / (1 - p_k z^{-1})^{e_k + 1}`, which ``residuez`` and
+    ``invresz`` use. A cumulative product builds it from the ratios
+    :math:`p_k (i + e_k) / i` of consecutive rows, which keeps the binomials
+    exact up to rounding, with no gamma functions.
+    """
+    n = torch.arange(1, rows, dtype=p.dtype.to_real(), device=p.device).unsqueeze(-1)
+    ratios = p.unsqueeze(-2) * ((n + e.unsqueeze(-2)) / n)
+    return torch.cumprod(F.pad(ratios, (0, 0, 1, 0), value=1), dim=-2)
 
 
 def matrix_power_accumulate(A: Tensor, n: int) -> Tensor:
