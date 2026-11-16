@@ -2,6 +2,13 @@
 
 Guidance for coding agents working in this repository. It is the one shared source of instructions: Claude Code, GitHub Copilot, Antigravity and Muse Code all read it. Keep tool-specific notes in that tool's own file, which only adds to this one: `CLAUDE.md` (Claude Code), `.github/copilot-instructions.md` and `.github/instructions/` (Copilot), `GEMINI.md` (Antigravity).
 
+Skills, the workflows an agent loads for a task, live in `.github/skills/`, the one folder every Copilot surface reads, its pull request reviewer included. `.agents/skills/` (Antigravity) and `.claude/skills/` (Claude Code) hold symbolic links to them, so that each skill has one copy. Add a skill there, with the same two links.
+
+- `philtorch-code-review`: what to check in a review and how to report it. Every review follows it.
+- `philtorch-docstring`: the workflow for writing, revising or trimming a docstring. Every docstring edit follows it.
+
+An agent that doesn't load skills reads `.github/skills/<name>/SKILL.md`.
+
 ## Before starting a task
 
 Agree on the task with the maintainer before carrying it out. Where the request leaves its details, scope or changes open, ask: don't assume the maintainer sees it the way you do, and don't settle it yourself by building on a guess. Questions are welcome; a question costs less than work done on the wrong reading. Ask in particular before:
@@ -98,7 +105,7 @@ Keep the measurements behind an issue, its benchmark or error tables and the scr
   - math in reStructuredText;
   - `Raises:` lists the errors bad input triggers; argument errors are `ValueError`s, not asserts.
 
-  The content rules cover what to leave out, the symbol table, and the check after every edit. They apply to every edit, a trim included. The workflow that applies them is `.agents/skills/philtorch-docstring/SKILL.md`: follow it for every docstring edit. Agents that load skills, such as Copilot, Antigravity and Claude Code (through `.claude/skills/`), find it on their own; any other agent reads the file.
+  The content rules cover what to leave out, the symbol table, and the check after every edit. They apply to every edit, a trim included, through the `philtorch-docstring` skill.
 - **New public functions** need an entry on their page in `docs/api/*.rst`.
 - **Third-party code:** never port GPL or LGPL code, not even into a comment: philtorch is MIT. Take values measured from such a library, or derive them anew, and cite the source; squash-merge a branch whose history held such a port.
 - **Docstring examples:** if a module's docstrings have examples, add the module to `MODULES` in `tests/test_docstrings.py`, or, for Triton code, to `CUDA_MODULES` in `tests/test_docstrings_cuda.py` (checked only on CUDA machines). Load it with `importlib.import_module` when a function of the same name shadows it, as `philtorch.align.dtw` does.

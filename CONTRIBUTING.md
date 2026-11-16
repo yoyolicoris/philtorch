@@ -71,7 +71,10 @@ Public functions follow [PyTorch's docstring conventions](https://github.com/pyt
 PyTorch's conventions fix a docstring's form. Its content follows these rules.
 
 - **What, not how.** Say what the function computes and returns: the formula, shapes, dtypes, errors, and the caveats that change the output or its accuracy. Leave out how it is computed when that changes nothing the user sees: kernels, scans, trees of products, solves, chunking.
-- **Numbers by example, not in the text.** Measured errors, timings and speed-ups go in pull requests and issue artifacts. State accuracy qualitatively in the text, as SciPy's `sosfilt` does ("designed to minimize numerical precision errors for high-order filters"). Where a numerical difference matters to a function, as the cascade's accuracy against the expanded polynomial does to `sosfilt`, show it with an example. The example compares the outputs and prints only a result that is the same on every platform, such as `torch.allclose(...)` or `bool(err_sos < err_tf)`, never the error itself.
+- **Numbers by example, not in the text.** Measured errors, timings and speed-ups go in pull requests and issue artifacts. State accuracy qualitatively in the text, as SciPy's `sosfilt` does ("designed to minimize numerical precision errors for high-order filters").
+  - Where the function is the stabler of two ways to compute something, an example may compare them, as SciPy's `sosfilt` example compares `sosfilt` with `lfilter`. Run both on a case where the difference shows, and print each one's error against a reference, or their outputs, so that the reader sees which one stays accurate.
+  - Print values that are the same on every platform.
+  - Don't show tolerances or thresholds, such as `atol` or `err < 1e-6`.
 - **Notes the user can act on.** A `Note:` states a difference from SciPy or NumPy that changes a call or its output, or the cost of an option the user chooses.
   - It doesn't state a limitation that no argument avoids.
   - It doesn't repeat Args, Returns, Raises, the main text, or a package convention.

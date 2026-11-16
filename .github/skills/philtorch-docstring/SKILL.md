@@ -5,7 +5,7 @@ description: Write, revise or trim docstrings of philtorch's public functions so
 
 # philtorch docstrings
 
-The rules are in `CONTRIBUTING.md`, "Docstrings": PyTorch's form (sections, roles, math, line length), then the content rules and the symbol table. Read them first. This skill is the workflow that applies them, for every coding agent: the file lives in `.agents/skills/`, which Copilot and Antigravity read, and `.claude/skills/philtorch-docstring` links to it for Claude Code.
+The rules are in `CONTRIBUTING.md`, "Docstrings": PyTorch's form (sections, roles, math, line length), then the content rules and the symbol table. Read them first. This skill is the workflow that applies them.
 
 ## Steps
 
@@ -25,7 +25,8 @@ The rules are in `CONTRIBUTING.md`, "Docstrings": PyTorch's form (sections, role
 ## Don't
 
 - Narrate the implementation: kernels, scans, trees, solves, chunks, launches.
-- Quote measurements in the text: errors, timings, memory figures, speed-ups. Where a numerical difference matters, show it with an example that prints a platform-stable result.
+- Quote measurements in the text: errors, timings, memory figures, speed-ups. To show that the function is the stabler of two ways, compare them in an example, as `CONTRIBUTING.md` says.
+- Show a tolerance or a threshold in an example.
 - Use `k` as a gain, except in functions that mirror SciPy's.
 - Leave a `Note:` about a limitation no argument avoids, such as a graph break.
 - Restate a package convention, or Args, Returns or the main text, in a Note.
