@@ -59,6 +59,26 @@ def test_pfefilt_complex_filter_and_input():
     torch.testing.assert_close(y, torch.from_numpy(_expected(sos, x.real.copy())))
 
 
+def test_pfefilt_float16_with_a_conjugate_pair():
+    # A real float16 filter whose complex section runs in complex32.
+    np.random.seed(2)
+    x = np.random.randn(2, 500)
+    sos = PAIR[None]
+    r, p, g = sos2pfe(torch.from_numpy(sos))[:3]
+    x16 = torch.from_numpy(x).half().requires_grad_()
+    y = pfefilt(r.to(torch.complex32), p.to(torch.complex32), g.half(), x16)
+    assert y.dtype == torch.float16
+    expected = torch.from_numpy(_expected(sos, x))
+    assert (y.double() - expected).abs().max() / expected.abs().max() < 2e-3
+    y.sum().backward()
+    x64 = x16.detach().double().requires_grad_()
+    pfefilt(
+        r.to(torch.complex32).cdouble(), p.to(torch.complex32).cdouble(), g.half().double(), x64
+    ).sum().backward()
+    assert x16.grad.dtype == torch.float16
+    assert (x16.grad.double() - x64.grad).abs().max() / x64.grad.abs().max() < 2e-3
+
+
 def test_pfefilt_batched_multiplicities():
     # one cascade per signal, with different multiplicities and numbers of real poles
     sos = np.stack(

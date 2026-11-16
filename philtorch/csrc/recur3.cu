@@ -10,7 +10,7 @@ struct recur3_dispatch
         using S = torch::headeronly::ScalarType;
         THO_DISPATCH_V2(
             type, "recur3", AT_WRAP([&] { f(scalar_t{}); }),
-            S::Float, S::Half, S::BFloat16, S::ComplexFloat);
+            S::Float, S::Half, S::BFloat16, S::ComplexFloat, S::ComplexHalf);
     }
 };
 

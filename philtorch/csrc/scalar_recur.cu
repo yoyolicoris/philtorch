@@ -101,7 +101,8 @@ Tensor scalar_recur_cuda_launch(const Tensor &decays, int64_t stride_b,
                       x_contiguous.const_data_ptr<scalar_t>(),
                       output.mutable_data_ptr<scalar_t>(),
                       static_cast<int>(n_steps), n_batches * n_steps, x); }),
-        AT_FLOATING_TYPES, AT_COMPLEX_TYPES, S::Long, S::Half, S::BFloat16);
+        AT_FLOATING_TYPES, AT_COMPLEX_TYPES, S::Long, S::Half, S::BFloat16,
+        S::ComplexHalf);
 
     return output;
 }

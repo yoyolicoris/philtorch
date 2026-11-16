@@ -1,12 +1,13 @@
 // The Metal kernels of recur_mps.mm, compiled after mps_common.metal once
 // per state size and dtype, with STATES (M), SCALAR (float, half, bfloat, or
-// float2 for complex64), THREADS (per threadgroup) and CHUNK (steps per
-// chunk) defined, so that loops over the states unroll. README.md describes
-// the algorithm: recur_reduce reduces each chunk but the last to its map
-// h -> P h + o, the host scans the maps as the same recurrence, and
-// recur_run runs each chunk from the state before it. A chunk's vector of
-// states runs in a block of 8 by 8 x 8 matrix products (run_block) or on its
-// own lanes (run_vector), and a map's P in blocks of 8 columns (map_block).
+// float2 or half2 for complex64 or complex32), THREADS (per threadgroup) and
+// CHUNK (steps per chunk) defined, so that loops over the states unroll.
+// README.md describes the algorithm: recur_reduce reduces each chunk but the
+// last to its map h -> P h + o, the host scans the maps as the same
+// recurrence, and recur_run runs each chunk from the state before it. A
+// chunk's vector of states runs in a block of 8 by 8 x 8 matrix products
+// (run_block) or on its own lanes (run_vector), and a map's P in blocks of 8
+// columns (map_block).
 
 using T = SCALAR;
 using A = Acc<T>::type;
@@ -245,14 +246,14 @@ template <typename P> inline void store_entry(device P *p, float re, float)
 {
     *p = P(re);
 }
-inline void store_entry(device float2 *p, float re, float im)
+template <typename R> inline void store_entry(device vec<R, 2> *p, float re, float im)
 {
-    *p = float2(re, im);
+    *p = vec<R, 2>(re, im);
 }
 
 // X <- A X for a SIMD group's block X, in tiles Xr and Xi, its real and
-// imaginary parts, A the step's matrix at m (see load_tile); complex64 as
-// four real products.
+// imaginary parts, A the step's matrix at m (see load_tile); complex64 and
+// complex32 as four real products.
 inline void multiply(const device T *m, thread simdgroup_float8x8 *Xr,
                      thread simdgroup_float8x8 *Xi, uint2 e, uint packed)
 {

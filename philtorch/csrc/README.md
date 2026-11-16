@@ -10,7 +10,7 @@ h[b, t] = a * (t == 0 ? zi[b] : h[b, t - 1]) + x[b, t]
 ```
 
 with `a` one coefficient per step (`philtorch::scan`, time-varying) or per sequence, shared or not (`philtorch::lti_recur`, time-invariant), as an associative affine scan.
-It takes float32, float16, bfloat16 and complex64, accumulating float16 and bfloat16 in float32.
+It takes float32, float16, bfloat16, complex64 and complex32, accumulating float16 and bfloat16 in float32 and complex32 in complex64.
 One three-pass design serves every input: reduce each tile, scan the tile totals of each sequence, and replay each tile from the state before it.
 
 ## Source map
@@ -55,7 +55,7 @@ compose(left, right)
 
 Composition is associative, so the maps can be evaluated with a parallel prefix scan.
 It is not commutative; changing the operand order changes the recurrence.
-For complex64, `m` and `v` are complex numbers (`float2`), multiplied as such.
+For complex64 and complex32, `m` and `v` are complex numbers (`float2`), multiplied as such.
 
 Step `t` of sequence `b` is the map
 
@@ -137,7 +137,7 @@ Time-varying coefficients are loaded the same way; a time-invariant one is read 
 
 ### Stage 2: scan tile totals
 
-`scan`, one kernel per accumulation type (float for float32, float16 and bfloat16, and float2 for complex64), runs one 256-thread threadgroup per sequence, which scans its tile totals two per thread, 512 at a time, carrying the map so far between chunks of 512.
+`scan`, one kernel per accumulation type (float for float32, float16 and bfloat16, and float2 for complex64 and complex32), runs one 256-thread threadgroup per sequence, which scans its tile totals two per thread, 512 at a time, carrying the map so far between chunks of 512.
 It writes `v`, the state, of each inclusive prefix to `states`: the state at the end of each tile.
 
 ### Stage 3: replay tiles
@@ -157,7 +157,7 @@ Replaying the scan costs SIMD arithmetic, but rereads the input instead of writi
 | `states` | `(B, n_tiles)` | The state at the end of each tile. |
 | `output` | `(B, T)` | Recurrence result. |
 
-Scratch, in float32 (two floats per value for complex64), is `3 * B * n_tiles` values, and none for sequences of one tile.
+Scratch, in float32 (two floats per value for complex64 and complex32), is `3 * B * n_tiles` values, and none for sequences of one tile.
 The dominant traffic is reading `x` (and per-step coefficients) twice and writing `output` once.
 
 | Property | Value |
@@ -257,7 +257,7 @@ They run 301 and 2049 steps, one tile and three, each ending mid-vector, and `T 
 h[b, t] = A[b, t] h[b, t - 1] + x[b, t],   h[b, -1] = zi[b],
 ```
 
-for M up to 128 (64 for complex64), the CUDA kernels' limit, in the same four dtypes as the scalar kernels, accumulating in float32 (complex64 for complex64).
+for M up to 128 (64 for complex), the CUDA kernels' limit, in the same dtypes as the scalar kernels, accumulating in float32 (complex64 for complex64 and complex32).
 `_recur.py` sends M = 1 to the scalar kernels, which are faster, and M from 2 on here.
 
 ### Algorithm
@@ -286,7 +286,7 @@ Lane `j` holds state `j` and reads column `j` of each step's matrix, so that a v
 A step forms each lane's share of every row, the products of its columns by its states, and a butterfly of `log2(LANES)` rounds of `simd_shuffle_xor` sums the shares over the lanes, a block of `LANES` rows at a time: each round, a lane keeps the half of the rows its lane's bit selects and adds its partner's other half, until it holds its own row's sum.
 The first round is taken as the shares are formed, so that a lane holds half a block's at most, and every shuffle exchanges lanes by a mask shared by all lanes.
 
-**Maps.** A map's `P` runs 8 columns at a time on a SIMD group, as the product of the chunk's matrices by those columns of the identity: the `M x 8` block `X <- A[t] X`, in tiles of 8 x 8, by `simdgroup_multiply_accumulate`, the Metal counterpart of a tensor-core product, in float32, complex64 as four real products; maps of up to 4 states share a tile, 8 / M of them.
+**Maps.** A map's `P` runs 8 columns at a time on a SIMD group, as the product of the chunk's matrices by those columns of the identity: the `M x 8` block `X <- A[t] X`, in tiles of 8 x 8, by `simdgroup_multiply_accumulate`, the Metal counterpart of a tensor-core product, in float32, complex as four real products; maps of up to 4 states share a tile, 8 / M of them.
 The tiles of `A[t]` are read entry by entry into `thread_elements()`, converted to the accumulation type.
 A block's columns evolve apart from the others', so it needs only its own `2 ceil(M / 8)` floats a lane, in registers whatever `M`.
 

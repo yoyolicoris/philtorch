@@ -21,14 +21,13 @@ The forward pass runs the first kernel of ``_KERNELS`` that takes the input:
 * CUDA: CUB scans for M <= 3: ``lti_recur`` and ``scan`` for M = 1;
   ``lti_recur2``, and ``recur2`` for time-varying A but complex128, for
   M = 2; for M = 3, ``recur3`` when time-varying in float32, float16,
-  bfloat16 and complex64, and ``lti_recur3`` when time-invariant in float32,
-  float16 and bfloat16. Those of
-  M = 2 and 3 apply only while B * (T + 1) fits in an int. ``lti_recurN``
-  and ``recurN`` take the rest, and the inputs past that size, for M up to
-  128 (64 complex);
-* MPS: the Metal kernels, in float32, float16, bfloat16 and complex64:
-  ``lti_recur`` and ``scan`` for M = 1, ``lti_recurN`` and ``recurN`` for M
-  up to 128 (64 complex).
+  bfloat16, complex64 and complex32, and ``lti_recur3`` when time-invariant
+  in float32, float16 and bfloat16. Those of M = 2 and 3 apply only while
+  B * (T + 1) fits in an int. ``lti_recurN`` and ``recurN`` take the rest,
+  and the inputs past that size, for M up to 128 (64 complex);
+* MPS: the Metal kernels, in float32, float16, bfloat16, complex64 and
+  complex32: ``lti_recur`` and ``scan`` for M = 1, ``lti_recurN`` and
+  ``recurN`` for M up to 128 (64 complex).
 
 Every kernel but ``scan``, ``recur3``, ``lti_recur3`` and the Metal
 kernels takes int64 too, so integer recurrences such as the Fibonacci
@@ -64,6 +63,7 @@ _NATIVE_DTYPES = (
     torch.bfloat16,
     torch.float32,
     torch.float64,
+    torch.complex32,
     torch.complex64,
     torch.complex128,
     torch.int64,
@@ -79,7 +79,7 @@ def _fits_states(x: Tensor) -> bool:
 
 
 # The dtypes the Metal kernels take.
-_MPS_DTYPES = (torch.float32, torch.float16, torch.bfloat16, torch.complex64)
+_MPS_DTYPES = (torch.float32, torch.float16, torch.bfloat16, torch.complex64, torch.complex32)
 
 
 def _mps_takes(x: Tensor) -> bool:
@@ -178,7 +178,13 @@ def _recur2(A: Tensor, zi: Tensor, x: Tensor) -> Tensor:
 
 
 # The dtypes recur3 is compiled for; float64 and int64 are left to recurN.
-_RECUR3_DTYPES = (torch.float32, torch.float16, torch.bfloat16, torch.complex64)
+_RECUR3_DTYPES = (
+    torch.float32,
+    torch.float16,
+    torch.bfloat16,
+    torch.complex64,
+    torch.complex32,
+)
 
 
 def _recur3_applies(A: Tensor, x: Tensor) -> bool:
@@ -237,7 +243,7 @@ def _forward(A: Tensor, zi: Tensor, x: Tensor) -> Tensor:
             if x.dtype not in _NATIVE_DTYPES:
                 raise NotImplementedError(
                     "the native kernels take float16, bfloat16, float32, float64, "
-                    f"complex64, complex128 and int64, got {x.dtype}"
+                    f"complex32, complex64, complex128 and int64, got {x.dtype}"
                 )
             return run(A, zi, x)
     kind = "time-invariant" if _time_invariant(A) else "time-varying"
@@ -250,7 +256,7 @@ def _forward(A: Tensor, zi: Tensor, x: Tensor) -> Tensor:
     elif x.device.type == "mps":  # pragma: no cover - MPS-only
         reason = (
             f"; the Metal kernels take M up to {_MAX_STATES} ({_MAX_STATES // 2} "
-            "complex) in float32, float16, bfloat16 and complex64"
+            "complex) in float32, float16, bfloat16, complex64 and complex32"
         )
     raise NotImplementedError(
         f"no recurrence kernel for {kind} A with M = {x.size(-1)} in {x.dtype} "
@@ -326,15 +332,29 @@ def _gradients(run, A, zi, h, grad, needs_A, needs_zi):
     A_H = A.mH
     if Ta > 1:
         A_H = A_H.index_select(1, torch.arange(Ta - 1, 0, -1, device=A.device))
-    lam = torch.cat([run(A_H, grad[:, -1], grad[:, :-1].flip(1)).flip(1), grad[:, -1:]], 1)
+    # complex32 has no matmul, nor, on CPU, a sum or a flip of an innermost
+    # dimension: those ops run in complex64, in which the kernels accumulate
+    # it, and the adjoint recurrence in complex32. Other dtypes aren't cast.
+    low = grad.dtype == torch.complex32
+
+    def wide(t):
+        return t.to(torch.complex64) if low else t
+
+    def narrow(t):
+        return t.to(torch.complex32) if low else t
+
+    def flip(t):
+        return narrow(wide(t).flip(1))
+
+    lam = torch.cat([flip(run(A_H, grad[:, -1], flip(grad[:, :-1]))), grad[:, -1:]], 1)
     grad_A = grad_zi = None
     if needs_A:
-        grad_A = _sum_outer(lam, _previous(zi.conj(), h.conj()), Ba, Ta)
+        grad_A = narrow(_sum_outer(wide(lam), wide(_previous(zi.conj(), h.conj())), Ba, Ta))
     if needs_zi:
         # A[0]^H lam[0], summed elementwise: as a batched matmul of small
         # matrices, PyTorch routes it through a Triton kernel whose launch
         # costs more than the product.
-        grad_zi = (A[:, 0].conj() * lam[:, 0].unsqueeze(-1)).sum(-2)
+        grad_zi = narrow((wide(A[:, 0].conj()) * wide(lam[:, 0]).unsqueeze(-1)).sum(-2))
     return grad_A, grad_zi, lam
 
 
@@ -397,10 +417,15 @@ class Recurrence(torch.autograd.Function):
         tangent = dx
         if dA is not None:
             h_prev = _previous(zi, h)
+            low = h.dtype == torch.complex32  # no matmul on CPU: run it in complex64
+            if low:
+                h_prev, dA = h_prev.to(torch.complex64), dA.to(torch.complex64)
             if dA.size(1) == 1:
                 term = h_prev @ dA[:, 0].mT
             else:
                 term = (dA @ h_prev.unsqueeze(-1)).squeeze(-1)
+            if low:
+                term = term.to(torch.complex32)
             tangent = term if tangent is None else tangent + term
         if tangent is None:
             tangent = torch.zeros_like(h)

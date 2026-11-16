@@ -181,7 +181,7 @@ void check_inputs(const Tensor &A, const Tensor &zi, const Tensor &x, bool varyi
     philtorch::mps::metal_type(x.scalar_type(), OP);
     check_recurN_shapes(A, zi, x, varying);
     const int64_t most =
-        x.scalar_type() == ScalarType::ComplexFloat ? MAX_STATES / 2 : MAX_STATES;
+        philtorch::mps::is_complex(x.scalar_type()) ? MAX_STATES / 2 : MAX_STATES;
     STD_TORCH_CHECK(x.size(2) <= most, "the MPS recurrence takes M up to ",
                     MAX_STATES, " (", MAX_STATES / 2, " complex), got ",
                     x.size(2));

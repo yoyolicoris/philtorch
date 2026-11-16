@@ -38,9 +38,10 @@
 // registers; a time-invariant one keeps A (or P) in registers and reads x one
 // step ahead.
 //
-// A thread's steps compute in Acc: float for Half and BFloat16, the type
-// itself otherwise; int64 wraps around, as integer arithmetic does, and a
-// complex number is a pair of reals, four real products per product. A map,
+// A thread's steps compute in Acc: float for Half and BFloat16, complex<float>
+// for complex<Half>, the type itself otherwise; int64 wraps around, as integer
+// arithmetic does, and a complex number is a pair of reals, four real products
+// per product. A map,
 // offset or state is published with stores, a fence, a barrier, and one
 // release store of the flag by one thread; a look-back is one acquire load by
 // one thread, a barrier, then the reads.
@@ -97,7 +98,10 @@ namespace philtorch::recur_n
     __device__ __forceinline__ auto to_acc(T v)
     {
         if constexpr (is_c10_complex<T>)
-            return cx<typename T::value_type>{v.real(), v.imag()};
+        {
+            using R = decltype(acc_t<T>::re);
+            return acc_t<T>{static_cast<R>(v.real()), static_cast<R>(v.imag())};
+        }
         else
             return static_cast<philtorch::opmath_type<T>>(v);
     }

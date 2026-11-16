@@ -30,7 +30,7 @@
 namespace philtorch
 {
     // The type kernels accumulate in, as at::opmath_type: float for Half and
-    // BFloat16, the type itself otherwise.
+    // BFloat16, complex<float> for complex<Half>, the type itself otherwise.
     template <typename T>
     struct opmath
     {
@@ -45,6 +45,11 @@ namespace philtorch
     struct opmath<c10::BFloat16>
     {
         using type = float;
+    };
+    template <>
+    struct opmath<c10::complex<c10::Half>>
+    {
+        using type = c10::complex<float>;
     };
     template <typename T>
     using opmath_type = typename opmath<T>::type;

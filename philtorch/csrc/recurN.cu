@@ -156,7 +156,8 @@ namespace
         using S = torch::headeronly::ScalarType;
         THO_DISPATCH_V2(
             x.scalar_type(), "recurN", AT_WRAP([&] { go(scalar_t{}); }),
-            AT_FLOATING_TYPES, AT_COMPLEX_TYPES, S::Long, S::Half, S::BFloat16);
+            AT_FLOATING_TYPES, AT_COMPLEX_TYPES, S::Long, S::Half, S::BFloat16,
+            S::ComplexHalf);
         return out;
     }
 } // namespace
