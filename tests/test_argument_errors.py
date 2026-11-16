@@ -1089,37 +1089,37 @@ _MAT_CASES = [
         "must have square matrices",
         id="cumdot-A-not-square",
     ),
-    # confluent_vandermonde(poles, e): poles (*, M); e integers >= 0 of shape
-    # (M) or poles's
+    # confluent_vandermonde(poles, power): poles (*, M); power integers >= 1 of
+    # shape (M) or poles's
     pytest.param(
-        lambda: confluent_vandermonde(_zeros(()), torch.zeros((), dtype=torch.long)),
+        lambda: confluent_vandermonde(_zeros(()), torch.ones((), dtype=torch.long)),
         "poles must be at least 1-D",
         id="confluent-poles-0d",
     ),
     pytest.param(
-        lambda: confluent_vandermonde(torch.tensor([1, 2]), torch.zeros(2, dtype=torch.long)),
+        lambda: confluent_vandermonde(torch.tensor([1, 2]), torch.ones(2, dtype=torch.long)),
         "poles must be floating or complex",
         id="confluent-poles-dtype",
     ),
     pytest.param(
-        lambda: confluent_vandermonde(_zeros(2), _zeros(2)),
-        "e must be an integer tensor",
-        id="confluent-e-dtype",
+        lambda: confluent_vandermonde(_zeros(2), _ones(2)),
+        "power must be an integer tensor",
+        id="confluent-power-dtype",
     ),
     pytest.param(
-        lambda: confluent_vandermonde(_zeros(2), torch.zeros(2, dtype=torch.long, device="meta")),
-        "e must be on poles's device",
-        id="confluent-e-device",
+        lambda: confluent_vandermonde(_zeros(2), torch.ones(2, dtype=torch.long, device="meta")),
+        "power must be on poles's device",
+        id="confluent-power-device",
     ),
     pytest.param(
-        lambda: confluent_vandermonde(_zeros(3, 2), torch.zeros(1, 2, dtype=torch.long)),
-        r"e must be of shape \(2,\) or \(3, 2\)",
-        id="confluent-e-shape",
+        lambda: confluent_vandermonde(_zeros(3, 2), torch.ones(1, 2, dtype=torch.long)),
+        r"power must be of shape \(2,\) or \(3, 2\)",
+        id="confluent-power-shape",
     ),
     pytest.param(
-        lambda: confluent_vandermonde(_zeros(2), torch.tensor([0, -1])),
-        "e must not be negative",
-        id="confluent-e-negative",
+        lambda: confluent_vandermonde(_zeros(2), torch.tensor([1, 0])),
+        "power must be at least 1",
+        id="confluent-power-below-1",
     ),
 ]
 

@@ -28,35 +28,35 @@ def test_confluent_vandermonde(dtype):
     p = torch.tensor([0.9, 0.9, 0.9, -0.3, 0.0, 0.0], dtype=torch.float64)
     p = p * (1 + 0.5j) if dtype.is_complex else p
     p = p.to(dtype).to(p.dtype)  # the reference takes the poles as rounded
-    e = torch.tensor([0, 1, 2, 0, 0, 1])
-    V = confluent_vandermonde(p.to(dtype), e)
+    power = torch.tensor([1, 2, 3, 1, 1, 2])
+    V = confluent_vandermonde(p.to(dtype), power)
     M = p.numel()
     expected = torch.zeros(M, M, dtype=p.dtype)
-    for c, (pc, ec) in enumerate(zip(p.tolist(), e.tolist())):
+    for c, (pc, jc) in enumerate(zip(p.tolist(), power.tolist())):
         for i in range(M):
             n = M - 1 - i
-            if n >= ec:
-                expected[i, c] = comb(n, ec) * pc ** (n - ec)
+            if n >= jc - 1:
+                expected[i, c] = comb(n, jc - 1) * pc ** (n - jc + 1)
     assert V.dtype == dtype
     low = dtype in (torch.bfloat16, torch.complex32)
     tol = dict(rtol=1e-2, atol=1e-2) if low else {}
     torch.testing.assert_close(V.to(p.dtype), expected, **tol)
 
 
-@pytest.mark.parametrize("batched_e", [False, True])
-def test_confluent_vandermonde_batched(batched_e):
+@pytest.mark.parametrize("batched_power", [False, True])
+def test_confluent_vandermonde_batched(batched_power):
     poles = torch.tensor([[0.5, 0.5, -0.3], [0.2, 0.9, 0.9]], dtype=torch.float64)
-    e = torch.tensor([[0, 1, 0], [0, 0, 1]]) if batched_e else torch.tensor([0, 1, 0])
-    V = confluent_vandermonde(poles, e)
+    power = torch.tensor([[1, 2, 1], [1, 1, 2]]) if batched_power else torch.tensor([1, 2, 1])
+    V = confluent_vandermonde(poles, power)
     expected = torch.stack(
-        [confluent_vandermonde(p, ei) for p, ei in zip(poles, e.expand_as(poles))]
+        [confluent_vandermonde(p, j) for p, j in zip(poles, power.expand_as(poles))]
     )
     torch.testing.assert_close(V, expected)
 
 
-def test_confluent_vandermonde_unsigned_orders():
-    # orders of an unsigned dtype once wrapped when negated
+def test_confluent_vandermonde_unsigned_powers():
+    # powers of an unsigned dtype once wrapped when negated
     poles = torch.tensor([0.5, 0.5, -0.3], dtype=torch.float64)
-    e = torch.tensor([0, 1, 0])
-    expected = confluent_vandermonde(poles, e)
-    torch.testing.assert_close(confluent_vandermonde(poles, e.to(torch.uint8)), expected)
+    power = torch.tensor([1, 2, 1])
+    expected = confluent_vandermonde(poles, power)
+    torch.testing.assert_close(confluent_vandermonde(poles, power.to(torch.uint8)), expected)

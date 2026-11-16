@@ -158,45 +158,44 @@ def vandermonde(poles: Tensor) -> Tensor:
     return torch.vander(poles).mT
 
 
-def confluent_vandermonde(poles: Tensor, e: Tensor) -> Tensor:
+def confluent_vandermonde(poles: Tensor, power: Tensor) -> Tensor:
     r"""Return the confluent Vandermonde matrix of descending powers of poles.
 
-    For :math:`M` poles :math:`p_i` with orders :math:`e_i`,
-    :math:`i = 0, \dots, M - 1`, column :math:`i` holds in row
-    :math:`M - 1 - n`, for :math:`n = 0, \dots, M - 1`,
+    For poles :math:`p_0, \dots, p_{M-1}` with powers
+    :math:`j_0, \dots, j_{M-1}`, column :math:`i` is the derivative of order
+    :math:`j_i - 1` in :math:`p_i` of :func:`vandermonde`'s column, divided by
+    :math:`(j_i - 1)!`, so a column with :math:`j_i = 1` is
+    :func:`vandermonde`'s. A pole :math:`p` of multiplicity :math:`m`, in
+    adjacent columns with :math:`j_i = 1, \dots, m`, takes the columns
 
     .. math::
-        V_{M - 1 - n, i} = \binom{n}{e_i} p_i^{\,n - e_i},
+        \begin{bmatrix}
+            p^{M-1} & (M-1) p^{M-2} & \cdots & \binom{M-1}{m-1} p^{M-m} \\
+            \vdots & \vdots & & \vdots \\
+            p & 1 & \cdots & 0 \\
+            1 & 0 & \cdots & 0
+        \end{bmatrix}.
 
-    which is zero where :math:`n < e_i`. Column :math:`i` is
-    :math:`\frac{1}{e_i!} \frac{d^{e_i}}{dx^{e_i}} (x^{M-1}, \dots, x, 1)`
-    at :math:`x = p_i`. A column of order 0 is the column of
-    :func:`vandermonde`, so with every order 0, :math:`V` is
-    :func:`vandermonde` of each row of poles.
-
-    Where each pole of multiplicity :math:`m` is listed in :math:`m` adjacent
-    columns, in the orders :math:`0, 1, \dots, m - 1`, :math:`C V = V J`:
-    :math:`C` is the :func:`companion` matrix of the :math:`a` with
-    :math:`1 + \sum_{j=1}^{M} a_j z^{-j} = \prod_{i=0}^{M-1} (1 - p_i z^{-1})`,
-    whose eigenvalues are the poles, and :math:`J` is the Jordan form in the
-    columns' order: :math:`J_{ii} = p_i`, :math:`J_{i-1, i} = 1` where
-    :math:`e_i \ge 1`, and zero elsewhere.
+    With every pole listed this way, the columns are the generalized
+    eigenvectors of the :func:`companion` matrix :math:`C` whose eigenvalues
+    are the poles: :math:`C V = V J`, with :math:`J` the Jordan form of
+    :math:`C`, its blocks in the columns' order.
 
     Args:
-        poles (Tensor): the poles :math:`p_i`, a floating or complex tensor
-            of shape :math:`(*, M)`.
-        e (Tensor): the orders :math:`e_i \ge 0`, an integer tensor of shape
-            :math:`(M)` or the shape of :attr:`poles`.
+        poles (Tensor): the poles, a floating or complex tensor of shape
+            :math:`(*, M)`.
+        power (Tensor): the powers :math:`j_i \ge 1`, an integer tensor of
+            shape :math:`(M)` or the shape of :attr:`poles`.
 
     Returns:
-        Tensor: the matrix, of shape :math:`(*, M, M)`, with the dtype and
+        Tensor: the matrices, of shape :math:`(*, M, M)`, with the dtype and
         device of :attr:`poles`.
 
     Raises:
         ValueError: if :attr:`poles` is 0-D or not floating or complex.
-        ValueError: if :attr:`e` is not an integer tensor, is not on the
+        ValueError: if :attr:`power` is not an integer tensor, is not on the
             device of :attr:`poles`, has neither shape :math:`(M)` nor that of
-            :attr:`poles`, or has a negative entry.
+            :attr:`poles`, or has an entry below 1.
 
     Example::
 
@@ -204,7 +203,7 @@ def confluent_vandermonde(poles: Tensor, e: Tensor) -> Tensor:
         >>> # a double pole at 0.5: a = [-1, 0.25], as
         >>> # 1 - z^-1 + 0.25 z^-2 = (1 - 0.5 z^-1)^2
         >>> poles = torch.tensor([0.5, 0.5])
-        >>> V = confluent_vandermonde(poles, torch.tensor([0, 1]))
+        >>> V = confluent_vandermonde(poles, torch.tensor([1, 2]))
         >>> V
         tensor([[0.5000, 1.0000],
                 [1.0000, 0.0000]])
@@ -217,16 +216,17 @@ def confluent_vandermonde(poles: Tensor, e: Tensor) -> Tensor:
         raise ValueError("poles must be at least 1-D.")
     if not (poles.is_floating_point() or poles.is_complex()):
         raise ValueError(f"poles must be floating or complex, got {poles.dtype}.")
-    _check_integer("e", e)
-    if e.device != poles.device:
-        raise ValueError(f"e must be on poles's device, got {e.device}.")
-    if e.shape not in (poles.shape[-1:], poles.shape):
+    _check_integer("power", power)
+    if power.device != poles.device:
+        raise ValueError(f"power must be on poles's device, got {power.device}.")
+    if power.shape not in (poles.shape[-1:], poles.shape):
         raise ValueError(
-            f"e must be of shape {tuple(poles.shape[-1:])} or {tuple(poles.shape)}, "
-            f"got {tuple(e.shape)}."
+            f"power must be of shape {tuple(poles.shape[-1:])} or {tuple(poles.shape)}, "
+            f"got {tuple(power.shape)}."
         )
-    if bool((e < 0).any()):
-        raise ValueError("e must not be negative.")
+    if bool((power < 1).any()):
+        raise ValueError("power must be at least 1.")
+    e = power - 1  # the order of each column's derivative
     p = poles.to(_accumulation_dtype(poles.dtype))
     # row i of column k is row n - e_k of the matrix read from row e,
     # n = M - 1 - i, and zero where n < e_k
