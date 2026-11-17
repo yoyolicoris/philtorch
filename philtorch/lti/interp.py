@@ -135,11 +135,11 @@ def cspline(
     scipy_padding: bool = False,
     lamb: float = 0.0,
 ) -> Tensor:
-    """Compute the cubic B-spline coefficients of signals.
+    r"""Compute the cubic B-spline coefficients of signals.
 
-    The coefficients come from recursive filtering, as in M. Unser, "B-Spline
-    Signal Processing: Part II---Efficient Design and Applications," IEEE
-    Transactions on Signal Processing, 1993.
+    The coefficients come from recursive filtering, as in `B-Spline Signal
+    Processing: Part II—Efficient Design and Applications`_ (Unser et al.,
+    1993).
 
     Args:
         x (Tensor): signals, of shape :math:`(B, L)`.
@@ -156,6 +156,9 @@ def cspline(
 
     Raises:
         NotImplementedError: if :attr:`lamb` is not zero.
+
+    .. _B-Spline Signal Processing\: Part II—Efficient Design and Applications:
+        https://doi.org/10.1109/78.193221
     """
     if lamb != 0.0:
         raise NotImplementedError(
@@ -172,14 +175,14 @@ def cubic_spline(
     parallel_form: bool = True,
     lamb: float = 0.0,
 ) -> Tensor:
-    """Upsample signals by an integer factor with cubic B-spline interpolation.
+    r"""Upsample signals by an integer factor with cubic B-spline interpolation.
 
-    This interpolates :attr:`x` with cubic B-splines, as in M. Unser,
-    "B-Spline Signal Processing: Part II---Efficient Design and Applications,"
-    IEEE Transactions on Signal Processing, 1993, and evaluates the spline at
-    :attr:`m` points per sample interval. The spline passes through the
-    original samples; with :attr:`scipy_padding`, only approximately for
-    short signals, as SciPy's does.
+    This interpolates :attr:`x` with cubic B-splines, as in `B-Spline Signal
+    Processing: Part II—Efficient Design and Applications`_ (Unser et al.,
+    1993), and evaluates the spline at :attr:`m` points per sample interval.
+    The spline passes through the original samples; with
+    :attr:`scipy_padding`, only approximately for short signals, as SciPy's
+    does.
 
     Args:
         x (Tensor): signals, of shape :math:`(B, L)`. Unlike SciPy, the batch
@@ -222,6 +225,9 @@ def cubic_spline(
         tensor([[1.0000, 0.9450, 0.7859]], dtype=torch.float64)
         >>> y[:, :9:4]
         tensor([[1.0000, 0.9450, 0.7859]], dtype=torch.float64)
+
+    .. _B-Spline Signal Processing\: Part II—Efficient Design and Applications:
+        https://doi.org/10.1109/78.193221
     """
     if not isinstance(m, int) or m < 1:
         raise ValueError("Interpolation factor m must be an integer >= 1.")

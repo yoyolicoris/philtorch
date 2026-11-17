@@ -23,7 +23,7 @@ The rules are in `AGENTS.md` and, for docstrings, `CONTRIBUTING.md`; where this 
   - A new device or dtype extends the existing tests. Parametrize only over values that reach distinct paths.
   - No test of an impossible branch or that restates the implementation. Gradchecks only for native ops, `custom_op`s and `autograd.Function`s.
   - A removed test names the test that still covers its path.
-- **Docs?** Compact, with no tuning history or benchmark tables. After a trim, a first-time user can still tell what each argument does, what is returned and how the parts connect. A method from a paper cites it.
+- **Docs?** Compact, with no tuning history or benchmark tables. After a trim, a first-time user can still tell what each argument does, what is returned and how the parts connect. A method from a paper cites it, as `CONTRIBUTING.md`'s "Citations" says.
 - **Scope and plan?** No more than the pull request says; a port keeps the logic it ports. List each departure from the agreed plan as a decision for the maintainer.
 - **Regressions?** Compare behaviour before and after. A claim that speed or behaviour is unchanged needs a run that shows it.
 

@@ -818,9 +818,9 @@ def soft_dtw_divergence(
         \mathrm{SDTW}_\gamma(x, y) - \tfrac{1}{2}\big(\mathrm{SDTW}_\gamma(x, x)
         + \mathrm{SDTW}_\gamma(y, y)\big),
 
-    from `Differentiable Divergences Between Time Series`_ (Blondel, Mensch
-    and Vert, 2021). Unlike soft-DTW itself, it is zero for identical
-    sequences, and with the squared Euclidean cost it is non-negative.
+    from `Differentiable Divergences Between Time Series`_ (Blondel et al.,
+    2021). Unlike soft-DTW itself, it is zero for identical sequences, and
+    with the squared Euclidean cost it is non-negative.
 
     Note:
         Runs only on CUDA GPUs, as Triton kernels: the inputs must be CUDA
