@@ -60,10 +60,15 @@ def find_eigenvectors(A: Tensor, eigenvalues: Tensor) -> Tensor:
     W = A.unsqueeze(-3) - eigenvalues[..., None, None] * eye
     B, W = torch.split(W, [1, n - 1], dim=-1)
 
-    WtW = W.mT.conj() @ W
-    WtB = W.mT.conj() @ -B
-
-    X = torch.linalg.solve(WtW, WtB)
+    # Least squares without the normal equations, whose condition number is
+    # the square of W's. CPU drivers report the rank, which a CUDA driver
+    # checks itself.
+    X, _, rank, _ = torch.linalg.lstsq(W, -B)
+    if rank.numel() and (rank < n - 1).any():
+        raise torch.linalg.LinAlgError(
+            "An eigenvector has a zero first component, or an eigenvalue has more "
+            "than one independent eigenvector."
+        )
     X = X.reshape(A.shape[:-2] + (n, n - 1))
     X = torch.cat([X.new_ones(X.shape[:-1] + (1,)), X], dim=-1)
     X = X / torch.linalg.vector_norm(X, dim=-1, keepdim=True)

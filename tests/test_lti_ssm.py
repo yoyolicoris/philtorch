@@ -667,6 +667,19 @@ def test_diag_state_space_diagonal_A(diagonal):
     torch.testing.assert_close(diag_state_space(x, A=A, B=B, C=C), state_space(A, x, B=B, C=C))
 
 
+# L in another order than eig's: A's eigenvectors follow L
+@pytest.mark.parametrize("system", ["A_real", "LV_real"])
+def test_diag_state_space_L_with_A_in_reverse(system):
+    given, A, dtype = _pfe_model(system, batched=False)
+    L = given["L"] if "L" in given else torch.linalg.eigvals(A)
+    x = torch.randn(_PFE_BATCH, _PFE_N, dtype=dtype)
+    B, C = torch.randn(_PFE_M, dtype=dtype), torch.randn(_PFE_M, dtype=dtype)
+
+    y = diag_state_space(x, L=L.flip(-1), A=A, B=B, C=C)
+
+    torch.testing.assert_close(y, state_space(A, x, B=B, C=C))
+
+
 def test_diag_state_space_integer_model():
     # pfefilt doesn't take integers: the integer recurrence runs them
     x = torch.ones(1, 4, dtype=torch.long)

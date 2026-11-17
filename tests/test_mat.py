@@ -5,7 +5,7 @@ import numpy as np
 import pytest
 import torch
 
-from philtorch.mat import companion, confluent_vandermonde, matrices_cumdot
+from philtorch.mat import companion, confluent_vandermonde, find_eigenvectors, matrices_cumdot
 
 
 # Primes, products of two primes, and products of three or more primes, which
@@ -67,3 +67,11 @@ def test_confluent_vandermonde_companion():
     )
     C = companion(torch.from_numpy(a))
     torch.testing.assert_close(C @ V, V @ J)
+
+
+# an eigenvector with a zero first component, and an eigenvalue with two
+@pytest.mark.parametrize("diagonal", [[0.5, 0.3], [0.5, 0.5]], ids=["zero-first", "repeated"])
+def test_find_eigenvectors_raises_without_a_first_component(diagonal):
+    eigenvalues = torch.tensor(diagonal, dtype=torch.float64)
+    with pytest.raises(torch.linalg.LinAlgError, match="first component"):
+        find_eigenvectors(torch.diag(eigenvalues), eigenvalues)

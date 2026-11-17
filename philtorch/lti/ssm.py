@@ -6,7 +6,6 @@ import torch
 from torch import Tensor
 
 from .. import _ssm
-from ..mat import find_eigenvectors
 from ..utils import _check_shared
 from .recur import linear_recurrence
 
@@ -341,9 +340,14 @@ def diag_state_space(
 
     Give the decomposition in one of these ways:
 
-    - :attr:`A` alone: both come from :func:`torch.linalg.eig`.
-    - :attr:`L` with :attr:`A`, :attr:`V` or :attr:`Vinv`: the missing
-      matrices are computed from it.
+    - :attr:`A` alone: the eigenvalues and eigenvectors come from
+      :func:`torch.linalg.eig`.
+    - :attr:`L` with :attr:`A`: :attr:`L` gives the eigenvalues. Each of its
+      entries, in order, takes the eigenvector of :attr:`A`, from
+      :func:`torch.linalg.eig`, whose eigenvalue is the nearest of those not
+      yet taken.
+    - :attr:`L` with :attr:`V` or :attr:`Vinv`: the missing one is the inverse
+      of the given one, and :attr:`A`, if given, is ignored.
     - :attr:`L` with both :attr:`V` and :attr:`Vinv`: used as given.
     - :attr:`L` alone: :math:`A` is diagonal and :math:`V = I`.
 
@@ -472,7 +476,18 @@ def diag_state_space(
         )
 
     if V is None and Vinv is None and A is not None:
-        V = find_eigenvectors(A, L)
+        # A's eigenvectors in the order of L: each eigenvalue of L takes the
+        # nearest of A's that an earlier one hasn't taken.
+        eigenvalues, V = torch.linalg.eig(A)
+        distance = (L.unsqueeze(-1) - eigenvalues.unsqueeze(-2)).abs()
+        order = []
+        for k in range(M):
+            j = distance[..., k, :].argmin(-1, keepdim=True)
+            distance.scatter_(-1, j.unsqueeze(-2).expand(*distance.shape[:-1], 1), torch.inf)
+            order.append(j)
+        V = V.gather(-1, torch.cat(order, -1).unsqueeze(-2).expand_as(V))
+        # A real L's eigenvectors are real.
+        V = V if L.is_complex() else V.real
     # With neither V nor Vinv, A = diag(L) and V = I.
     identity = V is None and Vinv is None
 
