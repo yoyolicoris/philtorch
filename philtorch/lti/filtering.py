@@ -48,6 +48,7 @@ def comb_filter(a: Tensor, delay: int, x: Tensor, zi: Tensor | None = None, **kw
     Example::
 
         >>> from philtorch.lti import comb_filter
+        >>> # y[n] = x[n] + 0.5 y[n - 2]
         >>> x = torch.tensor([[1.0, 0.0, 0.0, 0.0, 0.0, 0.0]])
         >>> comb_filter(torch.tensor(-0.5), 2, x)
         tensor([[1.0000, 0.0000, 0.5000, 0.0000, 0.2500, 0.0000]])
@@ -128,15 +129,18 @@ def lfiltic(b: Tensor, a: Tensor, y: Tensor, x: Tensor | None = None) -> Tensor:
     Example::
 
         >>> from philtorch.lti import lfilter, lfiltic
+        >>> # y[n] = 0.5 x[n] + 0.5 x[n - 1] + 0.5 y[n - 1]
         >>> b, a = torch.tensor([0.5, 0.5]), torch.tensor([-0.5])
         >>> x = torch.tensor([1.0, 2.0, 3.0, 4.0])
         >>> y = lfilter(b, a, x)
+        >>> y[2:]
+        tensor([3.3750, 5.1875])
         >>> # Continue from the second sample. With longer histories, pass
         >>> # the past values newest first, e.g. y[:k].flip(-1).
         >>> zi = lfiltic(b, a, y[1:2], x[1:2])
         >>> y_rest, _ = lfilter(b, a, x[2:], zi=zi)
-        >>> torch.allclose(y_rest, y[2:])
-        True
+        >>> y_rest
+        tensor([3.3750, 5.1875])
     """
     if b.dim() < 1:
         raise ValueError("Numerator coefficients b must be at least 1D.")
@@ -204,6 +208,7 @@ def lfilter_zi(a: Tensor, b: Tensor | None = None, transpose: bool = True) -> Te
     Example::
 
         >>> from philtorch.lti import lfilter, lfilter_zi
+        >>> # 0.5 / (1 - 0.5 z^-1)
         >>> b, a = torch.tensor([0.5]), torch.tensor([-0.5])
         >>> y, _ = lfilter(b, a, torch.ones(4), zi=lfilter_zi(a, b))
         >>> y
@@ -263,7 +268,7 @@ def fir(
     Returns:
         Tensor or tuple of Tensor: the filtered signals, of shape
         :math:`(B, N)`, and with :attr:`zi`, the final state in the same
-        convention, of shape :math:`(B, M)`.
+        convention, of shape :math:`(B, M)`, empty when :math:`M = 0`.
 
     Raises:
         ValueError: if :attr:`b`, :attr:`x` or :attr:`zi` is not 2-D,
@@ -273,6 +278,7 @@ def fir(
     Example::
 
         >>> from philtorch.lti import fir
+        >>> # y[n] = x[n] + x[n - 1]
         >>> fir(torch.tensor([[1.0, 1.0]]), torch.tensor([[1.0, 2.0, 3.0]]))
         tensor([[1., 3., 5.]])
     """
@@ -395,8 +401,8 @@ def lfilter(
         :attr:`x`, and with :attr:`zi`, the final state, of shape
         :math:`(B, M)`, or :math:`(M)` when :attr:`b`, :attr:`a`, :attr:`x`
         and :attr:`zi` are all unbatched; a shared :attr:`zi` with batched
-        signals still gives one final state per signal. A real filter gives
-        real outputs with either backend.
+        signals still gives one final state per signal, empty for a pure
+        gain. A real filter gives real outputs with either backend.
 
     Raises:
         ValueError: if :attr:`form` or :attr:`backend` is unknown,
@@ -587,21 +593,19 @@ def sosfilt(
         tensor([[0.5000, 0.2500, 0.1250],
                 [1.0000, 0.5000, 0.2500],
                 [1.0000, 0.0000, 0.0000]])
-        >>> # The step response of 8 sections of unit gain at DC: in float32,
-        >>> # the cascade stays accurate where the expanded polynomials don't
+        >>> # The step response of 12 sections of unit gain at DC, poles of
+        >>> # radius 0.95, ends at 1: the cascade gets there, while the
+        >>> # recursion of the expanded transfer function diverges.
         >>> from philtorch.lti import lfilter, sos2tf
-        >>> a1 = -torch.linspace(0.05, 0.3, 8, dtype=torch.float64).cos()
-        >>> a2 = torch.full_like(a1, 0.25)
+        >>> a1 = -1.9 * torch.linspace(0.02, 0.1, 12).cos()
+        >>> a2 = torch.full_like(a1, 0.9025)
         >>> b = (1 + a1 + a2) / 4
         >>> sos = torch.stack([b, 2 * b, b, a1, a2], -1)
-        >>> x = torch.ones(200, dtype=torch.float64)
-        >>> y = sosfilt(sos, x)  # the float64 reference
-        >>> y_sos = sosfilt(sos.float(), x.float())
-        >>> y_tf = lfilter(*sos2tf(sos.float()), x.float())
-        >>> err_sos = (y_sos.double() - y).abs().max()
-        >>> err_tf = (y_tf.double() - y).abs().max()
-        >>> bool(err_sos < err_tf)
-        True
+        >>> x = torch.ones(1000)
+        >>> sosfilt(sos, x)[-1]
+        tensor(1.0000)
+        >>> lfilter(*sos2tf(sos), x)[-1]
+        tensor(nan)
     """
     _check_sos(sos)
     if x.dim() not in (1, 2):
@@ -707,6 +711,7 @@ def sosfilt_zi(sos: Tensor, batch_index: Tensor | None = None) -> Tensor:
     Example::
 
         >>> from philtorch.lti import sosfilt, sosfilt_zi
+        >>> # 0.5 / (1 - 0.5 z^-1), then a gain of 2
         >>> sos = torch.tensor([[0.5, 0.0, 0.0, -0.5, 0.0],
         ...                     [2.0, 0.0, 0.0, 0.0, 0.0]])
         >>> y, _ = sosfilt(sos, torch.ones(4), zi=sosfilt_zi(sos))
@@ -784,14 +789,16 @@ def pfefilt(
         p (Tensor): the poles, real or complex, of shape :math:`(U)`.
         g (Tensor): the direct gain, of shape :math:`()` or :math:`(B)`.
         x (Tensor): input signals, of shape :math:`(B, N)` or :math:`(N)`.
-        zi (Tensor, optional): the initial states :math:`s_{ij}[0]`, of shape
-            :math:`(M)`, or :math:`(B, M)` for a 2-D :attr:`x` without
-            :attr:`batch_index`, listed as :attr:`r` is. Default: ``None``,
-            all zero.
+        zi (Tensor, optional): the initial states :math:`s_{ij}[0]`, real or
+            complex with the precision of :attr:`x`, listed as :attr:`r` is,
+            of shape :math:`(B, M)` for a 2-D :attr:`x` without
+            :attr:`batch_index`, and :math:`(M)` otherwise. Default:
+            ``None``, all zero.
         batch_index (Tensor, optional): the row of :attr:`x` each pole
             filters and adds to, of shape :math:`(U)`, from 0 to
-            :math:`B - 1`. Poles may come in any order. Default: ``None``,
-            one filter of all the poles for every row.
+            :math:`B - 1`, where :math:`B = 1` for a 1-D :attr:`x`. Poles may
+            come in any order. Default: ``None``, one filter of all the poles
+            for every row.
         multiplicity (Tensor, optional): the multiplicities :math:`m_i`, of
             shape :math:`(U)`, int32 or int64 and at least 1. Default:
             ``None``, every pole of multiplicity 1, so that :math:`M = U`.
@@ -1161,13 +1168,13 @@ def filtfilt(
     Example::
 
         >>> from philtorch.lti import filtfilt
+        >>> # (0.25 + 0.5 z^-1 + 0.25 z^-2) / (1 - 0.2 z^-1)
         >>> b, a = torch.tensor([0.25, 0.5, 0.25]), torch.tensor([-0.2])
         >>> x = torch.zeros(21)
         >>> x[10] = 1.0
-        >>> y = filtfilt(b, a, x)
         >>> # Zero phase: a symmetric input gives a symmetric output.
-        >>> torch.allclose(y, y.flip(0))
-        True
+        >>> filtfilt(b, a, x)[8:13]
+        tensor([0.1350, 0.3625, 0.5000, 0.3625, 0.1350])
     """
     if method not in ("pad", "gust"):
         raise ValueError("Method must be either 'pad' or 'gust'.")

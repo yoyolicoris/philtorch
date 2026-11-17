@@ -202,12 +202,17 @@ def cubic_spline(
     Example::
 
         >>> from philtorch.lti import cubic_spline
-        >>> x = torch.randn(1, 16, dtype=torch.float64)
+        >>> t = torch.arange(16, dtype=torch.float64)
+        >>> x = torch.cos(t / 3).unsqueeze(0)
+        >>> # m = 4: 4 points per sample interval, (16 - 1) * 4 + 1 = 61 in all
         >>> y = cubic_spline(x, 4)
         >>> y.shape
         torch.Size([1, 61])
-        >>> torch.allclose(y[:, ::4], x)
-        True
+        >>> # every 4th point is a sample of x
+        >>> x[:, :3]
+        tensor([[1.0000, 0.9450, 0.7859]], dtype=torch.float64)
+        >>> y[:, :9:4]
+        tensor([[1.0000, 0.9450, 0.7859]], dtype=torch.float64)
     """
     if not isinstance(m, int) or m < 1:
         raise ValueError("Interpolation factor m must be an integer >= 1.")
@@ -354,45 +359,23 @@ def resample(
 ) -> Tensor:
     r"""Resample signals between two sampling rates with a Kaiser-sinc filter.
 
-    For an input signal :math:`x[b, n]` of length :math:`T` at the rate
-    :attr:`orig_freq` and the resampling ratio
-    :math:`r = \text{new\_freq} / \text{orig\_freq}`, this evaluates the
-    band-limited Kaiser-sinc reconstruction at output sample indices
-    :math:`m \in \{0, \dots, L_{\text{out}} - 1\}`, corresponding to input
-    times :math:`t_m = m \cdot \text{orig\_freq} / \text{new\_freq}`, exactly:
-
-    .. math::
-        y[b, m] = \sum_{n = \lceil t_m - W \rceil}^{\lfloor t_m + W \rfloor}
-        x[b, n]\, c\, \operatorname{sinc}\!\bigl(c (t_m - n)\bigr)\,
-        \frac{I_0\!\left(\beta \sqrt{1 - ((t_m - n) / W)^2}\right)}{I_0(\beta)},
-
-    where :math:`\operatorname{sinc}(z) = \sin(\pi z) / (\pi z)`,
-    :math:`c = \rho \min(1, r)` is the anti-aliasing cutoff in normalized input
-    Nyquist units, :math:`W = N_z / c` is the window half-width in input
-    samples, and samples outside the signal (:math:`n < 0` or :math:`n \ge T`)
-    are zero. The filter also acts at equal rates, where it low-passes at
-    :math:`\rho` times the Nyquist frequency, unlike
-    :func:`scipy.signal.resample_poly`, which then copies the input.
-
-    The rates are reduced to :math:`r = p / q` in lowest terms. A ratio whose
-    polyphase filter, of about :math:`p (q + 2 W)` coefficients, would hold
-    more than :math:`2^{22}` raises an error: raise :attr:`rolloff` or lower
-    :attr:`num_zeros` for fewer taps, or approximate the ratio:
-    ``f = Fraction(new_freq, orig_freq).limit_denominator(1000)``, from
-    :mod:`fractions`, then ``resample(x, f.denominator, f.numerator)``.
-
-    The presets of :attr:`quality` realise the passband, stopband and
-    precision targets of ``libsoxr``, but the outputs are not bit-identical to
-    soxr's. ``float32`` accumulation may miss the precision targets of
-    ``"HQ"`` and ``"VHQ"``: use ``float64`` for them.
+    This low-passes and interpolates each signal with a sinc of cutoff
+    :math:`\rho` times the lower Nyquist frequency, under a Kaiser window of
+    shape :math:`\beta` over :math:`N_z` zero crossings per side, as in `A
+    flexible sampling-rate conversion method`_ (Smith and Gossett, 1984).
+    Samples outside :attr:`x` count as zero. The filter also acts at equal
+    rates, where it low-passes at :math:`\rho` times the Nyquist frequency,
+    unlike :func:`scipy.signal.resample_poly`, which then copies the input.
+    ``float32`` accumulation may miss the precision targets of ``"HQ"`` and
+    ``"VHQ"``: use ``float64`` for them.
 
     Derivatives of any order exist in :attr:`x`, and in :attr:`rolloff` and
-    :attr:`beta` when they are 0-D tensors. :attr:`rolloff`'s value sets the
-    filter's taps, which its gradient holds fixed; a tensor :attr:`rolloff`
-    costs a sync and a graph break under :func:`torch.compile`. A negative
-    tensor :attr:`beta` acts as its absolute value. On CUDA,
-    :func:`torch.func.jvp` and :func:`torch.func.vmap` (over :attr:`x`) work
-    in eager mode; :func:`torch.compile` supports reverse mode.
+    :attr:`beta` when they are 0-D tensors.
+
+    Note:
+        A tensor :attr:`rolloff` costs a host sync and a graph break under
+        :func:`torch.compile`, as its value sets the number of taps, which its
+        gradient holds fixed.
 
     Args:
         x (Tensor): signals, of shape :math:`(B, T)`, in a floating-point
@@ -400,8 +383,9 @@ def resample(
         orig_freq (int): the sampling rate of :attr:`x`, a positive integer.
         new_freq (int): the sampling rate of the output, a positive integer.
         quality (str or None, optional): filter design preset, from
-            ``libsoxr``'s targets, with the parameters :math:`\rho`,
-            :math:`\beta` and :math:`N_z`:
+            ``libsoxr``'s targets (the outputs are not bit-identical to
+            soxr's), with the parameters :math:`\rho`, :math:`\beta` and
+            :math:`N_z`:
 
             - ``"LQ"``: 16-bit precision (:math:`\rho = 0.8381`,
               :math:`\beta \approx 10.32`, :math:`N_z = 18`);
@@ -427,8 +411,7 @@ def resample(
     Returns:
         Tensor: the resampled signals, of shape :math:`(B, L_{\text{out}})`,
         where :math:`L_{\text{out}} = \lceil T \cdot \text{new\_freq} /
-        \text{orig\_freq} \rceil`, computed in integer arithmetic, as
-        :func:`scipy.signal.resample_poly` does.
+        \text{orig\_freq} \rceil`.
 
     Raises:
         ValueError: if :attr:`x` is not a 2-D floating-point tensor, if
@@ -437,8 +420,9 @@ def resample(
             :attr:`rolloff`, :attr:`beta` and :attr:`num_zeros`, if
             :attr:`rolloff` or :attr:`beta` is a tensor that is not 0-D and
             floating-point, if :attr:`rolloff`, :attr:`beta` or
-            :attr:`num_zeros` is out of range, or if the polyphase filter would
-            hold more than :math:`2^{22}` coefficients.
+            :attr:`num_zeros` is out of range, or if the filter would hold
+            more than :math:`2^{22}` coefficients: raise :attr:`rolloff`,
+            lower :attr:`num_zeros`, or approximate the ratio.
         NotImplementedError: on CUDA, if :attr:`x` is not float16, bfloat16,
             float32 or float64, which the kernel takes.
 
@@ -447,13 +431,19 @@ def resample(
         >>> from philtorch.lti import resample
         >>> t = torch.arange(441, dtype=torch.float64)
         >>> x = torch.sin(2 * torch.pi * 10 * t / 441).unsqueeze(0)
+        >>> # 44100 Hz to 48000 Hz, the default "HQ"
         >>> y = resample(x, 44100, 48000)
         >>> y.shape
         torch.Size([1, 480])
-        >>> # float32 agrees with float64 to well within 1e-5 here
-        >>> y32 = resample(x.float(), 44100, 48000)
-        >>> torch.allclose(y32.double(), y, atol=1e-5)
-        True
+        >>> y[:, :4]
+        tensor([[0.0015, 0.1267, 0.2628, 0.3791]], dtype=torch.float64)
+        >>> # the same, with the shorter "LQ" filter
+        >>> y = resample(x, 44100, 48000, quality="LQ")
+        >>> y[:, :4]
+        tensor([[0.0059, 0.1231, 0.2645, 0.3798]], dtype=torch.float64)
+
+    .. _A flexible sampling-rate conversion method:
+        https://doi.org/10.1109/ICASSP.1984.1172555
     """
     if x.dim() != 2:
         raise ValueError(f"x must be 2D (B, T), got {x.dim()}D")

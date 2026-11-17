@@ -227,6 +227,7 @@ def unique_roots(p: Tensor, tol: float = 1e-3, rtype: str = "min") -> tuple[Tens
     Example::
 
         >>> from philtorch.lti import unique_roots
+        >>> # 1.3 and 1.31 are within tol: one root, of multiplicity 2
         >>> p = torch.tensor([0.0, 1.3, 1.31, 2.8, 1.25, 2.2, 10.3])
         >>> unique, multiplicity = unique_roots(p, tol=2e-2, rtype="avg")
         >>> unique[multiplicity > 1]
@@ -274,11 +275,14 @@ def residuez(
 
     where :math:`F(z) = k_0 + k_1 z^{-1} + \cdots + k_{D-1} z^{-(D-1)}` is the
     FIR part, :math:`D = \max(L - M, 0)`. The two agree when :math:`L \le M`.
-    A pole of multiplicity
-    :math:`m` is listed :math:`m` times in a row, with the powers
-    :math:`j_i = 1, \dots, m`. The poles are the roots of the denominator,
-    sorted by magnitude, ascending, then by angle in :math:`(-\pi, \pi]`, and
-    grouped by :func:`unique_roots`.
+    A pole of multiplicity :math:`m` is listed :math:`m` times in a row, with
+    the powers :math:`j_i = 1, \dots, m`. The poles are the roots of the
+    denominator, sorted by magnitude, ascending, then by angle in
+    :math:`(-\pi, \pi]`, and grouped by :func:`unique_roots`.
+
+    The roots of :attr:`a` are ill-conditioned at high orders, and so is the
+    expansion. For a filter given as sections, use :func:`sos2pfe`, whose poles
+    are the sections' own.
 
     Args:
         b (Tensor): numerator coefficients, of shape :math:`(L)` or
@@ -316,10 +320,6 @@ def residuez(
         trimmed, so the output shapes follow from the input shapes: where
         SciPy trims a pole at 0 from :attr:`a` when :math:`L > M`, this raises
         an error, unless ``delayed_form=True``.
-
-        The poles are the roots of :attr:`a`, which are ill-conditioned at high
-        orders, and so is the expansion. For a filter given as sections, use
-        :func:`sos2pfe`, whose poles are the sections' own.
 
     Example::
 
@@ -420,10 +420,8 @@ def invresz(
             by the batch.
         tol (float, optional): the distance within which two adjacent poles
             are considered equal. Default: ``1e-3``.
-        rtype (str, optional): how to choose the pole of a group of equal
-            poles: ``"max"`` or ``"maximum"``, ``"min"`` or ``"minimum"``, or
-            ``"avg"`` or ``"mean"``, as in :func:`unique_roots`.
-            Default: ``"avg"``.
+        rtype (str, optional): how to choose the pole of a group of equal poles,
+            as in :func:`unique_roots`. Default: ``"avg"``.
         delayed_form (bool, optional): if ``True``, the fractions are delayed
             until the direct term has ended, as in :func:`residuez`.
             Default: ``False``.
@@ -448,6 +446,8 @@ def invresz(
     Example::
 
         >>> from philtorch.lti import invresz
+        >>> # 1.5 / (1 - 0.5 z^-1) - 0.5 / (1 + 0.5 z^-1)
+        >>> #     = (1 + z^-1) / (1 - 0.25 z^-2), with no direct term
         >>> r = torch.tensor([1.5, -0.5])
         >>> p = torch.tensor([0.5, -0.5])
         >>> b, a = invresz(r, p, torch.zeros(0))
@@ -561,10 +561,10 @@ def sos2pfe(
             plus 1. Default: ``None``, one cascade of all the sections.
 
     Returns:
-        tuple: the residues :math:`r`, complex at :attr:`sos`'s precision
-        (complex64 for float32) and of shape :math:`(M)`, :math:`M` being the
-        number of terms of all the filters: at most two per section, a real
-        :attr:`sos` listing one term for a conjugate pair; the poles
+        tuple of Tensor: the residues :math:`r`, complex at :attr:`sos`'s
+        precision (complex64 for float32) and of shape :math:`(M)`, :math:`M`
+        being the number of terms of all the filters: at most two per section, a
+        real :attr:`sos` listing one term for a conjugate pair; the poles
         :math:`p`, of the same dtype and of shape :math:`(U)`; the direct
         gain :math:`g`, of :attr:`sos`'s dtype and of shape :math:`()`, or
         :math:`(B)` with :attr:`batch_index`; the batch index, the filter

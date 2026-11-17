@@ -51,6 +51,7 @@ def linear_recurrence(
     Example::
 
         >>> from philtorch.lti import linear_recurrence
+        >>> # h[n + 1] = 0.5 h[n] + x[n], h[0] = 0, for an impulse x
         >>> x = torch.tensor([[1.0, 0.0, 0.0, 0.0]])
         >>> linear_recurrence(torch.tensor(0.5), torch.tensor(0.0), x)
         tensor([[1.0000, 0.5000, 0.2500, 0.1250]])

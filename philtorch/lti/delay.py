@@ -143,9 +143,7 @@ def delay_state_space(
     each line emits what was written into it :math:`m_i` steps earlier. With
     every delay equal to 1, this is :func:`state_space` with
     :math:`\mathbf{h} = \mathbf{s}`; :attr:`B`, :attr:`C`, :attr:`D`,
-    :attr:`out_idx` and the return value follow the same conventions. The
-    sequence is processed in blocks no longer than the shortest delay, so each
-    block only reads values written by earlier blocks.
+    :attr:`out_idx` and the return value follow the same conventions.
 
     With :attr:`absorption`, each line also has an IIR filter :math:`g_i`, with
     the transfer function of :func:`lfilter`, for the loss of a feedback delay
@@ -215,10 +213,11 @@ def delay_state_space(
             :attr:`absorption`. Default: ``None``.
 
     Returns:
-        Tensor or tuple: the outputs, as :func:`state_space`. With :attr:`zi`,
-        the pair ``(y, zf)``, where ``zf`` holds the next outputs of each
-        delay line, :math:`s_i[N], \dots, s_i[N + m_i - 1]`, as one queue per
-        line, of shape :math:`(B, m_i)`: pass it as :attr:`zi` to continue.
+        Tensor or tuple of Tensor: the outputs, as :func:`state_space`. With
+        :attr:`zi`, the pair ``(y, zf)``, where ``zf`` is a tuple of the next
+        outputs of each delay line, :math:`s_i[N], \dots, s_i[N + m_i - 1]`,
+        one queue per line, of shape :math:`(B, m_i)`: pass it as :attr:`zi` to
+        continue.
         With :attr:`absorption`, and
         :attr:`zi` or :attr:`absorption_zi`, the triple
         ``(y, zf, absorption_zf)``, where ``absorption_zf`` is the final state
@@ -246,11 +245,11 @@ def delay_state_space(
     Example::
 
         >>> from philtorch.lti import delay_state_space
-        >>> # One delay line of 3 samples that feeds back half its output.
+        >>> # m_1 = 3, s[n + 3] = 0.5 s[n] + x[n], y[n] = s[n]
         >>> x = torch.tensor([[1.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0]])
         >>> delay_state_space(torch.tensor([[0.5]]), x, [3]).squeeze(-1)
         tensor([[0.0000, 0.0000, 0.0000, 1.0000, 0.0000, 0.0000, 0.5000]])
-        >>> # The same, with a one-pole lowpass filter on the delay line.
+        >>> # the same, with g_1 = 0.5 / (1 - 0.5 z^-1) on the delay line
         >>> absorption = torch.tensor([[0.5]]), torch.tensor([[-0.5]])
         >>> delay_state_space(
         ...     torch.tensor([[0.5]]), x, [3], absorption=absorption

@@ -31,24 +31,18 @@ def state_space_recursion(
     :math:`\mathbf{h}[1], \dots, \mathbf{h}[N]`. A 2-D input feeds the
     first state only: :math:`\mathbf{x}[n] = x[n] \mathbf{e}_1`.
 
-    With the default ``unroll_factor=None``, this runs a kernel chosen by
-    device, dtype and :math:`M`, and raises where none takes the input, such
-    as :math:`M > 128` (64 complex) on CUDA and MPS. On any device,
-    ``unroll_factor=1`` runs the sequential PyTorch loop, and so does one of
-    :math:`N` or more; an :attr:`unroll_factor` from 2 to :math:`N - 1` runs a
-    block-unrolled PyTorch recursion instead. Both take the dtypes PyTorch's
-    matrix products take on the device: integers on CPU, but not on CUDA.
-
     Args:
         A (Tensor): state matrices, of shape :math:`(M, M)` or
             :math:`(B, M, M)`.
         zi (Tensor): the initial state :math:`\mathbf{h}[0]`, of shape
             :math:`(B, M)`.
         x (Tensor): inputs, of shape :math:`(B, N, M)` or :math:`(B, N)`.
-        unroll_factor (int, optional): ``None`` for the kernels described
-            above. ``1`` runs the sequential loop, as does :math:`N` or more,
-            and a value from 2 to :math:`N - 1` is the block length of the
-            unrolled recursion. Default: ``None``.
+        unroll_factor (int, optional): ``None`` runs a native kernel, which
+            doesn't take every input (see Raises). An integer runs PyTorch ops
+            on any device, in the dtypes their matrix products take there:
+            integers on CPU, but not on CUDA. ``1`` runs the sequential loop,
+            as does :math:`N` or more, and a value from 2 to :math:`N - 1` is
+            the block length of a block-unrolled recursion. Default: ``None``.
         out_idx (int, optional): return only this state. Default: ``None``.
 
     Returns:
@@ -59,19 +53,15 @@ def state_space_recursion(
         ValueError: if :attr:`A`, :attr:`zi` and :attr:`x` don't share a dtype
             and a device, if the shapes do not match, or :attr:`unroll_factor`
             is 0 or negative.
-        NotImplementedError: with ``unroll_factor=None``, if no kernel takes
-            the input; an integer :attr:`unroll_factor` runs PyTorch ops, on
-            any device.
-
-    Note:
-        These are the states after each input, :math:`\mathbf{h}[1]` to
-        :math:`\mathbf{h}[N]`: the state that :func:`state_space` uses at
-        step :math:`n` is :math:`\mathbf{h}[n]`, one step earlier, and its
-        final state is :math:`\mathbf{h}[N]`.
+        NotImplementedError: with ``unroll_factor=None``, if no native kernel
+            takes the input, such as :math:`M > 128` (64 complex) on CUDA and
+            MPS.
 
     Example::
 
         >>> from philtorch.lti import state_space_recursion
+        >>> # Fibonacci numbers: the first state of A = [[1, 1], [1, 0]] for
+        >>> # an impulse x[n] and h[0] = 0.
         >>> A = torch.tensor([[1.0, 1.0], [1.0, 0.0]])
         >>> x = torch.tensor([[1.0, 0.0, 0.0, 0.0, 0.0]])
         >>> state_space_recursion(A, torch.zeros(1, 2), x, out_idx=0)
@@ -173,7 +163,8 @@ def state_space(
     Example::
 
         >>> from philtorch.lti import state_space
-        >>> # Fibonacci numbers from an impulse.
+        >>> # Fibonacci numbers: y[n] = C h[n] with A = [[1, 1], [1, 0]],
+        >>> # C = [1, 0] and an impulse x[n].
         >>> A = torch.tensor([[1.0, 1.0], [1.0, 0.0]])
         >>> x = torch.tensor([[1.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0]])
         >>> state_space(A, x, C=torch.tensor([1.0, 0.0]))
@@ -345,8 +336,8 @@ def diag_state_space(
 
     with :math:`\hat{B} = V^{-1} B` and :math:`\hat{C} = C V`. As
     :math:`\Lambda` is diagonal, the states are :math:`M` independent
-    first-order recurrences, which run with :func:`linear_recurrence`. The
-    outputs are those of :func:`state_space` for a diagonalizable :math:`A`.
+    first-order recurrences. The outputs are those of :func:`state_space` for a
+    diagonalizable :math:`A`.
 
     Give the decomposition in one of these ways:
 
@@ -356,14 +347,7 @@ def diag_state_space(
     - :attr:`L` with :attr:`A`, :attr:`V` or :attr:`Vinv`: the missing
       matrices are computed from it.
     - :attr:`L` with both :attr:`V` and :attr:`Vinv`: used as given.
-    - :attr:`L` alone: :math:`A` is diagonal and :math:`V = I`. Then a 2-D
-      :attr:`x` without :attr:`B` drives every state, unlike
-      :func:`state_space`, whose default feeds the first state only.
-
-    :attr:`x`, :attr:`zi`, :attr:`A`, :attr:`B`, :attr:`C` and :attr:`D` share
-    one dtype, and so do :attr:`L`, :attr:`V` and :attr:`Vinv`: that of
-    :attr:`x`, or, with a real :attr:`A`, its complex dtype for complex
-    eigenvalues.
+    - :attr:`L` alone: :math:`A` is diagonal and :math:`V = I`.
 
     Args:
         x (Tensor): inputs, of shape :math:`(B, N, F)` or :math:`(B, N)`.
@@ -386,10 +370,9 @@ def diag_state_space(
             Default: ``None``.
 
     Returns:
-        Tensor or tuple of Tensor: as :func:`state_space`, in the dtype of
-        :attr:`x`. With complex eigenvalues of a real :attr:`A`, for example
-        a real filter with complex poles, the computation is complex, but
-        the outputs and final state are real.
+        Tensor or tuple of Tensor: the outputs, and with :attr:`zi` the final
+        state, as in :func:`state_space`, in the dtype of :attr:`x`: real for a
+        real :attr:`x`, even with complex eigenvalues.
 
     Raises:
         ValueError: if neither :attr:`L` nor :attr:`A` is given, if
@@ -405,12 +388,15 @@ def diag_state_space(
     Example::
 
         >>> from philtorch.lti import diag_state_space, state_space
+        >>> # The impulse response of A = [[0.5, 0.2], [0, -0.3]] and
+        >>> # C = [1, 1], through the eigendecomposition of A and directly.
         >>> A = torch.tensor([[0.5, 0.2], [0.0, -0.3]])
         >>> C = torch.tensor([1.0, 1.0])
-        >>> x = torch.randn(1, 8, 2)
-        >>> y = diag_state_space(x, A=A, C=C)
-        >>> torch.allclose(y, state_space(A, x, C=C), atol=1e-6)
-        True
+        >>> x = torch.tensor([[1.0, 0.0, 0.0, 0.0, 0.0, 0.0]])
+        >>> diag_state_space(x, A=A, C=C)
+        tensor([[0.0000, 1.0000, 0.5000, 0.2500, 0.1250, 0.0625]])
+        >>> state_space(A, x, C=C)
+        tensor([[0.0000, 1.0000, 0.5000, 0.2500, 0.1250, 0.0625]])
     """
     _ssm.check_arguments(x, C, out_idx)
     _check_shared(A=A, B=B, C=C, D=D, zi=zi, x=x)

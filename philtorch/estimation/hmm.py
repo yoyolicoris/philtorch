@@ -412,7 +412,9 @@ def hmm_filter(log_emit: Tensor, log_trans: Tensor, log_init: Tensor) -> tuple[T
         tuple of Tensor: the log-likelihood, of shape :math:`(B)`, and the
         filtered log-probabilities, of shape :math:`(B, N, K)`. If no state
         can emit some :math:`y[n]`, the log-likelihood is ``-inf``, and so
-        are the log-probabilities from step :math:`n` on.
+        are the log-probabilities from step :math:`n` on. With
+        :math:`N = 0`, the log-likelihood is 0 and the log-probabilities are
+        empty.
 
     Raises:
         ValueError: if the inputs are not CUDA tensors, have unsupported
@@ -422,8 +424,8 @@ def hmm_filter(log_emit: Tensor, log_trans: Tensor, log_init: Tensor) -> tuple[T
     Example::
 
         >>> from philtorch.estimation import hmm_filter
-        >>> # Two states that stay with probability 0.9, each emitting its own
-        >>> # symbol with probability 0.8; the measurements are 0, 0, 1, 1.
+        >>> # K = 2 states that stay with probability 0.9, each emitting its
+        >>> # own symbol with probability 0.8; y = 0, 0, 1, 1 (N = 4).
         >>> trans = torch.tensor([[0.9, 0.1], [0.1, 0.9]], device="cuda")
         >>> init = torch.tensor([0.5, 0.5], device="cuda")
         >>> emit = torch.tensor([[0.8, 0.2], [0.2, 0.8]], device="cuda")
@@ -479,7 +481,9 @@ def hmm_smoother(log_emit: Tensor, log_trans: Tensor, log_init: Tensor) -> tuple
     Returns:
         tuple of Tensor: the log-likelihood, of shape :math:`(B)`, and the
         posterior log-probabilities, of shape :math:`(B, N, K)`. If no state
-        can emit some :math:`y[n]`, all of them are ``-inf``.
+        can emit some :math:`y[n]`, all of them are ``-inf``. With
+        :math:`N = 0`, the log-likelihood is 0 and the log-probabilities are
+        empty.
 
     Raises:
         ValueError: as :func:`hmm_filter` does for these arguments.
@@ -488,7 +492,7 @@ def hmm_smoother(log_emit: Tensor, log_trans: Tensor, log_init: Tensor) -> tuple
     Example::
 
         >>> from philtorch.estimation import hmm_smoother
-        >>> # The model and measurements of :func:`hmm_filter`'s example.
+        >>> # The model and measurements of hmm_filter's example: K = 2, N = 4.
         >>> trans = torch.tensor([[0.9, 0.1], [0.1, 0.9]], device="cuda")
         >>> init = torch.tensor([0.5, 0.5], device="cuda")
         >>> emit = torch.tensor([[0.8, 0.2], [0.2, 0.8]], device="cuda")
@@ -542,7 +546,8 @@ def hmm_viterbi(log_emit: Tensor, log_trans: Tensor, log_init: Tensor) -> tuple[
         tuple of Tensor: the best joint log-probability
         :math:`\max \log p(z[0], \dots, z[N - 1], y[0], \dots, y[N - 1])`,
         of shape :math:`(B)`, and the states :math:`z[0], \dots, z[N - 1]`
-        of that path, of shape :math:`(B, N)`.
+        of that path, of shape :math:`(B, N)`. With :math:`N = 0`, the score
+        is 0 and the path is empty.
 
     Raises:
         ValueError: as :func:`hmm_filter` does for these arguments.
@@ -551,7 +556,7 @@ def hmm_viterbi(log_emit: Tensor, log_trans: Tensor, log_init: Tensor) -> tuple[
     Example::
 
         >>> from philtorch.estimation import hmm_viterbi
-        >>> # The model and measurements of :func:`hmm_filter`'s example.
+        >>> # The model and measurements of hmm_filter's example: K = 2, N = 4.
         >>> trans = torch.tensor([[0.9, 0.1], [0.1, 0.9]], device="cuda")
         >>> init = torch.tensor([0.5, 0.5], device="cuda")
         >>> emit = torch.tensor([[0.8, 0.2], [0.2, 0.8]], device="cuda")
@@ -605,11 +610,11 @@ def hmm_em_step(
             :math:`(K)`, or per signal, :math:`(B, K)`.
 
     Returns:
-        tuple: the log-likelihood of the given parameters, of shape
-        :math:`(B)`; the new :attr:`log_trans` and :attr:`log_init`, of the
-        shapes given; and the posterior probabilities
-        :math:`p(z[n] = k \mid y[0], \dots, y[N - 1])`, of shape
-        :math:`(B, N, K)`.
+        (Tensor, tuple of Tensor, Tensor): the log-likelihood of the
+        given parameters, of shape :math:`(B)`; the new :attr:`log_trans` and
+        :attr:`log_init`, of the shapes given; and the posterior
+        probabilities :math:`p(z[n] = k \mid y[0], \dots, y[N - 1])`, of
+        shape :math:`(B, N, K)`.
 
     Raises:
         ValueError: if the inputs are not CUDA tensors, have unsupported
@@ -619,7 +624,7 @@ def hmm_em_step(
     Example::
 
         >>> from philtorch.estimation import hmm_em_step
-        >>> # The model and measurements of :func:`hmm_filter`'s example.
+        >>> # The model and measurements of hmm_filter's example: K = 2, N = 4.
         >>> trans = torch.tensor([[0.9, 0.1], [0.1, 0.9]], device="cuda")
         >>> init = torch.tensor([0.5, 0.5], device="cuda")
         >>> emit = torch.tensor([[0.8, 0.2], [0.2, 0.8]], device="cuda")

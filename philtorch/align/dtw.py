@@ -143,9 +143,8 @@ def dtw(
             DTW, positive for soft-DTW. Default: 0.
         x (Tensor, optional): the first sequences' frames, of shape
             :math:`(B, N, F)`. With :attr:`y`, the cost is the squared
-            Euclidean distances between their frames, never stored, but for
-            soft-DTW's second derivatives, which rebuild them. DTW's gradient
-            is then that of its path's cost, the path :func:`dtw_path` finds.
+            Euclidean distances between their frames. DTW's gradient is then
+            that of its path's cost, the path :func:`dtw_path` finds.
         y (Tensor, optional): the second sequences' frames, of shape
             :math:`(B, M, F)`, with the dtype of :attr:`x`.
         step_pattern (str, optional): the steps a path may take, as (row,
@@ -157,11 +156,10 @@ def dtw(
             cells. Default: ``"symmetric"``.
         diagonal_weight (float, optional): :math:`w > 0`, the weight of a
             diagonal step's cost in the symmetric steps. 1 favors diagonal
-            paths, which sum fewer costs; 2, Sakoe and Chiba's symmetric form
-            ("symmetric2" in Giorgino's dtw package), weighs each step's cost
-            by how far it advances, :math:`\Delta n + \Delta m`, so that every
-            path has the same total weight and diagonal steps are not favored.
-            Default: 1.
+            paths, which sum fewer costs; 2 weighs each step's cost by how far
+            it advances, :math:`\Delta n + \Delta m`, so that every path has
+            the same total weight (Sakoe and Chiba's symmetric form,
+            "symmetric2" in Giorgino's dtw package). Default: 1.
         lengths (tuple of Tensor, optional): each pair's lengths
             :math:`(N_b, M_b)`, two integer tensors of shape :math:`(B)`, for
             batches of sequences padded to :math:`N` and :math:`M`; the
@@ -174,28 +172,24 @@ def dtw(
             to :math:`(N_b - 1, M_b - 1)`, measured along the longer
             sequence, may be on a path. Where the line is steeper than the
             band allows a step to follow, the band widens to keep a path.
-            Only with :attr:`x` and :attr:`y`, for DTW and soft-DTW alike;
-            the cells outside it are then skipped. With a cost, make the cost
-            ``inf`` outside it instead. Default: ``None``, no band.
-        checkpoint (int, optional): about the number of rows between
-            stored rows of the accumulated costs, which soft-DTW's gradient
-            needs; the rest are recomputed in the backward pass. There is a
-            row per frame of the shorter sequence: :math:`R = \min(N, M)`
-            rows for the symmetric and orthogonal steps, and
-            :math:`\min(M, N - M + 1)` for the asymmetric ones. The memory
+            Only with :attr:`x` and :attr:`y`, whose cells outside it are
+            skipped; with a cost, make the cost ``inf`` outside it instead.
+            Default: ``None``, no band.
+        checkpoint (int, optional): only with :attr:`x` and :attr:`y`,
+            about the number of rows between stored rows of the accumulated
+            costs, which soft-DTW's gradient needs; the rest are recomputed
+            in the backward pass. There are :math:`R = \min(N, M)` rows for
+            the symmetric and orthogonal steps, and
+            :math:`R = \min(M, N - M + 1)` for the asymmetric ones. The memory
             holds about :math:`R` / :attr:`checkpoint` stored rows and
             :attr:`checkpoint` recomputed ones, so it is least near
-            :math:`\sqrt{R}`, and a smaller value takes more time. When the
-            longer sequence is long, the value is rounded up to whole blocks
-            of rows, of at least about 62. From :attr:`x` and :attr:`y` only:
-            a cost is as large as the accumulated costs anyway. Default:
+            :math:`\sqrt{R}`, and a smaller value takes more time. Default:
             ``None``, all rows stored.
 
     Returns:
         Tensor: the distances, of shape :math:`(B)`, floating: of the dtype of
         the costs or frames, the default dtype for an integer cost; ``inf`` for
-        a pair with no path, such as the asymmetric steps with
-        :math:`N_b < M_b`.
+        a pair with no path.
 
     Raises:
         ValueError: if not exactly one of :attr:`cost` and (:attr:`x`,
@@ -221,13 +215,14 @@ def dtw(
 
         >>> import torch
         >>> from philtorch.align import dtw
-        >>> x = torch.randn(4, 100, 3, device="cuda")  # 3-D frames
+        >>> x = torch.randn(4, 100, 3, device="cuda")  # (B, N, F), 3-D frames
         >>> y = torch.randn(4, 80, 3, device="cuda", requires_grad=True)
+        >>> # soft-DTW, gamma = 0.1, of c[n, m] = |x[n] - y[m]|^2
         >>> cost = torch.cdist(x, y) ** 2
         >>> distance = dtw(cost, gamma=0.1)
         >>> alignment, = torch.autograd.grad(
         ...     distance.sum(), cost, retain_graph=True
-        ... )
+        ... )  # the expected alignment, (B, N, M)
         >>> distance.sum().backward()  # gradients with respect to y
         >>> same = dtw(x=x, y=y, gamma=0.1)  # the same cost, from the frames
 
@@ -731,8 +726,7 @@ def dtw_path(
     memory, after `Exact, Parallelizable Dynamic Time Warping Alignment with
     Linear Memory`_ (Tralie and Dempsey, 2020) and `A Study of Parallelizable
     Alternatives to Dynamic Time Warping for Aligning Long Sequences`_ (Yang
-    et al., 2022); the distance is then the path's cost, from the frames, which
-    autograd differentiates.
+    et al., 2022).
 
     Note:
         Runs only on CUDA GPUs, as Triton kernels: the inputs must be CUDA
@@ -764,6 +758,7 @@ def dtw_path(
         >>> from philtorch.align import dtw_path
         >>> x = torch.tensor([[0.0, 1.0, 2.0]], device="cuda")
         >>> y = torch.tensor([[0.0, 0.0, 1.0, 2.0]], device="cuda")
+        >>> # c[n, m] = (x[n] - y[m])^2, of 3 and 4 frames
         >>> distance, path = dtw_path((x[..., None] - y[:, None]) ** 2)
         >>> distance
         tensor([0.], device='cuda:0')
@@ -865,8 +860,9 @@ def soft_dtw_divergence(
 
         >>> import torch
         >>> from philtorch.align import soft_dtw_divergence
-        >>> x = torch.randn(4, 100, 3, device="cuda")
+        >>> x = torch.randn(4, 100, 3, device="cuda")  # (B, N, F), 3-D frames
         >>> y = torch.randn(4, 80, 3, device="cuda", requires_grad=True)
+        >>> # gamma = 0.1, with squared Euclidean costs between the frames
         >>> divergence = soft_dtw_divergence(gamma=0.1, x=x, y=y)
         >>> divergence.sum().backward()
 

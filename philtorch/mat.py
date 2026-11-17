@@ -31,14 +31,16 @@ def find_eigenvectors(A: Tensor, eigenvalues: Tensor) -> Tensor:
         eigenvalues gives complex eigenvectors.
 
     Raises:
-        ValueError: if :attr:`A` is not square or the number of
-            eigenvalues does not match its size.
+        ValueError: if :attr:`A` is less than 2-D or not square,
+            :attr:`eigenvalues` is 0-D, or the number of eigenvalues does not
+            match the size of :attr:`A`.
         torch.linalg.LinAlgError: if an eigenvector's first component is zero,
             or an eigenvalue has more than one independent eigenvector.
 
     Example::
 
         >>> from philtorch.mat import find_eigenvectors
+        >>> # the eigenvalues 2 and 1 of [[2, 1], [0, 1]]
         >>> A = torch.tensor([[2.0, 1.0], [0.0, 1.0]])
         >>> find_eigenvectors(A, torch.tensor([2.0, 1.0]))
         tensor([[ 1.0000,  0.7071],
@@ -103,6 +105,7 @@ def companion(a: Tensor) -> Tensor:
     Example::
 
         >>> from philtorch.mat import companion
+        >>> # 1 - 0.25 z^-1 - 0.125 z^-2
         >>> companion(torch.tensor([-0.25, -0.125]))
         tensor([[0.2500, 0.1250],
                 [1.0000, 0.0000]])
@@ -129,7 +132,7 @@ def vandermonde(poles: Tensor) -> Tensor:
         \end{bmatrix},
 
     the transpose of :func:`torch.vander`. Its columns are the eigenvectors of
-    the :func:`companion` matrix :math:`C` whose roots are the poles, so
+    the :func:`companion` matrix :math:`C` whose eigenvalues are the poles, so
     :math:`C V = V \operatorname{diag}(p_0, \dots, p_{M-1})`.
 
     Args:
@@ -143,12 +146,13 @@ def vandermonde(poles: Tensor) -> Tensor:
     Example::
 
         >>> from philtorch.mat import companion, vandermonde
+        >>> # the poles 0.5 and -0.25
         >>> poles = torch.tensor([0.5, -0.25])
         >>> V = vandermonde(poles)
         >>> V
         tensor([[ 0.5000, -0.2500],
                 [ 1.0000,  1.0000]])
-        >>> # 1 - 0.25 z^-1 - 0.125 z^-2 has poles 0.5 and -0.25.
+        >>> # 1 - 0.25 z^-1 - 0.125 z^-2 has these poles
         >>> C = companion(torch.tensor([-0.25, -0.125]))
         >>> torch.allclose(C @ V, V @ torch.diag(poles))
         True
@@ -273,8 +277,8 @@ def matrix_power_accumulate(A: Tensor, n: int) -> Tensor:
             the identity.
 
     Returns:
-        Tensor: the powers, of shape :math:`(*, K, N, N)`, where
-        :math:`K = |n|`, or 1 when :math:`n = 0`. Entry ``[..., k, :, :]`` is
+        Tensor: the powers, of shape :math:`(*, |n|, N, N)`, or
+        :math:`(*, 1, N, N)` when :math:`n = 0`. Entry ``[..., k, :, :]`` is
         :math:`A^{k+1}`, or :math:`A^{-(k+1)}` for a negative :attr:`n`. The
         dtype and device are those of :attr:`A`.
 
@@ -284,6 +288,7 @@ def matrix_power_accumulate(A: Tensor, n: int) -> Tensor:
     Example::
 
         >>> from philtorch.mat import matrix_power_accumulate
+        >>> # the entry (0, 1) of A, A^2, A^3, where A^k = [[1, k], [0, 1]]
         >>> A = torch.tensor([[1.0, 1.0], [0.0, 1.0]])
         >>> matrix_power_accumulate(A, 3)[:, 0, 1]
         tensor([1., 2., 3.])
@@ -347,6 +352,7 @@ def matrices_cumdot(A: Tensor) -> Tensor:
     Example::
 
         >>> from philtorch.mat import matrices_cumdot
+        >>> # P_4 = A_1 A_2 A_3 A_4, which is P[3]
         >>> A = torch.randn(6, 2, 2, dtype=torch.float64)
         >>> P = matrices_cumdot(A)
         >>> torch.allclose(P[3], A[0] @ A[1] @ A[2] @ A[3])

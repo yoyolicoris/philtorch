@@ -337,6 +337,7 @@ def newton_solve(
     Example::
 
         >>> from philtorch.nl import newton_solve
+        >>> # y[t] = tanh(0.5 y[t - 1] + x[t]), with x[t] = 0.5 and y[-1] = 0
         >>> step = lambda y, x: torch.tanh(0.5 * y + x)
         >>> x = torch.full((1, 6), 0.5)
         >>> y, steps = newton_solve(step, x, torch.zeros(1))
