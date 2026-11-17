@@ -32,8 +32,8 @@ def _sos2pfe(sos: np.ndarray):
 
 
 def _check(sos: np.ndarray, x: np.ndarray):
-    r, p, g, batch_index, power = _sos2pfe(sos)
-    y = pfefilt(r, p, g, torch.from_numpy(x), batch_index=batch_index, power=power)
+    r, p, g, batch_index, multiplicity = _sos2pfe(sos)
+    y = pfefilt(r, p, g, torch.from_numpy(x), batch_index=batch_index, multiplicity=multiplicity)
     assert y.dtype == torch.from_numpy(x).dtype
     torch.testing.assert_close(y, torch.from_numpy(_expected(sos, x)), rtol=1e-7, atol=1e-9)
 
@@ -58,6 +58,22 @@ def _random_real_sos() -> np.ndarray:
 )
 def test_pfefilt_matches_scipy(sos):
     _check(sos, np.random.default_rng(0).standard_normal(64))
+
+
+def test_pfefilt_repeated_pole_shared_by_rows():
+    # 1 + 0.3 z^-1 / (1 - 0.5 z^-1) - 0.4 z^-2 / (1 - 0.5 z^-1)^2, on two rows
+    g, r = 1.0, [0.3, -0.4]
+    a = np.convolve([1.0, -0.5], [1.0, -0.5])
+    b = g * a + r[0] * np.convolve([0.0, 1.0], [1.0, -0.5]) + r[1] * np.array([0.0, 0.0, 1.0])
+    x = np.random.default_rng(0).standard_normal((2, 64))
+    y = pfefilt(
+        torch.tensor(r, dtype=torch.float64),
+        torch.tensor([0.5], dtype=torch.float64),
+        torch.tensor(g, dtype=torch.float64),
+        torch.from_numpy(x),
+        multiplicity=torch.tensor([2]),
+    )
+    torch.testing.assert_close(y, torch.from_numpy(signal.lfilter(b, a, x)))
 
 
 def test_pfefilt_complex_filter_and_input():
@@ -107,9 +123,9 @@ def test_pfefilt_ragged_rows_match_scipy():
     # rows of 3, 1, 0 and 2 sections: the row without any passes x on
     rows = _ragged_rows()
     sos, batch_index = _flat(rows, interleave=True)
-    r, p, g, index, power = sos2pfe(sos, batch_index=batch_index)
+    r, p, g, index, multiplicity = sos2pfe(sos, batch_index=batch_index)
     x = np.random.default_rng(0).standard_normal((4, 64))
-    y = pfefilt(r, p, g, torch.from_numpy(x), batch_index=index, power=power)
+    y = pfefilt(r, p, g, torch.from_numpy(x), batch_index=index, multiplicity=multiplicity)
     expected = [
         signal.sosfilt(np.insert(row, 3, 1.0, axis=-1), xi) if len(row) else xi
         for row, xi in zip(rows, x)
@@ -127,14 +143,15 @@ def test_pfefilt_ragged_rows_match_scipy():
     ids=["real", "complex", "batched"],
 )
 def test_pfefilt_in_chunks_equals_whole(sos):
-    r, p, g, batch_index, power = _sos2pfe(sos)
+    r, p, g, batch_index, multiplicity = _sos2pfe(sos)
     x = torch.randn(2, 60, dtype=r.dtype if sos.dtype.kind == "c" else torch.float64)
     # one state per term with batch_index, else per term and row
-    zi = torch.zeros((2,) * (batch_index is None) + (p.numel(),), dtype=p.dtype)
-    whole, zf_whole = pfefilt(r, p, g, x, zi=zi, batch_index=batch_index, power=power)
+    zi = torch.zeros((2,) * (batch_index is None) + (r.numel(),), dtype=p.dtype)
+    kwargs = dict(batch_index=batch_index, multiplicity=multiplicity)
+    whole, zf_whole = pfefilt(r, p, g, x, zi=zi, **kwargs)
     ys, zf = [], zi
     for chunk in x.split([20, 0, 25, 15], dim=-1):
-        y, zf = pfefilt(r, p, g, chunk, zi=zf, batch_index=batch_index, power=power)
+        y, zf = pfefilt(r, p, g, chunk, zi=zf, **kwargs)
         ys.append(y)
     torch.testing.assert_close(torch.cat(ys, dim=-1), whole)
     torch.testing.assert_close(zf, zf_whole)

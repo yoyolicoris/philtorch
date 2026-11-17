@@ -504,18 +504,18 @@ def sos2pfe(
             \frac{b_{l0} + b_{l1} z^{-1} + b_{l2} z^{-2}}
                  {1 + a_{l1} z^{-1} + a_{l2} z^{-2}},
 
-    this returns the residues :math:`r_i`, the poles :math:`p_i`, the direct
-    gain :math:`g = \prod_l b_{l0}` and the powers :math:`j_i` of the delayed
-    form
+    this returns the residues :math:`r_{ij}`, the poles :math:`p_i` with their
+    multiplicities :math:`m_i`, and the direct gain :math:`g = \prod_l b_{l0}`
+    of the expansion
 
     .. math::
-        H(z) = g + \sum_{i=1}^{M}
-            \frac{r_i z^{-j_i}}{(1 - p_i z^{-1})^{j_i}},
+        H(z) = g + \sum_{i=1}^{U} \sum_{j=1}^{m_i}
+            \frac{r_{ij} z^{-j}}{(1 - p_i z^{-1})^{j}},
 
-    as :func:`~philtorch.lti.pfefilt` takes it. A repeated pole is listed once
-    per power, in a row, with the powers :math:`j_i` from 1 to its
-    multiplicity. Each term is delayed by its power, so that the
-    powers of a pole at 0 are the taps :math:`r_i z^{-j_i}` of an FIR filter.
+    as :func:`~philtorch.lti.pfefilt` takes it, with :math:`U` poles and
+    :math:`M = m_1 + \dots + m_U` terms. Each term is delayed by its power
+    :math:`j`, so that the powers of a pole at 0 are the taps
+    :math:`r_{ij} z^{-j}` of an FIR filter.
     For simple poles, this is the delayed form of the partial fraction
     expansion in `Introduction to Digital Filters with Audio Applications`_
     (Smith, 2007), with the FIR part :math:`F(z) = g`. A real :attr:`sos`
@@ -524,11 +524,12 @@ def sos2pfe(
     poles have real residues. A complex :attr:`sos` lists every pole.
 
     Poles within :attr:`tol` of each other, directly or through a chain of
-    such poles, are one group.
+    such poles, are one group, listed as one pole whose multiplicity is the
+    group's size.
 
     With :attr:`batch_index`, each filter's cascade, its sections in the order
     they are listed, is expanded on its own: a filter's expansion is the sum
-    above over the terms whose returned batch index is its number, with its
+    above over the poles whose returned batch index is its number, with its
     own :math:`g`. Poles of different filters are never one group, and a
     filter without a section has no term and :math:`g = 1`.
 
@@ -560,19 +561,20 @@ def sos2pfe(
             plus 1. Default: ``None``, one cascade of all the sections.
 
     Returns:
-        tuple: the residues :math:`r` and the poles :math:`p`, both complex
-        at :attr:`sos`'s precision (complex64 for float32) and of shape
-        :math:`(M)`, :math:`M` being the number of terms of all
-        the filters: at most two per section, a real :attr:`sos` listing one
-        term for a conjugate pair; the direct gain :math:`g`, of
-        :attr:`sos`'s dtype and of shape :math:`()`, or :math:`(B)` with
-        :attr:`batch_index`; the batch index, the filter each term belongs to,
-        int64 and of shape :math:`(M)`, or ``None`` without
-        :attr:`batch_index`; and the powers :math:`j_i`, int64 and of shape
-        :math:`(M)`. The terms are in the order of the filters, and in a
-        filter, grouped in the order of their first pole, the sections' poles
-        one section after the other, a section's pole of larger magnitude
-        first; each entry of a group holds the group's pole.
+        tuple: the residues :math:`r`, complex at :attr:`sos`'s precision
+        (complex64 for float32) and of shape :math:`(M)`, :math:`M` being the
+        number of terms of all the filters: at most two per section, a real
+        :attr:`sos` listing one term for a conjugate pair; the poles
+        :math:`p`, of the same dtype and of shape :math:`(U)`; the direct
+        gain :math:`g`, of :attr:`sos`'s dtype and of shape :math:`()`, or
+        :math:`(B)` with :attr:`batch_index`; the batch index, the filter
+        each pole belongs to, int64 and of shape :math:`(U)`, or ``None``
+        without :attr:`batch_index`; and the multiplicities :math:`m_i`, int64
+        and of shape :math:`(U)`. The poles are in the order of the filters,
+        and in a filter, in the order of their first appearance, the
+        sections' poles one section after the other, a section's pole of
+        larger magnitude first; :math:`r` lists each pole's residues in a
+        row, by ascending power.
 
     Raises:
         ValueError: if :attr:`sos` is not 2-D, its last dimension is not 5, it
@@ -593,14 +595,14 @@ def sos2pfe(
         >>> # (1 + z^-1) / (1 - 0.5 z^-1) = 1 + 1.5 z^-1 / (1 - 0.5 z^-1),
         >>> # and a pole at 0 with residue 0
         >>> sos = torch.tensor([[1.0, 1.0, 0.0, -0.5, 0.0]])
-        >>> r, p, g, batch_index, power = sos2pfe(sos)
+        >>> r, p, g, batch_index, multiplicity = sos2pfe(sos)
         >>> r.real
         tensor([1.5000, 0.0000])
         >>> p.real
         tensor([0.5000, 0.0000])
         >>> g
         tensor(1.)
-        >>> power
+        >>> multiplicity
         tensor([1, 1])
         >>> # a filter of order 24, 12 sections of unit gain at DC: the
         >>> # expansion filters as the cascade does
@@ -611,15 +613,16 @@ def sos2pfe(
         >>> sos = torch.stack([b, 2 * b, b, a1, a2], -1)
         >>> x = torch.zeros(200, dtype=torch.float64)
         >>> x[0] = 1.0
-        >>> r, p, g, batch_index, power = sos2pfe(sos)
-        >>> y = pfefilt(r, p, g, x, batch_index=batch_index, power=power)
+        >>> r, p, g, batch_index, multiplicity = sos2pfe(sos)
+        >>> y = pfefilt(r, p, g, x, batch_index=batch_index,
+        ...             multiplicity=multiplicity)
         >>> torch.allclose(y, sosfilt(sos, x))
         True
         >>> # two filters of one section each, the first's as above
         >>> sos = torch.tensor([[1.0, 1.0, 0.0, -0.5, 0.0],
         ...                     [1.0, -1.0, 0.0, 0.5, 0.0]])
         >>> index = torch.tensor([0, 1])
-        >>> r, p, g, batch_index, power = sos2pfe(sos, batch_index=index)
+        >>> r, p, g, batch_index, multiplicity = sos2pfe(sos, batch_index=index)
         >>> r.real
         tensor([ 1.5000,  0.0000, -1.5000,  0.0000])
         >>> batch_index
@@ -695,15 +698,15 @@ def sos2pfe(
     f = _tree_prod(terms.flatten(1, 2), m)
 
     # r_j = f[m - j]: each group's first m terms, reversed
-    power = torch.arange(1 - m, 1, device=sos.device) + multiplicity.unsqueeze(-1)
-    keep = power >= 1
-    p, r, power = unique.unsqueeze(-1).expand(-1, m)[keep], f.flip(-1)[keep], power[keep]
+    keep = torch.arange(1 - m, 1, device=sos.device) + multiplicity.unsqueeze(-1) >= 1
+    r = f.flip(-1)[keep]
     if not sos.is_complex():
         # a real pole's residue is real; r.real is made complex as a workaround
         # of an upstream bug: torch.where's backward fails for a real and a
         # complex input
-        r = torch.where(p.imag == 0, r.real.to(r.dtype), r)
+        real_pole = unique.repeat_interleave(multiplicity, output_size=r.size(0)).imag == 0
+        r = torch.where(real_pole, r.real.to(r.dtype), r)
     g = sos[..., 0].prod(-1)
     if batch_index is None:
-        return r, p, g[0], None, power
-    return r, p, g, row.repeat_interleave(multiplicity), power
+        return r, unique, g[0], None, multiplicity
+    return r, unique, g, row, multiplicity

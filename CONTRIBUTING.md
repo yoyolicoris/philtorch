@@ -90,13 +90,13 @@ Filter equations follow Julius O. Smith's *Introduction to Digital Filters with 
 |---|---|
 | `x[n]`, `y[n]` | input and output at sample `n` |
 | `H(z) = B(z) / A(z)` | transfer function, in powers of `z^{-1}` only |
-| `b_i`, `a_j`; `i`, `j` | numerator and denominator coefficients; the indices of their sums, as in `lfilter` |
+| `b_i`, `a_j`; `i`, `j` | numerator and denominator coefficients; the indices of their sums, as in `lfilter`, and of an FIR sum: `y[n] = sum_{i=0}^{M} b_i x[n - i]` |
 | `M`, `M_b`, `M_a` | the order (of a recursion, a numerator, a denominator) |
-| `m` | the index of an FIR sum: `y[n] = sum_{m=0}^{M} b_m x[n - m]` |
 | `K`, `l` | the number of second-order sections, and their index, `l = 1, ..., K` |
 | `g` | a direct gain |
 | `F(z)`, `f_i` | the FIR part of an expansion, and its coefficients |
-| `r_i`, `p_i`, `j_i` | residues, poles and powers of a partial fraction expansion |
+| `r_i`, `p_i`, `j_i` | residues, poles and powers of a partial fraction expansion, one entry per term, as in `residuez` |
+| `U`, `m_i`, `r_{ij}` | the number of poles of an expansion listed once each, their multiplicities, and the residue of pole `i` at power `j`, as in `pfefilt` |
 | `D` | a delay in samples |
 
 `k` is only an index, never a gain or a coefficient. The exception is the functions that mirror SciPy (`residuez`, `invresz`), which keep SciPy's `k` for the direct term. Where a function has two forms selected by an argument, such as `delayed_form`, show both equations rather than one parameterized equation. Write a cascade as a plain product over its sections, `H(z) = \prod_{l=1}^{K} ...`, with no intermediate `H_l(z)`. Give a product or sum explicit bounds, not a condition subscript such as `\prod_{j < k}`.
