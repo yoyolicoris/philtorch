@@ -343,9 +343,9 @@ def diag_state_space(
     - :attr:`A` alone: the eigenvalues and eigenvectors come from
       :func:`torch.linalg.eig`.
     - :attr:`L` with :attr:`A`: :attr:`L` gives the eigenvalues. Each of its
-      entries, in order, takes the eigenvector of :attr:`A`, from
-      :func:`torch.linalg.eig`, whose eigenvalue is the nearest of those not
-      yet taken.
+      entries takes the eigenvector of :attr:`A`, from
+      :func:`torch.linalg.eig`, whose eigenvalue is nearest to it, a different
+      one for each.
     - :attr:`L` with :attr:`V` or :attr:`Vinv`: the missing one is the inverse
       of the given one, and :attr:`A`, if given, is ignored.
     - :attr:`L` with both :attr:`V` and :attr:`Vinv`: used as given.
@@ -385,7 +385,9 @@ def diag_state_space(
             don't share a dtype and a device, or have neither the dtype of
             :attr:`x` nor, with a real :attr:`A`, its complex dtype, if
             :attr:`D` gives a different number of outputs from :attr:`C`,
-            :attr:`out_idx` or the states, or if the shapes do not match.
+            :attr:`out_idx` or the states, if two eigenvalues in :attr:`L` are
+            nearest to the same one of :attr:`A`, or if the shapes do not
+            match.
 
     Example::
 
@@ -477,15 +479,12 @@ def diag_state_space(
 
     if V is None and Vinv is None and A is not None:
         # A's eigenvectors in the order of L: each eigenvalue of L takes the
-        # nearest of A's that an earlier one hasn't taken.
+        # nearest of A's, a different one for each.
         eigenvalues, V = torch.linalg.eig(A)
-        distance = (L.unsqueeze(-1) - eigenvalues.unsqueeze(-2)).abs()
-        order = []
-        for k in range(M):
-            j = distance[..., k, :].argmin(-1, keepdim=True)
-            distance.scatter_(-1, j.unsqueeze(-2).expand(*distance.shape[:-1], 1), torch.inf)
-            order.append(j)
-        V = V.gather(-1, torch.cat(order, -1).unsqueeze(-2).expand_as(V))
+        nearest = (L.unsqueeze(-1) - eigenvalues.unsqueeze(-2)).abs().argmin(-1)
+        if (nearest.sort(-1).values != torch.arange(M, device=nearest.device)).any():
+            raise ValueError("Each eigenvalue in L must be nearest to a different one of A.")
+        V = V.gather(-1, nearest.unsqueeze(-2).expand_as(V))
         # A real L's eigenvectors are real.
         V = V if L.is_complex() else V.real
     # With neither V nor Vinv, A = diag(L) and V = I.
@@ -544,62 +543,61 @@ def diag_state_space(
             q0 = _ssm.initial_state(x, zi, M)[0].to(L.dtype)
             q0 = q0 if identity else to_modal(q0.unsqueeze(-1)).squeeze(-1)
             s0 = q0.flatten() / Bh
-            route = bool(torch.isfinite(s0).all())
-    if route:
-        from .filtering import pfefilt  # it imports this module
+        if zi is None or bool(torch.isfinite(s0).all()):
+            from .filtering import pfefilt  # it imports this module
 
-        C_hat = unit(out_idx) if C is None else C.to(L.dtype)
-        if not identity:
-            C_hat = times_V(C_hat)
-        r, p = C_hat * B_hat, L
-        # A given zi is per signal: flatten with it.
-        batched = (
-            zi is not None
-            or L.dim() == 2
-            or any(t is not None and t.dim() == 2 for t in (B, C))
-            or (D is not None and D.shape == (batch_size,) and batch_size != 1)
-        )
-        g = x.new_zeros(()) if D is None else D
-        if batched:
-            r = r.broadcast_to(batch_size, M).flatten()
-            p = L.broadcast_to(batch_size, M).flatten()
-            batch_index = torch.arange(batch_size, device=x.device).repeat_interleave(M)
-            g = g.expand(batch_size)
-        else:
-            r, batch_index, g = r.reshape(M), None, g.reshape(())
-        # A real filter lists one pole of each conjugate pair, which eigvals
-        # gives exactly; a complex L of the user's may not pair up: list all.
-        half = real and (from_A or not L.is_complex())
-        keep, weight = slice(None), 1
-        if half and L.is_complex():
-            (keep,) = (p.imag >= 0).nonzero(as_tuple=True)  # one sync for every selection
-            r, p = r[keep], p[keep]
-            weight = 1 + (p.imag != 0)  # a listed pole stands for its pair
+            C_hat = unit(out_idx) if C is None else C.to(L.dtype)
+            if not identity:
+                C_hat = times_V(C_hat)
+            r, p = C_hat * B_hat, L
+            # A given zi is per signal: flatten with it.
+            batched = (
+                zi is not None
+                or L.dim() == 2
+                or any(t is not None and t.dim() == 2 for t in (B, C))
+                or (D is not None and D.shape == (batch_size,) and batch_size != 1)
+            )
+            g = x.new_zeros(()) if D is None else D
             if batched:
-                batch_index = batch_index[keep]
-            r = torch.where(p.imag == 0, r.real.to(r.dtype), r)  # real poles: real residues
-            if zi is not None:
-                Bh, s0 = Bh[keep], s0[keep]
-                s0 = torch.where(p.imag == 0, s0.real.to(s0.dtype), s0)
-        y = pfefilt(
-            r,
-            p,
-            g if half else g.to(L.dtype),
-            x,
-            zi=None if zi is None else s0,
-            batch_index=batch_index,
-        )
-        if zi is None:
-            return y if half or not real else y.real
-        y, s = y
-        # q[N] = Bh s[N] and zf = V q[N]. The listed poles of a half form stand
-        # for their pairs: V q[N] is the real part of V times q[N] of the listed
-        # ones, counted twice for a non-real pole.
-        q = L.new_zeros(batch_size * M)
-        q[keep] = weight * Bh * s if L.is_complex() else (Bh * s).real
-        zf = q.reshape(batch_size, M)
-        zf = zf if identity else from_modal(zf.unsqueeze(-1)).squeeze(-1)
-        return (y if half or not real else y.real), (zf.real if real else zf)
+                r = r.broadcast_to(batch_size, M).flatten()
+                p = L.broadcast_to(batch_size, M).flatten()
+                batch_index = torch.arange(batch_size, device=x.device).repeat_interleave(M)
+                g = g.expand(batch_size)
+            else:
+                r, batch_index, g = r.reshape(M), None, g.reshape(())
+            # A real filter lists one pole of each conjugate pair, which eigvals
+            # gives exactly; a complex L of the user's may not pair up: list all.
+            half = real and (from_A or not L.is_complex())
+            keep, weight = slice(None), 1
+            if half and L.is_complex():
+                (keep,) = (p.imag >= 0).nonzero(as_tuple=True)  # one sync for every selection
+                r, p = r[keep], p[keep]
+                weight = 1 + (p.imag != 0)  # a listed pole stands for its pair
+                if batched:
+                    batch_index = batch_index[keep]
+                r = torch.where(p.imag == 0, r.real.to(r.dtype), r)  # real poles: real residues
+                if zi is not None:
+                    Bh, s0 = Bh[keep], s0[keep]
+                    s0 = torch.where(p.imag == 0, s0.real.to(s0.dtype), s0)
+            y = pfefilt(
+                r,
+                p,
+                g if half else g.to(L.dtype),
+                x,
+                zi=None if zi is None else s0,
+                batch_index=batch_index,
+            )
+            if zi is None:
+                return y if half or not real else y.real
+            y, s = y
+            # q[N] = Bh s[N] and zf = V q[N]. The listed poles of a half form stand
+            # for their pairs: V q[N] is the real part of V times q[N] of the listed
+            # ones, counted twice for a non-real pole.
+            q = L.new_zeros(batch_size * M)
+            q[keep] = weight * Bh * s if L.is_complex() else (Bh * s).real
+            zf = q.reshape(batch_size, M)
+            zf = zf if identity else from_modal(zf.unsqueeze(-1)).squeeze(-1)
+            return (y if half or not real else y.real), (zf.real if real else zf)
 
     zi, return_zf = _ssm.initial_state(x, zi, M)
 

@@ -1132,6 +1132,16 @@ _LTI_SSM_CASES = [
         "Input matrix B must be of shape",
         id="diag-route-B-wrong-shape",
     ),
+    pytest.param(
+        lambda: lti.diag_state_space(
+            _ones(1, 4),
+            L=torch.tensor([0.5, 0.5], dtype=F64),
+            A=torch.diag(torch.tensor([0.5, 0.3], dtype=F64)),
+            C=_ones(2),
+        ),
+        "Each eigenvalue in L must be nearest to a different one of A",
+        id="diag-L-A-unpaired",
+    ),
 ]
 
 
