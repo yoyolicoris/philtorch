@@ -341,9 +341,7 @@ def diag_state_space(
 
     Give the decomposition in one of these ways:
 
-    - :attr:`A` alone: the eigenvalues come from
-      :func:`torch.linalg.eigvals` and the eigenvectors from
-      :func:`~philtorch.mat.find_eigenvectors`.
+    - :attr:`A` alone: both come from :func:`torch.linalg.eig`.
     - :attr:`L` with :attr:`A`, :attr:`V` or :attr:`Vinv`: the missing
       matrices are computed from it.
     - :attr:`L` with both :attr:`V` and :attr:`Vinv`: used as given.
@@ -416,8 +414,7 @@ def diag_state_space(
         if V is not None or Vinv is not None:
             raise ValueError("V and Vinv need L")
         _check_A(A, x)
-        L = torch.linalg.eigvals(A)
-        V = Vinv = None
+        L, V = torch.linalg.eig(A)
         M = A.size(-1)
     else:
         match L.shape:
@@ -508,6 +505,8 @@ def diag_state_space(
         (zi is None or tuple(zi.shape) in ((M,), (batch_size, M)))
         and unroll_factor is None
         and x.dim() == 2
+        # pfefilt takes floating-point and complex dtypes other than bfloat16
+        and (x.is_floating_point() or x.is_complex())
         and x.dtype != torch.bfloat16
         and (D is None or tuple(D.shape) in ((), (1,), (batch_size,)))
         and (out_idx is not None if C is None else tuple(C.shape) in ((M,), (batch_size, M)))
@@ -543,7 +542,7 @@ def diag_state_space(
             zi is not None
             or L.dim() == 2
             or any(t is not None and t.dim() == 2 for t in (B, C))
-            or (D is not None and D.shape == (batch_size,) and batch_size > 1)
+            or (D is not None and D.shape == (batch_size,) and batch_size != 1)
         )
         g = x.new_zeros(()) if D is None else D
         if batched:

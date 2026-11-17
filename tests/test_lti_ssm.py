@@ -657,6 +657,36 @@ def test_diag_state_space_pfefilt_route_with_zi_and_no_steps():
     torch.testing.assert_close(zf, zi)
 
 
+# eigenvectors with a zero first entry, and a repeated eigenvalue with two
+@pytest.mark.parametrize("diagonal", [[0.5, 0.3], [0.5, 0.5]], ids=["distinct", "repeated"])
+def test_diag_state_space_diagonal_A(diagonal):
+    A = torch.diag(torch.tensor(diagonal, dtype=torch.double))
+    x = torch.randn(_PFE_BATCH, _PFE_N, dtype=torch.double)
+    B, C = torch.randn(2, dtype=torch.double), torch.randn(2, dtype=torch.double)
+
+    torch.testing.assert_close(diag_state_space(x, A=A, B=B, C=C), state_space(A, x, B=B, C=C))
+
+
+def test_diag_state_space_integer_model():
+    # pfefilt doesn't take integers: the integer recurrence runs them
+    x = torch.ones(1, 4, dtype=torch.long)
+    L, C = torch.zeros(1, dtype=torch.long), torch.ones(1, dtype=torch.long)
+
+    y = diag_state_space(x, L=L, C=C)
+
+    torch.testing.assert_close(y, torch.tensor([[0, 1, 1, 1]]))
+
+
+def test_diag_state_space_pfefilt_route_without_signals():
+    given, _, dtype = _pfe_model("A_real", batched=False)
+    x = torch.empty(0, _PFE_N, dtype=dtype)
+    C, D = torch.randn(_PFE_M, dtype=dtype), torch.randn(0, dtype=dtype)
+
+    y = diag_state_space(x, **given, C=C, D=D)
+
+    assert y.shape == (0, _PFE_N)
+
+
 def test_diag_state_space_one_output_in_bfloat16():
     # pfefilt doesn't take bfloat16, which has no complex dtype
     L = (torch.rand(_PFE_M) - 0.5).bfloat16()

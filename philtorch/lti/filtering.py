@@ -901,8 +901,10 @@ def pfefilt(
         pole = torch.arange(p.numel(), device=x.device)
         pole = pole.repeat_interleave(multiplicity, output_size=r.numel())
         p, batch_index = p[pole], batch_index[pole]
-        first = F.pad(pole[1:] != pole[:-1], (1, 0), value=True)
-        goes_on = F.pad(pole[1:] == pole[:-1], (0, 1))
+        first = torch.ones_like(pole, dtype=torch.bool)
+        first[1:] = pole[1:] != pole[:-1]
+        goes_on = torch.zeros_like(first)
+        goes_on[:-1] = pole[1:] == pole[:-1]
     if real:
         real_pole = p.imag == 0
         if (real_pole & ((r.imag != 0) | (zi.imag != 0))).any():
