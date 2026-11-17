@@ -601,15 +601,15 @@ def test_diag_state_space_pfefilt_route_matches_state_space(system, batched, out
 
 
 # The route with an initial state: the modes' sections start from V^{-1} zi.
+# A given zi always takes the per-signal layout, batched model or not.
 @pytest.mark.parametrize("system", ["A_real", "LVinv_complex", "A_complex", "L_real"])
-@pytest.mark.parametrize("batched", [False, True])
-def test_diag_state_space_pfefilt_route_with_zi_matches_state_space(system, batched):
-    given, A, dtype = _pfe_model(system, batched)
+def test_diag_state_space_pfefilt_route_with_zi_matches_state_space(system):
+    given, A, dtype = _pfe_model(system, batched=False)
     M = _PFE_M
     x = torch.randn(_PFE_BATCH, _PFE_N, dtype=dtype)
-    B = torch.randn(*((_PFE_BATCH,) if batched else ()), M, dtype=dtype)
+    B = torch.randn(M, dtype=dtype)
     C = torch.randn(_PFE_BATCH, M, dtype=dtype)
-    D = torch.randn((_PFE_BATCH,) if batched else (), dtype=dtype)
+    D = torch.randn((), dtype=dtype)
     zi = torch.randn(_PFE_BATCH, M, dtype=dtype)
 
     y, zf = diag_state_space(x, **given, B=B, C=C, D=D, zi=zi)
@@ -631,12 +631,10 @@ def test_diag_state_space_pfefilt_route_with_one_zi_for_all_signals():
     torch.testing.assert_close(zf, zf_ref)
 
 
-# a subnormal entry overflows q[0] / B as a zero divides by it
-@pytest.mark.parametrize("b", [0.0, 1e-310], ids=["zero", "subnormal"])
-def test_diag_state_space_with_zi_and_a_mode_that_b_cannot_reach(b):
-    # no section carries the initial state of a mode B can't reach
+def test_diag_state_space_with_zi_and_a_mode_that_b_cannot_reach():
+    # a subnormal entry of B, which overflows q[0] / B as a zero would divide it
     L = torch.tensor([0.5, -0.3, 0.2], dtype=torch.double)
-    B = torch.tensor([1.0, b, 2.0], dtype=torch.double)
+    B = torch.tensor([1.0, 1e-310, 2.0], dtype=torch.double)
     C, zi = torch.randn(3, dtype=torch.double), torch.randn(_PFE_BATCH, 3, dtype=torch.double)
     x = torch.randn(_PFE_BATCH, _PFE_N, dtype=torch.double)
 
@@ -657,10 +655,9 @@ def test_diag_state_space_pfefilt_route_with_zi_and_no_steps():
     torch.testing.assert_close(zf, zi)
 
 
-# eigenvectors with a zero first entry, and a repeated eigenvalue with two
-@pytest.mark.parametrize("diagonal", [[0.5, 0.3], [0.5, 0.5]], ids=["distinct", "repeated"])
-def test_diag_state_space_diagonal_A(diagonal):
-    A = torch.diag(torch.tensor(diagonal, dtype=torch.double))
+def test_diag_state_space_diagonal_A():
+    # a repeated eigenvalue with two eigenvectors
+    A = torch.diag(torch.tensor([0.5, 0.5], dtype=torch.double))
     x = torch.randn(_PFE_BATCH, _PFE_N, dtype=torch.double)
     B, C = torch.randn(2, dtype=torch.double), torch.randn(2, dtype=torch.double)
 

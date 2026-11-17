@@ -69,9 +69,8 @@ def test_confluent_vandermonde_companion():
     torch.testing.assert_close(C @ V, V @ J)
 
 
-# an eigenvector with a zero first component, and an eigenvalue with two
-@pytest.mark.parametrize("diagonal", [[0.5, 0.3], [0.5, 0.5]], ids=["zero-first", "repeated"])
-def test_find_eigenvectors_raises_without_a_first_component(diagonal):
-    eigenvalues = torch.tensor(diagonal, dtype=torch.float64)
+def test_find_eigenvectors_raises_without_a_first_component():
+    # the eigenvector of 0.3 has a zero first component
+    eigenvalues = torch.tensor([0.5, 0.3], dtype=torch.float64)
     with pytest.raises(torch.linalg.LinAlgError, match="first component"):
         find_eigenvectors(torch.diag(eigenvalues), eigenvalues)

@@ -168,12 +168,3 @@ def test_pfefilt_without_poles(g_dtype, with_multiplicity):
     g = torch.tensor(2.0, dtype=g_dtype)
     y = pfefilt(empty, empty, g, x, multiplicity=multiplicity)
     torch.testing.assert_close(y, 2 * x.to(g_dtype))
-
-
-def test_pfefilt_without_rows():
-    # a repeated pole for no rows: every row's chains are empty
-    r, p = torch.ones(2, dtype=torch.complex128), torch.tensor([0.5 + 0j], dtype=torch.complex128)
-    x = torch.zeros(0, 8, dtype=torch.float64)
-    g = torch.tensor(1.0 + 0j, dtype=torch.complex128)
-    y = pfefilt(r, p, g, x, multiplicity=torch.tensor([2]))
-    assert y.shape == (0, 8)

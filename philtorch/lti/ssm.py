@@ -418,8 +418,7 @@ def diag_state_space(
 
     batch_size = x.size(0)
 
-    from_A = L is None
-    if from_A:
+    if L is None:
         if A is None:
             raise ValueError("Either L or A must be provided")
         if V is not None or Vinv is not None:
@@ -550,7 +549,7 @@ def diag_state_space(
                 r, batch_index, g = r.reshape(M), None, g.reshape(())
             # A real filter lists one pole of each conjugate pair, which eig
             # gives exactly; a complex L of the user's may not pair up: list all.
-            half = real and (from_A or not L.is_complex())
+            half = real and (A is not None or not L.is_complex())
             keep, weight = slice(None), 1
             if half and L.is_complex():
                 (keep,) = (p.imag >= 0).nonzero(as_tuple=True)  # one sync for every selection
