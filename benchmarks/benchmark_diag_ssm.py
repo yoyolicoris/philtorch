@@ -3,12 +3,12 @@
 A real model with complex poles, x of shape (B, N), runs three ways from the
 same A, C and D:
 
-- ``modal``: ``diag_state_space`` with an all-zero ``zi``, which keeps it on
-  the modal path: one complex recursion per mode, with the input and output
-  projected at every step;
-- ``pfe``: ``diag_state_space`` without ``zi``, which folds the projections
-  into residues and runs ``pfefilt`` in its half form, one pole of each
-  conjugate pair, real poles in the real dtype;
+- ``modal``: ``diag_state_space`` with x as one feature, shape (B, N, 1),
+  which keeps it on the modal path: one complex recursion per mode, with the
+  input and output projected at every step;
+- ``pfe``: ``diag_state_space`` with x of shape (B, N), which folds the
+  projections into residues and runs ``pfefilt`` in its half form, one pole
+  of each conjugate pair, real poles in the real dtype;
 - ``ssm``: ``state_space(A, x, C=C, D=D)``, the dense recursion.
 
 Each time includes the eigendecomposition. Run from the repository root:
@@ -51,17 +51,20 @@ def main():
             for M in (2, 8, 32):
                 A, C, D = model(M, dtype, device)
                 for B in (1, 16):
-                    zi = A.new_zeros(B, M)
                     for N in (1_000, 10_000, 100_000):
                         x = torch.randn(B, N, dtype=dtype, device=device)
-                        y_modal = diag_state_space(x, A=A, C=C, D=D, zi=zi)[0]
+                        e0 = A.new_zeros(M, 1)
+                        e0[0] = 1
+                        y_modal = diag_state_space(x[..., None], A=A, B=e0, C=C, D=D[None])
                         err = (diag_state_space(x, A=A, C=C, D=D) - y_modal).abs().max().item()
                         scale = y_modal.abs().max().item()
                         assert err <= (1e-3 if dtype == torch.float32 else 1e-8) * scale, err
 
                         Ag, Cg, Dg = (t.clone().requires_grad_() for t in (A, C, D))
                         fns = {
-                            "modal": lambda A, C, D: diag_state_space(x, A=A, C=C, D=D, zi=zi)[0],
+                            "modal": lambda A, C, D: diag_state_space(
+                                x[..., None], A=A, B=e0, C=C, D=D[None]
+                            ),
                             "pfe": lambda A, C, D: diag_state_space(x, A=A, C=C, D=D),
                             "ssm": lambda A, C, D: state_space(A, x, C=C, D=D),
                         }

@@ -501,22 +501,20 @@ def diag_state_space(
 
     def unit(i):
         e = L.new_zeros(M)
-        e[i] = 1
+        e[i].fill_(1)  # e[i] = 1 would copy from the host and synchronize
         return e
 
-    if (
-        zi is None
+    route = (
+        (zi is None or tuple(zi.shape) in ((M,), (batch_size, M)))
         and unroll_factor is None
         and x.dim() == 2
         and x.dtype != torch.bfloat16
         and (D is None or tuple(D.shape) in ((), (1,), (batch_size,)))
         and (out_idx is not None if C is None else tuple(C.shape) in ((M,), (batch_size, M)))
-    ):
-        # One input and one output from rest: a partial fraction expansion with
-        # p = L and r = (C V) * (V^{-1} B), which pfefilt runs. It imports this
-        # module, so it is imported here.
-        from .filtering import pfefilt
-
+    )
+    if route:
+        # One input and one output: a partial fraction expansion with p = L and
+        # r = (C V) * (V^{-1} B), which pfefilt runs.
         if B is not None and tuple(B.shape) not in ((M,), (batch_size, M)):
             raise _ssm_B_shape_error(B, x, batch_size, M)
 
@@ -524,12 +522,26 @@ def diag_state_space(
         B_hat = B.to(L.dtype) if B is not None else L.new_ones(M) if identity else unit(0)
         if not identity:
             B_hat = to_modal(B_hat.reshape(-1, M, 1)).squeeze(-1)
+        if zi is not None:
+            # The sections s = q / Bh of the modes q, from q[0] = V^{-1} zi. A
+            # mode that B can't reach, or barely (a subnormal Bh), has no
+            # section to carry its initial state: s0 isn't finite.
+            Bh = B_hat.broadcast_to(batch_size, M).flatten()
+            q0 = _ssm.initial_state(x, zi, M)[0].to(L.dtype)
+            q0 = q0 if identity else to_modal(q0.unsqueeze(-1)).squeeze(-1)
+            s0 = q0.flatten() / Bh
+            route = bool(torch.isfinite(s0).all())
+    if route:
+        from .filtering import pfefilt  # it imports this module
+
         C_hat = unit(out_idx) if C is None else C.to(L.dtype)
         if not identity:
             C_hat = times_V(C_hat)
         r, p = C_hat * B_hat, L
+        # A given zi is per signal: flatten with it.
         batched = (
-            L.dim() == 2
+            zi is not None
+            or L.dim() == 2
             or any(t is not None and t.dim() == 2 for t in (B, C))
             or (D is not None and D.shape == (batch_size,) and batch_size > 1)
         )
@@ -544,14 +556,36 @@ def diag_state_space(
         # A real filter lists one pole of each conjugate pair, which eigvals
         # gives exactly; a complex L of the user's may not pair up: list all.
         half = real and (from_A or not L.is_complex())
+        keep, weight = slice(None), 1
         if half and L.is_complex():
-            keep = p.imag >= 0
+            (keep,) = (p.imag >= 0).nonzero(as_tuple=True)  # one sync for every selection
             r, p = r[keep], p[keep]
+            weight = 1 + (p.imag != 0)  # a listed pole stands for its pair
             if batched:
                 batch_index = batch_index[keep]
             r = torch.where(p.imag == 0, r.real.to(r.dtype), r)  # real poles: real residues
-        y = pfefilt(r, p, g if half else g.to(L.dtype), x, batch_index=batch_index)
-        return y if half or not real else y.real
+            if zi is not None:
+                Bh, s0 = Bh[keep], s0[keep]
+                s0 = torch.where(p.imag == 0, s0.real.to(s0.dtype), s0)
+        y = pfefilt(
+            r,
+            p,
+            g if half else g.to(L.dtype),
+            x,
+            zi=None if zi is None else s0,
+            batch_index=batch_index,
+        )
+        if zi is None:
+            return y if half or not real else y.real
+        y, s = y
+        # q[N] = Bh s[N] and zf = V q[N]. The listed poles of a half form stand
+        # for their pairs: V q[N] is the real part of V times q[N] of the listed
+        # ones, counted twice for a non-real pole.
+        q = L.new_zeros(batch_size * M)
+        q[keep] = weight * Bh * s if L.is_complex() else (Bh * s).real
+        zf = q.reshape(batch_size, M)
+        zf = zf if identity else from_modal(zf.unsqueeze(-1)).squeeze(-1)
+        return (y if half or not real else y.real), (zf.real if real else zf)
 
     zi, return_zf = _ssm.initial_state(x, zi, M)
 

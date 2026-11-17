@@ -600,6 +600,63 @@ def test_diag_state_space_pfefilt_route_matches_state_space(system, batched, out
     torch.testing.assert_close(y, y_ref)
 
 
+# The route with an initial state: the modes' sections start from V^{-1} zi.
+@pytest.mark.parametrize("system", ["A_real", "LVinv_complex", "A_complex", "L_real"])
+@pytest.mark.parametrize("batched", [False, True])
+def test_diag_state_space_pfefilt_route_with_zi_matches_state_space(system, batched):
+    given, A, dtype = _pfe_model(system, batched)
+    M = _PFE_M
+    x = torch.randn(_PFE_BATCH, _PFE_N, dtype=dtype)
+    B = torch.randn(*((_PFE_BATCH,) if batched else ()), M, dtype=dtype)
+    C = torch.randn(_PFE_BATCH, M, dtype=dtype)
+    D = torch.randn((_PFE_BATCH,) if batched else (), dtype=dtype)
+    zi = torch.randn(_PFE_BATCH, M, dtype=dtype)
+
+    y, zf = diag_state_space(x, **given, B=B, C=C, D=D, zi=zi)
+
+    y_ref, zf_ref = state_space(A, x, B=B, C=C, D=D, zi=zi)
+    torch.testing.assert_close(y, y_ref)
+    torch.testing.assert_close(zf, zf_ref)
+
+
+def test_diag_state_space_pfefilt_route_with_one_zi_for_all_signals():
+    given, A, dtype = _pfe_model("A_real", batched=False)
+    x = torch.randn(_PFE_BATCH, _PFE_N, dtype=dtype)
+    zi = torch.randn(_PFE_M, dtype=dtype)
+
+    y, zf = diag_state_space(x, **given, out_idx=2, zi=zi)
+
+    y_ref, zf_ref = state_space(A, x, out_idx=2, zi=zi)
+    torch.testing.assert_close(y, y_ref)
+    torch.testing.assert_close(zf, zf_ref)
+
+
+# a subnormal entry overflows q[0] / B as a zero divides by it
+@pytest.mark.parametrize("b", [0.0, 1e-310], ids=["zero", "subnormal"])
+def test_diag_state_space_with_zi_and_a_mode_that_b_cannot_reach(b):
+    # no section carries the initial state of a mode B can't reach
+    L = torch.tensor([0.5, -0.3, 0.2], dtype=torch.double)
+    B = torch.tensor([1.0, b, 2.0], dtype=torch.double)
+    C, zi = torch.randn(3, dtype=torch.double), torch.randn(_PFE_BATCH, 3, dtype=torch.double)
+    x = torch.randn(_PFE_BATCH, _PFE_N, dtype=torch.double)
+
+    y, zf = diag_state_space(x, L=L, B=B, C=C, zi=zi)
+
+    y_ref, zf_ref = state_space(torch.diag(L), x, B=B, C=C, zi=zi)
+    torch.testing.assert_close(y, y_ref)
+    torch.testing.assert_close(zf, zf_ref)
+
+
+def test_diag_state_space_pfefilt_route_with_zi_and_no_steps():
+    given, _, dtype = _pfe_model("A_real", batched=False)
+    zi = torch.randn(_PFE_BATCH, _PFE_M, dtype=dtype)
+
+    y, zf = diag_state_space(torch.empty(_PFE_BATCH, 0, dtype=dtype), **given, out_idx=1, zi=zi)
+
+    assert y.shape == (_PFE_BATCH, 0)
+    torch.testing.assert_close(zf, zi)
+
+
 def test_diag_state_space_one_output_in_bfloat16():
     # pfefilt doesn't take bfloat16, which has no complex dtype
     L = (torch.rand(_PFE_M) - 0.5).bfloat16()
