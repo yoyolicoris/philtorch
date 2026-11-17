@@ -610,7 +610,7 @@ _LTI_FILTERING_CASES = [
         "sos can't be float16 or bfloat16",
         id="sos2pfe-bfloat16",
     ),
-    # pfefilt(r, p, g, x, zi, batch_index, power): flat arguments of one precision; a real g
+    # pfefilt(r, p, g, x, zi, batch_index, multiplicity): flat arguments of one precision; a real g
     # takes a real x and real residues for real poles
     pytest.param(
         lambda: lti.pfefilt(_ones(2), _ones(2), _ones(()), _ones(1, 2, 4)),
@@ -679,9 +679,54 @@ _LTI_FILTERING_CASES = [
         id="pfefilt-batch-index-float",
     ),
     pytest.param(
-        lambda: lti.pfefilt(_ones(1), _ones(1), _ones(()), _ones(4), power=torch.tensor([True])),
-        "power must be int32 or int64",
-        id="pfefilt-power-bool",
+        lambda: lti.pfefilt(
+            _ones(1), _ones(1), _ones(()), _ones(4), multiplicity=torch.tensor([True])
+        ),
+        "multiplicity must be int32 or int64",
+        id="pfefilt-multiplicity-bool",
+    ),
+    pytest.param(
+        lambda: lti.pfefilt(
+            _ones(1), _ones(2), _ones(()), _ones(4), multiplicity=torch.tensor([1])
+        ),
+        "multiplicity must be 1D of length 2",
+        id="pfefilt-multiplicity-shape",
+    ),
+    pytest.param(
+        lambda: lti.pfefilt(
+            _ones(1), _ones(1), _ones(()), _ones(4), multiplicity=torch.tensor([0])
+        ),
+        "multiplicity must be at least 1",
+        id="pfefilt-multiplicity-below-1",
+    ),
+    pytest.param(
+        lambda: lti.pfefilt(
+            _ones(1), _ones(1), _ones(()), _ones(4), multiplicity=torch.tensor([2])
+        ),
+        "r must be 1D of length 2, the sum of multiplicity",
+        id="pfefilt-multiplicity-sum",
+    ),
+    pytest.param(
+        lambda: lti.pfefilt(
+            _ones(1),
+            _ones(1),
+            _ones(1),
+            _ones(1, 4),
+            batch_index=torch.zeros(1, dtype=torch.long, device="meta"),
+        ),
+        "batch_index must be on x's device",
+        id="pfefilt-batch_index-device",
+    ),
+    pytest.param(
+        lambda: lti.pfefilt(
+            _ones(1),
+            _ones(1),
+            _ones(()),
+            _ones(4),
+            multiplicity=torch.ones(1, dtype=torch.long, device="meta"),
+        ),
+        "multiplicity must be on x's device",
+        id="pfefilt-multiplicity-device",
     ),
     pytest.param(
         lambda: lti.pfefilt(
@@ -701,11 +746,6 @@ _LTI_FILTERING_CASES = [
         ),
         "real poles need real residues and initial states",
         id="pfefilt-complex-state-of-real-pole",
-    ),
-    pytest.param(
-        lambda: lti.pfefilt(_ones(1), _ones(1), _ones(()), _ones(4), power=torch.tensor([2])),
-        "Each power above 1",
-        id="pfefilt-power",
     ),
     pytest.param(
         lambda: lti.pfefilt(
@@ -1089,8 +1129,8 @@ _MAT_CASES = [
         "must have square matrices",
         id="cumdot-A-not-square",
     ),
-    # confluent_vandermonde(poles, power): poles (*, M); power integers >= 1 of
-    # shape (M) or poles's
+    # confluent_vandermonde(poles, multiplicity): poles (*, U); multiplicity integers >= 1
+    # of shape (U)
     pytest.param(
         lambda: confluent_vandermonde(_zeros(()), torch.ones((), dtype=torch.long)),
         "poles must be at least 1-D",
@@ -1103,23 +1143,23 @@ _MAT_CASES = [
     ),
     pytest.param(
         lambda: confluent_vandermonde(_zeros(2), _ones(2)),
-        "power must be an integer tensor",
-        id="confluent-power-dtype",
+        "multiplicity must be an integer tensor",
+        id="confluent-multiplicity-dtype",
     ),
     pytest.param(
         lambda: confluent_vandermonde(_zeros(2), torch.ones(2, dtype=torch.long, device="meta")),
-        "power must be on poles's device",
-        id="confluent-power-device",
+        "multiplicity must be on poles's device",
+        id="confluent-multiplicity-device",
     ),
     pytest.param(
-        lambda: confluent_vandermonde(_zeros(3, 2), torch.ones(1, 2, dtype=torch.long)),
-        r"power must be of shape \(2,\) or \(3, 2\)",
-        id="confluent-power-shape",
+        lambda: confluent_vandermonde(_zeros(3, 2), torch.ones(3, 2, dtype=torch.long)),
+        r"multiplicity must be of shape \(2,\)",
+        id="confluent-multiplicity-shape",
     ),
     pytest.param(
         lambda: confluent_vandermonde(_zeros(2), torch.tensor([1, 0])),
-        "power must be at least 1",
-        id="confluent-power-below-1",
+        "multiplicity must be at least 1",
+        id="confluent-multiplicity-below-1",
     ),
 ]
 

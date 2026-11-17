@@ -356,20 +356,24 @@ def test_invresz_without_poles():
 def _check_sos2pfe(sos: np.ndarray, atol: float):
     """Compare sos2pfe with SciPy's residue of the sections' product, row by row."""
     flat = torch.from_numpy(sos.reshape(-1, 5))
-    r, p, g, batch_index, power = sos2pfe(
+    r, p, g, batch_index, multiplicity = sos2pfe(
         flat,
         batch_index=torch.arange(sos.shape[0]).repeat_interleave(sos.shape[1])
         if sos.ndim == 3
         else None,
     )
-    M = r.numel()
-    assert r.shape == p.shape == power.shape == (M,)
+    U = p.numel()
+    assert p.shape == multiplicity.shape == (U,)
+    assert r.shape == (int(multiplicity.sum()),)
     assert (batch_index is None) == (sos.ndim == 2)
-    assert batch_index is None or batch_index.shape == (M,)
+    assert batch_index is None or batch_index.shape == (U,)
     assert g.shape == sos.shape[:-2]
-    index = torch.zeros(M, dtype=torch.long) if batch_index is None else batch_index
+    index = torch.zeros(U, dtype=torch.long) if batch_index is None else batch_index
     for b, (row, got_g) in enumerate(zip(sos.reshape(-1, sos.shape[-2], 5), g.numpy().ravel())):
-        got_r, got_p = r[index == b].numpy(), p[index == b].numpy()
+        mine = index == b
+        # each pole's residues, one entry per power: the pole is listed as often
+        got_r = r[mine.repeat_interleave(multiplicity)].numpy()
+        got_p = p[mine].repeat_interleave(multiplicity[mine]).numpy()
         if sos.dtype.kind != "c":
             # the half form lists one pole of each conjugate pair
             pair = got_p.imag != 0
@@ -403,18 +407,18 @@ def test_sos2pfe_lists_one_pole_of_a_conjugate_pair(monkeypatch, rounding):
     sqrt = torch.sqrt
     monkeypatch.setattr(torch, "sqrt", lambda z: sqrt(z) + rounding)
     sos = torch.tensor([[1.0, 0.5, 0.2, -0.6, 0.45]], dtype=F64)
-    r, p, g, _, power = sos2pfe(sos)
+    r, p, g, _, multiplicity = sos2pfe(sos)
     assert p.shape == (1,) and p[0].imag > 0
     x = torch.randn(8, dtype=F64)
-    torch.testing.assert_close(pfefilt(r, p, g, x, power=power), sosfilt(sos, x))
+    torch.testing.assert_close(pfefilt(r, p, g, x, multiplicity=multiplicity), sosfilt(sos, x))
 
 
 @pytest.mark.parametrize("dtype", [torch.float32, F64])
 def test_sos2pfe_default_tol_merges_a_double_root_split_by_rounding(dtype):
     # (z - 0.7)^2, whose roots rounding splits by about sqrt(eps)
-    _, p, _, _, power = sos2pfe(torch.tensor([[1.0, 0.3, 0.2, -1.4, 0.49]], dtype=dtype))
-    assert p[0] == p[1]
-    assert power.tolist() == [1, 2]
+    _, p, _, _, multiplicity = sos2pfe(torch.tensor([[1.0, 0.3, 0.2, -1.4, 0.49]], dtype=dtype))
+    assert p.shape == (1,)
+    assert multiplicity.tolist() == [2]
 
 
 def test_sos2pfe_matches_scipy_for_repeated_poles():
@@ -425,28 +429,32 @@ def test_sos2pfe_matches_scipy_for_repeated_poles():
 
 def test_sos2pfe_fir_section():
     # 1 + 2 / z + 3 / z^2: a double pole at 0 with residues 2 and 3
-    r, p, g, batch_index, power = sos2pfe(torch.tensor([[1.0, 2.0, 3.0, 0.0, 0.0]], dtype=F64))
+    r, p, g, batch_index, multiplicity = sos2pfe(
+        torch.tensor([[1.0, 2.0, 3.0, 0.0, 0.0]], dtype=F64)
+    )
     torch.testing.assert_close(r, torch.tensor([2.0, 3.0], dtype=torch.complex128))
-    torch.testing.assert_close(p, torch.zeros(2, dtype=torch.complex128))
+    torch.testing.assert_close(p, torch.zeros(1, dtype=torch.complex128))
     torch.testing.assert_close(g, torch.tensor(1.0, dtype=F64))
-    assert power.tolist() == [1, 2] and batch_index is None
+    assert multiplicity.tolist() == [2] and batch_index is None
 
 
 def test_sos2pfe_ragged_rows_equal_each_row_alone():
     rows = _ragged_rows()
     sos, batch_index = _flat(rows, interleave=True)
-    r, p, g, index, power = sos2pfe(sos, batch_index=batch_index)
+    r, p, g, index, multiplicity = sos2pfe(sos, batch_index=batch_index)
     assert g.shape == (4,)
     # the row without a section: no term and a gain of 1
     assert g[2] == 1 and (index != 2).all()
     for i, row in enumerate(rows):
         if not len(row):
             continue
-        expected_r, expected_p, expected_g, _, expected_power = sos2pfe(torch.from_numpy(row))
-        torch.testing.assert_close(r[index == i], expected_r)
+        expected_r, expected_p, expected_g, _, expected_multiplicity = sos2pfe(
+            torch.from_numpy(row)
+        )
+        torch.testing.assert_close(r[(index == i).repeat_interleave(multiplicity)], expected_r)
         torch.testing.assert_close(p[index == i], expected_p)
         torch.testing.assert_close(g[i], expected_g)
-        assert (power[index == i] == expected_power).all()
+        assert (multiplicity[index == i] == expected_multiplicity).all()
     # in the order of the rows
     assert (index.diff() >= 0).all()
 
@@ -459,12 +467,12 @@ def test_sos2pfe_gives_no_term_for_the_padding_of_a_shorter_row():
     live = np.array([[1.0, 2.0, 3.0, 0.0, 0.0]])
     rows = [_random_sos(K=3), live, _random_sos(K=3)]
     sos, batch_index = _flat(rows, interleave=True)
-    r, p, g, index, power = sos2pfe(sos, batch_index=batch_index)
-    expected_r, expected_p, _, _, expected_power = sos2pfe(torch.from_numpy(live))
-    torch.testing.assert_close(r[index == 1], expected_r)
+    r, p, g, index, multiplicity = sos2pfe(sos, batch_index=batch_index)
+    expected_r, expected_p, _, _, expected_multiplicity = sos2pfe(torch.from_numpy(live))
+    torch.testing.assert_close(r[(index == 1).repeat_interleave(multiplicity)], expected_r)
     torch.testing.assert_close(p[index == 1], expected_p)
-    assert (power[index == 1] == expected_power).all()
-    assert (index == 1).sum() == 2
+    assert (multiplicity[index == 1] == expected_multiplicity).all()
+    assert (index == 1).sum() == 1
 
 
 def test_sos2pfe_batched_multiplicities():
@@ -487,8 +495,9 @@ def test_sos2pfe_batched_multiplicities():
 )
 def test_sos2pfe_impulse_response_matches_sosfilt(design, atol):
     sos = torch.from_numpy(np.delete(design(), 3, 1))
-    r, p, g, batch_index, power = sos2pfe(sos)
-    h = pfefilt(r, p, g, torch.eye(1, 200, dtype=F64)[0], batch_index=batch_index, power=power)
+    r, p, g, batch_index, multiplicity = sos2pfe(sos)
+    x = torch.eye(1, 200, dtype=F64)[0]
+    h = pfefilt(r, p, g, x, batch_index=batch_index, multiplicity=multiplicity)
     expected = sosfilt(sos, torch.eye(1, 200, dtype=F64)[0])
     assert ((h - expected).abs().max() / expected.abs().max()).item() < atol
 
@@ -499,6 +508,6 @@ def test_sos2pfe_groups_a_cluster_of_conjugate_pairs_symmetrically():
     # other, so the four are one group, its own conjugate, with a real pole
     poles = [0.5 + 0.0004j, 0.5006 + 0.0008j]
     sos = torch.tensor([[1.0, 0.3, 0.2, -2 * q.real, abs(q) ** 2] for q in poles], dtype=F64)
-    r, p, g, _, power = sos2pfe(sos, tol=1e-3)
-    assert (p == p[0]).all() and p[0].imag == 0
-    assert power.tolist() == [1, 2, 3, 4]
+    r, p, g, _, multiplicity = sos2pfe(sos, tol=1e-3)
+    assert p.shape == (1,) and p[0].imag == 0
+    assert multiplicity.tolist() == [4]
