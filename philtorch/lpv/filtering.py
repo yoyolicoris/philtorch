@@ -23,18 +23,18 @@ def fir(
     coefficients of the output's step:
 
     .. math::
-        y[n] = \sum_{m=0}^{M} b_m[n]\, x[n - m].
+        y[n] = \sum_{i=0}^{M} b_i[n]\, x[n - i].
 
     The transposed direct form weights each input with the coefficients of its
     own step:
 
     .. math::
-        y[n] = \sum_{m=0}^{M} b_m[n - m]\, x[n - m].
+        y[n] = \sum_{i=0}^{M} b_i[n - i]\, x[n - i].
 
     The two agree for constant coefficients.
 
     Args:
-        b (Tensor): coefficients :math:`b_m[n]`, of shape :math:`(B, N, M + 1)`.
+        b (Tensor): coefficients :math:`b_i[n]`, of shape :math:`(B, N, M + 1)`.
         x (Tensor): input signals, of shape :math:`(B, N)`.
         zi (Tensor, optional): initial state, of shape :math:`(B, M)`. With
             ``transpose=True``, the transposed direct-form state; with

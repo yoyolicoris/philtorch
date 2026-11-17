@@ -246,7 +246,7 @@ def fir(
     This computes
 
     .. math::
-        y[n] = \sum_{m=0}^{M} b_m\, x[n - m].
+        y[n] = \sum_{i=0}^{M} b_i\, x[n - i].
 
     Args:
         b (Tensor): filter coefficients :math:`b_0, \dots, b_M`, of shape
