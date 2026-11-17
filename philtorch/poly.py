@@ -23,12 +23,13 @@ def polydiv(u: Tensor, v: Tensor) -> tuple[Tensor, Tensor]:
         u (Tensor): dividend coefficients, of shape :math:`(*, M + 1)`, where
             :math:`*` is zero or more batch dimensions.
         v (Tensor): divisor coefficients, of shape :math:`(*, N + 1)`. Its
-            batch dimensions must broadcast to those of :attr:`u`, and its
+            batch dimensions must broadcast with those of :attr:`u`, and its
             leading coefficient ``v[..., 0]`` must be nonzero.
 
     Returns:
         tuple of Tensor: the quotient, of shape :math:`(*, M - N + 1)`, and the
-        remainder, of shape :math:`(*, N)`, which is empty when :math:`N = 0`.
+        remainder, of shape :math:`(*, N)`, which is empty when :math:`N = 0`,
+        :math:`*` being the broadcast batch dimensions.
 
     Raises:
         ValueError: if :attr:`u` or :attr:`v` is 0-D, :attr:`u` and :attr:`v`
