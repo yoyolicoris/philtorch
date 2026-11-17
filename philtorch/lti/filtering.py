@@ -8,7 +8,7 @@ import torch.nn.functional as F
 from torch import Tensor
 
 from .. import _ssm
-from ..mat import companion
+from ..mat import companion, confluent_vandermonde
 from ..poly import polydiv
 from ..utils import _check_shared, _squeeze_first_result, chain_functions
 from .recur import linear_recurrence
@@ -390,8 +390,10 @@ def lfilter(
             first-order recurrence per pole (see :func:`diag_state_space`);
             it supports ``"df2"`` and ``"tdf2"`` only. Default: ``"ssm"``.
         **kwargs: passed to the backend: ``unroll_factor`` (see
-            :func:`state_space`) and, for ``"diag_ssm"``, ``L``, ``V`` and
-            ``Vinv`` (see :func:`diag_state_space`) and ``delayed_form``. When
+            :func:`state_space`) and, for ``"diag_ssm"``, the poles ``L``,
+            with ``V`` or ``Vinv`` (see :func:`diag_state_space`), which
+            default to the eigenvectors of the companion matrix for ``L``, and
+            ``delayed_form``. When
             :math:`M_b > M_a`, ``"diag_ssm"`` splits off an FIR part;
             ``delayed_form=True`` delays the recursive part by
             :math:`M_b - M_a + 1` samples instead. Both give the same output.
@@ -1089,15 +1091,21 @@ def _diag_ssm_lfilter(
         delay = 0
 
     b, a, terms, D = _ssm.direct_form(b, a)
-    A = companion(a)
+    # The companion matrix's eigendecomposition, or the poles L with its
+    # eigenvectors for them, the Vandermonde matrix, unless V or Vinv is given.
+    L = kwargs.get("L")
+    if L is None:
+        A = companion(a)
+        kwargs["A"] = A if form == "df2" else A.mT
+    elif kwargs.get("V") is None and kwargs.get("Vinv") is None:
+        V = confluent_vandermonde(L, torch.ones(L.size(-1), dtype=torch.long, device=L.device))
+        kwargs |= {"V": V} if form == "df2" else {"Vinv": V.mT}
 
     match form:
         case "df2":
-            filt = partial(diag_state_space, A=A, B=None, C=terms, D=D, zi=zi, **kwargs)
+            filt = partial(diag_state_space, B=None, C=terms, D=D, zi=zi, **kwargs)
         case "tdf2":
-            filt = partial(
-                diag_state_space, A=A.mT, B=terms, C=None, D=D, zi=zi, out_idx=0, **kwargs
-            )
+            filt = partial(diag_state_space, B=terms, C=None, D=D, zi=zi, out_idx=0, **kwargs)
 
     results = filt(x)
     if isinstance(results, tuple):

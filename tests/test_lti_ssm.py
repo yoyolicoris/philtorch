@@ -515,7 +515,7 @@ def test_diag_state_space_real_eigenvectors_with_C():
 # One input and one output from rest: diag_state_space folds B and C into
 # residues and runs pfefilt. Each system names its model to diag_state_space
 # and has the dense A that state_space takes. A complex L with a real x needs
-# the real A beside it.
+# V or Vinv beside it.
 _PFE_BATCH, _PFE_N, _PFE_M = 3, 17, 4
 _PFE_SYSTEMS = [
     "A_real",  # complex and real poles: the half form
@@ -558,7 +558,7 @@ def _pfe_model(system, batched):
         A = similar(Lam, torch.double)
         L, V = torch.linalg.eig(A)
         given = {"V": V} if system == "LV_complex" else {"Vinv": torch.linalg.inv(V)}
-        return {"L": L, "A": A, **given}, A, torch.double
+        return {"L": L, **given}, A, torch.double
     else:
         L = torch.rand(*batch, M, dtype=torch.double) - 0.5
         if system == "L_complex_x":
@@ -665,19 +665,6 @@ def test_diag_state_space_diagonal_A(diagonal):
     B, C = torch.randn(2, dtype=torch.double), torch.randn(2, dtype=torch.double)
 
     torch.testing.assert_close(diag_state_space(x, A=A, B=B, C=C), state_space(A, x, B=B, C=C))
-
-
-# L in another order than eig's: A's eigenvectors follow L
-@pytest.mark.parametrize("system", ["A_real", "LV_real"])
-def test_diag_state_space_L_with_A_in_reverse(system):
-    given, A, dtype = _pfe_model(system, batched=False)
-    L = given["L"] if "L" in given else torch.linalg.eigvals(A)
-    x = torch.randn(_PFE_BATCH, _PFE_N, dtype=dtype)
-    B, C = torch.randn(_PFE_M, dtype=dtype), torch.randn(_PFE_M, dtype=dtype)
-
-    y = diag_state_space(x, L=L.flip(-1), A=A, B=B, C=C)
-
-    torch.testing.assert_close(y, state_space(A, x, B=B, C=C))
 
 
 def test_diag_state_space_integer_model():

@@ -342,12 +342,8 @@ def diag_state_space(
 
     - :attr:`A` alone: the eigenvalues and eigenvectors come from
       :func:`torch.linalg.eig`.
-    - :attr:`L` with :attr:`A`: :attr:`L` gives the eigenvalues. Each of its
-      entries takes the eigenvector of :attr:`A`, from
-      :func:`torch.linalg.eig`, whose eigenvalue is nearest to it, a different
-      one for each.
     - :attr:`L` with :attr:`V` or :attr:`Vinv`: the missing one is the inverse
-      of the given one, and :attr:`A`, if given, is ignored.
+      of the given one.
     - :attr:`L` with both :attr:`V` and :attr:`Vinv`: used as given.
     - :attr:`L` alone: :math:`A` is diagonal and :math:`V = I`.
 
@@ -378,16 +374,15 @@ def diag_state_space(
 
     Raises:
         ValueError: if neither :attr:`L` nor :attr:`A` is given, if
-            :attr:`V` or :attr:`Vinv` is given without :attr:`L`, if both
+            :attr:`V` or :attr:`Vinv` is given without :attr:`L`, if
+            :attr:`A` is given with :attr:`L`, if both
             :attr:`C` and :attr:`out_idx` are given, if :attr:`A`, :attr:`B`,
             :attr:`C`, :attr:`D` and :attr:`zi` don't have the dtype and
             device of :attr:`x`, if :attr:`L`, :attr:`V` and :attr:`Vinv`
             don't share a dtype and a device, or have neither the dtype of
-            :attr:`x` nor, with a real :attr:`A`, its complex dtype, if
+            :attr:`x` nor, with :attr:`V` or :attr:`Vinv`, its complex dtype, if
             :attr:`D` gives a different number of outputs from :attr:`C`,
-            :attr:`out_idx` or the states, if two eigenvalues in :attr:`L` are
-            nearest to the same one of :attr:`A`, or if the shapes do not
-            match.
+            :attr:`out_idx` or the states, or if the shapes do not match.
 
     Example::
 
@@ -406,8 +401,8 @@ def diag_state_space(
     _check_shared(A=A, B=B, C=C, D=D, zi=zi, x=x)
     _check_shared(L=L, V=V, Vinv=Vinv)
     if L is not None:
-        # Without A, the decomposition is the model; a real A's may be complex.
-        _check_shared(precision=A is not None and not A.is_complex(), L=L, x=x)
+        # L alone is the model; with V or Vinv, a real model's may be complex.
+        _check_shared(precision=V is not None or Vinv is not None, L=L, x=x)
     # A real model has real outputs, even through complex eigenvalues.
     real = not x.is_complex()
 
@@ -422,6 +417,8 @@ def diag_state_space(
         _check_A(A, x)
         L, V = torch.linalg.eig(A)
         M = A.size(-1)
+    elif A is not None:
+        raise ValueError("A takes no L: its eigendecomposition gives the eigenvalues.")
     else:
         match L.shape:
             case (_,):
@@ -436,12 +433,6 @@ def diag_state_space(
                         raise ValueError(f"Vinv must be 2D, got {Vinv.shape}")
                     if not (Vinv.size(0) == Vinv.size(1) == M):
                         raise ValueError(f"Vinv must be square with size {M}, got {Vinv.shape}")
-
-                if A is not None:
-                    if A.dim() != 2:
-                        raise ValueError(f"A must be 2D, got {A.shape}")
-                    if not (A.size(0) == A.size(1) == M):
-                        raise ValueError(f"A must be square with size {M}, got {A.shape}")
 
             case (L_batch, _) if L_batch == batch_size:
                 M = L.size(1)
@@ -461,14 +452,6 @@ def diag_state_space(
                             f"got {Vinv.shape}"
                         )
 
-                if A is not None:
-                    if A.dim() != 3:
-                        raise ValueError(f"A must be 3D, got {A.shape}")
-                    if not (A.size(0) == batch_size and A.size(1) == A.size(2) == M):
-                        raise ValueError(
-                            f"A must be a batch of square matrices with size {M}, got {A.shape}"
-                        )
-
             case _:
                 raise ValueError(f"L must be a vector or a batch of vectors, got {L.shape}")
 
@@ -477,16 +460,6 @@ def diag_state_space(
             f"Last dimension of A must match last dimension of x, got A: {M}, x: {x.size(-1)}"
         )
 
-    if V is None and Vinv is None and A is not None:
-        # A's eigenvectors in the order of L: each eigenvalue of L takes the
-        # nearest of A's, a different one for each.
-        eigenvalues, V = torch.linalg.eig(A)
-        nearest = (L.unsqueeze(-1) - eigenvalues.unsqueeze(-2)).abs().argmin(-1)
-        if (nearest.sort(-1).values != torch.arange(M, device=nearest.device)).any():
-            raise ValueError("Each eigenvalue in L must be nearest to a different one of A.")
-        V = V.gather(-1, nearest.unsqueeze(-2).expand_as(V))
-        # A real L's eigenvectors are real.
-        V = V if L.is_complex() else V.real
     # With neither V nor Vinv, A = diag(L) and V = I.
     identity = V is None and Vinv is None
 
