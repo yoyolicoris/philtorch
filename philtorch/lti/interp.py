@@ -76,6 +76,10 @@ def _as_param(value: Any, name: str) -> float | Tensor:
 
 
 def _cubic_coeff(x: Tensor, parallel_form: bool, scipy_padding: bool) -> Tensor:
+    if not scipy_padding and x.shape[-1] == 1:
+        # one sample reflects to a constant signal, whose coefficients are its
+        # samples, as the B-splines sum to 1; its reflection has no period
+        return x.clone()
     r = torch.tensor(3**0.5 - 2, device=x.device, dtype=x.dtype)
 
     if scipy_padding:

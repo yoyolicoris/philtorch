@@ -59,6 +59,12 @@ def test_cspline(n, device, pfe):
     )
 
 
+def test_cspline_of_one_sample_is_the_sample():
+    # its reflection is constant, whose B-spline coefficients are its samples
+    x = torch.randn(2, 1, dtype=torch.float64)
+    assert torch.equal(cspline(x), x)
+
+
 @pytest.mark.parametrize("shape", [(16,), (2, 2, 16)])
 def test_cubic_spline_requires_batched_signals(shape):
     with pytest.raises(ValueError, match="must be 2D"):
