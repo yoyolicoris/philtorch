@@ -18,7 +18,7 @@ from philtorch.lti.interp import (
 from ._cases import DEVICES
 
 
-@pytest.mark.parametrize("n", [20, 100])
+@pytest.mark.parametrize("n", [3, 20, 100])
 @pytest.mark.parametrize("m", [2, 3, 7])
 @pytest.mark.parametrize("device", DEVICES)
 @pytest.mark.parametrize("pfe", [True, False])

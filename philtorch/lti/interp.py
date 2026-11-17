@@ -83,9 +83,12 @@ def _cubic_coeff(x: Tensor, parallel_form: bool, scipy_padding: bool) -> Tensor:
         powers = r ** torch.arange(x.shape[-1], device=x.device, dtype=x.dtype)
         causal_zi = x @ powers
     else:
-        # while in torch reflect padding, [1, 2, 3] is padded to [2, 1, 2, 3, 2]
-        powers = r ** torch.arange(x.shape[-1] - 1, device=x.device, dtype=x.dtype)
-        causal_zi = x[..., 1:] @ powers
+        # while in torch reflect padding, [1, 2, 3] is padded to [2, 1, 2, 3, 2],
+        # a signal of period P = 2L - 2: the state before x[0] sums one period,
+        # x[1], ..., x[L - 1], x[L - 2], ..., x[0], over all periods
+        period = torch.cat([x[..., 1:], x[..., :-1].flip(-1)], dim=-1)
+        powers = r ** torch.arange(period.shape[-1], device=x.device, dtype=x.dtype)
+        causal_zi = period @ powers / (1 - r ** period.shape[-1])
 
     if parallel_form:
         mirrored_x = torch.cat([x, x.flip(-1) if scipy_padding else x[..., :-1].flip(-1)], dim=-1)
@@ -171,7 +174,8 @@ def cubic_spline(
     "B-Spline Signal Processing: Part II---Efficient Design and Applications,"
     IEEE Transactions on Signal Processing, 1993, and evaluates the spline at
     :attr:`m` points per sample interval. The spline passes through the
-    original samples.
+    original samples; with :attr:`scipy_padding`, only approximately for
+    signals of fewer than about 16 samples, as SciPy's does.
 
     Args:
         x (Tensor): signals, of shape :math:`(B, L)`. Unlike SciPy, the batch

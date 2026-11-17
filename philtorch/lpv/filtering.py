@@ -275,13 +275,13 @@ def lfilter(
     Returns:
         Tensor or tuple of Tensor: the filtered signals, of shape
         :math:`(B, N)`, and with :attr:`zi`, the final state, of shape
-        :math:`(B, M)`. :math:`B` is the batch size after broadcasting
-        :attr:`b`, :attr:`a`, :attr:`x` and :attr:`zi`, so a shared
-        :attr:`zi` still gives one final state per signal. Both outputs are
-        unbatched, :math:`(N)` and :math:`(M)`, only when all four inputs
-        are. The ``"torchlpc"`` backend also broadcasts a 1-D :attr:`x`
-        across batched coefficients or :attr:`zi`; ``"ssm"`` needs :attr:`x`
-        to carry the batch dimension then.
+        :math:`(B, M)`, empty for a pure gain. :math:`B` is the batch size
+        after broadcasting :attr:`b`, :attr:`a`, :attr:`x` and :attr:`zi`, so
+        a shared :attr:`zi` still gives one final state per signal. Both
+        outputs are unbatched, :math:`(N)` and :math:`(M)`, only when all
+        four inputs are. The ``"torchlpc"`` backend also broadcasts a 1-D
+        :attr:`x` across batched coefficients or :attr:`zi`; ``"ssm"`` needs
+        :attr:`x` to carry the batch dimension then.
 
     Raises:
         ValueError: if :attr:`b`, :attr:`a`, :attr:`zi` and :attr:`x` don't
