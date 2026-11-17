@@ -409,7 +409,8 @@ def diag_state_space(
 
     batch_size = x.size(0)
 
-    if L is None:
+    from_A = L is None
+    if from_A:
         if A is None:
             raise ValueError("Either L or A must be provided")
         if V is not None or Vinv is not None:
@@ -497,6 +498,61 @@ def diag_state_space(
         rows = (c.reshape(-1, 1, M) if batched else c.unsqueeze(-2)) if one_row else c
         rows = rows @ V if V is not None else torch.linalg.solve(Vinv, rows, left=False)
         return rows.squeeze(-2) if one_row else rows
+
+    if (
+        zi is None
+        and unroll_factor is None
+        and x.dim() == 2
+        and x.dtype != torch.bfloat16
+        and (D is None or tuple(D.shape) in ((), (1,), (batch_size,)))
+        and (out_idx is not None if C is None else tuple(C.shape) in ((M,), (batch_size, M)))
+    ):
+        # One input and one output from rest: a partial fraction expansion with
+        # p = L and r = (C V) * (V^{-1} B), which pfefilt runs. It imports this
+        # module, so it is imported here.
+        from .filtering import pfefilt
+
+        if B is not None and tuple(B.shape) not in ((M,), (batch_size, M)):
+            raise _ssm_B_shape_error(B, x, batch_size, M)
+
+        def unit(i):
+            e = L.new_zeros(M)
+            e[i] = 1
+            return e
+
+        # A diagonal model without B drives every state, otherwise the first.
+        B_hat = L.new_ones(M) if B is None and identity else B
+        B_hat = unit(0) if B_hat is None else B_hat.to(L.dtype)
+        if not identity:
+            B_hat = to_modal(B_hat.reshape(-1, M, 1)).squeeze(-1)
+        C_hat = unit(out_idx) if C is None else C.to(L.dtype)
+        if not identity:
+            C_hat = times_V(C_hat)
+        r, p = C_hat * B_hat, L
+        batched = (
+            L.dim() == 2
+            or any(t is not None and t.dim() == 2 for t in (B, C))
+            or (D is not None and D.shape == (batch_size,) and batch_size > 1)
+        )
+        g = x.new_zeros(()) if D is None else D
+        if batched:
+            r = r.broadcast_to(batch_size, M).flatten()
+            p = L.broadcast_to(batch_size, M).flatten()
+            batch_index = torch.arange(batch_size, device=x.device).repeat_interleave(M)
+            g = g.expand(batch_size)
+        else:
+            r, batch_index, g = r.reshape(M), None, g.reshape(())
+        # A real filter lists one pole of each conjugate pair, which eigvals
+        # gives exactly; a complex L of the user's may not pair up: list all.
+        half = real and (from_A or not L.is_complex())
+        if half and L.is_complex():
+            keep = p.imag >= 0
+            r, p = r[keep], p[keep]
+            if batched:
+                batch_index = batch_index[keep]
+            r = torch.where(p.imag == 0, r.real.to(r.dtype), r)  # real poles: real residues
+        y = pfefilt(r, p, g if half else g.to(L.dtype), x, batch_index=batch_index)
+        return y if half or not real else y.real
 
     zi, return_zf = _ssm.initial_state(x, zi, M)
 

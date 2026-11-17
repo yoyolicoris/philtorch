@@ -1,11 +1,13 @@
-"""Benchmark diag_state_space against pfefilt for one input and one output (#203).
+"""Benchmark diag_state_space's two paths for one input and one output (#203).
 
 A real model with complex poles, x of shape (B, N), runs three ways from the
 same A, C and D:
 
-- ``diag``: ``diag_state_space(x, A=A, C=C, D=D)``, as today;
-- ``pfe``: the same eigendecomposition folded into residues,
-  r = (C V) * (V^-1 B), and ``pfefilt`` in its half form, one pole of each
+- ``modal``: ``diag_state_space`` with an all-zero ``zi``, which keeps it on
+  the modal path: one complex recursion per mode, with the input and output
+  projected at every step;
+- ``pfe``: ``diag_state_space`` without ``zi``, which folds the projections
+  into residues and runs ``pfefilt`` in its half form, one pole of each
   conjugate pair, real poles in the real dtype;
 - ``ssm``: ``state_space(A, x, C=C, D=D)``, the dense recursion.
 
@@ -17,22 +19,7 @@ Each time includes the eigendecomposition. Run from the repository root:
 import torch
 from _timing import bench
 
-from philtorch.lti import diag_state_space, pfefilt, state_space
-from philtorch.mat import find_eigenvectors
-
-
-def pfe_route(x, A, C, D):
-    """diag_state_space(x, A=A, C=C, D=D) through pfefilt, B = e_0."""
-    L = torch.linalg.eigvals(A)
-    V = find_eigenvectors(A, L)
-    e0 = torch.zeros(V.size(-1), 1, dtype=V.dtype, device=V.device)
-    e0[0] = 1
-    r = (C.to(V.dtype) @ V) * torch.linalg.solve(V, e0)[:, 0]
-    # one pole of each conjugate pair; a real pole's residue is real
-    keep = L.imag >= 0
-    real_pole = L.imag == 0
-    r = torch.where(real_pole, r.real.to(r.dtype), r)
-    return pfefilt(r[keep], L[keep], D, x)
+from philtorch.lti import diag_state_space, state_space
 
 
 def model(M, dtype, device):
@@ -52,7 +39,7 @@ def model(M, dtype, device):
 def main():
     torch.manual_seed(0)
     devices = ["cpu"] + (["cuda"] if torch.cuda.is_available() else [])
-    names = ("diag", "pfe", "ssm")
+    names = ("modal", "pfe", "ssm")
     header = f"{'device dtype M B N':<34s}" + "".join(
         f"{f'{n} ({m})':>14s}" for m in ("fwd", "f+b") for n in names
     )
@@ -64,28 +51,26 @@ def main():
             for M in (2, 8, 32):
                 A, C, D = model(M, dtype, device)
                 for B in (1, 16):
+                    zi = A.new_zeros(B, M)
                     for N in (1_000, 10_000, 100_000):
                         x = torch.randn(B, N, dtype=dtype, device=device)
-                        y_ref = diag_state_space(x, A=A, C=C, D=D)
-                        err = (pfe_route(x, A, C, D) - y_ref).abs().max().item()
-                        scale = y_ref.abs().max().item()
+                        y_modal = diag_state_space(x, A=A, C=C, D=D, zi=zi)[0]
+                        err = (diag_state_space(x, A=A, C=C, D=D) - y_modal).abs().max().item()
+                        scale = y_modal.abs().max().item()
                         assert err <= (1e-3 if dtype == torch.float32 else 1e-8) * scale, err
 
-                        fns = {
-                            "diag": lambda: diag_state_space(x, A=A, C=C, D=D),
-                            "pfe": lambda: pfe_route(x, A, C, D),
-                            "ssm": lambda: state_space(A, x, C=C, D=D),
-                        }
                         Ag, Cg, Dg = (t.clone().requires_grad_() for t in (A, C, D))
-                        grads = {
-                            "diag": lambda: diag_state_space(x, A=Ag, C=Cg, D=Dg),
-                            "pfe": lambda: pfe_route(x, Ag, Cg, Dg),
-                            "ssm": lambda: state_space(Ag, x, C=Cg, D=Dg),
+                        fns = {
+                            "modal": lambda A, C, D: diag_state_space(x, A=A, C=C, D=D, zi=zi)[0],
+                            "pfe": lambda A, C, D: diag_state_space(x, A=A, C=C, D=D),
+                            "ssm": lambda A, C, D: state_space(A, x, C=C, D=D),
                         }
                         row = f"{f'{device} {str(dtype)[6:]} {M} {B} {N}':<34s}"
-                        row += "".join(f"{bench(fns[n], width=11)}" for n in names)
                         row += "".join(
-                            f"{bench(lambda n=n: grads[n]().sum().backward(), width=11)}"
+                            f"{bench(lambda n=n: fns[n](A, C, D), width=11)}" for n in names
+                        )
+                        row += "".join(
+                            f"{bench(lambda n=n: fns[n](Ag, Cg, Dg).sum().backward(), width=11)}"
                             for n in names
                         )
                         print(row, flush=True)
