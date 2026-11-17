@@ -8,7 +8,7 @@ import torch.nn.functional as F
 from torch import Tensor
 
 from .. import _ssm
-from ..mat import companion
+from ..mat import companion, confluent_vandermonde
 from ..poly import polydiv
 from ..utils import _check_shared, _squeeze_first_result, chain_functions
 from .recur import linear_recurrence
@@ -390,8 +390,10 @@ def lfilter(
             first-order recurrence per pole (see :func:`diag_state_space`);
             it supports ``"df2"`` and ``"tdf2"`` only. Default: ``"ssm"``.
         **kwargs: passed to the backend: ``unroll_factor`` (see
-            :func:`state_space`) and, for ``"diag_ssm"``, ``L``, ``V`` and
-            ``Vinv`` (see :func:`diag_state_space`) and ``delayed_form``. When
+            :func:`state_space`) and, for ``"diag_ssm"``, the poles ``L``,
+            the eigenvalues of the state matrix, with its eigenvectors ``V``
+            or ``Vinv`` (see :func:`diag_state_space`), computed from ``L``
+            when neither is given, and ``delayed_form``. When
             :math:`M_b > M_a`, ``"diag_ssm"`` splits off an FIR part;
             ``delayed_form=True`` delays the recursive part by
             :math:`M_b - M_a + 1` samples instead. Both give the same output.
@@ -853,11 +855,9 @@ def pfefilt(
             raise ValueError(f"{name} must be int32 or int64, got {t.dtype}.")
         if t is not None and t.device != x.device:
             raise ValueError(f"{name} must be on x's device, {x.device}, got {t.device}.")
-    if multiplicity is None:
-        multiplicity = torch.ones(U, dtype=torch.long, device=x.device)
-    elif (multiplicity < 1).any():
+    if multiplicity is not None and (multiplicity < 1).any():
         raise ValueError("multiplicity must be at least 1.")
-    M = int(multiplicity.sum())
+    M = U if multiplicity is None else int(multiplicity.sum())
     if r.shape != (M,):
         raise ValueError(f"r must be 1D of length {M}, one per term, got shape {tuple(r.shape)}.")
     if g.dim() == 1 and (x.dim() == 1 or g.size(0) != x.size(0)):
@@ -887,38 +887,42 @@ def pfefilt(
         )
     return_zf = zi is not None
     cdtype = x.dtype.to_complex()
-    p = p.repeat_interleave(multiplicity, output_size=M)
+    r, p = r.to(cdtype), p.to(cdtype)
     if shared:
         # every row runs every term
-        batch_index = torch.arange(B, device=x.device).repeat_interleave(M)
-        r, p, multiplicity = r.repeat(B), p.repeat(B), multiplicity.repeat(B)
-    else:
-        batch_index = batch_index.repeat_interleave(multiplicity, output_size=M)
-    r, p = r.to(cdtype), p.to(cdtype)
+        batch_index = torch.arange(B, device=x.device).repeat_interleave(U)
+        r, p = r.repeat(B), p.repeat(B)
+        if multiplicity is not None:
+            multiplicity = multiplicity.repeat(B)
     zi = r.new_zeros(r.shape) if zi is None else zi.to(cdtype).flatten()
-
-    # the first term of each pole, and whether the next entry continues the chain
-    last = multiplicity.cumsum(0) - 1
-    first = torch.zeros_like(r, dtype=torch.bool)
-    first[last + 1 - multiplicity] = True
-    goes_on = torch.ones_like(first)
-    goes_on[last] = False
-    real_pole = p.imag == 0
-    if real and (real_pole & ((r.imag != 0) | (zi.imag != 0))).any():
-        raise ValueError(
-            "A real g makes a real filter, whose real poles need real residues and initial states."
-        )
-    # A real filter runs its real poles in the real dtype and each listed
-    # non-real pole for its conjugate pair; a complex one runs every term in
-    # complex.
-    in_real_dtype = real_pole & real
+    if multiplicity is None:
+        # every pole is a chain of one term
+        first, goes_on = torch.ones(r.numel(), dtype=torch.bool, device=x.device), None
+    else:
+        # the first term of each pole, and whether the next entry continues the chain
+        pole = torch.arange(p.numel(), device=x.device)
+        pole = pole.repeat_interleave(multiplicity, output_size=r.numel())
+        p, batch_index = p[pole], batch_index[pole]
+        first = torch.ones_like(pole, dtype=torch.bool)
+        first[1:] = pole[1:] != pole[:-1]
+        goes_on = torch.zeros_like(first)
+        goes_on[:-1] = pole[1:] == pole[:-1]
+    if real:
+        real_pole = p.imag == 0
+        if (real_pole & ((r.imag != 0) | (zi.imag != 0))).any():
+            raise ValueError(
+                "A real g makes a real filter, whose real poles need real residues "
+                "and initial states."
+            )
 
     # Each round runs one power of the chains of one kind, from power 1, adds
-    # their terms to the output, and passes on the chains that go on.
+    # their terms to the output, and passes on the chains that go on. A real
+    # filter runs its real poles in the real dtype and each listed non-real
+    # pole for its conjugate pair; a complex one runs every term in complex.
     y = g.unsqueeze(-1) * x
-    zf = zi.clone()
-    for in_real in (True, False):
-        (i,) = (first & (in_real_dtype == in_real)).nonzero(as_tuple=True)
+    zf = zi.clone() if return_zf else None
+    for in_real in (True, False) if real else (False,):
+        (i,) = (first & (real_pole == in_real) if real else first).nonzero(as_tuple=True)
         b = batch_index[i]
         u = (x if in_real else x.to(cdtype))[b]
         while N and i.numel():
@@ -935,10 +939,13 @@ def pfefilt(
                 term, term0 = term.real, term0.real
             y[:, 0].index_add_(0, b, term0)
             y[:, 1:].index_add_(0, b, term)
-            zf[i] = h[:, -1].to(cdtype)
-            cont = goes_on[i]
-            u = torch.cat((init[cont].unsqueeze(-1), before[cont]), -1)
-            i, b = i[cont] + 1, b[cont]
+            if return_zf:
+                zf[i] = h[:, -1].to(cdtype)
+            if goes_on is None:
+                break
+            (k,) = goes_on[i].nonzero(as_tuple=True)
+            u = torch.cat((init[k].unsqueeze(-1), before[k]), -1)
+            i, b = i[k] + 1, b[k]
     y = y if batched else y.squeeze(0)
     return (y, zf.reshape(zshape)) if return_zf else y
 
@@ -1084,15 +1091,21 @@ def _diag_ssm_lfilter(
         delay = 0
 
     b, a, terms, D = _ssm.direct_form(b, a)
-    A = companion(a)
+    # The companion matrix's eigendecomposition, or the poles L with its
+    # eigenvectors for them, the Vandermonde matrix, unless V or Vinv is given.
+    L = kwargs.get("L")
+    if L is None:
+        A = companion(a)
+        kwargs["A"] = A if form == "df2" else A.mT
+    elif kwargs.get("V") is None and kwargs.get("Vinv") is None:
+        V = confluent_vandermonde(L, torch.ones(L.size(-1), dtype=torch.long, device=L.device))
+        kwargs |= {"V": V} if form == "df2" else {"Vinv": V.mT}
 
     match form:
         case "df2":
-            filt = partial(diag_state_space, A=A, B=None, C=terms, D=D, zi=zi, **kwargs)
+            filt = partial(diag_state_space, B=None, C=terms, D=D, zi=zi, **kwargs)
         case "tdf2":
-            filt = partial(
-                diag_state_space, A=A.mT, B=terms, C=None, D=D, zi=zi, out_idx=0, **kwargs
-            )
+            filt = partial(diag_state_space, B=terms, C=None, D=D, zi=zi, out_idx=0, **kwargs)
 
     results = filt(x)
     if isinstance(results, tuple):

@@ -1037,7 +1037,9 @@ _LTI_SSM_CASES = [
         id="diag-L-dtype",
     ),
     pytest.param(
-        lambda: lti.diag_state_space(_ones(1, 4), L=_zeros(2).to(torch.complex64), A=_eye(2)),
+        lambda: lti.diag_state_space(
+            _ones(1, 4), L=_zeros(2).to(torch.complex64), V=_eye(2).to(torch.complex64)
+        ),
         "L and x must share a precision and a device",
         id="diag-L-precision",
     ),
@@ -1078,16 +1080,6 @@ _LTI_SSM_CASES = [
         id="diag-L-vector-Vinv-wrong-size",
     ),
     pytest.param(
-        lambda: lti.diag_state_space(_ones(1, 4), L=_zeros(2), A=_zeros(1, 2, 2)),
-        "A must be 2D",
-        id="diag-L-vector-A-3d",
-    ),
-    pytest.param(
-        lambda: lti.diag_state_space(_ones(1, 4), L=_zeros(2), A=_eye(3)),
-        "A must be square with size 2",
-        id="diag-L-vector-A-wrong-size",
-    ),
-    pytest.param(
         lambda: lti.diag_state_space(_ones(1, 4, 2), L=_zeros(3)),
         "Last dimension of A must match last dimension of x",
         id="diag-3d-x-no-B-wrong-features",
@@ -1114,18 +1106,14 @@ _LTI_SSM_CASES = [
         id="diag-L-batch-Vinv-wrong-size",
     ),
     pytest.param(
-        lambda: lti.diag_state_space(
-            _ones(2, 4), L=_zeros(2, 3), V=_eye(3).expand(2, 3, 3), A=_eye(3)
-        ),
-        "A must be 3D",
-        id="diag-L-batch-A-2d",
+        lambda: lti.diag_state_space(_ones(1, 4), L=_zeros(2), B=_ones(3), C=_ones(2)),
+        "Input matrix B must be of shape",
+        id="diag-route-B-wrong-shape",
     ),
     pytest.param(
-        lambda: lti.diag_state_space(
-            _ones(2, 4), L=_zeros(2, 3), V=_eye(3).expand(2, 3, 3), A=_zeros(2, 2, 2)
-        ),
-        "A must be a batch of square matrices with size 3",
-        id="diag-L-batch-A-wrong-size",
+        lambda: lti.diag_state_space(_ones(1, 4), L=_zeros(2), A=_eye(2)),
+        "A takes no L",
+        id="diag-L-with-A",
     ),
 ]
 

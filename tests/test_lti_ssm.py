@@ -510,3 +510,198 @@ def test_diag_state_space_real_eigenvectors_with_C():
     C = torch.randn(2, dtype=torch.double)
 
     torch.testing.assert_close(diag_state_space(x, L=L, V=V, C=C), state_space(A, x, C=C))
+
+
+# One input and one output from rest: diag_state_space folds B and C into
+# residues and runs pfefilt. Each system names its model to diag_state_space
+# and has the dense A that state_space takes. A complex L with a real x needs
+# V or Vinv beside it.
+_PFE_BATCH, _PFE_N, _PFE_M = 3, 17, 4
+_PFE_SYSTEMS = [
+    "A_real",  # complex and real poles: the half form
+    "A_complex",
+    "LV_real",
+    "LV_complex",  # a real A's complex L and V, with a real x: the full form
+    "LVinv_complex",
+    "L_real",
+    "L_complex_x",
+]
+
+
+def _pfe_model(system, batched):
+    batch = (_PFE_BATCH,) if batched else ()
+    M = _PFE_M
+    scale = torch.linspace(0.6, 1.0, _PFE_BATCH)[:, None, None] if batched else 1.0
+    eye = torch.eye(M, dtype=torch.double)
+
+    def similar(Lam, dtype):
+        S = (eye + 0.3 * torch.randn(*batch, M, M, dtype=dtype)).to(dtype)
+        return S @ Lam.to(dtype) @ torch.linalg.inv(S)
+
+    # eigenvalues 0.5 +- 0.3j, 0.4 and -0.2
+    Lam = torch.block_diag(
+        torch.tensor([[0.5, 0.3], [-0.3, 0.5]]), torch.diag(torch.tensor([0.4, -0.2]))
+    )
+    Lam = scale * Lam.double()
+    if system == "A_real":
+        A = similar(Lam, torch.double)
+    elif system == "A_complex":
+        A = similar(
+            torch.diag_embed(torch.randn(*batch, M, dtype=torch.cdouble)) * 0.4, torch.cdouble
+        )
+    elif system == "LV_real":
+        Q = torch.linalg.qr(torch.randn(*batch, M, M, dtype=torch.double)).Q
+        L = torch.rand(*batch, M, dtype=torch.double) - 0.5
+        A = Q @ torch.diag_embed(L) @ Q.mT
+        return {"L": L, "V": Q}, A, torch.double
+    elif system in ("LV_complex", "LVinv_complex"):
+        A = similar(Lam, torch.double)
+        L, V = torch.linalg.eig(A)
+        given = {"V": V} if system == "LV_complex" else {"Vinv": torch.linalg.inv(V)}
+        return {"L": L, **given}, A, torch.double
+    else:
+        L = torch.rand(*batch, M, dtype=torch.double) - 0.5
+        if system == "L_complex_x":
+            L = torch.polar(L.abs(), torch.rand_like(L) * 6.0)
+        dtype = L.dtype
+        return {"L": L}, torch.diag_embed(L), dtype
+    return {"A": A}, A, A.dtype
+
+
+def _pfe_reference(A, x, B, C, D, out_idx, identity):
+    """state_space of the dense A, with the model's B for a 2-D x."""
+    if B is None and identity:
+        B = torch.ones(A.shape[:-1], dtype=A.dtype)
+    return state_space(A, x, B=B, C=C, D=D, out_idx=out_idx)
+
+
+@pytest.mark.parametrize("system", _PFE_SYSTEMS)
+@pytest.mark.parametrize("batched", [False, True])
+# the output, and whether B is given: without B, x drives every state of a
+# diagonal model and the first of the others
+@pytest.mark.parametrize(
+    ("output", "with_B"), [("C", True), ("C_per_signal", False), ("out_idx", True)]
+)
+def test_diag_state_space_pfefilt_route_matches_state_space(system, batched, output, with_B):
+    given, A, dtype = _pfe_model(system, batched)
+    M = _PFE_M
+    x = torch.randn(_PFE_BATCH, _PFE_N, dtype=dtype)
+    B = torch.randn(*((_PFE_BATCH,) if batched else ()), M, dtype=dtype) if with_B else None
+    C = {"C": (M,), "C_per_signal": (_PFE_BATCH, M)}.get(output)
+    C = None if C is None else torch.randn(C, dtype=dtype)
+    out_idx = 2 if output == "out_idx" else None
+    # a gain per signal with a batched model, one gain otherwise; the other
+    # tests of diag_state_space run without D
+    D = torch.randn((_PFE_BATCH,) if batched else (), dtype=dtype)
+
+    y = diag_state_space(x, **given, B=B, C=C, D=D, out_idx=out_idx)
+
+    y_ref = _pfe_reference(A, x, B, C, D, out_idx, identity=set(given) == {"L"})
+    torch.testing.assert_close(y, y_ref)
+
+
+# The route with an initial state: the modes' sections start from V^{-1} zi.
+# A given zi always takes the per-signal layout, batched model or not.
+@pytest.mark.parametrize("system", ["A_real", "LVinv_complex", "A_complex", "L_real"])
+def test_diag_state_space_pfefilt_route_with_zi_matches_state_space(system):
+    given, A, dtype = _pfe_model(system, batched=False)
+    M = _PFE_M
+    x = torch.randn(_PFE_BATCH, _PFE_N, dtype=dtype)
+    B = torch.randn(M, dtype=dtype)
+    C = torch.randn(_PFE_BATCH, M, dtype=dtype)
+    D = torch.randn((), dtype=dtype)
+    zi = torch.randn(_PFE_BATCH, M, dtype=dtype)
+
+    y, zf = diag_state_space(x, **given, B=B, C=C, D=D, zi=zi)
+
+    y_ref, zf_ref = state_space(A, x, B=B, C=C, D=D, zi=zi)
+    torch.testing.assert_close(y, y_ref)
+    torch.testing.assert_close(zf, zf_ref)
+
+
+def test_diag_state_space_pfefilt_route_with_one_zi_for_all_signals():
+    given, A, dtype = _pfe_model("A_real", batched=False)
+    x = torch.randn(_PFE_BATCH, _PFE_N, dtype=dtype)
+    zi = torch.randn(_PFE_M, dtype=dtype)
+
+    y, zf = diag_state_space(x, **given, out_idx=2, zi=zi)
+
+    y_ref, zf_ref = state_space(A, x, out_idx=2, zi=zi)
+    torch.testing.assert_close(y, y_ref)
+    torch.testing.assert_close(zf, zf_ref)
+
+
+def test_diag_state_space_with_zi_and_a_mode_that_b_cannot_reach():
+    # a subnormal entry of B, which overflows q[0] / B as a zero would divide it
+    L = torch.tensor([0.5, -0.3, 0.2], dtype=torch.double)
+    B = torch.tensor([1.0, 1e-310, 2.0], dtype=torch.double)
+    C, zi = torch.randn(3, dtype=torch.double), torch.randn(_PFE_BATCH, 3, dtype=torch.double)
+    x = torch.randn(_PFE_BATCH, _PFE_N, dtype=torch.double)
+
+    y, zf = diag_state_space(x, L=L, B=B, C=C, zi=zi)
+
+    y_ref, zf_ref = state_space(torch.diag(L), x, B=B, C=C, zi=zi)
+    torch.testing.assert_close(y, y_ref)
+    torch.testing.assert_close(zf, zf_ref)
+
+
+def test_diag_state_space_pfefilt_route_with_zi_and_no_steps():
+    given, _, dtype = _pfe_model("A_real", batched=False)
+    zi = torch.randn(_PFE_BATCH, _PFE_M, dtype=dtype)
+
+    y, zf = diag_state_space(torch.empty(_PFE_BATCH, 0, dtype=dtype), **given, out_idx=1, zi=zi)
+
+    assert y.shape == (_PFE_BATCH, 0)
+    torch.testing.assert_close(zf, zi)
+
+
+def test_diag_state_space_diagonal_A():
+    # a repeated eigenvalue with two eigenvectors
+    A = torch.diag(torch.tensor([0.5, 0.5], dtype=torch.double))
+    x = torch.randn(_PFE_BATCH, _PFE_N, dtype=torch.double)
+    B, C = torch.randn(2, dtype=torch.double), torch.randn(2, dtype=torch.double)
+
+    torch.testing.assert_close(diag_state_space(x, A=A, B=B, C=C), state_space(A, x, B=B, C=C))
+
+
+def test_diag_state_space_integer_model():
+    # pfefilt doesn't take integers: the integer recurrence runs them
+    x = torch.ones(1, 4, dtype=torch.long)
+    L, C = torch.zeros(1, dtype=torch.long), torch.ones(1, dtype=torch.long)
+
+    y = diag_state_space(x, L=L, C=C)
+
+    torch.testing.assert_close(y, torch.tensor([[0, 1, 1, 1]]))
+
+
+def test_diag_state_space_pfefilt_route_without_signals():
+    given, _, dtype = _pfe_model("A_real", batched=False)
+    x = torch.empty(0, _PFE_N, dtype=dtype)
+    C, D = torch.randn(_PFE_M, dtype=dtype), torch.randn(0, dtype=dtype)
+
+    y = diag_state_space(x, **given, C=C, D=D)
+
+    assert y.shape == (0, _PFE_N)
+
+
+def test_diag_state_space_one_output_in_bfloat16():
+    # pfefilt doesn't take bfloat16, which has no complex dtype
+    L = (torch.rand(_PFE_M) - 0.5).bfloat16()
+    x, C = torch.randn(_PFE_BATCH, _PFE_N).bfloat16(), torch.randn(_PFE_M).bfloat16()
+
+    y = diag_state_space(x, L=L, C=C)
+
+    # bfloat16 states, rounded at every step
+    y_ref = _pfe_reference(torch.diag(L.float()), x.float(), None, C.float(), None, None, True)
+    torch.testing.assert_close(y.float(), y_ref, rtol=3e-2, atol=3e-2)
+
+
+@pytest.mark.parametrize("system", ["A_real", "LVinv_complex"])
+def test_diag_state_space_out_idx_off_the_route(system):
+    # an integer unroll_factor keeps the modal path, which takes row out_idx of V
+    given, A, dtype = _pfe_model(system, batched=False)
+    x = torch.randn(_PFE_BATCH, _PFE_N, dtype=dtype)
+
+    y = diag_state_space(x, **given, out_idx=2, unroll_factor=4)
+
+    torch.testing.assert_close(y, state_space(A, x, out_idx=2))

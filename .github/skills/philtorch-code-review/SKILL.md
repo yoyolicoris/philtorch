@@ -5,7 +5,7 @@ description: Review a philtorch pull request or diff for minimal, duplication-fr
 
 # Reviewing philtorch changes
 
-The rules are in `AGENTS.md` and, for docstrings, `CONTRIBUTING.md`; where this skill differs, they win. Read the pull request's description first: a choice it states and explains is not a finding. Review what was asked: the pull request, every pull request of a stack, and uncommitted changes when they are included.
+The rules are in `AGENTS.md` and, for docstrings, `CONTRIBUTING.md`; where this skill differs, they win. Read the pull request's description first: a choice it states and explains is not a finding, unless a rule forbids it. A plan on the issue, or an agent's brief, is a blueprint, not a rule: check the change against the rules even where it does what the plan said. Review what was asked: the pull request, every pull request of a stack, and uncommitted changes when they are included.
 
 ## Questions for code, tests, comments and docs alike
 
@@ -20,11 +20,12 @@ The rules are in `AGENTS.md` and, for docstrings, `CONTRIBUTING.md`; where this 
 - **Consistent?** Before accepting a fix, check how the sibling kernels and functions handle the same case. Carry over what earlier reviews and Copilot found in similar code.
 - **Tests?**
   - One test per path, covering each new behaviour and each new `ValueError`. Each new tensor argument has a mismatch case in `tests/test_argument_errors.py`.
-  - A new device or dtype extends the existing tests. Parametrize only over values that reach distinct paths.
-  - No test of an impossible branch or that restates the implementation. Gradchecks only for native ops, `custom_op`s and `autograd.Function`s.
+  - A new device or dtype extends the existing tests. Parametrize only over values that reach distinct paths, and cross two parameters only where their combinations are paths of their own.
+  - No test of an impossible branch or that restates the implementation, such as one that patches a function to see which path runs: test what the paths return.
+  - Gradient tests, a `gradcheck` or a comparison with a reference's gradients, only for native ops, `custom_op`s and `autograd.Function`s: autograd through PyTorch ops is PyTorch's to test.
   - A removed test names the test that still covers its path.
 - **Docs?** Compact, with no tuning history or benchmark tables. After a trim, a first-time user can still tell what each argument does, what is returned and how the parts connect. A method from a paper cites it, as `CONTRIBUTING.md`'s "Citations" says.
-- **Scope and plan?** No more than the pull request says; a port keeps the logic it ports. List each departure from the agreed plan as a decision for the maintainer.
+- **Scope and plan?** No more than the pull request says; a port keeps the logic it ports. A departure from the plan that a rule calls for is not a finding; one that changes the agreed design or behaviour is a decision for the maintainer.
 - **Regressions?** Compare behaviour before and after. A claim that speed or behaviour is unchanged needs a run that shows it.
 
 ## Checks by area

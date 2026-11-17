@@ -6,7 +6,6 @@ import torch
 from torch import Tensor
 
 from .. import _ssm
-from ..mat import find_eigenvectors
 from ..utils import _check_shared
 from .recur import linear_recurrence
 
@@ -341,13 +340,22 @@ def diag_state_space(
 
     Give the decomposition in one of these ways:
 
-    - :attr:`A` alone: the eigenvalues come from
-      :func:`torch.linalg.eigvals` and the eigenvectors from
-      :func:`~philtorch.mat.find_eigenvectors`.
-    - :attr:`L` with :attr:`A`, :attr:`V` or :attr:`Vinv`: the missing
-      matrices are computed from it.
+    - :attr:`A` alone: the eigenvalues and eigenvectors come from
+      :func:`torch.linalg.eig`.
+    - :attr:`L` with :attr:`V` or :attr:`Vinv`: the missing one is the inverse
+      of the given one.
     - :attr:`L` with both :attr:`V` and :attr:`Vinv`: used as given.
     - :attr:`L` alone: :math:`A` is diagonal and :math:`V = I`.
+
+    Note:
+        With :attr:`zi`, one input (a 2-D :attr:`x`) and one output
+        (:attr:`C` of shape :math:`(M)` or :math:`(B, M)`, or :attr:`out_idx`),
+        the rounding error of the gradients grows with
+        :math:`|\hat{h}_i[0] / \hat{B}_i|`, where
+        :math:`\hat{\mathbf{h}}[0] = V^{-1} \text{zi}`: large for a state that
+        the input barely drives (a small :math:`\hat{B}_i`) but :attr:`zi`
+        starts away from zero. The outputs and the final state keep their
+        precision.
 
     Args:
         x (Tensor): inputs, of shape :math:`(B, N, F)` or :math:`(B, N)`.
@@ -376,12 +384,13 @@ def diag_state_space(
 
     Raises:
         ValueError: if neither :attr:`L` nor :attr:`A` is given, if
-            :attr:`V` or :attr:`Vinv` is given without :attr:`L`, if both
+            :attr:`V` or :attr:`Vinv` is given without :attr:`L`, if
+            :attr:`A` is given with :attr:`L`, if both
             :attr:`C` and :attr:`out_idx` are given, if :attr:`A`, :attr:`B`,
             :attr:`C`, :attr:`D` and :attr:`zi` don't have the dtype and
             device of :attr:`x`, if :attr:`L`, :attr:`V` and :attr:`Vinv`
             don't share a dtype and a device, or have neither the dtype of
-            :attr:`x` nor, with a real :attr:`A`, its complex dtype, if
+            :attr:`x` nor, with :attr:`V` or :attr:`Vinv`, its complex dtype, if
             :attr:`D` gives a different number of outputs from :attr:`C`,
             :attr:`out_idx` or the states, or if the shapes do not match.
 
@@ -402,8 +411,8 @@ def diag_state_space(
     _check_shared(A=A, B=B, C=C, D=D, zi=zi, x=x)
     _check_shared(L=L, V=V, Vinv=Vinv)
     if L is not None:
-        # Without A, the decomposition is the model; a real A's may be complex.
-        _check_shared(precision=A is not None and not A.is_complex(), L=L, x=x)
+        # L alone is the model; with V or Vinv, a real model's may be complex.
+        _check_shared(precision=V is not None or Vinv is not None, L=L, x=x)
     # A real model has real outputs, even through complex eigenvalues.
     real = not x.is_complex()
 
@@ -415,9 +424,10 @@ def diag_state_space(
         if V is not None or Vinv is not None:
             raise ValueError("V and Vinv need L")
         _check_A(A, x)
-        L = torch.linalg.eigvals(A)
-        V = Vinv = None
+        L, V = torch.linalg.eig(A)
         M = A.size(-1)
+    elif A is not None:
+        raise ValueError("A takes no L: its eigendecomposition gives the eigenvalues.")
     else:
         match L.shape:
             case (_,):
@@ -432,12 +442,6 @@ def diag_state_space(
                         raise ValueError(f"Vinv must be 2D, got {Vinv.shape}")
                     if not (Vinv.size(0) == Vinv.size(1) == M):
                         raise ValueError(f"Vinv must be square with size {M}, got {Vinv.shape}")
-
-                if A is not None:
-                    if A.dim() != 2:
-                        raise ValueError(f"A must be 2D, got {A.shape}")
-                    if not (A.size(0) == A.size(1) == M):
-                        raise ValueError(f"A must be square with size {M}, got {A.shape}")
 
             case (L_batch, _) if L_batch == batch_size:
                 M = L.size(1)
@@ -457,14 +461,6 @@ def diag_state_space(
                             f"got {Vinv.shape}"
                         )
 
-                if A is not None:
-                    if A.dim() != 3:
-                        raise ValueError(f"A must be 3D, got {A.shape}")
-                    if not (A.size(0) == batch_size and A.size(1) == A.size(2) == M):
-                        raise ValueError(
-                            f"A must be a batch of square matrices with size {M}, got {A.shape}"
-                        )
-
             case _:
                 raise ValueError(f"L must be a vector or a batch of vectors, got {L.shape}")
 
@@ -473,19 +469,117 @@ def diag_state_space(
             f"Last dimension of A must match last dimension of x, got A: {M}, x: {x.size(-1)}"
         )
 
-    match (V, Vinv, A):
-        case (None, None, None):
-            # A = diag(L) and V = I: V and Vinv stay None, meaning the identity.
-            pass
-        case (None, None, _):
-            V = find_eigenvectors(A, L)
-            Vinv = torch.linalg.inv(V)
-        case (None, _, _):
-            V = torch.linalg.inv(Vinv)
-        case (_, None, _):
-            Vinv = torch.linalg.inv(V)
-        case (_, _, _):
-            pass
+    # With neither V nor Vinv, A = diag(L) and V = I.
+    identity = V is None and Vinv is None
+
+    # V^{-1} t and V t for stacks of columns t with three dimensions, and c V
+    # for the rows of C. The missing one of V and Vinv is never inverted: solve
+    # applies it.
+    def to_modal(t):
+        return Vinv @ t if Vinv is not None else torch.linalg.solve(V, t)
+
+    def from_modal(t):
+        return V @ t if V is not None else torch.linalg.solve(Vinv, t)
+
+    def times_V(c):
+        # c is of shape (M,), (B, M), (P, M) or (B, P, M); a (B, M) c with a
+        # batched V is a row per signal, as _ssm_C_D reads it.
+        batched = (Vinv if V is None else V).dim() == 3
+        one_row = c.dim() == 1 or (batched and c.dim() == 2 and c.size(0) == batch_size)
+        # Rows stay 3-D for a batched V, so that solve(left=False) broadcasts
+        # them: it would read a (1, M) row as a column of a (1, M, M) Vinv.
+        rows = (c.reshape(-1, 1, M) if batched else c.unsqueeze(-2)) if one_row else c
+        rows = rows @ V if V is not None else torch.linalg.solve(Vinv, rows, left=False)
+        return rows.squeeze(-2) if one_row else rows
+
+    def unit(i):
+        e = L.new_zeros(M)
+        e[i].fill_(1)  # e[i] = 1 would copy from the host and synchronize
+        return e
+
+    route = (
+        (zi is None or tuple(zi.shape) in ((M,), (batch_size, M)))
+        and unroll_factor is None
+        and x.dim() == 2
+        # pfefilt takes floating-point and complex dtypes other than bfloat16
+        and (x.is_floating_point() or x.is_complex())
+        and x.dtype != torch.bfloat16
+        and (D is None or tuple(D.shape) in ((), (1,), (batch_size,)))
+        and (out_idx is not None if C is None else tuple(C.shape) in ((M,), (batch_size, M)))
+    )
+    if route:
+        # One input and one output: a partial fraction expansion with p = L and
+        # r = (C V) * (V^{-1} B), which pfefilt runs.
+        if B is not None and tuple(B.shape) not in ((M,), (batch_size, M)):
+            raise _ssm_B_shape_error(B, x, batch_size, M)
+
+        # A diagonal model without B drives every state, otherwise the first.
+        B_hat = B.to(L.dtype) if B is not None else L.new_ones(M) if identity else unit(0)
+        if not identity:
+            B_hat = to_modal(B_hat.reshape(-1, M, 1)).squeeze(-1)
+        if zi is not None:
+            # The sections s = q / Bh of the modes q, from q[0] = V^{-1} zi. A
+            # mode that B can't reach, or barely (a subnormal Bh), has no
+            # section to carry its initial state: s0 isn't finite.
+            Bh = B_hat.broadcast_to(batch_size, M).flatten()
+            q0 = _ssm.initial_state(x, zi, M)[0].to(L.dtype)
+            q0 = q0 if identity else to_modal(q0.unsqueeze(-1)).squeeze(-1)
+            s0 = q0.flatten() / Bh
+        if zi is None or bool(torch.isfinite(s0).all()):
+            from .filtering import pfefilt  # it imports this module
+
+            C_hat = unit(out_idx) if C is None else C.to(L.dtype)
+            if not identity:
+                C_hat = times_V(C_hat)
+            r, p = C_hat * B_hat, L
+            # A given zi is per signal: flatten with it.
+            batched = (
+                zi is not None
+                or L.dim() == 2
+                or any(t is not None and t.dim() == 2 for t in (B, C))
+                or (D is not None and D.shape == (batch_size,))
+            )
+            g = x.new_zeros(()) if D is None else D
+            if batched:
+                r = r.broadcast_to(batch_size, M).flatten()
+                p = L.broadcast_to(batch_size, M).flatten()
+                batch_index = torch.arange(batch_size, device=x.device).repeat_interleave(M)
+                g = g.expand(batch_size)
+            else:
+                r, batch_index, g = r.reshape(M), None, g.reshape(())
+            # A real filter lists one pole of each conjugate pair, which eig
+            # gives exactly; a complex L of the user's may not pair up: list all.
+            half = real and (A is not None or not L.is_complex())
+            keep, weight = slice(None), 1
+            if half and L.is_complex():
+                (keep,) = (p.imag >= 0).nonzero(as_tuple=True)  # one sync for every selection
+                r, p = r[keep], p[keep]
+                weight = 1 + (p.imag != 0)  # a listed pole stands for its pair
+                if batched:
+                    batch_index = batch_index[keep]
+                r = torch.where(p.imag == 0, r.real.to(r.dtype), r)  # real poles: real residues
+                if zi is not None:
+                    Bh, s0 = Bh[keep], s0[keep]
+                    s0 = torch.where(p.imag == 0, s0.real.to(s0.dtype), s0)
+            y = pfefilt(
+                r,
+                p,
+                g if half else g.to(L.dtype),
+                x,
+                zi=None if zi is None else s0,
+                batch_index=batch_index,
+            )
+            if zi is None:
+                return y if half or not real else y.real
+            y, s = y
+            # q[N] = Bh s[N] and zf = V q[N]. The listed poles of a half form stand
+            # for their pairs: V q[N] is the real part of V times q[N] of the listed
+            # ones, counted twice for a non-real pole.
+            q = L.new_zeros(batch_size * M)
+            q[keep] = weight * Bh * s if L.is_complex() else (Bh * s).real
+            zf = q.reshape(batch_size, M)
+            zf = zf if identity else from_modal(zf.unsqueeze(-1)).squeeze(-1)
+            return (y if half or not real else y.real), (zf.real if real else zf)
 
     zi, return_zf = _ssm.initial_state(x, zi, M)
 
@@ -493,44 +587,31 @@ def diag_state_space(
     x_orig, zi_orig = x, zi
     x, zi, B = (t if t is None else t.to(L.dtype) for t in (x, zi, B))
 
-    # Vinv is None (the identity), or 2-D or 3-D: as given and checked, or as
-    # computed.
-    if Vinv is None:
-        Vinvzi = zi
-    elif Vinv.dim() == 2:
-        Vinvzi = zi @ Vinv.T
-    else:
-        Vinvzi = torch.linalg.vecdot(Vinv.conj(), zi.unsqueeze(1))
+    Vinvzi = zi if identity else to_modal(zi.unsqueeze(-1)).squeeze(-1)
 
-    if Vinv is None:
+    if identity:
         if B is None and x.dim() == 2:  # every state is driven by x
             VinvBx = x.unsqueeze(-1).expand(-1, -1, M)
         else:
             VinvBx = _ssm_B(B, x, batch_size, M)
-    elif B is not None:
-        # Same dispatch as _ssm_B, but Vinv is folded into B before touching x.
+    elif B is None and x.dim() == 3:  # x drives the states
+        VinvBx = to_modal(x.mT).mT
+    else:
+        if B is None:  # a 2-D x drives the first state
+            B = unit(0)
+        # Same dispatch as _ssm_B, but V^{-1} is folded into B before touching x.
         features = x.size(-1)
         match x.dim(), tuple(B.shape):
             case 2, (m,) if m == M:
-                VinvB = Vinv @ B
-                if VinvB.dim() == 2:
-                    VinvB = VinvB.unsqueeze(1)
-                VinvBx = x.unsqueeze(-1) * VinvB
+                VinvBx = x.unsqueeze(-1) * to_modal(B.reshape(1, M, 1)).mT
             case 2, (b, m) if (b, m) == (batch_size, M):
-                VinvB = (Vinv @ B.unsqueeze(-1)).squeeze(-1)
-                VinvBx = x.unsqueeze(-1) * VinvB.unsqueeze(1)
+                VinvBx = x.unsqueeze(-1) * to_modal(B.unsqueeze(-1)).mT
             case 3, (m, f) if (m, f) == (M, features):
-                VinvBx = x @ (Vinv @ B).mT
+                VinvBx = x @ to_modal(B.unsqueeze(0)).mT
             case 3, (b, m, f) if (b, m, f) == (batch_size, M, features):
-                VinvBx = x @ (Vinv @ B).mT
+                VinvBx = x @ to_modal(B).mT
             case _:
                 raise _ssm_B_shape_error(B, x, batch_size, M)
-    elif x.dim() == 2 and Vinv.dim() == 2:
-        VinvBx = x.unsqueeze(-1) * Vinv[:, 0]
-    elif x.dim() == 2 and Vinv.dim() == 3:
-        VinvBx = x.unsqueeze(-1) * Vinv[:, None, :, 0]
-    else:  # x is 3-D, as checked
-        VinvBx = x @ Vinv.mT
 
     recur_runner = partial(linear_recurrence, unroll_factor=unroll_factor)
 
@@ -541,12 +622,13 @@ def diag_state_space(
     ).unflatten(0, (batch_size, M))
 
     def run(out_idx, h_hat=Vinvh):
-        if V is None:
+        if identity:
             h = h_hat.mT if out_idx is None else h_hat[:, out_idx]
         elif out_idx is None:
-            h = (V @ h_hat).mT
+            h = from_modal(h_hat).mT
         else:
-            h = (V[..., out_idx, None, :] @ h_hat).squeeze(-2)
+            row = times_V(unit(out_idx))
+            h = (row.unsqueeze(-2) @ h_hat).squeeze(-2)
         # A real system's states are real: their imaginary part is rounding.
         return h.real if real else h
 
@@ -562,10 +644,8 @@ def diag_state_space(
         zf = (run(None, Vinvh[..., -1:])[:, 0] if N else zi) if return_zf else None
         Czi = _ssm_C_D(zi.unsqueeze(1), x, C, None, batch_size, M)
         C_hat = C.to(L.dtype)
-        if V is not None:
-            # A (B, M) C is a row per signal, as _ssm_C_D reads it.
-            per_signal = V.dim() == 3 and C.dim() == 2 and C.size(0) == batch_size
-            C_hat = (C_hat.unsqueeze(-2) @ V).squeeze(-2) if per_signal else C_hat @ V
+        if not identity:
+            C_hat = times_V(C_hat)
         Ch = _ssm_C_D(Vinvh.mT[:, :-1], x, C_hat, None, batch_size, M)
         Ch = torch.cat([Czi, Ch.real if real else Ch], dim=1)[:, :N]
         y = _ssm.outputs(Ch, None if D is None else _ssm_D(D, x, batch_size))
