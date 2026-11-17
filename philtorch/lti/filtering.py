@@ -806,14 +806,14 @@ def pfefilt(
         ValueError: if :attr:`x` is not 1-D or 2-D, :attr:`g` is not 0-D or
             1-D, :attr:`p` is not 1-D, :attr:`batch_index` or
             :attr:`multiplicity` is not of shape :math:`(U)`, the length of
-            :attr:`r` is not the sum of :attr:`multiplicity`, :attr:`zi` or a
-            batched :attr:`g` has the wrong shape, :attr:`batch_index` or
-            :attr:`multiplicity` isn't int32 or int64 on :attr:`x`'s device,
-            :attr:`batch_index` is out of range, :attr:`multiplicity` is below
-            1, the inputs differ in precision or device, are neither
-            floating-point nor complex, or are bfloat16, which has no complex
-            dtype, :attr:`g` is real and :attr:`x` complex, or a real pole has
-            a complex residue or initial state.
+            :attr:`r` is not :math:`M`, :attr:`zi` or a batched :attr:`g` has
+            the wrong shape, :attr:`batch_index` or :attr:`multiplicity` isn't
+            int32 or int64 on :attr:`x`'s device, :attr:`batch_index` is out of
+            range, :attr:`multiplicity` is below 1, the inputs differ in
+            precision or device, are neither floating-point nor complex, or
+            are bfloat16, which has no complex dtype, :attr:`g` is real and
+            :attr:`x` complex, or a real pole has a complex residue or initial
+            state.
 
     Example::
 
@@ -852,9 +852,7 @@ def pfefilt(
         raise ValueError("multiplicity must be at least 1.")
     M = int(multiplicity.sum())
     if r.shape != (M,):
-        raise ValueError(
-            f"r must be 1D of length {M}, the sum of multiplicity, got shape {tuple(r.shape)}."
-        )
+        raise ValueError(f"r must be 1D of length {M}, one per term, got shape {tuple(r.shape)}.")
     if g.dim() == 1 and (x.dim() == 1 or g.size(0) != x.size(0)):
         raise ValueError(
             f"A 1D g needs a 2D x of its batch size, got g: {tuple(g.shape)}, x: {tuple(x.shape)}"

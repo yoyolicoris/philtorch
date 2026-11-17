@@ -703,7 +703,7 @@ _LTI_FILTERING_CASES = [
         lambda: lti.pfefilt(
             _ones(1), _ones(1), _ones(()), _ones(4), multiplicity=torch.tensor([2])
         ),
-        "r must be 1D of length 2, the sum of multiplicity",
+        "r must be 1D of length 2, one per term",
         id="pfefilt-multiplicity-sum",
     ),
     pytest.param(
