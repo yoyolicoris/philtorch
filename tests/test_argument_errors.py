@@ -179,6 +179,22 @@ _LPV_FILTERING_CASES = [
         "number of time steps in b and a",
         id="torchlpc-b-time-mismatch",
     ),
+    # a pure gain, M_b = M_a = 0, which the ssm backend runs without a state
+    pytest.param(
+        lambda: lpv.lfilter(_ones(1, 3, 1), _zeros(1, 4, 0), _ones(1, 4)),
+        "number of time steps in b and a",
+        id="ssm-pure-gain-time-mismatch",
+    ),
+    pytest.param(
+        lambda: lpv.lfilter(_ones(1, 4, 1), _zeros(1, 4, 0), _ones(1, 4), zi=_zeros(1, 1, 0)),
+        "zi must be 1D or 2D",
+        id="ssm-pure-gain-zi-3d",
+    ),
+    pytest.param(
+        lambda: lpv.lfilter(_ones(1, 4, 1), _zeros(1, 4, 0), _ones(1, 4), zi=_zeros(1, 2)),
+        "zi must have 0 states for a pure gain",
+        id="ssm-pure-gain-zi-states",
+    ),
     # A batch of one isn't broadcast to a batched x: torchlpc did.
     pytest.param(
         lambda: lpv.lfilter(_ones(1, 4, 2), _zeros(4, 1), _ones(3, 4), backend="torchlpc"),
@@ -230,6 +246,22 @@ _LPV_RECUR_CASES = [
         lambda: lpv.linear_recurrence(_zeros(1, 4), _zeros(()), _ones(3, 4)),
         "Batch size of a must match batch size of x",
         id="a-batch-of-one",
+    ),
+    # a's shapes hold for unroll_factor=None too, which once broadcast a to x
+    pytest.param(
+        lambda: lpv.linear_recurrence(_zeros(()), _zeros(()), _ones(1, 4)),
+        "State matrix a must be 1D or 2D",
+        id="a-0d",
+    ),
+    pytest.param(
+        lambda: lpv.linear_recurrence(_zeros(3), _zeros(()), _ones(1, 4)),
+        "State matrix a must be 1D with the same length as x",
+        id="a-1d-length",
+    ),
+    pytest.param(
+        lambda: lpv.linear_recurrence(_zeros(1, 1), _zeros(()), _ones(1, 4)),
+        "State matrix a must be 2D with the same length as x",
+        id="a-2d-length",
     ),
     # The sequential loop used to promote a's dtype.
     pytest.param(
@@ -1171,6 +1203,13 @@ _NL_CASES = [
         ),
         "y0 and init must share a dtype and a device",
         id="newton_solve-y0-dtype",
+    ),
+    pytest.param(
+        lambda: newton_solve(
+            lambda y, x: torch.tanh(0.5 * y + x), _ones(1, 3), torch.zeros(1, dtype=torch.long)
+        ),
+        "init must be a real floating-point tensor",
+        id="newton_solve-init-integer",
     ),
 ]
 

@@ -316,3 +316,22 @@ def test_torchlpc_backend_rejects_float16():
     b, a, x = torch.randn(1, 8, 2).half(), torch.randn(1, 8, 2).half(), torch.randn(1, 8).half()
     with pytest.raises(NotImplementedError, match="float32, float64, complex64 and complex128"):
         lfilter(b, a, x, backend="torchlpc")
+
+
+@pytest.mark.parametrize("transpose", [True, False])
+def test_allpole_order_zero_has_an_empty_state(transpose: bool):
+    x = torch.randn(3, 5)
+    y, zf = lpv_allpole(torch.zeros(3, 5, 0), x, zi=torch.zeros(3, 0), transpose=transpose)
+    assert torch.equal(y, x)
+    assert zf.shape == (3, 0)
+
+
+@pytest.mark.parametrize("backend", ["ssm", "torchlpc"])
+@pytest.mark.parametrize("with_zi", [True, False])
+def test_lfilter_pure_gain(backend: str, with_zi: bool):
+    b, x = torch.randn(3, 5, 1), torch.randn(3, 5)
+    zi = torch.zeros(3, 0) if with_zi else None
+    out = lfilter(b, torch.zeros(3, 5, 0), x, zi=zi, backend=backend)
+    y, zf = out if with_zi else (out, None)
+    assert torch.allclose(y, b[..., 0] * x)
+    assert zf is None or zf.shape == (3, 0)
