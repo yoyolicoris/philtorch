@@ -155,7 +155,7 @@ def allpole(
     Returns:
         Tensor or tuple of Tensor: the filtered signals, of shape
         :math:`(B, N)`, and with :attr:`zi`, the final state in the same
-        convention, of shape :math:`(B, M)`.
+        convention, of shape :math:`(B, M)`, empty when :math:`M = 0`.
 
     Raises:
         ValueError: if :attr:`a`, :attr:`zi` and :attr:`x` don't share a dtype

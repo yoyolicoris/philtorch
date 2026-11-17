@@ -65,6 +65,12 @@ def test_cspline_of_one_sample_is_the_sample():
     assert torch.equal(cspline(x), x)
 
 
+def test_cubic_spline_lamb_raises_before_the_length_check():
+    # m = 1 skips the length check; a nonzero lamb still raises its own error
+    with pytest.raises(NotImplementedError):
+        cubic_spline(torch.ones(1, 2), 1, lamb=1.0)
+
+
 @pytest.mark.parametrize("shape", [(16,), (2, 2, 16)])
 def test_cubic_spline_requires_batched_signals(shape):
     with pytest.raises(ValueError, match="must be 2D"):

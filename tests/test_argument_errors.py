@@ -248,7 +248,7 @@ _LPV_RECUR_CASES = [
         id="a-3d",
     ),
     pytest.param(
-        lambda: lpv.linear_recurrence(_zeros(4), _zeros(1, 1), _ones(1, 4), unroll_factor=2),
+        lambda: lpv.linear_recurrence(_zeros(4), _zeros(1, 1), _ones(1, 4)),
         "Initial state init must be 1D or 0D",
         id="init-2d",
     ),
@@ -940,12 +940,12 @@ _LTI_RECUR_CASES = [
         id="x-not-2d",
     ),
     pytest.param(
-        lambda: lti.linear_recurrence(_zeros(1, 1), _zeros(()), _ones(1, 4), unroll_factor=2),
+        lambda: lti.linear_recurrence(_zeros(1, 1), _zeros(()), _ones(1, 4)),
         "State matrix a must be 1D or 0D",
         id="a-2d",
     ),
     pytest.param(
-        lambda: lti.linear_recurrence(_zeros(()), _zeros(1, 1), _ones(1, 4), unroll_factor=2),
+        lambda: lti.linear_recurrence(_zeros(()), _zeros(1, 1), _ones(1, 4)),
         "Initial state init must be 1D or 0D",
         id="init-2d",
     ),
@@ -1234,6 +1234,11 @@ _POLY_CASES = [
         lambda: polydiv(_ones(()), _ones(2)),
         "u and v must be at least 1D",
         id="u-0d",
+    ),
+    pytest.param(
+        lambda: polydiv(_ones(2), _ones(3)),
+        "must not exceed",
+        id="v-degree-above-u",
     ),
     pytest.param(
         lambda: polydiv(_ones(3), _ones(())),

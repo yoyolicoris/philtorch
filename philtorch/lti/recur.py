@@ -37,13 +37,10 @@ def linear_recurrence(
 
     Raises:
         ValueError: if :attr:`x` is not 2-D, if :attr:`a`, :attr:`init` and
-            :attr:`x` don't share a dtype and a device, if
-            :attr:`unroll_factor` is 0 or negative, or, with an integer
-            :attr:`unroll_factor`, if :attr:`a` or :attr:`init` is not 0-D or
-            1-D, or either has a batch size other than 1 or that of
-            :attr:`x`.
-        RuntimeError: with ``unroll_factor=None``, for the same batch-size
-            mismatch.
+            :attr:`x` don't share a dtype and a device, if :attr:`a` or
+            :attr:`init` is not 0-D or 1-D, or either has a batch size other
+            than 1 or that of :attr:`x`, or if :attr:`unroll_factor` is 0 or
+            negative.
         NotImplementedError: with ``unroll_factor=None``, if no kernel takes
             the input; an integer :attr:`unroll_factor` runs PyTorch ops, on
             any device.
@@ -59,11 +56,10 @@ def linear_recurrence(
     if x.dim() != 2:
         raise ValueError(f"Input x must be 2D, got {x.shape}")
     _check_shared(a=a, init=init, x=x)
-    if unroll_factor is None:
-        return _ssm.scalar_recursion(a.broadcast_to(x.shape[0])[:, None], init, x)
-
     _check_scalar_batch(a, "State matrix", "a", x)
     _check_scalar_batch(init, "Initial state", "init", x)
+    if unroll_factor is None:
+        return _ssm.scalar_recursion(a.broadcast_to(x.shape[0])[:, None], init, x)
 
     if a.dim() == 0:
         a = a.expand(1)

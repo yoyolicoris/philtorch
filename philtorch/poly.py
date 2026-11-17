@@ -33,9 +33,8 @@ def polydiv(u: Tensor, v: Tensor) -> tuple[Tensor, Tensor]:
 
     Raises:
         ValueError: if :attr:`u` or :attr:`v` is 0-D, :attr:`u` and :attr:`v`
-            don't share a dtype and a device, or :attr:`u` has an integer
-            dtype.
-        RuntimeError: if :math:`N > M`.
+            don't share a dtype and a device, :attr:`u` has an integer
+            dtype, or :math:`N > M`.
 
     Note:
         Unlike :func:`numpy.polydiv`, the remainder always has :math:`N`
@@ -58,6 +57,8 @@ def polydiv(u: Tensor, v: Tensor) -> tuple[Tensor, Tensor]:
 
     m = u.size(-1) - 1
     n = v.size(-1) - 1
+    if n > m:
+        raise ValueError(f"v's degree {n} must not exceed u's {m}")
     scale = v[..., 0].reciprocal()
     r = u
     q = []

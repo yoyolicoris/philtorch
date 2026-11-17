@@ -235,7 +235,7 @@ def cubic_spline(
         raise ValueError(f"Input signal x must be 2D (batch, time), got {x.shape}")
     if m == 1 and lamb == 0.0:  # cspline below raises for another lamb
         return x
-    if x.size(1) < 3 - scipy_padding:
+    if m > 1 and x.size(1) < 3 - scipy_padding:
         raise ValueError(
             f"x must have at least {3 - scipy_padding} samples for m > 1"
             f"{' with scipy_padding' if scipy_padding else ''}, got {x.size(1)}"
@@ -424,7 +424,8 @@ def resample(
             :math:`\rho \in (0, 1]` as a fraction of the lower Nyquist
             frequency. Default: ``None``.
         beta (float or Tensor, optional): the Kaiser window shape parameter
-            :math:`\beta \ge 0`. Default: ``None``.
+            :math:`\beta \ge 0`; a tensor's sign is ignored. Default:
+            ``None``.
         num_zeros (int, optional): the number of zero-crossings
             :math:`N_z \ge 1` per side of the sinc mainlobe. Default: ``None``.
 

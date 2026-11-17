@@ -158,8 +158,11 @@ def dtw(
             diagonal step's cost in the symmetric steps. 1 favors diagonal
             paths, which sum fewer costs; 2 weighs each step's cost by how far
             it advances, :math:`\Delta n + \Delta m`, so that every path has
-            the same total weight (Sakoe and Chiba's symmetric form,
-            "symmetric2" in Giorgino's dtw package). Default: 1.
+            the same total weight: the symmetric form of `Dynamic
+            Programming Algorithm Optimization for Spoken Word Recognition`_
+            (Sakoe and Chiba, 1978), "symmetric2" in `Computing and
+            Visualizing Dynamic Time Warping Alignments in R: The dtw
+            Package`_ (Giorgino, 2009). Default: 1.
         lengths (tuple of Tensor, optional): each pair's lengths
             :math:`(N_b, M_b)`, two integer tensors of shape :math:`(B)`, for
             batches of sequences padded to :math:`N` and :math:`M`; the
@@ -227,6 +230,10 @@ def dtw(
         >>> distance.sum().backward()  # gradients with respect to y
         >>> same = dtw(x=x, y=y, gamma=0.1)  # the same cost, from the frames
 
+    .. _Dynamic Programming Algorithm Optimization for Spoken Word Recognition:
+        https://doi.org/10.1109/TASSP.1978.1163055
+    .. _Computing and Visualizing Dynamic Time Warping Alignments in R\: The dtw Package:
+        https://doi.org/10.18637/jss.v031.i07
     .. _Soft-DTW\: a Differentiable Loss Function for Time-Series:
         https://proceedings.mlr.press/v70/cuturi17a.html
     .. _Parallelizing Dynamic Time Warping Algorithm Using Prefix Computations on GPU:
