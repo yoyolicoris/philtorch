@@ -175,7 +175,7 @@ def cubic_spline(
     IEEE Transactions on Signal Processing, 1993, and evaluates the spline at
     :attr:`m` points per sample interval. The spline passes through the
     original samples; with :attr:`scipy_padding`, only approximately for
-    signals of fewer than about 16 samples, as SciPy's does.
+    short signals, as SciPy's does.
 
     Args:
         x (Tensor): signals, of shape :math:`(B, L)`. Unlike SciPy, the batch
@@ -199,16 +199,17 @@ def cubic_spline(
         With ``m=1``, :attr:`x` itself.
 
     Raises:
-        ValueError: if :attr:`m` is not an integer of at least 1, or
-            :attr:`x` is not 2-D.
+        ValueError: if :attr:`m` is not an integer of at least 1,
+            :attr:`x` is not 2-D, or, for :attr:`m` above 1, :attr:`x` has
+            fewer than 3 samples, 2 with :attr:`scipy_padding`.
         NotImplementedError: if :attr:`lamb` is not zero.
 
     Example::
 
         >>> from philtorch.lti import cubic_spline
+        >>> # m = 4: 4 points per sample interval, (16 - 1) * 4 + 1 = 61 in all
         >>> t = torch.arange(16, dtype=torch.float64)
         >>> x = torch.cos(t / 3).unsqueeze(0)
-        >>> # m = 4: 4 points per sample interval, (16 - 1) * 4 + 1 = 61 in all
         >>> y = cubic_spline(x, 4)
         >>> y.shape
         torch.Size([1, 61])
@@ -224,6 +225,11 @@ def cubic_spline(
         raise ValueError(f"Input signal x must be 2D (batch, time), got {x.shape}")
     if m == 1 and lamb == 0.0:  # cspline below raises for another lamb
         return x
+    if x.size(1) < 3 - scipy_padding:
+        raise ValueError(
+            f"x must have at least {3 - scipy_padding} samples for m > 1"
+            f"{' with scipy_padding' if scipy_padding else ''}, got {x.size(1)}"
+        )
 
     c = cspline(x, parallel_form=parallel_form, scipy_padding=scipy_padding, lamb=lamb)
 
@@ -433,9 +439,9 @@ def resample(
     Example::
 
         >>> from philtorch.lti import resample
+        >>> # 10 ms of a 1 kHz sine, 44100 Hz to 48000 Hz, the default "HQ"
         >>> t = torch.arange(441, dtype=torch.float64)
         >>> x = torch.sin(2 * torch.pi * 10 * t / 441).unsqueeze(0)
-        >>> # 44100 Hz to 48000 Hz, the default "HQ"
         >>> y = resample(x, 44100, 48000)
         >>> y.shape
         torch.Size([1, 480])

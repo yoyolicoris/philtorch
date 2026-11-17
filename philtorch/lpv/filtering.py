@@ -56,9 +56,10 @@ def fir(
     Example::
 
         >>> from philtorch.lpv import fir
+        >>> # y[n] = b_0[n] x[n] + b_1[n] x[n - 1]
         >>> b = torch.tensor([[[1.0, 1.0], [2.0, 2.0], [3.0, 3.0]]])
         >>> x = torch.ones(1, 3)
-        >>> fir(b, x, transpose=False)  # y[n] = b_0[n] x[n] + b_1[n] x[n - 1]
+        >>> fir(b, x, transpose=False)
         tensor([[1., 4., 6.]])
         >>> fir(b, x)  # y[n] = b_0[n] x[n] + b_1[n - 1] x[n - 1]
         tensor([[1., 3., 5.]])
@@ -211,8 +212,8 @@ def allpole(
         # last M of y can be part of it, so copy just those.
         # Explicit starts: -M: would select everything when M = 0.
         M = a.size(2)
-        tail = torch.cat([zi.flip(1), y[:, y.size(1) - min(M, y.size(1)) :]], dim=1)
-        return y, tail[:, tail.size(1) - M :].flip(1)
+        tail = torch.cat([zi.flip(1), y[:, max(T - M, 0) :]], dim=1)
+        return y, tail[:, min(M, T) :].flip(1)
     return y  # type: ignore[return-value]
 
 
@@ -458,6 +459,14 @@ def _ssm_lfilter(
             raise ValueError(f"Initial conditions zi must be 1D or 2D, got {zi.shape}")
         if zi is not None and zi.size(-1) != 0:
             raise ValueError(f"zi must have 0 states for a pure gain, got {zi.size(-1)}.")
+        # x is 2-D here, a 1-D one unsqueezed: batched coefficients or a
+        # batched zi don't broadcast across it, as in the general path
+        for name, t, unbatched_dims in (("b", b, 2), ("a", a, 2), ("zi", zi, 1)):
+            if t is not None and t.dim() > unbatched_dims and t.size(0) != x.size(0):
+                raise ValueError(
+                    f"Batch size of {name} must match batch size of x, "
+                    f"got {name}: {t.size(0)}, x: {x.size(0)}"
+                )
         y = b[..., 0] * x
         return y if zi is None else (y, zi.expand(y.size(0), 0))
 

@@ -42,8 +42,8 @@ def linear_recurrence(
             or 2-D or its last dimension is not the length of :attr:`x`, if
             :attr:`unroll_factor` is 0 or negative, or, with an integer
             :attr:`unroll_factor`, if :attr:`init` is not 0-D or 1-D.
-        ValueError or RuntimeError: if :attr:`a` or :attr:`init` does not
-            match :attr:`x`; which one depends on :attr:`unroll_factor`.
+        ValueError or RuntimeError: if :attr:`init` does not match
+            :attr:`x`; which one depends on :attr:`unroll_factor`.
         NotImplementedError: with ``unroll_factor=None``, if no kernel takes
             the input; an integer :attr:`unroll_factor` runs PyTorch ops, on
             any device.
@@ -51,6 +51,7 @@ def linear_recurrence(
     Example::
 
         >>> from philtorch.lpv import linear_recurrence
+        >>> # h[n + 1] = a[n] h[n] + x[n], h[0] = 0, with a[2] = 0 restarting
         >>> a = torch.tensor([0.5, 0.5, 0.0, 0.5])
         >>> x = torch.tensor([[1.0, 0.0, 1.0, 0.0]])
         >>> linear_recurrence(a, torch.tensor(0.0), x)

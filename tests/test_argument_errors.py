@@ -195,6 +195,16 @@ _LPV_FILTERING_CASES = [
         "zi must have 0 states for a pure gain",
         id="ssm-pure-gain-zi-states",
     ),
+    pytest.param(
+        lambda: lpv.lfilter(_ones(3, 4, 1), _zeros(3, 4, 0), _ones(4)),
+        "Batch size of b must match batch size of x",
+        id="ssm-pure-gain-batched-b-1d-x",
+    ),
+    pytest.param(
+        lambda: lpv.lfilter(_ones(3, 4, 1), _zeros(3, 4, 0), _ones(3, 4), zi=_zeros(1, 0)),
+        "Batch size of zi must match batch size of x",
+        id="ssm-pure-gain-zi-batch-of-one",
+    ),
     # A batch of one isn't broadcast to a batched x: torchlpc did.
     pytest.param(
         lambda: lpv.lfilter(_ones(1, 4, 2), _zeros(4, 1), _ones(3, 4), backend="torchlpc"),
@@ -898,6 +908,11 @@ _LTI_INTERP_CASES = [
         lambda: lti.cubic_spline(_ones(1, 4), 1.5),
         "integer >= 1",
         id="m-not-integer",
+    ),
+    pytest.param(
+        lambda: lti.cubic_spline(_ones(1, 2), 2),
+        "at least 3 samples",
+        id="x-too-short",
     ),
 ]
 

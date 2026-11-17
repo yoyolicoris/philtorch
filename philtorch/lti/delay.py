@@ -213,7 +213,8 @@ def delay_state_space(
             :attr:`absorption`. Default: ``None``.
 
     Returns:
-        Tensor or tuple of Tensor: the outputs, as :func:`state_space`. With
+        Tensor or (Tensor, tuple of Tensor) or (Tensor, tuple of Tensor,
+        Tensor): the outputs, as :func:`state_space`. With
         :attr:`zi`, the pair ``(y, zf)``, where ``zf`` is a tuple of the next
         outputs of each delay line, :math:`s_i[N], \dots, s_i[N + m_i - 1]`,
         one queue per line, of shape :math:`(B, m_i)`: pass it as :attr:`zi` to

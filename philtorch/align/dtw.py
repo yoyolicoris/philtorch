@@ -183,7 +183,8 @@ def dtw(
             :math:`R = \min(M, N - M + 1)` for the asymmetric ones. The memory
             holds about :math:`R` / :attr:`checkpoint` stored rows and
             :attr:`checkpoint` recomputed ones, so it is least near
-            :math:`\sqrt{R}`, and a smaller value takes more time. Default:
+            :math:`\sqrt{R}`, and a smaller value takes more time. For long
+            sequences, it is rounded up to whole blocks of rows. Default:
             ``None``, all rows stored.
 
     Returns:
@@ -215,9 +216,9 @@ def dtw(
 
         >>> import torch
         >>> from philtorch.align import dtw
+        >>> # soft-DTW, gamma = 0.1, of c[n, m] = |x[n] - y[m]|^2
         >>> x = torch.randn(4, 100, 3, device="cuda")  # (B, N, F), 3-D frames
         >>> y = torch.randn(4, 80, 3, device="cuda", requires_grad=True)
-        >>> # soft-DTW, gamma = 0.1, of c[n, m] = |x[n] - y[m]|^2
         >>> cost = torch.cdist(x, y) ** 2
         >>> distance = dtw(cost, gamma=0.1)
         >>> alignment, = torch.autograd.grad(
