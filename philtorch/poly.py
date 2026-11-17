@@ -22,20 +22,19 @@ def polydiv(u: Tensor, v: Tensor) -> tuple[Tensor, Tensor]:
     Args:
         u (Tensor): dividend coefficients, of shape :math:`(*, M + 1)`, where
             :math:`*` is zero or more batch dimensions.
-        v (Tensor): divisor coefficients, of shape :math:`(*, N + 1)`, where
-            :math:`N \le M`. Its batch dimensions must broadcast to those of
-            :attr:`u`, and its leading coefficient ``v[..., 0]`` must be
-            nonzero.
+        v (Tensor): divisor coefficients, of shape :math:`(*, N + 1)`. Its
+            batch dimensions must broadcast with those of :attr:`u`, and its
+            leading coefficient ``v[..., 0]`` must be nonzero.
 
     Returns:
         tuple of Tensor: the quotient, of shape :math:`(*, M - N + 1)`, and the
-        remainder, of shape :math:`(*, N)`.
+        remainder, of shape :math:`(*, N)`, which is empty when :math:`N = 0`,
+        :math:`*` being the broadcast batch dimensions.
 
     Raises:
         ValueError: if :attr:`u` or :attr:`v` is 0-D, :attr:`u` and :attr:`v`
-            don't share a dtype and a device, or :attr:`u` has an integer
-            dtype.
-        RuntimeError: if :math:`N > M`.
+            don't share a dtype and a device, :attr:`u` has an integer
+            dtype, or :math:`N > M`.
 
     Note:
         Unlike :func:`numpy.polydiv`, the remainder always has :math:`N`
@@ -58,6 +57,8 @@ def polydiv(u: Tensor, v: Tensor) -> tuple[Tensor, Tensor]:
 
     m = u.size(-1) - 1
     n = v.size(-1) - 1
+    if n > m:
+        raise ValueError(f"v's degree {n} must not exceed u's {m}")
     scale = v[..., 0].reciprocal()
     r = u
     q = []
@@ -85,7 +86,7 @@ def polymul(a: Tensor, b: Tensor) -> Tensor:
             dimensions.
         b (Tensor): coefficients of the second factor, of shape
             :math:`(*, N + 1)`. Its batch dimensions must broadcast with those
-            of :attr:`a`, and its dtype is that of :attr:`a`.
+            of :attr:`a`.
 
     Returns:
         Tensor: the coefficients of the product, of shape

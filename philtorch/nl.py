@@ -327,16 +327,18 @@ def newton_solve(
     Raises:
         ValueError: if :attr:`max_iter` is not positive,
             :attr:`max_halvings` is negative, :attr:`params` is not a tuple of
-            tensors, :attr:`init` is not 1-D or 2-D, a tensor of
-            :attr:`x` has fewer than 2 dimensions or a length :math:`T` of
-            0, the tensors of :attr:`x` differ in batch size or length,
-            :attr:`init`'s batch size differs from :attr:`x`'s,
-            :attr:`y0` is not of the shape of the output, or :attr:`y0` and
-            :attr:`init` don't share a dtype and a device.
+            tensors, :attr:`init` is not 1-D or 2-D or not a real
+            floating-point tensor, a tensor of :attr:`x` has fewer than 2
+            dimensions or a length :math:`T` of 0, the tensors of :attr:`x`
+            differ in batch size or length, :attr:`init`'s batch size
+            differs from :attr:`x`'s, :attr:`y0` is not of the shape of the
+            output, or :attr:`y0` and :attr:`init` don't share a dtype and a
+            device.
 
     Example::
 
         >>> from philtorch.nl import newton_solve
+        >>> # y[t] = tanh(0.5 y[t - 1] + x[t]), with x[t] = 0.5 and y[-1] = 0
         >>> step = lambda y, x: torch.tanh(0.5 * y + x)
         >>> x = torch.full((1, 6), 0.5)
         >>> y, steps = newton_solve(step, x, torch.zeros(1))
@@ -354,6 +356,8 @@ def newton_solve(
         raise ValueError(f"max_halvings must be non-negative, got {max_halvings}")
     if init.dim() not in (1, 2):
         raise ValueError(f"init must be 1-D (B,) or 2-D (B, M), got {init.dim()}-D")
+    if not init.is_floating_point():
+        raise ValueError(f"init must be a real floating-point tensor, got {init.dtype}.")
 
     x_tensors = x if isinstance(x, tuple) else (x,)
     for xi in x_tensors:

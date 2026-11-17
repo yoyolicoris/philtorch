@@ -29,24 +29,14 @@ def state_space_recursion(
     :math:`\mathbf{h}[1], \dots, \mathbf{h}[N]`. A 2-D input feeds the
     first state only: :math:`\mathbf{x}[n] = x[n] \mathbf{e}_1`.
 
-    With the default ``unroll_factor=None``, this runs a kernel chosen by
-    device, dtype and :math:`M`, and raises where none takes the input, such
-    as :math:`M > 128` (64 complex) on CUDA and MPS. On any device,
-    ``unroll_factor=1`` runs the sequential PyTorch loop, and so does one of
-    :math:`N` or more; an :attr:`unroll_factor` from 2 to :math:`N - 1` runs a
-    block-unrolled PyTorch recursion instead. Both take the dtypes PyTorch's
-    matrix products take on the device: integers on CPU, but not on CUDA.
-
     Args:
         A (Tensor): state matrices :math:`A[n]`, of shape :math:`(N, M, M)` to
             share them or :math:`(B, N, M, M)`.
         zi (Tensor): the initial state :math:`\mathbf{h}[0]`, of shape
             :math:`(B, M)`.
         x (Tensor): inputs, of shape :math:`(B, N, M)` or :math:`(B, N)`.
-        unroll_factor (int, optional): ``None`` for the kernels described
-            above. ``1`` runs the sequential loop, as does :math:`N` or more,
-            and a value from 2 to :math:`N - 1` is the block length of the
-            unrolled recursion. Default: ``None``.
+        unroll_factor (int, optional): as in
+            :func:`philtorch.lti.state_space_recursion`. Default: ``None``.
         out_idx (int, optional): return only this state. Default: ``None``.
 
     Returns:
@@ -57,19 +47,15 @@ def state_space_recursion(
         ValueError: if :attr:`A`, :attr:`zi` and :attr:`x` don't share a dtype
             and a device, if the shapes do not match, or :attr:`unroll_factor`
             is 0 or negative.
-        NotImplementedError: with ``unroll_factor=None``, if no kernel takes
-            the input; an integer :attr:`unroll_factor` runs PyTorch ops, on
-            any device.
-
-    Note:
-        These are the states after each input, :math:`\mathbf{h}[1]` to
-        :math:`\mathbf{h}[N]`: the state that :func:`state_space` uses at
-        step :math:`n` is :math:`\mathbf{h}[n]`, one step earlier, and its
-        final state is :math:`\mathbf{h}[N]`.
+        NotImplementedError: with ``unroll_factor=None``, if no native kernel
+            takes the input, such as :math:`M > 128` (64 complex) on CUDA and
+            MPS.
 
     Example::
 
         >>> from philtorch.lpv import state_space_recursion
+        >>> # Fibonacci numbers: the first state of A[n] = [[1, 1], [1, 0]]
+        >>> # for an impulse x[n] and h[0] = 0.
         >>> A = torch.tensor([[1.0, 1.0], [1.0, 0.0]]).expand(5, 2, 2)
         >>> x = torch.tensor([[1.0, 0.0, 0.0, 0.0, 0.0]])
         >>> state_space_recursion(A, torch.zeros(1, 2), x, out_idx=0)
@@ -150,9 +136,9 @@ def state_space(
     Each of :attr:`B`, :attr:`C` and :attr:`D` may be constant or time-varying,
     and shared or one per signal: its base shape below can be prefixed with
     :math:`N` for time-varying values, :math:`B` for one per signal, or
-    :math:`(B, N)` for both; the one exception is a scalar :attr:`D` with a
-    3-D :attr:`x`. When two readings fit, such as :math:`N = B`, the
-    time-varying one is tried first, then the per-signal one.
+    :math:`(B, N)` for both, except a scalar :attr:`D` with a 3-D :attr:`x`.
+    When two readings fit, such as :math:`N = B`, the time-varying one is
+    tried first, then the per-signal one.
 
     Args:
         A (Tensor): state matrices :math:`A[n]`, of shape :math:`(N, M, M)` or
@@ -172,9 +158,7 @@ def state_space(
             :math:`(P, F)` for a 3-D one. For a 3-D :attr:`x`, a scalar
             :math:`()` or :math:`(1)` is only accepted constant and shared,
             as :math:`D` times the identity, so the output size must equal
-            :math:`F`; vary the feedthrough over time or per signal with the
-            :math:`(F)` or :math:`(P, F)` base shapes. Default: ``None``, no
-            feedthrough.
+            :math:`F`. Default: ``None``, no feedthrough.
         zi (Tensor, optional): the initial state, of shape :math:`(B, M)` or
             :math:`(M)`. Default: ``None``, all zero.
         unroll_factor (int, optional): see :func:`state_space_recursion`.
@@ -199,7 +183,7 @@ def state_space(
     Example::
 
         >>> from philtorch.lpv import state_space
-        >>> # An accumulator with a growing input gain:
+        >>> # An accumulator with a growing input gain, y[n] = h[n]:
         >>> # h[n + 1] = h[n] + (n + 1) x[n]
         >>> A = torch.ones(4, 1, 1)
         >>> B = torch.tensor([[1.0], [2.0], [3.0], [4.0]])  # (N, M)

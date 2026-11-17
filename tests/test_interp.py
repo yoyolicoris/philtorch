@@ -18,7 +18,7 @@ from philtorch.lti.interp import (
 from ._cases import DEVICES
 
 
-@pytest.mark.parametrize("n", [20, 100])
+@pytest.mark.parametrize("n", [3, 20, 100])
 @pytest.mark.parametrize("m", [2, 3, 7])
 @pytest.mark.parametrize("device", DEVICES)
 @pytest.mark.parametrize("pfe", [True, False])
@@ -57,6 +57,18 @@ def test_cspline(n, device, pfe):
     assert torch.allclose(y_philtorch, torch.from_numpy(y_scipy)), (
         f"Max abs diff: {(y_philtorch - torch.from_numpy(y_scipy)).abs().max()}"
     )
+
+
+def test_cspline_of_one_sample_is_the_sample():
+    # its reflection is constant, whose B-spline coefficients are its samples
+    x = torch.randn(2, 1, dtype=torch.float64)
+    assert torch.equal(cspline(x), x)
+
+
+def test_cubic_spline_lamb_raises_before_the_length_check():
+    # m = 1 skips the length check; a nonzero lamb still raises its own error
+    with pytest.raises(NotImplementedError):
+        cubic_spline(torch.ones(1, 2), 1, lamb=1.0)
 
 
 @pytest.mark.parametrize("shape", [(16,), (2, 2, 16)])

@@ -23,14 +23,15 @@ def em(
 
     Args:
         step (Callable): one step of expectation-maximization.
-        params (tuple): the initial parameters.
+        params (tuple of Tensor): the initial parameters.
         max_iter (int, optional): the most steps to run. Default: 100.
         tol (float, optional): the least rise of the log-likelihood to go on.
             Default: 1e-6.
 
     Returns:
-        tuple: the last parameters, and the summed log-likelihood of the
-        parameters each step started from, of shape :math:`(\text{steps})`.
+        (tuple of Tensor, Tensor): the last parameters, and the summed
+        log-likelihood of the parameters each step started from, of shape
+        :math:`(\text{steps})`.
 
     Raises:
         ValueError: if :attr:`max_iter` is less than 1.
@@ -39,13 +40,15 @@ def em(
 
         >>> from functools import partial
         >>> from philtorch.estimation import em, kalman_em_step
+        >>> # A scalar random walk, started from unit variances, fitted to four
+        >>> # random signals of 50 measurements.
         >>> y = torch.randn(4, 50, 1, dtype=torch.float64)
         >>> one = torch.ones(1, 1, dtype=torch.float64)
         >>> m0 = torch.zeros(1, dtype=torch.float64)
         >>> params, history = em(
         ...     partial(kalman_em_step, y), (one, one, one, one, m0, one)
         ... )
-        >>> bool(history[-1] > history[0])
+        >>> bool(history[-1] > history[0])  # the log-likelihood rose
         True
     """
     if max_iter < 1:

@@ -38,12 +38,11 @@ def linear_recurrence(
     Raises:
         ValueError: if :attr:`x` is not 2-D, if :attr:`a`, :attr:`init` and
             :attr:`x` don't share a dtype and a device, if a 2-D :attr:`a` has
-            a batch size other than that of :attr:`x`, if
-            :attr:`unroll_factor` is 0 or negative, or, with an integer
-            :attr:`unroll_factor`, if :attr:`a` is not 1-D or 2-D, or
-            :attr:`init` is not 0-D or 1-D.
-        ValueError or RuntimeError: if :attr:`a` or :attr:`init` does not
-            match :attr:`x`; which one depends on :attr:`unroll_factor`.
+            a batch size other than that of :attr:`x`, if :attr:`a` is not 1-D
+            or 2-D or its last dimension is not the length of :attr:`x`, if
+            :attr:`init` is not 0-D or 1-D or has a batch size other than 1
+            or that of :attr:`x`, or if :attr:`unroll_factor` is 0 or
+            negative.
         NotImplementedError: with ``unroll_factor=None``, if no kernel takes
             the input; an integer :attr:`unroll_factor` runs PyTorch ops, on
             any device.
@@ -51,6 +50,7 @@ def linear_recurrence(
     Example::
 
         >>> from philtorch.lpv import linear_recurrence
+        >>> # h[n + 1] = a[n] h[n] + x[n], h[0] = 0, with a[2] = 0 restarting
         >>> a = torch.tensor([0.5, 0.5, 0.0, 0.5])
         >>> x = torch.tensor([[1.0, 0.0, 1.0, 0.0]])
         >>> linear_recurrence(a, torch.tensor(0.0), x)
@@ -60,22 +60,25 @@ def linear_recurrence(
     if x.dim() != 2:
         raise ValueError(f"Input x must be 2D, got {x.shape}")
     _check_shared(a=a, init=init, x=x)
+    if a.dim() not in (1, 2):
+        raise ValueError(f"State matrix a must be 1D or 2D, got {a.shape}")
     if a.dim() == 2 and a.size(0) != x.size(0):
         raise ValueError(
             f"Batch size of a must match batch size of x, got a: {a.size(0)}, x: {x.size(0)}"
         )
-    if unroll_factor is None:
-        return _ssm.scalar_recursion(a.broadcast_to(x.shape), init, x)
-
-    if a.dim() not in (1, 2):
-        raise ValueError(f"State matrix a must be 1D or 2D, got {a.shape}")
     if a.dim() == 1 and a.size(0) != x.size(1):
         raise ValueError(
             f"State matrix a must be 1D with the same length as x, "
             f"got a: {a.size(0)}, x: {x.size(1)}"
         )
-
+    if a.dim() == 2 and a.size(1) != x.size(1):
+        raise ValueError(
+            f"State matrix a must be 2D with the same length as x, "
+            f"got a: {a.size(1)}, x: {x.size(1)}"
+        )
     _check_scalar_batch(init, "Initial state", "init", x)
+    if unroll_factor is None:
+        return _ssm.scalar_recursion(a.broadcast_to(x.shape), init, x)
 
     if init.dim() == 0:
         init = init.expand(1)

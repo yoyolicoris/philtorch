@@ -8,6 +8,7 @@ from torch import Tensor
 
 from .. import _ssm
 from .._torchlpc import lpc
+from ..lti.filtering import _SSM_KWARGS, _check_kwargs, _check_unroll_factor
 from ..mat import companion
 from ..utils import _check_shared, _squeeze_first_result, chain_functions
 from .ssm import state_space, state_space_recursion
@@ -46,7 +47,7 @@ def fir(
     Returns:
         Tensor or tuple of Tensor: the filtered signals, of shape
         :math:`(B, N)`, and with :attr:`zi`, the final state in the same
-        convention, of shape :math:`(B, M)`.
+        convention, of shape :math:`(B, M)`, empty when :math:`M = 0`.
 
     Raises:
         ValueError: if :attr:`b`, :attr:`zi` and :attr:`x` don't share a dtype
@@ -55,9 +56,10 @@ def fir(
     Example::
 
         >>> from philtorch.lpv import fir
+        >>> # y[n] = b_0[n] x[n] + b_1[n] x[n - 1]
         >>> b = torch.tensor([[[1.0, 1.0], [2.0, 2.0], [3.0, 3.0]]])
         >>> x = torch.ones(1, 3)
-        >>> fir(b, x, transpose=False)  # y[n] = b_0[n] x[n] + b_1[n] x[n - 1]
+        >>> fir(b, x, transpose=False)
         tensor([[1., 4., 6.]])
         >>> fir(b, x)  # y[n] = b_0[n] x[n] + b_1[n - 1] x[n - 1]
         tensor([[1., 3., 5.]])
@@ -153,7 +155,7 @@ def allpole(
     Returns:
         Tensor or tuple of Tensor: the filtered signals, of shape
         :math:`(B, N)`, and with :attr:`zi`, the final state in the same
-        convention, of shape :math:`(B, M)`.
+        convention, of shape :math:`(B, M)`, empty when :math:`M = 0`.
 
     Raises:
         ValueError: if :attr:`a`, :attr:`zi` and :attr:`x` don't share a dtype
@@ -208,8 +210,10 @@ def allpole(
     if return_zf:
         # The last M outputs, which reach back into zi when T < M. Only the
         # last M of y can be part of it, so copy just those.
+        # Explicit starts: -M: would select everything when M = 0.
         M = a.size(2)
-        return y, torch.cat([zi.flip(1), y[:, -M:]], dim=1)[:, -M:].flip(1)
+        tail = torch.cat([zi.flip(1), y[:, max(T - M, 0) :]], dim=1)
+        return y, tail[:, min(M, T) :].flip(1)
     return y  # type: ignore[return-value]
 
 
@@ -272,13 +276,13 @@ def lfilter(
     Returns:
         Tensor or tuple of Tensor: the filtered signals, of shape
         :math:`(B, N)`, and with :attr:`zi`, the final state, of shape
-        :math:`(B, M)`. :math:`B` is the batch size after broadcasting
-        :attr:`b`, :attr:`a`, :attr:`x` and :attr:`zi`, so a shared
-        :attr:`zi` still gives one final state per signal. Both outputs are
-        unbatched, :math:`(N)` and :math:`(M)`, only when all four inputs
-        are. The ``"torchlpc"`` backend also broadcasts a 1-D :attr:`x`
-        across batched coefficients or :attr:`zi`; ``"ssm"`` needs :attr:`x`
-        to carry the batch dimension then.
+        :math:`(B, M)`, empty for a pure gain. :math:`B` is the batch size
+        after broadcasting :attr:`b`, :attr:`a`, :attr:`x` and :attr:`zi`, so
+        a shared :attr:`zi` still gives one final state per signal. Both
+        outputs are unbatched, :math:`(N)` and :math:`(M)`, only when all
+        four inputs are. The ``"torchlpc"`` backend also broadcasts a 1-D
+        :attr:`x` across batched coefficients or :attr:`zi`; ``"ssm"`` needs
+        :attr:`x` to carry the batch dimension then.
 
     Raises:
         ValueError: if :attr:`b`, :attr:`a`, :attr:`zi` and :attr:`x` don't
@@ -442,6 +446,30 @@ def _ssm_lfilter(
 ) -> Tensor | tuple[Tensor, Tensor]:
     """Run :func:`lfilter` with the ``"ssm"`` backend."""
     b, a = _ssm.pad_coefficients(b, a)
+
+    if a.size(-1) == 0 and form in ("df2", "tdf2", "df1", "tdf1"):
+        # A pure gain has no state: the output is b0[n] * x[n], and the final
+        # state is empty. The state-space functions of the general path would
+        # have checked the keyword arguments and unroll_factor.
+        _check_kwargs(kwargs, _SSM_KWARGS)
+        _check_unroll_factor(kwargs)
+        if not (b.size(-2) == a.size(-2) == x.size(1)):
+            raise ValueError("The number of time steps in b and a must match the input signal x.")
+        if zi is not None and zi.dim() not in (1, 2):
+            raise ValueError(f"Initial conditions zi must be 1D or 2D, got {zi.shape}")
+        if zi is not None and zi.size(-1) != 0:
+            raise ValueError(f"zi must have 0 states for a pure gain, got {zi.size(-1)}.")
+        # x is 2-D here, a 1-D one unsqueezed: batched coefficients or a
+        # batched zi don't broadcast across it, as in the general path
+        for name, t, unbatched_dims in (("b", b, 2), ("a", a, 2), ("zi", zi, 1)):
+            if t is not None and t.dim() > unbatched_dims and t.size(0) != x.size(0):
+                raise ValueError(
+                    f"Batch size of {name} must match batch size of x, "
+                    f"got {name}: {t.size(0)}, x: {x.size(0)}"
+                )
+        y = b[..., 0] * x
+        return y if zi is None else (y, zi.expand(y.size(0), 0))
+
     A = companion(a)
 
     match form:

@@ -76,6 +76,10 @@ def _as_param(value: Any, name: str) -> float | Tensor:
 
 
 def _cubic_coeff(x: Tensor, parallel_form: bool, scipy_padding: bool) -> Tensor:
+    if not scipy_padding and x.shape[-1] == 1:
+        # one sample reflects to a constant signal, whose coefficients are its
+        # samples, as the B-splines sum to 1; its reflection has no period
+        return x.clone()
     r = torch.tensor(3**0.5 - 2, device=x.device, dtype=x.dtype)
 
     if scipy_padding:
@@ -83,9 +87,12 @@ def _cubic_coeff(x: Tensor, parallel_form: bool, scipy_padding: bool) -> Tensor:
         powers = r ** torch.arange(x.shape[-1], device=x.device, dtype=x.dtype)
         causal_zi = x @ powers
     else:
-        # while in torch reflect padding, [1, 2, 3] is padded to [2, 1, 2, 3, 2]
-        powers = r ** torch.arange(x.shape[-1] - 1, device=x.device, dtype=x.dtype)
-        causal_zi = x[..., 1:] @ powers
+        # while in torch reflect padding, [1, 2, 3] is padded to [2, 1, 2, 3, 2],
+        # a signal of period P = 2L - 2: the state before x[0] sums one period,
+        # x[1], ..., x[L - 1], x[L - 2], ..., x[0], over all periods
+        period = torch.cat([x[..., 1:], x[..., :-1].flip(-1)], dim=-1)
+        powers = r ** torch.arange(period.shape[-1], device=x.device, dtype=x.dtype)
+        causal_zi = period @ powers / (1 - r ** period.shape[-1])
 
     if parallel_form:
         mirrored_x = torch.cat([x, x.flip(-1) if scipy_padding else x[..., :-1].flip(-1)], dim=-1)
@@ -128,11 +135,11 @@ def cspline(
     scipy_padding: bool = False,
     lamb: float = 0.0,
 ) -> Tensor:
-    """Compute the cubic B-spline coefficients of signals.
+    r"""Compute the cubic B-spline coefficients of signals.
 
-    The coefficients come from recursive filtering, as in M. Unser, "B-Spline
-    Signal Processing: Part II---Efficient Design and Applications," IEEE
-    Transactions on Signal Processing, 1993.
+    The coefficients come from recursive filtering, as in `B-Spline Signal
+    Processing: Part II—Efficient Design and Applications`_ (Unser et al.,
+    1993).
 
     Args:
         x (Tensor): signals, of shape :math:`(B, L)`.
@@ -149,6 +156,9 @@ def cspline(
 
     Raises:
         NotImplementedError: if :attr:`lamb` is not zero.
+
+    .. _B-Spline Signal Processing\: Part II—Efficient Design and Applications:
+        https://doi.org/10.1109/78.193221
     """
     if lamb != 0.0:
         raise NotImplementedError(
@@ -165,13 +175,14 @@ def cubic_spline(
     parallel_form: bool = True,
     lamb: float = 0.0,
 ) -> Tensor:
-    """Upsample signals by an integer factor with cubic B-spline interpolation.
+    r"""Upsample signals by an integer factor with cubic B-spline interpolation.
 
-    This interpolates :attr:`x` with cubic B-splines, as in M. Unser,
-    "B-Spline Signal Processing: Part II---Efficient Design and Applications,"
-    IEEE Transactions on Signal Processing, 1993, and evaluates the spline at
-    :attr:`m` points per sample interval. The spline passes through the
-    original samples.
+    This interpolates :attr:`x` with cubic B-splines, as in `B-Spline Signal
+    Processing: Part II—Efficient Design and Applications`_ (Unser et al.,
+    1993), and evaluates the spline at :attr:`m` points per sample interval.
+    The spline passes through the original samples; with
+    :attr:`scipy_padding`, only approximately for short signals, as SciPy's
+    does.
 
     Args:
         x (Tensor): signals, of shape :math:`(B, L)`. Unlike SciPy, the batch
@@ -195,19 +206,28 @@ def cubic_spline(
         With ``m=1``, :attr:`x` itself.
 
     Raises:
-        ValueError: if :attr:`m` is not an integer of at least 1, or
-            :attr:`x` is not 2-D.
+        ValueError: if :attr:`m` is not an integer of at least 1,
+            :attr:`x` is not 2-D, or, for :attr:`m` above 1, :attr:`x` has
+            fewer than 3 samples, 2 with :attr:`scipy_padding`.
         NotImplementedError: if :attr:`lamb` is not zero.
 
     Example::
 
         >>> from philtorch.lti import cubic_spline
-        >>> x = torch.randn(1, 16, dtype=torch.float64)
+        >>> # m = 4: 4 points per sample interval, (16 - 1) * 4 + 1 = 61 in all
+        >>> t = torch.arange(16, dtype=torch.float64)
+        >>> x = torch.cos(t / 3).unsqueeze(0)
         >>> y = cubic_spline(x, 4)
         >>> y.shape
         torch.Size([1, 61])
-        >>> torch.allclose(y[:, ::4], x)
-        True
+        >>> # every 4th point is a sample of x
+        >>> x[:, :3]
+        tensor([[1.0000, 0.9450, 0.7859]], dtype=torch.float64)
+        >>> y[:, :9:4]
+        tensor([[1.0000, 0.9450, 0.7859]], dtype=torch.float64)
+
+    .. _B-Spline Signal Processing\: Part II—Efficient Design and Applications:
+        https://doi.org/10.1109/78.193221
     """
     if not isinstance(m, int) or m < 1:
         raise ValueError("Interpolation factor m must be an integer >= 1.")
@@ -215,6 +235,11 @@ def cubic_spline(
         raise ValueError(f"Input signal x must be 2D (batch, time), got {x.shape}")
     if m == 1 and lamb == 0.0:  # cspline below raises for another lamb
         return x
+    if m > 1 and x.size(1) < 3 - scipy_padding:
+        raise ValueError(
+            f"x must have at least {3 - scipy_padding} samples for m > 1"
+            f"{' with scipy_padding' if scipy_padding else ''}, got {x.size(1)}"
+        )
 
     c = cspline(x, parallel_form=parallel_form, scipy_padding=scipy_padding, lamb=lamb)
 
@@ -354,45 +379,23 @@ def resample(
 ) -> Tensor:
     r"""Resample signals between two sampling rates with a Kaiser-sinc filter.
 
-    For an input signal :math:`x[b, n]` of length :math:`T` at the rate
-    :attr:`orig_freq` and the resampling ratio
-    :math:`r = \text{new\_freq} / \text{orig\_freq}`, this evaluates the
-    band-limited Kaiser-sinc reconstruction at output sample indices
-    :math:`m \in \{0, \dots, L_{\text{out}} - 1\}`, corresponding to input
-    times :math:`t_m = m \cdot \text{orig\_freq} / \text{new\_freq}`, exactly:
-
-    .. math::
-        y[b, m] = \sum_{n = \lceil t_m - W \rceil}^{\lfloor t_m + W \rfloor}
-        x[b, n]\, c\, \operatorname{sinc}\!\bigl(c (t_m - n)\bigr)\,
-        \frac{I_0\!\left(\beta \sqrt{1 - ((t_m - n) / W)^2}\right)}{I_0(\beta)},
-
-    where :math:`\operatorname{sinc}(z) = \sin(\pi z) / (\pi z)`,
-    :math:`c = \rho \min(1, r)` is the anti-aliasing cutoff in normalized input
-    Nyquist units, :math:`W = N_z / c` is the window half-width in input
-    samples, and samples outside the signal (:math:`n < 0` or :math:`n \ge T`)
-    are zero. The filter also acts at equal rates, where it low-passes at
-    :math:`\rho` times the Nyquist frequency, unlike
-    :func:`scipy.signal.resample_poly`, which then copies the input.
-
-    The rates are reduced to :math:`r = p / q` in lowest terms. A ratio whose
-    polyphase filter, of about :math:`p (q + 2 W)` coefficients, would hold
-    more than :math:`2^{22}` raises an error: raise :attr:`rolloff` or lower
-    :attr:`num_zeros` for fewer taps, or approximate the ratio:
-    ``f = Fraction(new_freq, orig_freq).limit_denominator(1000)``, from
-    :mod:`fractions`, then ``resample(x, f.denominator, f.numerator)``.
-
-    The presets of :attr:`quality` realise the passband, stopband and
-    precision targets of ``libsoxr``, but the outputs are not bit-identical to
-    soxr's. ``float32`` accumulation may miss the precision targets of
-    ``"HQ"`` and ``"VHQ"``: use ``float64`` for them.
+    This low-passes and interpolates each signal with a sinc of cutoff
+    :math:`\rho` times the lower Nyquist frequency, under a Kaiser window of
+    shape :math:`\beta` over :math:`N_z` zero crossings per side, as in `A
+    flexible sampling-rate conversion method`_ (Smith and Gossett, 1984).
+    Samples outside :attr:`x` count as zero. The filter also acts at equal
+    rates, where it low-passes at :math:`\rho` times the Nyquist frequency,
+    unlike :func:`scipy.signal.resample_poly`, which then copies the input.
+    ``float32`` accumulation may miss the precision targets of ``"HQ"`` and
+    ``"VHQ"``: use ``float64`` for them.
 
     Derivatives of any order exist in :attr:`x`, and in :attr:`rolloff` and
-    :attr:`beta` when they are 0-D tensors. :attr:`rolloff`'s value sets the
-    filter's taps, which its gradient holds fixed; a tensor :attr:`rolloff`
-    costs a sync and a graph break under :func:`torch.compile`. A negative
-    tensor :attr:`beta` acts as its absolute value. On CUDA,
-    :func:`torch.func.jvp` and :func:`torch.func.vmap` (over :attr:`x`) work
-    in eager mode; :func:`torch.compile` supports reverse mode.
+    :attr:`beta` when they are 0-D tensors.
+
+    Note:
+        A tensor :attr:`rolloff` costs a host sync and a graph break under
+        :func:`torch.compile`, as its value sets the number of taps, which its
+        gradient holds fixed.
 
     Args:
         x (Tensor): signals, of shape :math:`(B, T)`, in a floating-point
@@ -400,8 +403,9 @@ def resample(
         orig_freq (int): the sampling rate of :attr:`x`, a positive integer.
         new_freq (int): the sampling rate of the output, a positive integer.
         quality (str or None, optional): filter design preset, from
-            ``libsoxr``'s targets, with the parameters :math:`\rho`,
-            :math:`\beta` and :math:`N_z`:
+            ``libsoxr``'s targets (the outputs are not bit-identical to
+            soxr's), with the parameters :math:`\rho`, :math:`\beta` and
+            :math:`N_z`:
 
             - ``"LQ"``: 16-bit precision (:math:`\rho = 0.8381`,
               :math:`\beta \approx 10.32`, :math:`N_z = 18`);
@@ -420,15 +424,15 @@ def resample(
             :math:`\rho \in (0, 1]` as a fraction of the lower Nyquist
             frequency. Default: ``None``.
         beta (float or Tensor, optional): the Kaiser window shape parameter
-            :math:`\beta \ge 0`. Default: ``None``.
+            :math:`\beta \ge 0`; a tensor's sign is ignored. Default:
+            ``None``.
         num_zeros (int, optional): the number of zero-crossings
             :math:`N_z \ge 1` per side of the sinc mainlobe. Default: ``None``.
 
     Returns:
         Tensor: the resampled signals, of shape :math:`(B, L_{\text{out}})`,
         where :math:`L_{\text{out}} = \lceil T \cdot \text{new\_freq} /
-        \text{orig\_freq} \rceil`, computed in integer arithmetic, as
-        :func:`scipy.signal.resample_poly` does.
+        \text{orig\_freq} \rceil`.
 
     Raises:
         ValueError: if :attr:`x` is not a 2-D floating-point tensor, if
@@ -437,23 +441,30 @@ def resample(
             :attr:`rolloff`, :attr:`beta` and :attr:`num_zeros`, if
             :attr:`rolloff` or :attr:`beta` is a tensor that is not 0-D and
             floating-point, if :attr:`rolloff`, :attr:`beta` or
-            :attr:`num_zeros` is out of range, or if the polyphase filter would
-            hold more than :math:`2^{22}` coefficients.
+            :attr:`num_zeros` is out of range, or if the filter would hold
+            more than :math:`2^{22}` coefficients: raise :attr:`rolloff`,
+            lower :attr:`num_zeros`, or approximate the ratio.
         NotImplementedError: on CUDA, if :attr:`x` is not float16, bfloat16,
             float32 or float64, which the kernel takes.
 
     Example::
 
         >>> from philtorch.lti import resample
+        >>> # 10 ms of a 1 kHz sine, 44100 Hz to 48000 Hz, the default "HQ"
         >>> t = torch.arange(441, dtype=torch.float64)
         >>> x = torch.sin(2 * torch.pi * 10 * t / 441).unsqueeze(0)
         >>> y = resample(x, 44100, 48000)
         >>> y.shape
         torch.Size([1, 480])
-        >>> # float32 agrees with float64 to well within 1e-5 here
-        >>> y32 = resample(x.float(), 44100, 48000)
-        >>> torch.allclose(y32.double(), y, atol=1e-5)
-        True
+        >>> y[:, :4]
+        tensor([[0.0015, 0.1267, 0.2628, 0.3791]], dtype=torch.float64)
+        >>> # the same, with the shorter "LQ" filter
+        >>> y = resample(x, 44100, 48000, quality="LQ")
+        >>> y[:, :4]
+        tensor([[0.0059, 0.1231, 0.2645, 0.3798]], dtype=torch.float64)
+
+    .. _A flexible sampling-rate conversion method:
+        https://doi.org/10.1109/ICASSP.1984.1172555
     """
     if x.dim() != 2:
         raise ValueError(f"x must be 2D (B, T), got {x.dim()}D")

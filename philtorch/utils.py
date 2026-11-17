@@ -23,6 +23,7 @@ def chain_functions(*functions: Callable) -> Callable:
     Example::
 
         >>> from philtorch.utils import chain_functions
+        >>> # (x + y)(x - y) at x = 3, y = 2: the tuple is unpacked into s, d
         >>> f = chain_functions(lambda x, y: (x + y, x - y), lambda s, d: s * d)
         >>> f(3, 2)
         5

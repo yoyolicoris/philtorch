@@ -317,40 +317,31 @@ def kalman_filter(
     varies over time. Complex tensors describe circularly symmetric complex
     Gaussian noise, with conjugate transposes in place of transposes.
 
-    Note:
-        Known inputs need no extra arguments. For
-        :math:`\mathbf{x}[n + 1] = A[n] \mathbf{x}[n] + \mathbf{u}[n] +
-        \mathbf{w}[n]` and :math:`\mathbf{y}[n] = C[n] \mathbf{x}[n] +
-        \mathbf{d}[n] + \mathbf{v}[n]`, filter the part of the state that
-        :math:`\mathbf{u}` doesn't drive, then add the part it does, which
-        :func:`~philtorch.lpv.state_space_recursion` computes from zero. With
-        ``u`` of shape :math:`(B, N - 1, M)`, ``d`` of shape
-        :math:`(B, N, P)`, and :attr:`A` and :attr:`C` expanded to their full
-        shapes :math:`(B, N - 1, M, M)` and :math:`(B, N, P, M)`, such as
-        ``A.expand(B, N - 1, M, M)`` for a constant :attr:`A`::
+    For known inputs, :math:`\mathbf{x}[n + 1] = A[n] \mathbf{x}[n] +
+    \mathbf{u}[n] + \mathbf{w}[n]` and :math:`\mathbf{y}[n] = C[n]
+    \mathbf{x}[n] + \mathbf{d}[n] + \mathbf{v}[n]`, the model stays linear:
+    filter the measurements less what the inputs contribute, and add the
+    states that :math:`\mathbf{u}` drives to the means, which
+    :func:`~philtorch.lpv.state_space_recursion` computes from zero. The
+    covariances need no correction, and the same works for
+    :func:`kalman_smoother`. With ``u`` of shape :math:`(B, N - 1, M)`, ``d``
+    of shape :math:`(B, N, P)`, and :attr:`A` and :attr:`C` expanded to
+    :math:`(B, N - 1, M, M)` and :math:`(B, N, P, M)`::
 
-            from philtorch.lpv import state_space_recursion
+        from philtorch.lpv import state_space_recursion
 
-            x_u = state_space_recursion(A, y.new_zeros(B, M), u)
-            x_u = torch.cat([y.new_zeros(B, 1, M), x_u], dim=1)  # x_u[0] = 0
-            y_s = y - d - (C @ x_u.unsqueeze(-1)).squeeze(-1)
-            result = kalman_filter(y_s, A, C, Q, R, m0, P0)
-            means = result.means + x_u
+        x_u = state_space_recursion(A, y.new_zeros(B, M), u)
+        x_u = torch.cat([y.new_zeros(B, 1, M), x_u], dim=1)  # x_u[0] = 0
+        y_s = y - d - (C @ x_u.unsqueeze(-1)).squeeze(-1)
+        result = kalman_filter(y_s, A, C, Q, R, m0, P0)
+        means = result.means + x_u
 
-        This is exact, as the model is linear, and the covariances need no
-        correction. The same works for :func:`kalman_smoother`.
-
-    Note:
-        A prior on the state before the first measured one, as ``zi`` in
-        :func:`~philtorch.lpv.state_space_recursion`, with :math:`N`
-        transitions :attr:`A` and :attr:`Q` into the measured states,
-        expanded to :math:`(B, N, M, M)` such as ``A.expand(B, N, M, M)`` for
-        a constant :attr:`A`, is a prior on the first measured state after
-        one prediction step::
-
-            m0 = (A[:, 0] @ m0.unsqueeze(-1)).squeeze(-1)
-            P0 = A[:, 0] @ P0 @ A[:, 0].mH + Q[:, 0]
-            result = kalman_filter(y, A[:, 1:], C, Q[:, 1:], R, m0, P0)
+    A prior on a state before the first measured one is a prior on
+    :math:`\mathbf{x}[0]` after one prediction step. Given the :math:`N`
+    transitions :math:`A'[n]`, :math:`Q'[n]` into the measured states, the
+    first from the prior's state, pass :math:`A'[0] \mathbf{m}_0` as
+    :attr:`m0`, :math:`A'[0] P_0 A'[0]^H + Q'[0]` as :attr:`P0`, and the other
+    :math:`N - 1` as :attr:`A` and :attr:`Q`.
 
     Args:
         y (Tensor): measurements :math:`\mathbf{y}[n]`, of shape
@@ -440,8 +431,8 @@ def kalman_smoother(
     Returns:
         KalmanSmootherResult: the smoothed means and covariances, of shapes
         :math:`(B, N, M)` and :math:`(B, N, M, M)`, the cross-covariances, of
-        shape :math:`(B, N - 1, M, M)`, and the log-likelihood, of shape
-        :math:`(B)`.
+        shape :math:`(B, N - 1, M, M)`, empty when :math:`N = 1`, and the
+        log-likelihood, of shape :math:`(B)`.
 
     Raises:
         ValueError: as :func:`kalman_filter` does for these arguments.
@@ -449,7 +440,7 @@ def kalman_smoother(
     Example::
 
         >>> from philtorch.estimation import kalman_smoother
-        >>> # The random walk of :func:`kalman_filter`'s example.
+        >>> # A random walk with unit steps, measured with noise variance 2.
         >>> y = torch.ones(1, 3, 1, dtype=torch.float64)
         >>> one = torch.ones(1, 1, dtype=torch.float64)
         >>> m0 = torch.zeros(1, dtype=torch.float64)
@@ -506,9 +497,9 @@ def kalman_em_step(
             :math:`(B, M, M)`.
 
     Returns:
-        tuple: the log-likelihood of the given parameters, of shape
-        :math:`(B)`, and the new ``(A, C, Q, R, m0, P0)``, each in the layout
-        it was given.
+        (Tensor, tuple of Tensor): the log-likelihood of the given parameters,
+        of shape :math:`(B)`, and the new ``(A, C, Q, R, m0, P0)``, each in the
+        layout it was given.
 
     Raises:
         ValueError: if :attr:`y` has no signal or fewer than two steps, or a

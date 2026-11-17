@@ -90,6 +90,8 @@ def ctc_loss(
 
         >>> import torch
         >>> from philtorch.align import ctc_loss
+        >>> # B = 4 sequences of T = 100 frames over C = 20 classes, with
+        >>> # targets of S = 30 labels, none of them the blank 0
         >>> logits = torch.randn(4, 100, 20, device="cuda", requires_grad=True)
         >>> targets = torch.randint(1, 20, (4, 30), device="cuda")
         >>> log_probs = logits.log_softmax(-1)
@@ -159,6 +161,8 @@ def forced_align(
 
         >>> import torch
         >>> from philtorch.align import forced_align
+        >>> # B = 2 sequences of T = 50 frames over C = 20 classes, of 50 and
+        >>> # 40 frames, with targets of 10 and 8 labels
         >>> log_probs = torch.randn(2, 50, 20, device="cuda").log_softmax(-1)
         >>> targets = torch.randint(1, 20, (2, 10), device="cuda")
         >>> labels, scores = forced_align(log_probs, targets, (50, 40), (10, 8))
