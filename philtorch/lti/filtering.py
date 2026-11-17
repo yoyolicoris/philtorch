@@ -754,11 +754,11 @@ def pfefilt(
             \frac{r_{ij} z^{-j}}{(1 - p_i z^{-1})^{j}},
 
     with :math:`U` poles :math:`p_i`, each of multiplicity :math:`m_i`, and
-    :math:`M = m_1 + \dots + m_U` terms. :func:`sos2pfe`
-    expands second-order sections into this form, with the
-    :attr:`batch_index` and :attr:`multiplicity` to pass on. Term
-    :math:`(i, j)` is :math:`r_{ij} s_{ij}`, where :math:`s_{ij}` is the output
-    of the first-order section
+    :math:`M = m_1 + \dots + m_U` terms. :func:`sos2pfe` expands second-order
+    sections into this form, with the :attr:`batch_index` and
+    :attr:`multiplicity` to pass on. Term :math:`(i, j)` is
+    :math:`r_{ij} s_{ij}`, where :math:`s_{ij}` is the output of the
+    first-order section
 
     .. math::
         s_{ij}[n + 1] = p_i s_{ij}[n] + u_{ij}[n], \quad
@@ -771,9 +771,9 @@ def pfefilt(
     A real :attr:`g` makes a real filter, which takes a real :attr:`x`. Each
     of its non-real poles stands for itself and its conjugate, whose terms
     have the conjugates of :math:`r_{ij}`, :math:`p_i` and
-    :math:`\text{zi}_{ij}`, so that the pair sums to a real second-order
-    section: list one pole of each conjugate pair, as :func:`sos2pfe` does, not
-    both, as :func:`residuez` does. Its real poles need real residues and
+    :math:`\text{zi}_{ij}`, so that each pair of terms sums to a real one:
+    list one pole of each conjugate pair, as :func:`sos2pfe` does, not both,
+    as :func:`residuez` does. Its real poles need real residues and
     initial states. For a complex :attr:`x`, filter its real and imaginary
     parts. A complex :attr:`g` makes a complex filter, which lists every pole.
 
@@ -826,6 +826,11 @@ def pfefilt(
         tensor([1.0000, 0.5000, 0.2500, 0.1250])
         >>> sosfilt(sos, x)
         tensor([1.0000, 0.5000, 0.2500, 0.1250])
+        >>> # a double pole: 1 / (1 - 0.5 z^-1)^2
+        >>> #   = 1 + z^-1 / (1 - 0.5 z^-1) + 0.25 z^-2 / (1 - 0.5 z^-1)^2
+        >>> r = torch.tensor([1.0, 0.25])
+        >>> pfefilt(r, p, torch.tensor(1.0), x, multiplicity=torch.tensor([2]))
+        tensor([1.0000, 1.0000, 0.7500, 0.5000])
     """
     if x.dim() not in (1, 2):
         raise ValueError("Input signal x must be 1D or 2D.")

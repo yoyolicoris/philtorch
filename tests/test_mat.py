@@ -54,15 +54,6 @@ def test_confluent_vandermonde_batched():
     torch.testing.assert_close(V, expected)
 
 
-def test_confluent_vandermonde_unsigned_multiplicity():
-    # multiplicities of an unsigned dtype once wrapped when negated
-    poles = torch.tensor([0.5, -0.3], dtype=torch.float64)
-    multiplicity = torch.tensor([2, 1])
-    expected = confluent_vandermonde(poles, multiplicity)
-    V = confluent_vandermonde(poles, multiplicity.to(torch.uint8))
-    torch.testing.assert_close(V, expected)
-
-
 def test_confluent_vandermonde_companion():
     poles = torch.tensor([0.5, -0.3], dtype=torch.float64)
     multiplicity = torch.tensor([2, 1])

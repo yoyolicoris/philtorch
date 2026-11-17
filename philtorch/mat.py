@@ -7,7 +7,7 @@ import torch.nn.functional as F
 from sympy.ntheory import factorint
 from torch import Tensor
 
-from .utils import _accumulation_dtype, _check_integer
+from .utils import _accumulation_dtype
 
 
 def find_eigenvectors(A: Tensor, eigenvalues: Tensor) -> Tensor:
@@ -189,7 +189,7 @@ def confluent_vandermonde(poles: Tensor, multiplicity: Tensor) -> Tensor:
         poles (Tensor): the poles, a floating or complex tensor of shape
             :math:`(*, U)`.
         multiplicity (Tensor): the multiplicities :math:`m_i \ge 1`, an
-            integer tensor of shape :math:`(U)`, shared by the batch.
+            int32 or int64 tensor of shape :math:`(U)`, shared by the batch.
 
     Returns:
         Tensor: the matrices, of shape :math:`(*, M, M)`, with the dtype and
@@ -197,7 +197,7 @@ def confluent_vandermonde(poles: Tensor, multiplicity: Tensor) -> Tensor:
 
     Raises:
         ValueError: if :attr:`poles` is 0-D or not floating or complex.
-        ValueError: if :attr:`multiplicity` is not an integer tensor, is not
+        ValueError: if :attr:`multiplicity` is not int32 or int64, is not
             on the device of :attr:`poles`, is not of shape :math:`(U)`, or
             has an entry below 1.
 
@@ -219,7 +219,8 @@ def confluent_vandermonde(poles: Tensor, multiplicity: Tensor) -> Tensor:
         raise ValueError("poles must be at least 1-D.")
     if not (poles.is_floating_point() or poles.is_complex()):
         raise ValueError(f"poles must be floating or complex, got {poles.dtype}.")
-    _check_integer("multiplicity", multiplicity)
+    if multiplicity.dtype not in (torch.int32, torch.int64):
+        raise ValueError(f"multiplicity must be int32 or int64, got {multiplicity.dtype}.")
     if multiplicity.device != poles.device:
         raise ValueError(f"multiplicity must be on poles's device, got {multiplicity.device}.")
     if multiplicity.shape != poles.shape[-1:]:
@@ -229,7 +230,6 @@ def confluent_vandermonde(poles: Tensor, multiplicity: Tensor) -> Tensor:
         )
     if bool((multiplicity < 1).any()):
         raise ValueError("multiplicity must be at least 1.")
-    multiplicity = multiplicity.long()  # repeat_interleave takes no uint8
     M = int(multiplicity.sum())
     # the order of each column's derivative: its offset in its pole's block
     first = multiplicity.cumsum(0) - multiplicity

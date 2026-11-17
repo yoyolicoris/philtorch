@@ -1129,8 +1129,8 @@ _MAT_CASES = [
         "must have square matrices",
         id="cumdot-A-not-square",
     ),
-    # confluent_vandermonde(poles, multiplicity): poles (*, U); multiplicity integers >= 1
-    # of shape (U)
+    # confluent_vandermonde(poles, multiplicity): poles (*, U); multiplicity int32 or
+    # int64 >= 1 of shape (U)
     pytest.param(
         lambda: confluent_vandermonde(_zeros(()), torch.ones((), dtype=torch.long)),
         "poles must be at least 1-D",
@@ -1142,8 +1142,8 @@ _MAT_CASES = [
         id="confluent-poles-dtype",
     ),
     pytest.param(
-        lambda: confluent_vandermonde(_zeros(2), _ones(2)),
-        "multiplicity must be an integer tensor",
+        lambda: confluent_vandermonde(_zeros(2), torch.ones(2, dtype=torch.uint8)),
+        "multiplicity must be int32 or int64",
         id="confluent-multiplicity-dtype",
     ),
     pytest.param(
