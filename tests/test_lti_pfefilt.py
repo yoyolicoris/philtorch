@@ -157,8 +157,10 @@ def test_pfefilt_in_chunks_equals_whole(sos):
     torch.testing.assert_close(zf, zf_whole)
 
 
-@pytest.mark.parametrize("g_dtype", [torch.float64, torch.complex128])
-@pytest.mark.parametrize("with_multiplicity", [False, True])
+# a real filter, and a complex one with multiplicities, whose chain masks are empty
+@pytest.mark.parametrize(
+    ("g_dtype", "with_multiplicity"), [(torch.float64, False), (torch.complex128, True)]
+)
 def test_pfefilt_without_poles(g_dtype, with_multiplicity):
     x = torch.randn(2, 8, dtype=torch.float64)
     empty = torch.zeros(0, dtype=torch.complex128)

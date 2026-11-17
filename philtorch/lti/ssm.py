@@ -347,6 +347,14 @@ def diag_state_space(
     - :attr:`L` with both :attr:`V` and :attr:`Vinv`: used as given.
     - :attr:`L` alone: :math:`A` is diagonal and :math:`V = I`.
 
+    Note:
+        With :attr:`zi`, one input (a 2-D :attr:`x`) and one output
+        (:attr:`C` of shape :math:`(M)` or :math:`(B, M)`, or :attr:`out_idx`),
+        the rounding error of the gradients grows with
+        :math:`|\hat{h}_i[0] / \hat{B}_i|`, the ratio of mode :math:`i`'s
+        initial state to its input gain: large for a mode that :attr:`B`
+        barely reaches. The outputs keep their precision.
+
     Args:
         x (Tensor): inputs, of shape :math:`(B, N, F)` or :math:`(B, N)`.
         L (Tensor, optional): the eigenvalues :math:`\boldsymbol{\lambda}`,
@@ -477,8 +485,8 @@ def diag_state_space(
         # batched V is a row per signal, as _ssm_C_D reads it.
         batched = (Vinv if V is None else V).dim() == 3
         one_row = c.dim() == 1 or (batched and c.dim() == 2 and c.size(0) == batch_size)
-        # 3-D rows for a batched V: solve reads a (1, M) as a column for a
-        # (1, M, M) Vinv.
+        # Rows stay 3-D for a batched V, so that solve(left=False) broadcasts
+        # them: it would read a (1, M) row as a column of a (1, M, M) Vinv.
         rows = (c.reshape(-1, 1, M) if batched else c.unsqueeze(-2)) if one_row else c
         rows = rows @ V if V is not None else torch.linalg.solve(Vinv, rows, left=False)
         return rows.squeeze(-2) if one_row else rows
@@ -528,7 +536,7 @@ def diag_state_space(
                 zi is not None
                 or L.dim() == 2
                 or any(t is not None and t.dim() == 2 for t in (B, C))
-                or (D is not None and D.shape == (batch_size,) and batch_size != 1)
+                or (D is not None and D.shape == (batch_size,))
             )
             g = x.new_zeros(()) if D is None else D
             if batched:
@@ -538,7 +546,7 @@ def diag_state_space(
                 g = g.expand(batch_size)
             else:
                 r, batch_index, g = r.reshape(M), None, g.reshape(())
-            # A real filter lists one pole of each conjugate pair, which eigvals
+            # A real filter lists one pole of each conjugate pair, which eig
             # gives exactly; a complex L of the user's may not pair up: list all.
             half = real and (from_A or not L.is_complex())
             keep, weight = slice(None), 1
