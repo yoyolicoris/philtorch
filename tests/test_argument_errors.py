@@ -1127,6 +1127,11 @@ _LTI_SSM_CASES = [
         "A must be a batch of square matrices with size 3",
         id="diag-L-batch-A-wrong-size",
     ),
+    pytest.param(
+        lambda: lti.diag_state_space(_ones(1, 4), L=_zeros(2), B=_ones(3), C=_ones(2)),
+        "Input matrix B must be of shape",
+        id="diag-route-B-wrong-shape",
+    ),
 ]
 
 

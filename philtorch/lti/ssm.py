@@ -499,6 +499,11 @@ def diag_state_space(
         rows = rows @ V if V is not None else torch.linalg.solve(Vinv, rows, left=False)
         return rows.squeeze(-2) if one_row else rows
 
+    def unit(i):
+        e = L.new_zeros(M)
+        e[i] = 1
+        return e
+
     if (
         zi is None
         and unroll_factor is None
@@ -515,14 +520,8 @@ def diag_state_space(
         if B is not None and tuple(B.shape) not in ((M,), (batch_size, M)):
             raise _ssm_B_shape_error(B, x, batch_size, M)
 
-        def unit(i):
-            e = L.new_zeros(M)
-            e[i] = 1
-            return e
-
         # A diagonal model without B drives every state, otherwise the first.
-        B_hat = L.new_ones(M) if B is None and identity else B
-        B_hat = unit(0) if B_hat is None else B_hat.to(L.dtype)
+        B_hat = B.to(L.dtype) if B is not None else L.new_ones(M) if identity else unit(0)
         if not identity:
             B_hat = to_modal(B_hat.reshape(-1, M, 1)).squeeze(-1)
         C_hat = unit(out_idx) if C is None else C.to(L.dtype)
@@ -571,7 +570,7 @@ def diag_state_space(
         VinvBx = to_modal(x.mT).mT
     else:
         if B is None:  # a 2-D x drives the first state
-            B = torch.eye(M, dtype=L.dtype, device=L.device)[0]
+            B = unit(0)
         # Same dispatch as _ssm_B, but V^{-1} is folded into B before touching x.
         features = x.size(-1)
         match x.dim(), tuple(B.shape):
@@ -600,7 +599,7 @@ def diag_state_space(
         elif out_idx is None:
             h = from_modal(h_hat).mT
         else:
-            row = times_V(torch.eye(M, dtype=L.dtype, device=L.device)[out_idx])
+            row = times_V(unit(out_idx))
             h = (row.unsqueeze(-2) @ h_hat).squeeze(-2)
         # A real system's states are real: their imaginary part is rounding.
         return h.real if real else h

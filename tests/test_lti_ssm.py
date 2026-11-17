@@ -627,6 +627,17 @@ def test_diag_state_space_pfefilt_route_gradients_match_state_space(batched):
         torch.testing.assert_close(g, g_ref)
 
 
+@pytest.mark.parametrize("system", ["A_real", "LVinv_complex"])
+def test_diag_state_space_out_idx_off_the_route(system):
+    # an integer unroll_factor keeps the modal path, which takes row out_idx of V
+    given, A, dtype = _pfe_model(system, batched=False)
+    x = torch.randn(_PFE_BATCH, _PFE_N, dtype=dtype)
+
+    y = diag_state_space(x, **given, out_idx=2, unroll_factor=4)
+
+    torch.testing.assert_close(y, state_space(A, x, out_idx=2))
+
+
 @pytest.fixture
 def pfefilt_calls(monkeypatch):
     """The calls diag_state_space makes to pfefilt."""
