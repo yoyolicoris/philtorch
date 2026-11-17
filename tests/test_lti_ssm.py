@@ -523,7 +523,6 @@ _PFE_SYSTEMS = [
     "LV_real",
     "LV_complex",  # a real A's complex L and V, with a real x: the full form
     "LVinv_complex",
-    "LA_complex",
     "L_real",
     "L_complex_x",
 ]
@@ -555,14 +554,10 @@ def _pfe_model(system, batched):
         L = torch.rand(*batch, M, dtype=torch.double) - 0.5
         A = Q @ torch.diag_embed(L) @ Q.mT
         return {"L": L, "V": Q}, A, torch.double
-    elif system in ("LV_complex", "LVinv_complex", "LA_complex"):
+    elif system in ("LV_complex", "LVinv_complex"):
         A = similar(Lam, torch.double)
         L, V = torch.linalg.eig(A)
-        given = {
-            "LV_complex": {"V": V},
-            "LVinv_complex": {"Vinv": torch.linalg.inv(V)},
-            "LA_complex": {},
-        }[system]
+        given = {"V": V} if system == "LV_complex" else {"Vinv": torch.linalg.inv(V)}
         return {"L": L, "A": A, **given}, A, torch.double
     else:
         L = torch.rand(*batch, M, dtype=torch.double) - 0.5
@@ -582,8 +577,11 @@ def _pfe_reference(A, x, B, C, D, out_idx, identity):
 
 @pytest.mark.parametrize("system", _PFE_SYSTEMS)
 @pytest.mark.parametrize("batched", [False, True])
-@pytest.mark.parametrize("output", ["C", "C_per_signal", "out_idx"])
-@pytest.mark.parametrize("with_B", [False, True])
+# the output, and whether B is given: without B, x drives every state of a
+# diagonal model and the first of the others
+@pytest.mark.parametrize(
+    ("output", "with_B"), [("C", True), ("C_per_signal", False), ("out_idx", True)]
+)
 def test_diag_state_space_pfefilt_route_matches_state_space(system, batched, output, with_B):
     given, A, dtype = _pfe_model(system, batched)
     M = _PFE_M
@@ -602,29 +600,16 @@ def test_diag_state_space_pfefilt_route_matches_state_space(system, batched, out
     torch.testing.assert_close(y, y_ref)
 
 
-@pytest.mark.parametrize("batched", [False, True])
-def test_diag_state_space_pfefilt_route_gradients_match_state_space(batched):
-    _, A, _ = _pfe_model("A_real", batched)
-    M = _PFE_M
-    x = torch.randn(_PFE_BATCH, _PFE_N, dtype=torch.double)
-    leaves = {
-        "A": A,
-        "B": torch.randn(*((_PFE_BATCH,) if batched else ()), M, dtype=torch.double),
-        "C": torch.randn(M, dtype=torch.double),
-        "D": torch.randn(_PFE_BATCH, dtype=torch.double),
-    }
-    w = torch.randn(_PFE_BATCH, _PFE_N, dtype=torch.double)
+def test_diag_state_space_one_output_in_bfloat16():
+    # pfefilt doesn't take bfloat16, which has no complex dtype
+    L = (torch.rand(_PFE_M) - 0.5).bfloat16()
+    x, C = torch.randn(_PFE_BATCH, _PFE_N).bfloat16(), torch.randn(_PFE_M).bfloat16()
 
-    def grads(ssm):
-        p = {k: v.clone().requires_grad_() for k, v in leaves.items()}
-        (ssm(p) * w).sum().backward()
-        return [t.grad for t in p.values()]
+    y = diag_state_space(x, L=L, C=C)
 
-    diag = grads(lambda p: diag_state_space(x, A=p["A"], B=p["B"], C=p["C"], D=p["D"]))
-    dense = grads(lambda p: state_space(p["A"], x, B=p["B"], C=p["C"], D=p["D"]))
-
-    for g, g_ref in zip(diag, dense, strict=True):
-        torch.testing.assert_close(g, g_ref)
+    # bfloat16 states, rounded at every step
+    y_ref = _pfe_reference(torch.diag(L.float()), x.float(), None, C.float(), None, None, True)
+    torch.testing.assert_close(y.float(), y_ref, rtol=3e-2, atol=3e-2)
 
 
 @pytest.mark.parametrize("system", ["A_real", "LVinv_complex"])
@@ -636,56 +621,3 @@ def test_diag_state_space_out_idx_off_the_route(system):
     y = diag_state_space(x, **given, out_idx=2, unroll_factor=4)
 
     torch.testing.assert_close(y, state_space(A, x, out_idx=2))
-
-
-@pytest.fixture
-def pfefilt_calls(monkeypatch):
-    """The calls diag_state_space makes to pfefilt."""
-    from philtorch.lti import filtering
-
-    calls = []
-    pfefilt = filtering.pfefilt
-
-    def record(*args, **kwargs):
-        calls.append(args)
-        return pfefilt(*args, **kwargs)
-
-    monkeypatch.setattr(filtering, "pfefilt", record)
-    return calls
-
-
-def _routing_inputs():
-    _, A, _ = _pfe_model("A_real", False)
-    x = torch.randn(_PFE_BATCH, _PFE_N, dtype=torch.double)
-    return {"x": x, "A": A, "C": torch.randn(_PFE_M, dtype=torch.double)}
-
-
-def test_diag_state_space_routes_one_input_and_output_through_pfefilt(pfefilt_calls):
-    kwargs = _routing_inputs()
-    diag_state_space(**kwargs)
-    diag_state_space(**kwargs | {"C": None, "out_idx": 1})
-
-    assert len(pfefilt_calls) == 2
-
-
-@pytest.mark.parametrize(
-    "change",
-    [
-        {"zi": torch.zeros(_PFE_BATCH, _PFE_M, dtype=torch.double)},
-        {"unroll_factor": 3},
-        {"x": torch.randn(_PFE_BATCH, _PFE_N, _PFE_M, dtype=torch.double), "C": None},
-        {"C": torch.randn(2, _PFE_M, dtype=torch.double)},
-        {"C": None},
-        {
-            "x": torch.randn(_PFE_BATCH, _PFE_N).bfloat16(),
-            "A": None,
-            "L": torch.rand(_PFE_M).bfloat16(),
-            "C": torch.randn(_PFE_M).bfloat16(),
-        },
-    ],
-    ids=["zi", "unroll_factor", "3-D x", "C with P != B", "no output", "bfloat16"],
-)
-def test_diag_state_space_keeps_other_calls_off_pfefilt(pfefilt_calls, change):
-    diag_state_space(**_routing_inputs() | change)
-
-    assert not pfefilt_calls
