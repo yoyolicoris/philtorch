@@ -391,9 +391,9 @@ def lfilter(
             it supports ``"df2"`` and ``"tdf2"`` only. Default: ``"ssm"``.
         **kwargs: passed to the backend: ``unroll_factor`` (see
             :func:`state_space`) and, for ``"diag_ssm"``, the poles ``L``,
-            with ``V`` or ``Vinv`` (see :func:`diag_state_space`), which
-            default to the eigenvectors of the companion matrix for ``L``, and
-            ``delayed_form``. When
+            the eigenvalues of the state matrix, with its eigenvectors ``V``
+            or ``Vinv`` (see :func:`diag_state_space`), computed from ``L``
+            when neither is given, and ``delayed_form``. When
             :math:`M_b > M_a`, ``"diag_ssm"`` splits off an FIR part;
             ``delayed_form=True`` delays the recursive part by
             :math:`M_b - M_a + 1` samples instead. Both give the same output.

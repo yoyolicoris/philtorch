@@ -351,9 +351,11 @@ def diag_state_space(
         With :attr:`zi`, one input (a 2-D :attr:`x`) and one output
         (:attr:`C` of shape :math:`(M)` or :math:`(B, M)`, or :attr:`out_idx`),
         the rounding error of the gradients grows with
-        :math:`|\hat{h}_i[0] / \hat{B}_i|`, the ratio of mode :math:`i`'s
-        initial state to its input gain: large for a mode that :attr:`B`
-        barely reaches. The outputs keep their precision.
+        :math:`|\hat{h}_i[0] / \hat{B}_i|`, where
+        :math:`\hat{\mathbf{h}}[0] = V^{-1} \text{zi}`: large for a state that
+        the input barely drives (a small :math:`\hat{B}_i`) but :attr:`zi`
+        starts away from zero. The outputs and the final state keep their
+        precision.
 
     Args:
         x (Tensor): inputs, of shape :math:`(B, N, F)` or :math:`(B, N)`.
