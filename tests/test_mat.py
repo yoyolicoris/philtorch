@@ -5,7 +5,13 @@ import numpy as np
 import pytest
 import torch
 
-from philtorch.mat import companion, confluent_vandermonde, find_eigenvectors, matrices_cumdot
+from philtorch.mat import (
+    companion,
+    confluent_vandermonde,
+    find_eigenvectors,
+    matrices_cumdot,
+    vandermonde,
+)
 
 
 # Primes, products of two primes, and products of three or more primes, which
@@ -18,6 +24,20 @@ def test_matrices_cumdot(M: int):
     expected = torch.stack(list(accumulate(A.unbind(-3), torch.matmul)), dim=-3)
 
     assert torch.allclose(matrices_cumdot(A), expected)
+
+
+# One pole, whose matrix is [[1]], and several; complex32 runs in complex64, as
+# CPU's cumprod takes no complex32.
+@pytest.mark.parametrize(
+    "M, dtype", [(1, torch.complex128), (3, torch.complex128), (3, torch.complex32)]
+)
+def test_vandermonde_batched(M: int, dtype: torch.dtype):
+    poles = torch.randn(2, 4, M, dtype=torch.complex128).to(dtype)
+    powers = torch.arange(M - 1, -1, -1, dtype=torch.float64)
+    expected = poles.to(torch.complex128).unsqueeze(-2) ** powers.unsqueeze(-1)
+    V = vandermonde(poles)
+    assert V.dtype == dtype
+    torch.testing.assert_close(V.to(torch.complex128), expected, rtol=2e-3, atol=2e-3)
 
 
 # bfloat16 and complex32 run in float32 and complex64, as CPU's cumprod takes
