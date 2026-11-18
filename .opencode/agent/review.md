@@ -5,7 +5,7 @@ description: >-
   runs read-only git; can post PR comments but never writes code, approves, or merges.
   Use to review opened/updated PRs.
 mode: all
-model: model_api/muse-spark-1.3
+model: model_api/muse-spark-1.3-contributor
 tools:
   read: true
   grep: true
