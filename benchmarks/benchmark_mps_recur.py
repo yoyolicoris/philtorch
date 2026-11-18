@@ -10,9 +10,10 @@ M = 1, ``lti_recurN`` and ``recurN`` above. The coefficient layouts are
 * ``per_step_shared``: time-varying, one per step shared over the batch
   (M > 1, from B = 2).
 
-Cases of more than 2^26 coefficients or inputs above 1 GiB (which the CPU and
-MPS copies and the outputs make 4 GiB) are skipped, and complex64 runs up to
-M = 64, the kernels' limit. The recurrences are stable: ``|a| < 0.9``, with a
+Cases of more than 2^26 coefficients are skipped, and complex64 runs up to
+M = 64, the kernels' limit. ``--max-input-gib`` also skips the cases whose input
+is larger, to bound the memory: the CPU and MPS copies and the two outputs take
+four times it. The recurrences are stable: ``|a| < 0.9``, with a
 random phase for complex64, and matrices of spectral norm 0.9; int64's
 coefficients, states and inputs are random 62-bit integers, whose products
 wrap around. Each case
@@ -52,7 +53,6 @@ DTYPES = {
 LAYOUTS = ("shared", "batched", "per_step", "per_step_shared")
 STATES = (1, 2, 4, 8, 16, 32, 64, 128)
 MAX_COEFFICIENTS = 2**26
-MAX_INPUT_BYTES = 2**30
 # The Metal kernels' largest M, half that for complex64.
 MAX_STATES = 128
 MAX_DECAY = 0.9
@@ -155,6 +155,11 @@ def parse_args():
         default=list(STATES),
         help="state sizes M to run (default: %(default)s)",
     )
+    parser.add_argument(
+        "--max-input-gib",
+        type=float,
+        help="skip the cases whose input exceeds this size (default: run them all)",
+    )
     return parser.parse_args()
 
 
@@ -183,7 +188,8 @@ def main():
                         continue
                     if states > (MAX_STATES // 2 if dtype.is_complex else MAX_STATES):
                         continue
-                    if batch * steps * states * dtype.itemsize > MAX_INPUT_BYTES:
+                    input_bytes = batch * steps * states * dtype.itemsize
+                    if args.max_input_gib is not None and input_bytes > args.max_input_gib * 2**30:
                         continue
                     if states == 1:
                         a_cpu = random_decay(shape, dtype)
