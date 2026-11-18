@@ -10,10 +10,12 @@ M = 1, ``lti_recurN`` and ``recurN`` above. The coefficient layouts are
 * ``per_step_shared``: time-varying, one per step shared over the batch
   (M > 1, from B = 2).
 
-Cases of more than 2^26 coefficients are skipped, and complex64 runs up to
-M = 64, the kernels' limit. The CPU column is ``n/a`` where ``scan``'s CPU
-kernel takes no float16 or bfloat16. The recurrences are stable: ``|a| < 0.9``,
-with a random phase for complex64, and matrices of spectral norm 0.9. Each case
+Cases of more than 2^26 coefficients or inputs above 1 GiB (which the CPU and
+MPS copies and the outputs make 4 GiB) are skipped, and complex64 runs up to
+M = 64, the kernels' limit. The recurrences are stable: ``|a| < 0.9``, with a
+random phase for complex64, and matrices of spectral norm 0.9; int64's
+coefficients, states and inputs are random 62-bit integers, whose products
+wrap around. Each case
 reports the median runtime (and IQR) of
 ``torch.utils.benchmark.Timer.blocked_autorange``, synchronizing the MPS device
 at each measurement boundary, and the speed-up of MPS over CPU.
@@ -27,7 +29,6 @@ Run it with no other GPU work going on::
 
 import argparse
 import platform
-import time
 
 import torch
 import torch.utils.benchmark as benchmark
@@ -46,20 +47,33 @@ DTYPES = {
     "float16": torch.float16,
     "bfloat16": torch.bfloat16,
     "complex64": torch.complex64,
+    "int64": torch.int64,
 }
 LAYOUTS = ("shared", "batched", "per_step", "per_step_shared")
 STATES = (1, 2, 4, 8, 16, 32, 64, 128)
 MAX_COEFFICIENTS = 2**26
+MAX_INPUT_BYTES = 2**30
 # The Metal kernels' largest M, half that for complex64.
 MAX_STATES = 128
-# scan's CPU kernel takes no half precision; lti_recur's takes all four dtypes.
-SCAN_CPU_DTYPES = (torch.float32, torch.complex64)
 MAX_DECAY = 0.9
 NUM_THREADS = torch.get_num_threads()
 
 
+def random_integers(shape):
+    return torch.randint(-(2**62), 2**62, shape)
+
+
+def random_values(shape, dtype):
+    """Random states and inputs."""
+    if dtype == torch.int64:
+        return random_integers(shape)
+    return torch.randn(shape, dtype=dtype)
+
+
 def random_decay(shape, dtype):
     """Stable coefficients: ``|a| < MAX_DECAY``, with a random phase if complex."""
+    if dtype == torch.int64:
+        return random_integers(shape)
     if dtype.is_complex:
         magnitude = torch.rand(shape) * MAX_DECAY
         return torch.polar(magnitude, torch.rand(shape) * 2 * torch.pi).to(dtype)
@@ -68,6 +82,8 @@ def random_decay(shape, dtype):
 
 def random_matrices(shape, dtype):
     """Stable matrices: each of spectral norm ``MAX_DECAY``."""
+    if dtype == torch.int64:
+        return random_integers(shape)
     wide = torch.complex128 if dtype.is_complex else torch.float64
     A = torch.randn(shape, dtype=wide)
     return (A / torch.linalg.matrix_norm(A, ord=2, keepdim=True) * MAX_DECAY).to(dtype)
@@ -99,26 +115,14 @@ def make_function(layout, states, a, zi, x):
     return lambda: ops.lti_recur(a, zi, x)
 
 
-def cpu_supports(layout, states, dtype):
-    return states > 1 or layout != "per_step" or dtype in SCAN_CPU_DTYPES
-
-
-def synchronized_mps_timer():
-    torch.mps.synchronize()
-    return time.perf_counter()
-
-
-def measure_runtime(function, timer=time.perf_counter):
-    # Untimed first, for 0.2 s: the first call of a state size and dtype
-    # compiles its Metal library, and the GPU takes its first calls slower.
-    start = timer()
-    while timer() - start < 0.2:
-        function()
+def measure_runtime(function):
+    """The median and IQR, in ms, of ``function()`` by ``Timer.blocked_autorange``,
+    whose clock synchronizes the accelerator, MPS included, at each boundary."""
+    # Called once first, untimed: the first call of a state size and dtype
+    # compiles its Metal library.
+    function()
     measurement = benchmark.Timer(
-        stmt="function()",
-        globals={"function": function},
-        timer=timer,
-        num_threads=NUM_THREADS,
+        stmt="function()", globals={"function": function}, num_threads=NUM_THREADS
     ).blocked_autorange(min_run_time=0.5)
     return measurement.median * 1_000, measurement.iqr * 1_000
 
@@ -179,30 +183,27 @@ def main():
                         continue
                     if states > (MAX_STATES // 2 if dtype.is_complex else MAX_STATES):
                         continue
+                    if batch * steps * states * dtype.itemsize > MAX_INPUT_BYTES:
+                        continue
                     if states == 1:
                         a_cpu = random_decay(shape, dtype)
-                        zi_cpu = torch.randn(batch, dtype=dtype)
-                        x_cpu = torch.randn(batch, steps, dtype=dtype)
+                        zi_cpu = random_values((batch,), dtype)
+                        x_cpu = random_values((batch, steps), dtype)
                     else:
                         a_cpu = random_matrices(shape, dtype)
-                        zi_cpu = torch.randn(batch, states, dtype=dtype)
-                        x_cpu = torch.randn(batch, steps, states, dtype=dtype)
+                        zi_cpu = random_values((batch, states), dtype)
+                        x_cpu = random_values((batch, steps, states), dtype)
                     cpu_inputs = (a_cpu, zi_cpu, x_cpu)
                     mps_inputs = tuple(value.to("mps") for value in cpu_inputs)
                     mps_function = make_function(layout, states, *mps_inputs)
 
-                    mps_ms, mps_iqr_ms = measure_runtime(mps_function, timer=synchronized_mps_timer)
-                    cpu_cell, speedup = "n/a", "n/a"
-                    if cpu_supports(layout, states, dtype):
-                        cpu_function = make_function(layout, states, *cpu_inputs)
-                        cpu_ms, cpu_iqr_ms = measure_runtime(cpu_function)
-                        cpu_cell, speedup = (
-                            f"{cpu_ms:.4f} ({cpu_iqr_ms:.4f})",
-                            f"{cpu_ms / mps_ms:.2f}x",
-                        )
+                    mps_ms, mps_iqr_ms = measure_runtime(mps_function)
+                    cpu_function = make_function(layout, states, *cpu_inputs)
+                    cpu_ms, cpu_iqr_ms = measure_runtime(cpu_function)
                     print(
                         f"| {states} | {dtype_name} | {batch} | {steps} | {layout} | "
-                        f"{cpu_cell} | {mps_ms:.4f} ({mps_iqr_ms:.4f}) | {speedup} |",
+                        f"{cpu_ms:.4f} ({cpu_iqr_ms:.4f}) | {mps_ms:.4f} ({mps_iqr_ms:.4f}) | "
+                        f"{cpu_ms / mps_ms:.2f}x |",
                         flush=True,
                     )
 

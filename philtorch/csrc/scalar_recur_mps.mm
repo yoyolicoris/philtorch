@@ -74,7 +74,8 @@ const Kernels &kernels(ScalarType dtype)
                          h = make_kernels(ScalarType::Half),
                          bf = make_kernels(ScalarType::BFloat16),
                          c = make_kernels(ScalarType::ComplexFloat),
-                         ch = make_kernels(ScalarType::ComplexHalf);
+                         ch = make_kernels(ScalarType::ComplexHalf),
+                         i = make_kernels(ScalarType::Long);
     switch (dtype)
     {
     case ScalarType::Float:
@@ -85,6 +86,8 @@ const Kernels &kernels(ScalarType dtype)
         return bf;
     case ScalarType::ComplexHalf:
         return ch;
+    case ScalarType::Long:
+        return i;
     default:
         return c;
     }
@@ -134,13 +137,16 @@ Tensor scalar_recur_mps(const Tensor &decays, bool varying, int64_t stride_b,
     if (n_tiles > 1)
     {
         // Each tile's map, two values of the accumulation type, and the state
-        // at its end.
+        // at its end. A complex value is two floats.
         const bool complex = philtorch::mps::is_complex(dtype);
         const int64_t values = complex ? 2 : 1;
+        const ScalarType scratch = complex
+            ? ScalarType::Float
+            : philtorch::mps::accumulation_type(dtype);
         auto totals = torch::stable::new_empty(
-            x_contiguous, {n_batches, n_tiles, 2 * values}, ScalarType::Float);
+            x_contiguous, {n_batches, n_tiles, 2 * values}, scratch);
         states = torch::stable::new_empty(
-            x_contiguous, {n_batches, n_tiles, values}, ScalarType::Float);
+            x_contiguous, {n_batches, n_tiles, values}, scratch);
         launch(k.reduce[varying],
                {decays_contiguous.get(), zi_contiguous.get(),
                 x_contiguous.get(), totals.get()},

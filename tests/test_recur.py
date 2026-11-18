@@ -170,6 +170,34 @@ def test_recurrence_mps(sharing, B, T, M, dtype):
 
 @MPS
 @pytest.mark.parametrize("sharing", SHARING)
+@pytest.mark.parametrize(
+    "B, T, M",
+    # Around chunks of 64 steps and tiles of 1024 (M = 1); 16 states is where
+    # float32 vectors would run in blocks, 17 leaves lanes idle, 40 and 100
+    # hold several states per lane; 9 sequences of few chunks each; 2**17 steps
+    # take three levels of maps over chunks of chunks.
+    [(3, T, M) for T in (1, 63, 64, 65, 200) for M in (1, 2, 3, 16, 17)]
+    + [(3, T, 1) for T in (1023, 1024, 1025, 4097)]
+    + [(2, 130, 40), (2, 70, 100), (9, 200, 3), (2, 2**17 + 3, 2)],
+)
+def test_recurrence_mps_int64(sharing, B, T, M):
+    # States that wrap around: the products of random 62-bit integers, which
+    # must match the CPU's exactly.
+    gen = torch.Generator().manual_seed(M)
+    Ba = B if sharing in ("per_item", "both") else 1
+    Ta = T if sharing in ("per_step", "both") else 1
+
+    def ints(*shape):
+        return torch.randint(-(2**62), 2**62, shape, generator=gen)
+
+    A, zi, x = ints(Ba, Ta, M, M), ints(B, M), ints(B, T, M)
+    actual = recurrence(*(t.to("mps") for t in (A, zi, x)))
+    assert actual.dtype == torch.int64
+    assert torch.equal(actual.cpu(), recurrence(A, zi, x))
+
+
+@MPS
+@pytest.mark.parametrize("sharing", SHARING)
 @pytest.mark.parametrize("M", [2, 5])
 @pytest.mark.parametrize("T", [2**17 + 3, 2**15 + 40])
 @pytest.mark.parametrize("identity", [False, True])
@@ -442,7 +470,7 @@ INTEGER_DISPATCH = [
 ]
 
 
-# The Metal kernels, which take these five dtypes: the scalar ones M = 1, and
+# The Metal kernels, which take these six dtypes: the scalar ones M = 1, and
 # those of order M the rest.
 MPS_DISPATCH = [
     pytest.param(*case, marks=MPS)
@@ -459,6 +487,7 @@ MPS_DISPATCH = [
             torch.bfloat16,
             torch.complex64,
             torch.complex32,
+            torch.int64,
         )
     ]
 ]

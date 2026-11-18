@@ -8,7 +8,7 @@ using namespace metal;
 constant constexpr uint SIMD_WIDTH = 32;
 
 // The accumulation type: float for float, half and bfloat; float2, a complex
-// number, for complex64 (float2) and complex32 (half2).
+// number, for complex64 (float2) and complex32 (half2); long for int64.
 template <typename T> struct Acc
 {
     using type = float;
@@ -27,8 +27,27 @@ template <> struct Acc<half2>
     static float2 one() { return float2(1.0f, 0.0f); }
 };
 
+// int64, accumulated in int64, which wraps on overflow.
+template <> struct Acc<long>
+{
+    using type = long;
+    static long one() { return 1; }
+};
+
+// Metal's SIMD shuffles take no long: they move its two 32-bit halves.
+inline long simd_shuffle_up(long v, ushort delta)
+{
+    return as_type<long>(simd_shuffle_up(as_type<uint2>(v), delta));
+}
+inline long simd_shuffle_xor(long v, ushort mask)
+{
+    return as_type<long>(simd_shuffle_xor(as_type<uint2>(v), mask));
+}
+
 inline float mul(float a, float b) { return a * b; }
 inline float2 mul(float2 a, float2 b)
 {
     return float2(a.x * b.x - a.y * b.y, a.x * b.y + a.y * b.x);
 }
+// Unsigned, as the sum of a long's products wraps rather than overflows.
+inline long mul(long a, long b) { return long(ulong(a) * ulong(b)); }

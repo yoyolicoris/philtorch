@@ -78,10 +78,22 @@ int64_t run_length(int64_t n)
 
 // Whether vectors run in blocks of 8, by 8 x 8 matrix products: vectors of
 // BLOCK_STATES or more that share their matrices, time-invariant or shared
-// over the batch; smaller ones would leave the tiles mostly idle.
-bool blocked(int64_t M, int64_t stride_t, int64_t a_batch)
+// over the batch; smaller ones would leave the tiles mostly idle. int64 has no
+// matrix products.
+bool blocked(ScalarType dtype, int64_t M, int64_t stride_t, int64_t a_batch)
 {
-    return M >= BLOCK_STATES && (stride_t == 0 || a_batch == 1);
+    return dtype != ScalarType::Long && M >= BLOCK_STATES &&
+           (stride_t == 0 || a_batch == 1);
+}
+
+// The SIMD groups of n vectors of M states, SIMD_WIDTH / LANES a group, LANES
+// being M rounded up to a power of 2, SIMD_WIDTH at most.
+int64_t lane_groups(int64_t n, int64_t M)
+{
+    int64_t lanes = 1;
+    while (lanes < std::min(M, SIMD_WIDTH))
+        lanes *= 2;
+    return philtorch::ceil_div(n, SIMD_WIDTH / lanes);
 }
 
 // The SIMD groups of the vectors of n_batch sequences' chunks, as
@@ -101,12 +113,8 @@ int64_t vector_groups(int64_t batch, int64_t chunks, int64_t M,
             : inner;
         return philtorch::ceil_div<int64_t>(outer * padded, 8);
     }
-    int64_t lanes = 1;
-    while (lanes < std::min(M, SIMD_WIDTH))
-        lanes *= 2;
     const int64_t run = run_length(chunks);
-    return philtorch::ceil_div(batch * philtorch::ceil_div(chunks, run) * run,
-                               SIMD_WIDTH / lanes);
+    return lane_groups(batch * philtorch::ceil_div(chunks, run) * run, M);
 }
 
 // The threads of n SIMD groups, in whole threadgroups, which the kernels
@@ -134,7 +142,7 @@ Tensor recur_mps(const Tensor &a, int64_t a_batch, int64_t stride_b,
         return out;
     const Kernels &k = kernels(M, x.scalar_type());
     const std::array<uint64_t, 2> group{THREADS, 1};
-    const bool block = blocked(M, stride_t, a_batch);
+    const bool block = blocked(x.scalar_type(), M, stride_t, a_batch);
     const int64_t chunks = philtorch::ceil_div(steps, CHUNK);
 
     // The state at each chunk's end but the last, from the same recurrence
@@ -146,7 +154,8 @@ Tensor recur_mps(const Tensor &a, int64_t a_batch, int64_t stride_b,
         // The maps, in the accumulation type: their offsets o, and their
         // matrices P, one per chunk of time-varying A, and one, A^CHUNK, for
         // time-invariant A, in SIMD groups of 8 x 8 tiles: ceil(M / 8) per
-        // map, or 8 / M maps per group up to 4 states.
+        // map, or 8 / M maps per group up to 4 states; for int64, in one
+        // vector per column (see map_vector).
         const int64_t maps_per_item = chunks - 1;
         const int64_t maps_per_a = stride_t == 0 ? 1 : maps_per_item;
         const ScalarType acc = philtorch::mps::accumulation_type(x.scalar_type());
@@ -155,9 +164,10 @@ Tensor recur_mps(const Tensor &a, int64_t a_batch, int64_t stride_b,
         const int64_t packed = M <= 4 ? 8 / M : 1;
         const int64_t offset_groups =
             vector_groups(batch, maps_per_item, M, stride_t, a_batch, block);
-        const int64_t map_groups =
-            philtorch::ceil_div(a_batch * maps_per_a, packed) *
-            philtorch::ceil_div<int64_t>(M, 8);
+        const int64_t map_groups = acc == ScalarType::Long
+            ? lane_groups(a_batch * maps_per_a * M, M)
+            : philtorch::ceil_div(a_batch * maps_per_a, packed) *
+                  philtorch::ceil_div<int64_t>(M, 8);
         launch(k.reduce, {a.get(), zi.get(), x.get(), offsets.get(), maps.get()},
                {batch, steps, stride_b, stride_t, a_batch, from_zi,
                 run_length(maps_per_item), block, packed, offset_groups},

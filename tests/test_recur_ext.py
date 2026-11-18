@@ -191,7 +191,7 @@ def test_mps_recur_of_order(order: int, time_invariant: bool, batched: bool):
         (op, dtype, M, match)
         for op in ("lti_recurN", "recurN")
         for dtype, M, match in [
-            (torch.int64, 3, "takes float32, float16, bfloat16, complex64 and complex32"),
+            (torch.int32, 3, "takes float32, float16, bfloat16, int64, complex64 and complex32"),
             (torch.float32, 129, "takes M up to 128 .*, got 129"),
             (torch.complex64, 65, "takes M up to 128 .*, got 65"),
         ]
@@ -223,9 +223,27 @@ def test_mps_recur_n_empty(op: str, B: int, T: int):
 
 @MPS
 @pytest.mark.parametrize("op", ["lti_recur", "scan"])
-def test_mps_scalar_recur_rejects_int64(op: str):
+def test_mps_scalar_recur_int64_block_chunks(op: str):
+    # Past 1024 * 512 steps, the tiles' totals are scanned in several chunks of
+    # 512: the carry across them wraps around exactly as the CPU's does.
+    batch_size, samples = 2, 1024 * 512 + 5
+    gen = torch.Generator().manual_seed(0)
+
+    def ints(*shape):
+        return torch.randint(-(2**62), 2**62, shape, generator=gen)
+
+    a = ints(batch_size) if op == "lti_recur" else ints(batch_size, samples)
+    zi, x = ints(batch_size), ints(batch_size, samples)
+    args = (a, zi, x) if op == "lti_recur" else (x, a, zi)
+    actual = _MPS_OPS[op](*(arg.to("mps") for arg in args))
+    assert torch.equal(actual.cpu(), _MPS_OPS[op](*args))
+
+
+@MPS
+@pytest.mark.parametrize("op", ["lti_recur", "scan"])
+def test_mps_scalar_recur_rejects_other_integers(op: str):
     def ones(*shape):
-        return torch.ones(shape, dtype=torch.int64, device="mps")
+        return torch.ones(shape, dtype=torch.int32, device="mps")
 
     args = (
         (ones(2), ones(2), ones(2, 5)) if op == "lti_recur" else (ones(2, 5), ones(2, 5), ones(2))

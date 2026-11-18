@@ -47,9 +47,11 @@ inline const char *metal_type(ScalarType dtype, const char *op)
         return "bfloat";
     case ScalarType::ComplexHalf:
         return "half2";
+    case ScalarType::Long:
+        return "long";
     default:
         STD_TORCH_CHECK(dtype == ScalarType::ComplexFloat, op,
-                        " takes float32, float16, bfloat16, complex64 and complex32");
+                        " takes float32, float16, bfloat16, int64, complex64 and complex32");
         return "float2";
     }
 }
@@ -59,9 +61,11 @@ inline bool is_complex(ScalarType dtype)
     return dtype == ScalarType::ComplexFloat || dtype == ScalarType::ComplexHalf;
 }
 
-// The dtype the kernels accumulate dtype in: float32, or complex64.
+// The dtype the kernels accumulate dtype in: float32, complex64, or int64.
 inline ScalarType accumulation_type(ScalarType dtype)
 {
+    if (dtype == ScalarType::Long)
+        return ScalarType::Long;
     return is_complex(dtype) ? ScalarType::ComplexFloat : ScalarType::Float;
 }
 
