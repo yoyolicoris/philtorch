@@ -4,9 +4,7 @@
 #include "mps_shim.h"
 #include "recur_checks.h"
 
-#include <algorithm>
 #include <limits>
-#include <string>
 
 // LPC_MPS_METAL, the text of lpc_mps.metal, which setup.py generates in the
 // build directory.
@@ -16,6 +14,7 @@ namespace
 {
 
 using torch::headeronly::ScalarType;
+using philtorch::mps::SIMD_WIDTH;
 using torch::stable::Tensor;
 
 // The kernels' name in errors.
@@ -23,7 +22,6 @@ constexpr const char *OP = "the MPS lpc";
 
 // The most coefficients, one thread each, as on CUDA; the kernels' own limit.
 constexpr int64_t MAX_ORDER = 1024;
-constexpr int64_t SIMD_WIDTH = 32;
 
 AOTIMetalKernelFunctionHandle kernel(ScalarType dtype)
 {

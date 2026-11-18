@@ -1,5 +1,5 @@
 // What the Metal kernels share, compiled at the head of each of their
-// sources: scalar_recur_mps.mm and recur_mps.mm prepend it.
+// sources: scalar_recur_mps.mm, recur_mps.mm and lpc_mps.mm prepend it.
 #include <metal_stdlib>
 using namespace metal;
 
@@ -49,5 +49,6 @@ inline float2 mul(float2 a, float2 b)
 {
     return float2(a.x * b.x - a.y * b.y, a.x * b.y + a.y * b.x);
 }
-// Unsigned, as the sum of a long's products wraps rather than overflows.
+// Wrapping: signed overflow is undefined in C++, so a product multiplies as
+// ulong. The sums stay long, as they are in the CPU and CUDA kernels.
 inline long mul(long a, long b) { return long(ulong(a) * ulong(b)); }

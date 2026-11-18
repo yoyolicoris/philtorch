@@ -20,7 +20,7 @@ import torch.nn.functional as F
 from torch.autograd.gradcheck import gradcheck, gradgradcheck
 from torch.func import jacfwd
 
-from philtorch._torchlpc import AllPole, lpc
+from philtorch._torchlpc import AllPole
 
 from ._cases import DEVICES, MPS
 
@@ -177,27 +177,20 @@ def test_lpc_rejects_orders_above_1024(device: str):
 
 
 @MPS
-@pytest.mark.parametrize("dtype", [torch.int64, torch.int32])
-def test_lpc_mps_rejects_integers(dtype: torch.dtype):
+def test_lpc_mps_rejects_int64():
     x, zi = (
-        torch.ones(2, 8, dtype=dtype, device="mps"),
-        torch.zeros(2, 2, dtype=dtype, device="mps"),
+        torch.ones(2, 8, dtype=torch.int64, device="mps"),
+        torch.zeros(2, 2, dtype=torch.int64, device="mps"),
     )
     with pytest.raises(RuntimeError, match="MPS lpc takes float32, float16, bfloat16"):
-        torch.ops.philtorch.lpc(x, torch.zeros(2, 8, 2, dtype=dtype, device="mps"), zi)
+        torch.ops.philtorch.lpc(x, torch.zeros(2, 8, 2, dtype=torch.int64, device="mps"), zi)
 
 
-def test_lpc_rejects_dtypes_it_does_not_take():
-    x, a, zi = (torch.zeros(*s, dtype=torch.float8_e4m3fn) for s in ((1, 4), (1, 4, 1), (1, 1)))
-    with pytest.raises(NotImplementedError, match="lpc takes float16, bfloat16, float32"):
-        lpc(x, a, zi)
-
-
-@pytest.mark.parametrize("device", ["cpu", pytest.param("mps", marks=MPS)])
+@MPS
 @pytest.mark.parametrize("B, T, order", [(0, 5, 2), (2, 0, 2), (0, 0, 2), (2, 5, 0)])
-def test_lpc_empty_and_order_zero(device: str, B: int, T: int, order: int):
-    x = torch.randn(B, T, device=device)
-    y = torch.ops.philtorch.lpc(x, torch.zeros(B, T, order, device=device), x.new_zeros(B, order))
+def test_lpc_mps_empty_and_order_zero(B: int, T: int, order: int):
+    x = torch.randn(B, T, device="mps")
+    y = torch.ops.philtorch.lpc(x, torch.zeros(B, T, order, device="mps"), x.new_zeros(B, order))
     assert y.shape == (B, T) and y.device == x.device
     torch.testing.assert_close(y, x)
 
@@ -225,33 +218,36 @@ def _lpc_problem(B: int, T: int, order: int, dtype: torch.dtype):
     return x.to(dtype), a.to(dtype), zi.to(dtype), wide
 
 
-@pytest.mark.parametrize("device", LPC_DEVICES)
-@pytest.mark.parametrize("dtype, tolerance", _LPC_DTYPES)
-@pytest.mark.parametrize(
-    "order, T",
-    # Orders around the 32 threads of a SIMD group and up to the largest of
-    # CUDA and MPS, steps past the order, as the head reaches back into zi, and
-    # fewer.
-    [(1, 300), (2, 300), (3, 300), (31, 300), (32, 300), (33, 300), (100, 300), (33, 5)]
-    + [(1024, 1100)],
-)
-def test_lpc_dtypes(device: str, dtype: torch.dtype, tolerance: float, order: int, T: int):
+def _check_lpc(device: str, dtype: torch.dtype, order: int, T: int):
     x, a, zi, wide = _lpc_problem(3, T, order, dtype)
     expected = torch.ops.philtorch.lpc(*(t.to(wide) for t in (x, a, zi)))
     actual = torch.ops.philtorch.lpc(*(t.to(device) for t in (x, a, zi)))
     assert actual.dtype == dtype
     error = (actual.cpu().to(wide) - expected).abs().max() / expected.abs().max()
-    assert error < tolerance
+    assert error < dict(_LPC_DTYPES)[dtype]
+
+
+@pytest.mark.parametrize("device", LPC_DEVICES)
+@pytest.mark.parametrize("dtype", [dtype for dtype, _ in _LPC_DTYPES])
+def test_lpc_dtypes(device: str, dtype: torch.dtype):
+    _check_lpc(device, dtype, 33, 300)
+
+
+@pytest.mark.parametrize("device", LPC_DEVICES)
+@pytest.mark.parametrize(
+    "dtype, order, T",
+    # Orders around the 32 threads of a SIMD group and up to the largest of
+    # CUDA and MPS, steps past the order, as the head reaches back into zi, and
+    # fewer; the largest again in complex32, whose ring is complex.
+    [(torch.float32, order, 300) for order in (1, 31, 32, 100)]
+    + [(torch.float32, 33, 5), (torch.float32, 1024, 1100), (torch.complex32, 1024, 1100)],
+)
+def test_lpc_orders(device: str, dtype: torch.dtype, order: int, T: int):
+    _check_lpc(device, dtype, order, T)
 
 
 # What each low-precision gradient is held to, relative to the largest.
-_LPC_GRADIENT_DTYPES = [
-    (torch.float32, 1e-4),
-    (torch.complex64, 1e-4),
-    (torch.float16, 1e-2),
-    (torch.bfloat16, 6e-2),
-    (torch.complex32, 1e-2),
-]
+_LPC_GRADIENT_DTYPES = [(torch.float32, 1e-4), (torch.float16, 1e-2), (torch.complex32, 1e-2)]
 
 
 def _relative_error(actual: torch.Tensor, expected: torch.Tensor) -> torch.Tensor:

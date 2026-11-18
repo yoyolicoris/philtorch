@@ -29,8 +29,8 @@ The forward pass runs the first kernel of ``_KERNELS`` that takes the input:
   complex32 and int64: ``lti_recur`` and ``scan`` for M = 1, ``lti_recurN``
   and ``recurN`` for M up to 128 (64 complex).
 
-Every kernel but ``scan``, ``recur3`` and ``lti_recur3`` takes int64 too, so
-integer recurrences such as the Fibonacci numbers run exactly. Anything else
+Every kernel but CUDA's ``scan``, ``recur3`` and ``lti_recur3`` takes int64 too,
+so integer recurrences such as the Fibonacci numbers run exactly. Anything else
 raises: there is no fallback to PyTorch ops.
 """
 

@@ -21,6 +21,7 @@ namespace
 {
 
 using philtorch::mps::launch;
+using philtorch::mps::SIMD_WIDTH;
 using torch::headeronly::ScalarType;
 using torch::stable::Tensor;
 
@@ -29,7 +30,6 @@ constexpr const char *OP = "the MPS recurrence";
 
 // Threads per threadgroup of the chunks' kernels, and per SIMD group.
 constexpr uint64_t THREADS = 64;
-constexpr int64_t SIMD_WIDTH = 32;
 // Steps per chunk, and at most as many consecutive chunks of a sequence per
 // run (see sequence_chunk in recur_mps.metal).
 constexpr int64_t CHUNK = 64;

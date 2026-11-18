@@ -21,6 +21,9 @@ namespace philtorch::mps
 
 using torch::headeronly::ScalarType;
 
+// The width of a SIMD group on every Apple GPU, as mps_common.metal's.
+constexpr int64_t SIMD_WIDTH = 32;
+
 // The library of a shader source, after its definitions and mps_common.metal;
 // libraries stay for the process.
 inline AOTIMetalShaderLibraryHandle compile(const std::string &definitions,
@@ -34,7 +37,8 @@ inline AOTIMetalShaderLibraryHandle compile(const std::string &definitions,
 }
 
 // The Metal type of the dtypes the kernels take, float2 and half2 being
-// complex64 and complex32; `op` names the kernels in the error for the others.
+// complex64 and complex32, and long int64; `op` names the kernels in the error
+// for the others.
 inline const char *metal_type(ScalarType dtype, const char *op)
 {
     switch (dtype)

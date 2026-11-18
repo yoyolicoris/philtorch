@@ -64,7 +64,7 @@ _MPS_OPS = {
 
 
 @MPS
-@pytest.mark.parametrize("dtype", [torch.float32, torch.complex64])
+@pytest.mark.parametrize("dtype", [torch.float32, torch.complex64, torch.int64])
 @pytest.mark.parametrize("op", ["lti_recur", "scan"])
 def test_mps_scalar_recur_block_chunks(op: str, dtype: torch.dtype):
     # Past 1024 * 512 steps, the tiles' totals are scanned in several chunks of
@@ -75,6 +75,17 @@ def test_mps_scalar_recur_block_chunks(op: str, dtype: torch.dtype):
     batch_size, samples = 2, 1024 * 512 + 5
     gen = torch.Generator().manual_seed(0)
     shape = (batch_size,) if op == "lti_recur" else (batch_size, samples)
+    if dtype == torch.int64:
+        # Random 62-bit integers, which wrap around: the carry across the
+        # chunks must match the CPU's exactly.
+        a, zi, x = (
+            torch.randint(-(2**62), 2**62, s, generator=gen)
+            for s in (shape, (batch_size,), (batch_size, samples))
+        )
+        args = (a, zi, x) if op == "lti_recur" else (x, a, zi)
+        actual = _MPS_OPS[op](*(arg.to("mps") for arg in args))
+        assert torch.equal(actual.cpu(), _MPS_OPS[op](*args))
+        return
     a = 1 - 5e-3 * torch.rand(shape, generator=gen)
     if dtype.is_complex:
         a = torch.polar(a, 0.05 * torch.rand(shape, generator=gen))
@@ -219,24 +230,6 @@ def test_mps_recur_n_empty(op: str, B: int, T: int):
     out = _MPS_OPS[op](*_mps_matrix_args(op, B, T, 3))
     assert out.shape == (B, T, 3)
     assert out.device.type == "mps"
-
-
-@MPS
-@pytest.mark.parametrize("op", ["lti_recur", "scan"])
-def test_mps_scalar_recur_int64_block_chunks(op: str):
-    # Past 1024 * 512 steps, the tiles' totals are scanned in several chunks of
-    # 512: the carry across them wraps around exactly as the CPU's does.
-    batch_size, samples = 2, 1024 * 512 + 5
-    gen = torch.Generator().manual_seed(0)
-
-    def ints(*shape):
-        return torch.randint(-(2**62), 2**62, shape, generator=gen)
-
-    a = ints(batch_size) if op == "lti_recur" else ints(batch_size, samples)
-    zi, x = ints(batch_size), ints(batch_size, samples)
-    args = (a, zi, x) if op == "lti_recur" else (x, a, zi)
-    actual = _MPS_OPS[op](*(arg.to("mps") for arg in args))
-    assert torch.equal(actual.cpu(), _MPS_OPS[op](*args))
 
 
 @MPS

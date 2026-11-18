@@ -494,7 +494,7 @@ void recur_run(const device T *a [[buffer(0)]],
                uint lane [[thread_index_in_simdgroup]])
 {
     const uint chunks = (uint(steps) - 1) / CHUNK_STEPS + 1;
-    if (!INTEGER && blocked)
+    if (blocked)
         run_block<true>(a, from_zi ? zi : nullptr, x, starts, out, nullptr,
                         index / SIMD_WIDTH, lane, batch, chunks, steps,
                         stride_b, stride_t, a_batch);
@@ -532,7 +532,7 @@ void recur_reduce(const device T *a [[buffer(0)]],
 {
     const uint maps_per_item = (uint(steps) - 1) / CHUNK_STEPS;
     const uint group = index / SIMD_WIDTH;
-    if (group < offset_groups && !INTEGER && blocked)
+    if (group < offset_groups && blocked)
         return run_block<false>(a, from_zi ? zi : nullptr, x, nullptr, nullptr,
                                 offsets, group, lane, batch, maps_per_item,
                                 steps, stride_b, stride_t, a_batch);

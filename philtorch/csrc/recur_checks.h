@@ -90,7 +90,7 @@ inline void check_recurN_shapes(const torch::stable::Tensor &A,
                     "A must have the batch size of x");
 }
 
-// The checks of lpc (the CPU and CUDA kernels): x is (B, T), a (B, T, M) and
+// The checks of lpc (all its kernels): x is (B, T), a (B, T, M) and
 // zi (B, M), all of one dtype. The dispatch rejects dtypes it doesn't take.
 inline void check_lpc_inputs(const torch::stable::Tensor &x,
                              const torch::stable::Tensor &a,

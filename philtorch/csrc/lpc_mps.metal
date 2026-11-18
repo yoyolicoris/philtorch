@@ -52,9 +52,9 @@ inline void lpc_sequence(const device T *x, const device T *a,
         threadgroup A *sums = partials + (t & 1) * MAX_SIMD_GROUPS;
         if (lane == 0)
             sums[simd_group] = partial;
-        // The reads of y[t - M]'s slot, by thread M - 1, precede this barrier,
-        // the write of y[t] to it follows; and the write of y[t - 1 - i] to
-        // the ring is visible to thread i by this barrier of step t.
+        // Thread M - 1 reads y[t - M]'s slot before this barrier, and thread 0
+        // overwrites it after. The write of y[s] after barrier s is visible by
+        // barrier s + 1, before any thread reads it, at step s + 2 or later.
         threadgroup_barrier(mem_flags::mem_threadgroup);
         if (lid == 0)
         {
