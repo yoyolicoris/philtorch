@@ -6,16 +6,17 @@ on:
   issue_comment:
     types: [created]
 
-concurrency:
-  group: opencode-review-${{ github.event.issue.number }}
-  cancel-in-progress: true
-
 jobs:
   review:
     if: |
       github.event.issue.pull_request &&
       startsWith(github.event.comment.body, '/review') &&
       contains(fromJSON('["OWNER", "MEMBER", "COLLABORATOR"]'), github.event.comment.author_association)
+    # In the job, not the workflow: a comment that isn't a /review, such as a
+    # bot's, skips the job and so cancels no review.
+    concurrency:
+      group: opencode-review-${{ github.event.issue.number }}
+      cancel-in-progress: true
     runs-on: ubuntu-latest
     timeout-minutes: 20
     permissions:
