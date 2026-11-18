@@ -118,7 +118,7 @@ Tensor lti_recur_cuda_impl(const Tensor &a,
 Tensor scan_cuda(const Tensor &impulse, const Tensor &decay,
                  const Tensor &init)
 {
-    check_scan_inputs(impulse, decay, init);
+    check_scan_shapes(impulse, decay, init);
     return scalar_recur_cuda_launch(decay, impulse.size(1), 1, init, impulse);
 }
 

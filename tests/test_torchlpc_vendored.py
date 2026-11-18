@@ -282,19 +282,11 @@ def test_allpole_tangents_in_low_precision(device: str, dtype: torch.dtype, tole
     assert relative_error(actual, expected) < tolerance
 
 
-@pytest.mark.cuda
-def test_cuda_scan_rejects_dtype():
-    # The recurrence kernels it runs take float16; the CUDA scan keeps
-    # torchlpc's dtypes until it is measured against recurN's (#188).
-    impulse = torch.ones(2, 8, dtype=torch.float16, device="cuda")
-    init = torch.ones(2, dtype=torch.float16, device="cuda")
-    with pytest.raises(RuntimeError, match="float32, float64, complex64 or complex128"):
-        torch.ops.philtorch.scan(impulse, impulse, init)
-
-
+@pytest.mark.parametrize("device", DEVICES)
 @pytest.mark.parametrize("dtype", [torch.float16, torch.bfloat16, torch.complex32, torch.int64])
-def test_cpu_scan_takes_the_recurrence_dtypes(dtype: torch.dtype):
-    # Nothing routes these dtypes to the CPU scan, but a call takes them.
+def test_scan_takes_the_recurrence_dtypes(device: str, dtype: torch.dtype):
+    # On CUDA, the recurrence sends time-varying M = 1 here in every dtype. On
+    # CPU it sends them to recurN, but scan takes them too.
     B, T = 3, 50
     gen = torch.Generator().manual_seed(0)
     if dtype == torch.int64:
@@ -310,9 +302,9 @@ def test_cpu_scan_takes_the_recurrence_dtypes(dtype: torch.dtype):
         h = decay[:, t].to(wide) * h + impulse[:, t].to(wide)
         states.append(h)
     expected = torch.stack(states, 1)
-    actual = torch.ops.philtorch.scan(impulse, decay, init)
+    actual = torch.ops.philtorch.scan(*(t.to(device) for t in (impulse, decay, init)))
     assert actual.dtype == dtype
     if dtype == torch.int64:
-        assert torch.equal(actual, expected)
+        assert torch.equal(actual.cpu(), expected)
     else:
         assert relative_error(actual, expected) < DTYPE_TOLERANCES[dtype]

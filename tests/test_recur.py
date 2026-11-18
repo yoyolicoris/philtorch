@@ -419,14 +419,14 @@ DISPATCH = [
             (True, 3, torch.float16, "cuda", "_lti_recur3"),
             (True, 3, torch.complex64, "cuda", "_lti_recurN"),
             (False, 1, torch.complex64, "cuda", "_scan"),
-            (False, 1, torch.float16, "cuda", "_recurN"),
+            (False, 1, torch.float16, "cuda", "_scan"),
             (False, 2, torch.float16, "cuda", "_recur2"),
             (False, 2, torch.complex64, "cuda", "_recur2"),
             (False, 2, torch.complex128, "cuda", "_recurN"),
             (False, 3, torch.float16, "cuda", "_recur3"),
             (False, 3, torch.complex128, "cuda", "_recurN"),
             (True, 3, torch.complex32, "cuda", "_lti_recurN"),
-            (False, 1, torch.complex32, "cuda", "_recurN"),
+            (False, 1, torch.complex32, "cuda", "_scan"),
             (False, 2, torch.complex32, "cuda", "_recur2"),
             (False, 3, torch.complex32, "cuda", "_recur3"),
         ]
@@ -444,7 +444,7 @@ INTEGER_DISPATCH = [
         for case in [
             (True, 1, torch.int64, "cuda", "_lti_recur"),
             (True, 2, torch.int64, "cuda", "_lti_recur2"),
-            (False, 1, torch.int64, "cuda", "_recurN"),
+            (False, 1, torch.int64, "cuda", "_scan"),
             (False, 2, torch.int64, "cuda", "_recur2"),
             (False, 3, torch.int64, "cuda", "_recurN"),
         ]
