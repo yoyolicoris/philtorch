@@ -136,17 +136,13 @@ Tensor scalar_recur_mps(const Tensor &decays, bool varying, int64_t stride_b,
     Tensor states = output;
     if (n_tiles > 1)
     {
-        // Each tile's map, two values of the accumulation type, and the state
-        // at its end. A complex value is two floats.
-        const bool complex = philtorch::mps::is_complex(dtype);
-        const int64_t values = complex ? 2 : 1;
-        const ScalarType scratch = complex
-            ? ScalarType::Float
-            : philtorch::mps::accumulation_type(dtype);
+        // Each tile's map, its two values m and v, and the state at its end,
+        // in the accumulation type.
+        const ScalarType scratch = philtorch::mps::accumulation_type(dtype);
         auto totals = torch::stable::new_empty(
-            x_contiguous, {n_batches, n_tiles, 2 * values}, scratch);
-        states = torch::stable::new_empty(
-            x_contiguous, {n_batches, n_tiles, values}, scratch);
+            x_contiguous, {n_batches, n_tiles, 2}, scratch);
+        states = torch::stable::new_empty(x_contiguous, {n_batches, n_tiles},
+                                          scratch);
         launch(k.reduce[varying],
                {decays_contiguous.get(), zi_contiguous.get(),
                 x_contiguous.get(), totals.get()},
