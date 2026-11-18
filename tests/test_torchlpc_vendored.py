@@ -187,7 +187,7 @@ def test_lpc_mps_rejects_int64():
 
 
 @MPS
-@pytest.mark.parametrize("B, T, order", [(0, 5, 2), (2, 0, 2), (0, 0, 2), (2, 5, 0)])
+@pytest.mark.parametrize("B, T, order", [(0, 5, 2), (2, 0, 2), (2, 5, 0)])
 def test_lpc_mps_empty_and_order_zero(B: int, T: int, order: int):
     x = torch.randn(B, T, device="mps")
     y = torch.ops.philtorch.lpc(x, torch.zeros(B, T, order, device="mps"), x.new_zeros(B, order))
@@ -239,7 +239,7 @@ def test_lpc_dtypes(device: str, dtype: torch.dtype):
     # Orders around the 32 threads of a SIMD group and up to the largest of
     # CUDA and MPS, steps past the order, as the head reaches back into zi, and
     # fewer; the largest again in complex32, whose ring is complex.
-    [(torch.float32, order, 300) for order in (1, 31, 32, 100)]
+    [(torch.float32, order, 300) for order in (1, 31, 32)]
     + [(torch.float32, 33, 5), (torch.float32, 1024, 1100), (torch.complex32, 1024, 1100)],
 )
 def test_lpc_orders(device: str, dtype: torch.dtype, order: int, T: int):

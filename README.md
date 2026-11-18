@@ -33,7 +33,7 @@ PhilTorch requires its compiled `philtorch._C` extension; there is no pure-PyTor
 
 | Route | Platforms | Kernels | Python | PyTorch |
 | --- | --- | --- | --- | --- |
-| PyPI wheel | Linux x86_64 (manylinux_2_28), macOS 14+ arm64, Windows AMD64 | CPU, plus LTI and LPV recurrences on MPS on macOS, in float32, float16, bfloat16, complex64 and complex32 (macOS 15+ from PyTorch 2.15) | 3.11 on, the Pythons its PyTorch has wheels for | 2.12 or newer |
+| PyPI wheel | Linux x86_64 (manylinux_2_28), macOS 14+ arm64, Windows AMD64 | CPU, plus LTI and LPV recurrences on MPS on macOS, in float32, float16, bfloat16, int64, complex64 and complex32 (macOS 15+ from PyTorch 2.15) | 3.11 on, the Pythons its PyTorch has wheels for | 2.12 or newer |
 | CUDA wheel, from the [PhilTorch index](https://yoyolicoris.github.io/philtorch/) | Linux x86_64 (manylinux_2_28) | CPU and CUDA | 3.11 on, the Pythons its PyTorch has wheels for | 2.12 or newer, one wheel per CUDA major version; see [CUDA wheels](#cuda-wheels) |
 | Source build | Any platform with a C++ toolchain | CPU, MPS, or CUDA | 3.11+ | 2.12 or newer |
 
@@ -258,9 +258,9 @@ With the default `unroll_factor=None`, the state-space paths (`lfilter`, `state_
 | MPS | ✓² | ✓² | ✓¹² | ✓² | ✓² | ✓² | ✓¹² |
 
 ✓ native kernel. An input no kernel takes raises `NotImplementedError`; pass `unroll_factor=1` for the sequential loop, or 2 up to one less than the sequence length for a block-unrolled recursion, or use CPU.
-¹ Up to M = 128 (64 for complex dtypes); larger M raises. ² float32, float16, bfloat16, complex64 and complex32.
+¹ Up to M = 128 (64 for complex dtypes); larger M raises. ² float32, float16, bfloat16, int64, complex64 and complex32.
 
-The CPU and CUDA kernels take floating-point and complex dtypes, and int64, exactly; the MPS kernels take the dtypes of ²; other dtypes raise.
+The CPU and CUDA kernels take floating-point and complex dtypes, and int64, exactly; the MPS kernels take the dtypes of ², int64 exactly too; other dtypes raise.
 
 Passing an integer `unroll_factor` runs PyTorch ops instead. `unroll_factor=1` runs the sequential loop. Setting `1 < unroll_factor < sequence length` switches to a block-unrolled recursion, which computes blocks in parallel with matrix multiplications ([background](https://iamycy.github.io/posts/2025/06/28/unroll-ssm/)); larger values run the sequential loop too. Both run on any device, in the dtypes PyTorch's matrix products take there: integers on CPU, but not on CUDA.
 The block-unrolled recursion is slower than the native kernels but much faster than the sequential loop.

@@ -1,8 +1,8 @@
 """Benchmark the linear recurrence on MPS against the CPU kernels.
 
-Times the native ops, on MPS and, where its kernel takes the dtype, on the CPU,
-over batch sizes B, lengths T and state sizes M: ``lti_recur`` and ``scan`` for
-M = 1, ``lti_recurN`` and ``recurN`` above. The coefficient layouts are
+Times the native ops, on MPS and on the CPU, over batch sizes B, lengths T and
+state sizes M: ``lti_recur`` and ``scan`` for M = 1, ``lti_recurN`` and
+``recurN`` above. The coefficient layouts are
 
 * ``shared``: time-invariant, one coefficient or M x M matrix for all items;
 * ``batched``: time-invariant, one per item (from B = 2);
@@ -13,10 +13,9 @@ M = 1, ``lti_recurN`` and ``recurN`` above. The coefficient layouts are
 Cases of more than 2^26 coefficients are skipped, and complex64 runs up to
 M = 64, the kernels' limit. ``--max-input-gib`` also skips the cases whose input
 is larger, to bound the memory: the CPU and MPS copies and the two outputs take
-four times it. The recurrences are stable: ``|a| < 0.9``, with a
-random phase for complex64, and matrices of spectral norm 0.9; int64's
-coefficients, states and inputs are random 62-bit integers, whose products
-wrap around. Each case
+four times it. The recurrences are stable: ``|a| < 0.9``, with a random phase
+for complex64, and matrices of spectral norm 0.9; int64's coefficients, states
+and inputs are random 62-bit integers, whose products wrap around. Each case
 reports the median runtime (and IQR) of
 ``torch.utils.benchmark.Timer.blocked_autorange``, synchronizing the MPS device
 at each measurement boundary, and the speed-up of MPS over CPU.
