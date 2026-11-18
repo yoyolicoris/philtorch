@@ -18,13 +18,19 @@ MPS = pytest.mark.skipif(not torch.backends.mps.is_available(), reason="MPS not 
 
 # The error, relative to the largest value, that each dtype of the recurrence
 # and lpc kernels is held to against float64's or complex128's.
-LOW_PRECISION_TOLERANCES = {
+DTYPE_TOLERANCES = {
     torch.float32: 1e-5,
     torch.complex64: 1e-5,
     torch.float16: 3e-3,
     torch.bfloat16: 2e-2,
     torch.complex32: 3e-3,
 }
+
+
+def relative_error(actual: torch.Tensor, expected: torch.Tensor) -> torch.Tensor:
+    """The largest difference, relative to the largest value of ``expected``, once
+    ``actual`` is on the CPU in ``expected``'s dtype."""
+    return (actual.cpu().to(expected.dtype) - expected).abs().max() / expected.abs().max()
 
 
 def random_int64(*shape: int, generator: torch.Generator | None = None) -> torch.Tensor:

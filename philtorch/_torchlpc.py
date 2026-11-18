@@ -6,11 +6,7 @@ import torch
 import torch.nn.functional as F
 from torch.autograd import Function
 
-from .utils import _FLOATING_DTYPES, _dtype_names, _via_complex64
-
-
-def _flip(t: torch.Tensor, dim: int) -> torch.Tensor:
-    return _via_complex64(torch.flip, t, (dim,))
+from .utils import _FLOATING_DTYPES, _dtype_names, _flip, _via_complex64
 
 
 def _lpc_gradients(run, A, zi, y, grad_y, needs_input_grad):
@@ -98,14 +94,11 @@ class AllPole(Function):
         return y.reshape(info.batch_size, -1, *y.shape[1:]), 0
 
 
-_DTYPES = _FLOATING_DTYPES
-
-
 def lpc(x: torch.Tensor, A: torch.Tensor, zi: torch.Tensor) -> torch.Tensor:
     # The op's dispatch raises RuntimeError for any other dtype: other floating
     # and complex dtypes get NotImplementedError here instead, integers don't.
-    if (x.is_floating_point() or x.is_complex()) and x.dtype not in _DTYPES:
-        raise NotImplementedError(f"lpc takes {_dtype_names(_DTYPES)}, got {x.dtype}")
+    if (x.is_floating_point() or x.is_complex()) and x.dtype not in _FLOATING_DTYPES:
+        raise NotImplementedError(f"lpc takes {_dtype_names(_FLOATING_DTYPES)}, got {x.dtype}")
     if torch.compiler.is_compiling():
         return torch.ops.philtorch.lpc(x, A, zi)
     return AllPole.apply(x, A, zi)

@@ -100,12 +100,16 @@ def _dtype_names(dtypes: tuple[torch.dtype, ...]) -> str:
 
 
 def _via_complex64(op: Callable[..., Tensor], t: Tensor, *args) -> Tensor:
-    """``op(t, *args)``, run in complex64 if ``t`` is complex32, which has no sum
-    and, on CPU, no flip of an innermost dimension; the kernels accumulate it in
+    """``op(t, *args)``, run in complex64 if ``t`` is complex32, which has, on CPU,
+    no sum and no flip of an innermost dimension; the kernels accumulate it in
     complex64."""
     if t.dtype != torch.complex32:
         return op(t, *args)
     return op(t.to(torch.complex64), *args).to(torch.complex32)
+
+
+def _flip(t: Tensor, dim: int) -> Tensor:
+    return _via_complex64(torch.flip, t, (dim,))
 
 
 def _check_integer(name: str, t: Tensor) -> None:

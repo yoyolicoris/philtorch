@@ -21,7 +21,6 @@ using torch::stable::Tensor;
 // The kernels' name in errors.
 constexpr const char *OP = "the MPS lpc";
 
-
 AOTIMetalKernelFunctionHandle kernel(ScalarType dtype)
 {
     static const AOTIMetalShaderLibraryHandle library =

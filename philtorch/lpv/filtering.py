@@ -296,6 +296,8 @@ def lfilter(
         NotImplementedError: with ``backend="torchlpc"``, for ``form="tdf2"``
             or an :attr:`x` that is floating point or complex but not float16,
             bfloat16, float32, float64, complex32, complex64 or complex128.
+        RuntimeError: with ``backend="torchlpc"``, on CUDA and MPS, if the order
+            of :attr:`a` is larger than 1024.
 
     Example::
 

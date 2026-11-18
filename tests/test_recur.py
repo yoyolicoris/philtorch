@@ -4,7 +4,7 @@ import torch
 from philtorch import _recur
 from philtorch._recur import _forward, recurrence
 
-from ._cases import DEVICES, LOW_PRECISION_TOLERANCES, MPS, random_int64
+from ._cases import DEVICES, DTYPE_TOLERANCES, MPS, random_int64, relative_error
 
 # How A is shared: (batch items, steps) it has, of B and T.
 SHARING = ["one", "per_item", "per_step", "both"]
@@ -105,7 +105,7 @@ def test_recurrence_overflows_to_inf_not_nan(M):
     torch.testing.assert_close(recurrence(A.cuda(), zi.cuda(), x.cuda()).cpu(), expected)
 
 
-@pytest.mark.parametrize("dtype, tolerance", LOW_PRECISION_TOLERANCES.items())
+@pytest.mark.parametrize("dtype, tolerance", DTYPE_TOLERANCES.items())
 @pytest.mark.parametrize("sharing", SHARING)
 @pytest.mark.parametrize(
     "device, M, T",
@@ -128,8 +128,7 @@ def test_recurrence_low_precision(dtype, tolerance, sharing, device, M, T):
                              for t in (A, zi, x)))  # fmt: skip
     actual = recurrence(A, zi, x)
     assert actual.dtype == dtype
-    error = (actual.cpu().to(expected.dtype) - expected).abs().max() / expected.abs().max()
-    assert error < tolerance
+    assert relative_error(actual, expected) < tolerance
 
 
 def _mps_error(A, zi, x):
@@ -139,7 +138,7 @@ def _mps_error(A, zi, x):
     expected = recurrence(*(t.to(wide) for t in (A, zi, x)))
     actual = recurrence(*(t.to("mps") for t in (A, zi, x)))
     assert actual.dtype == x.dtype
-    return ((actual.cpu().to(wide) - expected).abs().max() / expected.abs().max()).item()
+    return relative_error(actual, expected).item()
 
 
 @MPS
@@ -555,12 +554,14 @@ def _integer_problem(B, T, M, sharing, dtype, device, wrap=False):
     gen = torch.Generator().manual_seed(0)
     Ba = B if sharing in ("per_item", "both") else 1
     Ta = T if sharing in ("per_step", "both") else 1
+    shapes = ((Ba, Ta, M, M), (B, T, M), (B, M))
     if wrap:
-        A, x, zi = (random_int64(*s, generator=gen) for s in ((Ba, Ta, M, M), (B, T, M), (B, M)))
-        return [t.to(device, dtype) for t in (A, zi, x)]
-    A = torch.randint(-2, 3, (Ba, Ta, M, M), generator=gen)
-    x = torch.randint(-5, 6, (B, T, M), generator=gen)
-    zi = torch.randint(-5, 6, (B, M), generator=gen)
+        A, x, zi = (random_int64(*shape, generator=gen) for shape in shapes)
+    else:
+        A, x, zi = (
+            torch.randint(-bound, bound + 1, shape, generator=gen)
+            for shape, bound in zip(shapes, (2, 5, 5))
+        )
     return [t.to(device, dtype) for t in (A, zi, x)]
 
 

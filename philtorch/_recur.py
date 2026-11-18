@@ -39,7 +39,7 @@ import torch.nn.functional as F
 from torch import Tensor
 
 from ._ssm import to_lpv, to_lti
-from .utils import _FLOATING_DTYPES, _check_shared, _dtype_names, _via_complex64
+from .utils import _FLOATING_DTYPES, _check_shared, _dtype_names, _flip
 
 # Each kernel is a condition on the input, (A, x), and a launch, (A, zi, x),
 # listed in _KERNELS in order of preference. The native kernels take A as one
@@ -340,10 +340,7 @@ def _gradients(run, A, zi, h, grad, needs_A, needs_zi):
     def narrow(t):
         return t.to(torch.complex32) if low else t
 
-    def flip(t):
-        return _via_complex64(torch.flip, t, (1,))
-
-    lam = torch.cat([flip(run(A_H, grad[:, -1], flip(grad[:, :-1]))), grad[:, -1:]], 1)
+    lam = torch.cat([_flip(run(A_H, grad[:, -1], _flip(grad[:, :-1], 1)), 1), grad[:, -1:]], 1)
     grad_A = grad_zi = None
     if needs_A:
         grad_A = narrow(_sum_outer(wide(lam), wide(_previous(zi.conj(), h.conj())), Ba, Ta))

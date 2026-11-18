@@ -22,7 +22,7 @@ from torch.func import jacfwd
 
 from philtorch._torchlpc import AllPole
 
-from ._cases import DEVICES, LOW_PRECISION_TOLERANCES, MPS, random_int64
+from ._cases import DEVICES, DTYPE_TOLERANCES, MPS, random_int64, relative_error
 
 # Each input on and off, and A both with and without zi: zi's gradient changes
 # the adjoint recurrence that A's gradient is read from.
@@ -149,11 +149,16 @@ LPC_DEVICES = [*DEVICES, pytest.param("mps", marks=MPS)]
 @pytest.mark.parametrize(
     "device", [pytest.param("cuda", marks=pytest.mark.cuda), pytest.param("mps", marks=MPS)]
 )
-def test_lpc_rejects_initial_conditions_on_another_device(device: str):
-    x = torch.ones(2, 8, device=device)
-    A = torch.zeros(2, 8, 2, device=device)
-    with pytest.raises(RuntimeError, match="Initial conditions must be on the same device"):
-        torch.ops.philtorch.lpc(x, A, torch.zeros(2, 2))
+@pytest.mark.parametrize(
+    "on_cpu, match",
+    [(1, "Coefficients must be on the same device"), (2, "Initial conditions must be on the same")],
+)
+def test_lpc_rejects_other_devices(device: str, on_cpu: int, match: str):
+    # x, A and zi, one of them on the CPU.
+    args = [torch.ones(2, 8), torch.zeros(2, 8, 2), torch.zeros(2, 2)]
+    args = [arg if i == on_cpu else arg.to(device) for i, arg in enumerate(args)]
+    with pytest.raises(RuntimeError, match=match):
+        torch.ops.philtorch.lpc(*args)
 
 
 @pytest.mark.parametrize("device", LPC_DEVICES)
@@ -195,10 +200,6 @@ def test_lpc_mps_empty_and_order_zero(B: int, T: int, order: int):
     torch.testing.assert_close(y, x)
 
 
-def _relative_error(actual: torch.Tensor, expected: torch.Tensor) -> torch.Tensor:
-    return (actual.cpu().to(expected.dtype) - expected).abs().max() / expected.abs().max()
-
-
 def _lpc_problem(B: int, T: int, order: int, dtype: torch.dtype):
     """x, a and zi in dtype, on CPU, with each step's coefficients summing to
     0.9 in magnitude, so that the filter is stable whatever they do over time."""
@@ -216,11 +217,11 @@ def _check_lpc(device: str, dtype: torch.dtype, order: int, T: int):
     expected = torch.ops.philtorch.lpc(*(t.to(wide) for t in (x, a, zi)))
     actual = torch.ops.philtorch.lpc(*(t.to(device) for t in (x, a, zi)))
     assert actual.dtype == dtype
-    assert _relative_error(actual, expected) < LOW_PRECISION_TOLERANCES[dtype]
+    assert relative_error(actual, expected) < DTYPE_TOLERANCES[dtype]
 
 
 @pytest.mark.parametrize("device", LPC_DEVICES)
-@pytest.mark.parametrize("dtype", LOW_PRECISION_TOLERANCES)
+@pytest.mark.parametrize("dtype", DTYPE_TOLERANCES)
 def test_lpc_dtypes(device: str, dtype: torch.dtype):
     _check_lpc(device, dtype, 33, 300)
 
@@ -258,7 +259,7 @@ def test_allpole_gradients_in_low_precision(device: str, dtype: torch.dtype, tol
     actual = gradients([t.to(device) for t in (x, a, zi)], grad_y.to(device, dtype))
     for got, want in zip(actual, expected):
         assert got.dtype == dtype
-        assert _relative_error(got, want) < tolerance
+        assert relative_error(got, want) < tolerance
 
 
 @pytest.mark.parametrize("device", LPC_DEVICES)
@@ -278,7 +279,7 @@ def test_allpole_tangents_in_low_precision(device: str, dtype: torch.dtype, tole
         [t.to(device) for t in (x, a, zi)], [t.to(device, dtype) for t in tangents]
     )
     assert actual.dtype == dtype
-    assert _relative_error(actual, expected) < tolerance
+    assert relative_error(actual, expected) < tolerance
 
 
 @pytest.mark.cuda
@@ -300,7 +301,6 @@ def test_cpu_scan_takes_the_recurrence_dtypes(dtype: torch.dtype, tolerance: flo
     B, T = 3, 50
     gen = torch.Generator().manual_seed(0)
     if dtype == torch.int64:
-        # Random 62-bit integers, whose products wrap around.
         impulse, decay, init = (random_int64(*s, generator=gen) for s in ((B, T), (B, T), (B,)))
         wide = dtype
     else:
@@ -318,4 +318,4 @@ def test_cpu_scan_takes_the_recurrence_dtypes(dtype: torch.dtype, tolerance: flo
     if dtype == torch.int64:
         assert torch.equal(actual, expected)
     else:
-        assert _relative_error(actual, expected) < tolerance
+        assert relative_error(actual, expected) < tolerance

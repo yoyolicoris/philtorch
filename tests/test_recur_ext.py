@@ -76,8 +76,7 @@ def test_mps_scalar_recur_block_chunks(op: str, dtype: torch.dtype):
     gen = torch.Generator().manual_seed(0)
     shape = (batch_size,) if op == "lti_recur" else (batch_size, samples)
     if dtype == torch.int64:
-        # Random 62-bit integers, which wrap around: the carry across the
-        # chunks must match the CPU's exactly.
+        # The carry across the chunks must match the CPU's exactly.
         a, zi, x = (
             random_int64(*s, generator=gen) for s in (shape, (batch_size,), (batch_size, samples))
         )

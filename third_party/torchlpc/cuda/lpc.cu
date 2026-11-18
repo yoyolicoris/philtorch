@@ -20,7 +20,7 @@ __device__ void atomic_add(c10::complex<scalar_t>* address,
 
 // CUDA kernel for LPC computation, real or complex. The history in shared
 // memory and the sums are in the accumulation type, as the recurrence kernels'
-// are; atomicAdd has no overload for Half or BFloat16 either.
+// are; atomicAdd has no overload for c10's Half or BFloat16 either.
 template <typename scalar_t>
 __global__ void lpc_cuda_kernel(scalar_t* y,           // [B, T]
                                 const scalar_t* x,     // [B, T]
