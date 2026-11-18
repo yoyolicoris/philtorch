@@ -159,7 +159,7 @@ Replaying the scan costs SIMD arithmetic, but rereads the input instead of writi
 | `states` | `(B, n_tiles)` | The state at the end of each tile. |
 | `output` | `(B, T)` | Recurrence result. |
 
-Scratch, in the accumulation type (two floats per value for complex64 and complex32), is `3 * B * n_tiles` values, and none for sequences of one tile.
+Scratch, in the accumulation type (complex64 for complex64 and complex32), is `3 * B * n_tiles` values, and none for sequences of one tile.
 The dominant traffic is reading `x` (and per-step coefficients) twice and writing `output` once.
 
 | Property | Value |
