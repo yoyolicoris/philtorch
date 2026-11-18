@@ -1,36 +1,32 @@
-# Manual PR review: runs only when a maintainer comments `/review` on a PR.
-# Gated to users who can write to the repo, so nobody else can spend the
-# maintainer's API credits. Nothing runs automatically: no trigger on PR
-# open, push, or reopen.
+# Pull request review on request: runs only when someone with write access
+# comments `/review` on a pull request, so no API credits are spent unasked.
 name: opencode-command
 
 on:
   issue_comment:
     types: [created]
 
+concurrency:
+  group: opencode-review-${{ github.event.issue.number }}
+  cancel-in-progress: true
+
 jobs:
-  command:
-    # Only run on an explicit /review on a pull request, and only for users
-    # who can write to the repo (maintainers). This gates the review behind
-    # a human.
+  review:
     if: |
-      contains(github.event.comment.body, '/review') &&
-      github.event.issue.pull_request != null &&
-      (github.event.comment.author_association == 'OWNER' ||
-       github.event.comment.author_association == 'MEMBER' ||
-       github.event.comment.author_association == 'COLLABORATOR')
+      github.event.issue.pull_request &&
+      startsWith(github.event.comment.body, '/review') &&
+      contains(fromJSON('["OWNER", "MEMBER", "COLLABORATOR"]'), github.event.comment.author_association)
     runs-on: ubuntu-latest
+    timeout-minutes: 20
     permissions:
-      id-token: write
       contents: read
-      pull-requests: write   # to post the review comment
-      issues: read
+      pull-requests: write # to post the review
     steps:
-      - uses: actions/checkout@v6
+      - uses: actions/checkout@v7
         with:
-          fetch-depth: 0          # full history so the review agent can diff against base
+          fetch-depth: 0 # the base branch too, to diff against
           persist-credentials: false
-      - uses: anomalyco/opencode/github@latest
+      - uses: anomalyco/opencode/github@f4e363c8295fa90a03dddc451882fffe8fbce357 # v1.19.6
         env:
           MUSE_API_KEY: ${{ secrets.MUSE_API_KEY }}
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
@@ -38,3 +34,5 @@ jobs:
           model: model_api/muse-spark-1.3-contributor
           agent: review
           use_github_token: true
+          # A fixed prompt: the comment's text is not passed on as instructions.
+          prompt: Review this pull request.

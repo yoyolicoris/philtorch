@@ -1,1 +1,20 @@
-{"$schema":"https://opencode.ai/config.json","model":"model_api/muse-spark-1.3-contributor","provider":{"model_api":{"models":{"muse-spark-1.3-contributor":{"limit":{"context":1048576,"output":131072},"name":"Muse Spark"}},"name":"Meta Model API","npm":"@ai-sdk/openai-compatible","options":{"apiKey":"{env:MUSE_API_KEY}","baseURL":"https://api.meta.ai/v1"}}}}
+{
+  "$schema": "https://opencode.ai/config.json",
+  "model": "model_api/muse-spark-1.3-contributor",
+  "provider": {
+    "model_api": {
+      "name": "Meta Model API",
+      "npm": "@ai-sdk/openai-compatible",
+      "options": {
+        "baseURL": "https://api.meta.ai/v1",
+        "apiKey": "{env:MUSE_API_KEY}"
+      },
+      "models": {
+        "muse-spark-1.3-contributor": {
+          "name": "Muse Spark",
+          "limit": { "context": 1048576, "output": 131072 }
+        }
+      }
+    }
+  }
+}

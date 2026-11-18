@@ -1,8 +1,5 @@
 ---
-description: Review the current changes or a given PR/diff
+description: Review a pull request or diff, or the current changes
 agent: review
 ---
-Review the following (or the current working changes if nothing is specified):
-$ARGUMENTS
-Check correctness, style-guide compliance, missing tests, and AI-slop indicators.
-End with a clear verdict and specific feedback.
+Review $ARGUMENTS, or the current changes if nothing is given.
