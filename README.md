@@ -260,7 +260,7 @@ With the default `unroll_factor=None`, the state-space paths (`lfilter`, `state_
 ✓ native kernel. An input no kernel takes raises `NotImplementedError`; pass `unroll_factor=1` for the sequential loop, or 2 up to one less than the sequence length for a block-unrolled recursion, or use CPU.
 ¹ Up to M = 128 (64 for complex dtypes); larger M raises. ² float32, float16, bfloat16, int64, complex64 and complex32.
 
-The CPU and CUDA kernels take floating-point and complex dtypes, and int64, exactly; the MPS kernels take the dtypes of ², int64 exactly too; other dtypes raise.
+The CPU and CUDA kernels take floating-point and complex dtypes, and int64, exactly; the MPS kernels take the dtypes of ²; other dtypes raise.
 
 Passing an integer `unroll_factor` runs PyTorch ops instead. `unroll_factor=1` runs the sequential loop. Setting `1 < unroll_factor < sequence length` switches to a block-unrolled recursion, which computes blocks in parallel with matrix multiplications ([background](https://iamycy.github.io/posts/2025/06/28/unroll-ssm/)); larger values run the sequential loop too. Both run on any device, in the dtypes PyTorch's matrix products take there: integers on CPU, but not on CUDA.
 The block-unrolled recursion is slower than the native kernels but much faster than the sequential loop.

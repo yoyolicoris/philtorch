@@ -78,12 +78,10 @@ int64_t run_length(int64_t n)
 
 // Whether vectors run in blocks of 8, by 8 x 8 matrix products: vectors of
 // BLOCK_STATES or more that share their matrices, time-invariant or shared
-// over the batch; smaller ones would leave the tiles mostly idle. int64 has no
-// matrix products.
-bool blocked(ScalarType dtype, int64_t M, int64_t stride_t, int64_t a_batch)
+// over the batch; smaller ones would leave the tiles mostly idle.
+bool blocked(int64_t M, int64_t stride_t, int64_t a_batch)
 {
-    return dtype != ScalarType::Long && M >= BLOCK_STATES &&
-           (stride_t == 0 || a_batch == 1);
+    return M >= BLOCK_STATES && (stride_t == 0 || a_batch == 1);
 }
 
 // The SIMD groups of n vectors of M states, SIMD_WIDTH / LANES a group, LANES
@@ -99,8 +97,8 @@ int64_t lane_groups(int64_t n, int64_t M)
 // The SIMD groups of the vectors of n_batch sequences' chunks, as
 // recur_mps.metal lays them out: blocks of 8 if blocked, a sequence's
 // chunks or a chunk's sequences padded to a multiple of 8 where a block may
-// not span two; and otherwise SIMD_WIDTH / LANES a group in runs (see
-// run_length), LANES being M rounded up to a power of 2, SIMD_WIDTH at most.
+// not span two; and otherwise on lanes (see lane_groups), in runs (see
+// run_length).
 int64_t vector_groups(int64_t batch, int64_t chunks, int64_t M,
                       int64_t stride_t, int64_t a_batch, bool block)
 {
@@ -142,7 +140,10 @@ Tensor recur_mps(const Tensor &a, int64_t a_batch, int64_t stride_b,
         return out;
     const Kernels &k = kernels(M, x.scalar_type());
     const std::array<uint64_t, 2> group{THREADS, 1};
-    const bool block = blocked(x.scalar_type(), M, stride_t, a_batch);
+    // int64 has no matrix products: its vectors run on lanes, whatever their
+    // sharing, and its maps by column (see map_vector).
+    const bool integer = x.scalar_type() == ScalarType::Long;
+    const bool block = !integer && blocked(M, stride_t, a_batch);
     const int64_t chunks = philtorch::ceil_div(steps, CHUNK);
 
     // The state at each chunk's end but the last, from the same recurrence
@@ -164,7 +165,7 @@ Tensor recur_mps(const Tensor &a, int64_t a_batch, int64_t stride_b,
         const int64_t packed = M <= 4 ? 8 / M : 1;
         const int64_t offset_groups =
             vector_groups(batch, maps_per_item, M, stride_t, a_batch, block);
-        const int64_t map_groups = acc == ScalarType::Long
+        const int64_t map_groups = integer
             ? lane_groups(a_batch * maps_per_a * M, M)
             : philtorch::ceil_div(a_batch * maps_per_a, packed) *
                   philtorch::ceil_div<int64_t>(M, 8);

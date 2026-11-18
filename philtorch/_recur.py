@@ -39,7 +39,7 @@ import torch.nn.functional as F
 from torch import Tensor
 
 from ._ssm import to_lpv, to_lti
-from .utils import _check_shared
+from .utils import _FLOATING_DTYPES, _check_shared, _dtype_names, _via_complex64
 
 # Each kernel is a condition on the input, (A, x), and a launch, (A, zi, x),
 # listed in _KERNELS in order of preference. The native kernels take A as one
@@ -58,16 +58,7 @@ def _floating_or_int64(x: Tensor) -> bool:
 
 # The dtypes the native kernels dispatch on; others, such as float8, would
 # raise RuntimeError there.
-_NATIVE_DTYPES = (
-    torch.float16,
-    torch.bfloat16,
-    torch.float32,
-    torch.float64,
-    torch.complex32,
-    torch.complex64,
-    torch.complex128,
-    torch.int64,
-)
+_NATIVE_DTYPES = (*_FLOATING_DTYPES, torch.int64)
 
 
 # The largest M of the Metal and CUDA kernels of order M, half that for complex.
@@ -249,8 +240,7 @@ def _forward(A: Tensor, zi: Tensor, x: Tensor) -> Tensor:
         if applies(A, x):
             if x.dtype not in _NATIVE_DTYPES:
                 raise NotImplementedError(
-                    "the native kernels take float16, bfloat16, float32, float64, "
-                    f"complex32, complex64, complex128 and int64, got {x.dtype}"
+                    f"the native kernels take {_dtype_names(_NATIVE_DTYPES)}, got {x.dtype}"
                 )
             return run(A, zi, x)
     kind = "time-invariant" if _time_invariant(A) else "time-varying"
@@ -263,7 +253,7 @@ def _forward(A: Tensor, zi: Tensor, x: Tensor) -> Tensor:
     elif x.device.type == "mps":  # pragma: no cover - MPS-only
         reason = (
             f"; the Metal kernels take M up to {_MAX_STATES} ({_MAX_STATES // 2} "
-            "complex) in float32, float16, bfloat16, complex64, complex32 and int64"
+            f"complex) in {_dtype_names(_MPS_DTYPES)}"
         )
     raise NotImplementedError(
         f"no recurrence kernel for {kind} A with M = {x.size(-1)} in {x.dtype} "
@@ -351,7 +341,7 @@ def _gradients(run, A, zi, h, grad, needs_A, needs_zi):
         return t.to(torch.complex32) if low else t
 
     def flip(t):
-        return narrow(wide(t).flip(1))
+        return _via_complex64(torch.flip, t, (1,))
 
     lam = torch.cat([flip(run(A_H, grad[:, -1], flip(grad[:, :-1]))), grad[:, -1:]], 1)
     grad_A = grad_zi = None

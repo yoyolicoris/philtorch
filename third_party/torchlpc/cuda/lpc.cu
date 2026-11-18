@@ -18,19 +18,6 @@ __device__ void atomic_add(c10::complex<scalar_t>* address,
     atomicAdd(parts + 1, val.imag());
 }
 
-// A stored value in the accumulation type: float for Half and BFloat16,
-// complex<float> for complex<Half>, which converts by its parts.
-template <typename acc_t, typename T>
-__device__ acc_t to_acc(T v) {
-    return static_cast<acc_t>(v);
-}
-
-template <typename acc_t, typename R>
-__device__ acc_t to_acc(c10::complex<R> v) {
-    using V = typename acc_t::value_type;
-    return acc_t(static_cast<V>(v.real()), static_cast<V>(v.imag()));
-}
-
 // CUDA kernel for LPC computation, real or complex. The history in shared
 // memory and the sums are in the accumulation type, as the recurrence kernels'
 // are; atomicAdd has no overload for Half or BFloat16 either.
@@ -50,13 +37,13 @@ __global__ void lpc_cuda_kernel(scalar_t* y,           // [B, T]
     if (b >= B || i >= order) return;
 
     // Initialize shared memory with the initial conditions, reversed
-    sm[i] = to_acc<acc_t>(zi[b * order + order - 1 - i]);
+    sm[i] = static_cast<acc_t>(zi[b * order + order - 1 - i]);
     __syncthreads();
 
     int circular_idx = 0;
     for (int t = 0; t < T; ++t) {
         circular_idx = t % order;
-        acc_t a = -to_acc<acc_t>(A[((b * T + t) * order) + i]);
+        acc_t a = -static_cast<acc_t>(A[((b * T + t) * order) + i]);
 
         // Compute s as in the Python code
         int idx_offset = circular_idx - i - 1;
@@ -69,7 +56,7 @@ __global__ void lpc_cuda_kernel(scalar_t* y,           // [B, T]
 
         if (i == order - 1) {
             sm[circular_idx] = v;
-            v = to_acc<acc_t>(x[b * T + t]);
+            v = static_cast<acc_t>(x[b * T + t]);
         }
         __syncthreads();
 
@@ -100,10 +87,6 @@ void lpc_launch(Tensor& y, const Tensor& x, const Tensor& zi, const Tensor& a,
 Tensor lpc_cuda_wrapper(const Tensor& x, const Tensor& a, const Tensor& zi) {
     namespace ph = philtorch;
     check_lpc_inputs(x, a, zi);
-    STD_TORCH_CHECK(a.device() == x.device(),
-                    "Coefficients must be on the same device as input");
-    STD_TORCH_CHECK(zi.device() == x.device(),
-                    "Initial conditions must be on the same device as input");
 
     const torch::stable::accelerator::DeviceGuard device_guard(
         x.get_device_index());
@@ -113,7 +96,7 @@ Tensor lpc_cuda_wrapper(const Tensor& x, const Tensor& a, const Tensor& zi) {
     auto zi_contiguous = torch::stable::contiguous(zi);
 
     auto order = a_contiguous.size(2);
-    STD_TORCH_CHECK(order <= 1024, "LPC order must be less than or equal to 1024");
+    check_lpc_order(order);
     auto stream = ph::current_cuda_stream(x.get_device_index());
 
     auto out = torch::stable::empty_like(x_contiguous);

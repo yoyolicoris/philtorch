@@ -22,7 +22,7 @@ from torch.func import jacfwd
 
 from philtorch._torchlpc import AllPole
 
-from ._cases import DEVICES, MPS
+from ._cases import DEVICES, LOW_PRECISION_TOLERANCES, MPS, random_int64
 
 # Each input on and off, and A both with and without zi: zi's gradient changes
 # the adjoint recurrence that A's gradient is read from.
@@ -195,15 +195,8 @@ def test_lpc_mps_empty_and_order_zero(B: int, T: int, order: int):
     torch.testing.assert_close(y, x)
 
 
-# The dtypes lpc takes besides float64 and complex128, with the error against
-# float64's, relative to the largest output, that each is held to.
-_LPC_DTYPES = [
-    (torch.float32, 1e-5),
-    (torch.complex64, 1e-5),
-    (torch.float16, 3e-3),
-    (torch.bfloat16, 2e-2),
-    (torch.complex32, 3e-3),
-]
+def _relative_error(actual: torch.Tensor, expected: torch.Tensor) -> torch.Tensor:
+    return (actual.cpu().to(expected.dtype) - expected).abs().max() / expected.abs().max()
 
 
 def _lpc_problem(B: int, T: int, order: int, dtype: torch.dtype):
@@ -223,12 +216,11 @@ def _check_lpc(device: str, dtype: torch.dtype, order: int, T: int):
     expected = torch.ops.philtorch.lpc(*(t.to(wide) for t in (x, a, zi)))
     actual = torch.ops.philtorch.lpc(*(t.to(device) for t in (x, a, zi)))
     assert actual.dtype == dtype
-    error = (actual.cpu().to(wide) - expected).abs().max() / expected.abs().max()
-    assert error < dict(_LPC_DTYPES)[dtype]
+    assert _relative_error(actual, expected) < LOW_PRECISION_TOLERANCES[dtype]
 
 
 @pytest.mark.parametrize("device", LPC_DEVICES)
-@pytest.mark.parametrize("dtype", [dtype for dtype, _ in _LPC_DTYPES])
+@pytest.mark.parametrize("dtype", LOW_PRECISION_TOLERANCES)
 def test_lpc_dtypes(device: str, dtype: torch.dtype):
     _check_lpc(device, dtype, 33, 300)
 
@@ -248,10 +240,6 @@ def test_lpc_orders(device: str, dtype: torch.dtype, order: int, T: int):
 
 # What each low-precision gradient is held to, relative to the largest.
 _LPC_GRADIENT_DTYPES = [(torch.float32, 1e-4), (torch.float16, 1e-2), (torch.complex32, 1e-2)]
-
-
-def _relative_error(actual: torch.Tensor, expected: torch.Tensor) -> torch.Tensor:
-    return (actual.cpu().to(expected.dtype) - expected).abs().max() / expected.abs().max()
 
 
 @pytest.mark.parametrize("device", LPC_DEVICES)
@@ -313,9 +301,7 @@ def test_cpu_scan_takes_the_recurrence_dtypes(dtype: torch.dtype, tolerance: flo
     gen = torch.Generator().manual_seed(0)
     if dtype == torch.int64:
         # Random 62-bit integers, whose products wrap around.
-        impulse, decay, init = (
-            torch.randint(-(2**62), 2**62, shape, generator=gen) for shape in ((B, T), (B, T), (B,))
-        )
+        impulse, decay, init = (random_int64(*s, generator=gen) for s in ((B, T), (B, T), (B,)))
         wide = dtype
     else:
         wide = torch.complex128 if dtype.is_complex else torch.float64

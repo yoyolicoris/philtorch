@@ -6,20 +6,11 @@ import torch
 import torch.nn.functional as F
 from torch.autograd import Function
 
+from .utils import _FLOATING_DTYPES, _dtype_names, _via_complex64
+
 
 def _flip(t: torch.Tensor, dim: int) -> torch.Tensor:
-    """``t.flip(dim)``. complex32 has no flip of an innermost dimension on CPU:
-    it runs in complex64, in which the kernels accumulate it."""
-    if t.dtype != torch.complex32:
-        return t.flip(dim)
-    return t.to(torch.complex64).flip(dim).to(torch.complex32)
-
-
-def _sum(t: torch.Tensor, dim: int) -> torch.Tensor:
-    """``t.sum(dim)``, in complex64 for complex32, which has no sum on CPU."""
-    if t.dtype != torch.complex32:
-        return t.sum(dim)
-    return t.to(torch.complex64).sum(dim).to(torch.complex32)
+    return _via_complex64(torch.flip, t, (dim,))
 
 
 def _lpc_gradients(run, A, zi, y, grad_y, needs_input_grad):
@@ -87,7 +78,7 @@ class AllPole(Function):
         fwd_x = grad_x if grad_x is not None else torch.zeros_like(y)
         if grad_A is not None:
             unfolded_y = _flip(torch.cat([_flip(zi, 1), y[:, :-1]], dim=1).unfold(1, order, 1), 2)
-            fwd_x = fwd_x - _sum(unfolded_y * grad_A, 2)
+            fwd_x = fwd_x - _via_complex64(torch.sum, unfolded_y * grad_A, 2)
         return AllPole.apply(fwd_x, A, fwd_zi)
 
     @staticmethod
@@ -107,25 +98,14 @@ class AllPole(Function):
         return y.reshape(info.batch_size, -1, *y.shape[1:]), 0
 
 
-_DTYPES = (
-    torch.float16,
-    torch.bfloat16,
-    torch.float32,
-    torch.float64,
-    torch.complex32,
-    torch.complex64,
-    torch.complex128,
-)
+_DTYPES = _FLOATING_DTYPES
 
 
 def lpc(x: torch.Tensor, A: torch.Tensor, zi: torch.Tensor) -> torch.Tensor:
     # The op's dispatch raises RuntimeError for any other dtype: other floating
     # and complex dtypes get NotImplementedError here instead, integers don't.
     if (x.is_floating_point() or x.is_complex()) and x.dtype not in _DTYPES:
-        raise NotImplementedError(
-            "lpc takes float16, bfloat16, float32, float64, complex32, complex64 and "
-            f"complex128, got {x.dtype}"
-        )
+        raise NotImplementedError(f"lpc takes {_dtype_names(_DTYPES)}, got {x.dtype}")
     if torch.compiler.is_compiling():
         return torch.ops.philtorch.lpc(x, A, zi)
     return AllPole.apply(x, A, zi)

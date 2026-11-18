@@ -10,8 +10,7 @@
 // threadgroup memory), and thread 0 computes y[t], which it keeps in a
 // register for the next step.
 
-// The most coefficients, as on CUDA: one thread each.
-constant constexpr uint MAX_ORDER = 1024;
+// MAX_ORDER, the most coefficients, one thread each, is defined by the host.
 constant constexpr uint MAX_SIMD_GROUPS = MAX_ORDER / SIMD_WIDTH;
 
 template <typename T, typename A = typename Acc<T>::type>

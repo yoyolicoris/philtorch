@@ -16,6 +16,21 @@ REPO_ROOT = Path(__file__).parents[1]
 DEVICES = ["cpu", pytest.param("cuda", marks=pytest.mark.cuda)]
 MPS = pytest.mark.skipif(not torch.backends.mps.is_available(), reason="MPS not available")
 
+# The error, relative to the largest value, that each dtype of the recurrence
+# and lpc kernels is held to against float64's or complex128's.
+LOW_PRECISION_TOLERANCES = {
+    torch.float32: 1e-5,
+    torch.complex64: 1e-5,
+    torch.float16: 3e-3,
+    torch.bfloat16: 2e-2,
+    torch.complex32: 3e-3,
+}
+
+
+def random_int64(*shape: int, generator: torch.Generator | None = None) -> torch.Tensor:
+    """Random 62-bit integers, whose products wrap around."""
+    return torch.randint(-(2**62), 2**62, shape, generator=generator)
+
 
 def load_script(path: str):
     """The module of a file outside the package, given relative to the repository."""

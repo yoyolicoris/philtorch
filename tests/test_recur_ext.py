@@ -3,7 +3,7 @@ import torch
 
 from philtorch._recur import recurrence
 
-from ._cases import DEVICES, MPS
+from ._cases import DEVICES, MPS, random_int64
 
 _REQUIRES_GRAD_CASES = [(True, True, True), (True, False, False), (False, False, True)]
 
@@ -79,8 +79,7 @@ def test_mps_scalar_recur_block_chunks(op: str, dtype: torch.dtype):
         # Random 62-bit integers, which wrap around: the carry across the
         # chunks must match the CPU's exactly.
         a, zi, x = (
-            torch.randint(-(2**62), 2**62, s, generator=gen)
-            for s in (shape, (batch_size,), (batch_size, samples))
+            random_int64(*s, generator=gen) for s in (shape, (batch_size,), (batch_size, samples))
         )
         args = (a, zi, x) if op == "lti_recur" else (x, a, zi)
         actual = _MPS_OPS[op](*(arg.to("mps") for arg in args))

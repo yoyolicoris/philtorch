@@ -4,7 +4,7 @@ import torch
 from philtorch import _recur
 from philtorch._recur import _forward, recurrence
 
-from ._cases import DEVICES, MPS
+from ._cases import DEVICES, LOW_PRECISION_TOLERANCES, MPS, random_int64
 
 # How A is shared: (batch items, steps) it has, of B and T.
 SHARING = ["one", "per_item", "per_step", "both"]
@@ -105,16 +105,7 @@ def test_recurrence_overflows_to_inf_not_nan(M):
     torch.testing.assert_close(recurrence(A.cuda(), zi.cuda(), x.cuda()).cpu(), expected)
 
 
-@pytest.mark.parametrize(
-    "dtype, tolerance",
-    [
-        (torch.float32, 1e-5),
-        (torch.complex64, 1e-5),
-        (torch.float16, 3e-3),
-        (torch.bfloat16, 2e-2),
-        (torch.complex32, 3e-3),
-    ],
-)
+@pytest.mark.parametrize("dtype, tolerance", LOW_PRECISION_TOLERANCES.items())
 @pytest.mark.parametrize("sharing", SHARING)
 @pytest.mark.parametrize(
     "device, M, T",
@@ -181,16 +172,8 @@ def test_recurrence_mps(sharing, B, T, M, dtype):
     + [(2, 130, 40), (2, 70, 100), (9, 200, 3), (2, 2**17 + 3, 2)],
 )
 def test_recurrence_mps_int64(sharing, B, T, M):
-    # States that wrap around: the products of random 62-bit integers, which
-    # must match the CPU's exactly.
-    gen = torch.Generator().manual_seed(M)
-    Ba = B if sharing in ("per_item", "both") else 1
-    Ta = T if sharing in ("per_step", "both") else 1
-
-    def ints(*shape):
-        return torch.randint(-(2**62), 2**62, shape, generator=gen)
-
-    A, zi, x = ints(Ba, Ta, M, M), ints(B, M), ints(B, T, M)
+    # States that wrap around, which must match the CPU's exactly.
+    A, zi, x = _integer_problem(B, T, M, sharing, torch.int64, "cpu", wrap=True)
     actual = recurrence(*(t.to("mps") for t in (A, zi, x)))
     assert actual.dtype == torch.int64
     assert torch.equal(actual.cpu(), recurrence(A, zi, x))
@@ -566,11 +549,15 @@ def test_recurrence_in_integers(device):
     assert h[0, :, 0].tolist() == fib[1:]
 
 
-def _integer_problem(B, T, M, sharing, dtype, device):
-    """Small integers, whose states grow, and overflow, as integer arithmetic does."""
+def _integer_problem(B, T, M, sharing, dtype, device, wrap=False):
+    """Small integers, whose states grow, and overflow, as integer arithmetic
+    does; with ``wrap``, random 62-bit ones, whose products wrap around at once."""
     gen = torch.Generator().manual_seed(0)
     Ba = B if sharing in ("per_item", "both") else 1
     Ta = T if sharing in ("per_step", "both") else 1
+    if wrap:
+        A, x, zi = (random_int64(*s, generator=gen) for s in ((Ba, Ta, M, M), (B, T, M), (B, M)))
+        return [t.to(device, dtype) for t in (A, zi, x)]
     A = torch.randint(-2, 3, (Ba, Ta, M, M), generator=gen)
     x = torch.randint(-5, 6, (B, T, M), generator=gen)
     zi = torch.randint(-5, 6, (B, M), generator=gen)

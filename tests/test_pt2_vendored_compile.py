@@ -49,7 +49,9 @@ def _assert_compiled_forward_and_backward(
     compiled_output = torch.compile(function, fullgraph=True)(*compiled_inputs)
     torch.testing.assert_close(compiled_output, eager_output)
 
-    grad_output = torch.randn_like(eager_output)
+    # randn_like has no complex32: draw it in complex64.
+    wide = torch.complex64 if eager_output.dtype == torch.complex32 else eager_output.dtype
+    grad_output = torch.randn_like(eager_output, dtype=wide).to(eager_output.dtype)
     eager_output.backward(grad_output)
     compiled_output.backward(grad_output)
 
@@ -78,6 +80,17 @@ def test_allpole_compile_forward_and_backward(device: str) -> None:
     x = torch.randn(2, 16, device=device)
 
     _assert_compiled_forward_and_backward(_run_allpole, (a, zi, x))
+
+
+@pytest.mark.parametrize("device", _DEVICES)
+@pytest.mark.parametrize("dtype", [torch.float16, torch.bfloat16, torch.complex32])
+def test_lpc_compile_forward_and_backward_in_low_precision(device: str, dtype: torch.dtype) -> None:
+    # lpc itself: allpole flips zi, which complex32 lacks on CPU.
+    A = (torch.randn(2, 16, 3) * 0.05).to(device, dtype)
+    zi = torch.randn(2, 3).to(device, dtype)
+    x = torch.randn(2, 16).to(device, dtype)
+
+    _assert_compiled_forward_and_backward(vendored_lpc, (x, A, zi))
 
 
 @pytest.mark.usefixtures("isolated_rng")

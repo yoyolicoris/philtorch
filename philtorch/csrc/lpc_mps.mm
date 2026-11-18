@@ -5,6 +5,7 @@
 #include "recur_checks.h"
 
 #include <limits>
+#include <string>
 
 // LPC_MPS_METAL, the text of lpc_mps.metal, which setup.py generates in the
 // build directory.
@@ -20,13 +21,13 @@ using torch::stable::Tensor;
 // The kernels' name in errors.
 constexpr const char *OP = "the MPS lpc";
 
-// The most coefficients, one thread each, as on CUDA; the kernels' own limit.
-constexpr int64_t MAX_ORDER = 1024;
 
 AOTIMetalKernelFunctionHandle kernel(ScalarType dtype)
 {
     static const AOTIMetalShaderLibraryHandle library =
-        philtorch::mps::compile("", LPC_MPS_METAL);
+        philtorch::mps::compile(
+            "#define MAX_ORDER " + std::to_string(LPC_MAX_ORDER) + "\n",
+            LPC_MPS_METAL);
     const auto function = [&](const char *name)
     { return philtorch::mps::kernel_function(library, name); };
     // All looked up on the first call, one at a time under the statics'
@@ -56,10 +57,6 @@ AOTIMetalKernelFunctionHandle kernel(ScalarType dtype)
 Tensor lpc_mps(const Tensor &x, const Tensor &a, const Tensor &zi)
 {
     check_lpc_inputs(x, a, zi);
-    STD_TORCH_CHECK(a.device() == x.device(),
-                    "Coefficients must be on the same device as input");
-    STD_TORCH_CHECK(zi.device() == x.device(),
-                    "Initial conditions must be on the same device as input");
     const ScalarType dtype = x.scalar_type();
     STD_TORCH_CHECK(dtype == ScalarType::Float || dtype == ScalarType::Half ||
                         dtype == ScalarType::BFloat16 ||
@@ -67,8 +64,7 @@ Tensor lpc_mps(const Tensor &x, const Tensor &a, const Tensor &zi)
                         dtype == ScalarType::ComplexHalf,
                     OP, " takes float32, float16, bfloat16, complex64 and complex32");
     const int64_t n_batches = x.size(0), steps = x.size(1), order = a.size(2);
-    STD_TORCH_CHECK(order <= MAX_ORDER,
-                    "LPC order must be less than or equal to 1024");
+    check_lpc_order(order);
     // The kernel indexes the steps of a sequence in 32 bits.
     STD_TORCH_CHECK(steps <= std::numeric_limits<int32_t>::max() &&
                         n_batches <= std::numeric_limits<uint32_t>::max(),

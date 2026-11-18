@@ -11,8 +11,8 @@ state sizes M: ``lti_recur`` and ``scan`` for M = 1, ``lti_recurN`` and
   (M > 1, from B = 2).
 
 Cases of more than 2^26 coefficients are skipped, and complex64 runs up to
-M = 64, the kernels' limit. ``--max-input-gib`` also skips the cases whose input
-is larger, to bound the memory: the CPU and MPS copies and the two outputs take
+M = 64, the kernels' limit. ``--max-input-gib`` also skips the cases whose inputs
+are larger, to bound the memory: the CPU and MPS copies and the two outputs take
 four times it. The recurrences are stable: ``|a| < 0.9``, with a random phase
 for complex64, and matrices of spectral norm 0.9; int64's coefficients, states
 and inputs are random 62-bit integers, whose products wrap around. Each case
@@ -157,7 +157,8 @@ def parse_args():
     parser.add_argument(
         "--max-input-gib",
         type=float,
-        help="skip the cases whose input exceeds this size (default: run them all)",
+        help="skip the cases whose inputs (coefficients, initial states and signal) exceed "
+        "this size (default: run them all)",
     )
     return parser.parse_args()
 
@@ -187,8 +188,11 @@ def main():
                         continue
                     if states > (MAX_STATES // 2 if dtype.is_complex else MAX_STATES):
                         continue
-                    input_bytes = batch * steps * states * dtype.itemsize
-                    if args.max_input_gib is not None and input_bytes > args.max_input_gib * 2**30:
+                    # The coefficients, the initial states and the signal.
+                    inputs = torch.Size(shape).numel() + batch * states + batch * steps * states
+                    if args.max_input_gib is not None and inputs * dtype.itemsize > (
+                        args.max_input_gib * 2**30
+                    ):
                         continue
                     if states == 1:
                         a_cpu = random_decay(shape, dtype)

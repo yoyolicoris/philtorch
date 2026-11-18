@@ -163,6 +163,7 @@ def allpole(
         NotImplementedError: if :attr:`x` is floating point or complex but not
             float16, bfloat16, float32, float64, complex32, complex64 or
             complex128.
+        RuntimeError: on CUDA and MPS, if :math:`M` is larger than 1024.
 
     Example::
 

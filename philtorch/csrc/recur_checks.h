@@ -90,8 +90,17 @@ inline void check_recurN_shapes(const torch::stable::Tensor &A,
                     "A must have the batch size of x");
 }
 
-// The checks of lpc (all its kernels): x is (B, T), a (B, T, M) and
-// zi (B, M), all of one dtype. The dispatch rejects dtypes it doesn't take.
+// The most coefficients of the CUDA and MPS kernels of lpc, one thread each.
+constexpr int64_t LPC_MAX_ORDER = 1024;
+
+inline void check_lpc_order(int64_t order)
+{
+    STD_TORCH_CHECK(order <= LPC_MAX_ORDER,
+                    "LPC order must be less than or equal to ", LPC_MAX_ORDER);
+}
+
+// The checks of lpc (all its kernels): x is (B, T), a (B, T, M) and zi (B, M),
+// all of one dtype, on x's device. The dispatch rejects dtypes it doesn't take.
 inline void check_lpc_inputs(const torch::stable::Tensor &x,
                              const torch::stable::Tensor &a,
                              const torch::stable::Tensor &zi)
@@ -109,4 +118,8 @@ inline void check_lpc_inputs(const torch::stable::Tensor &x,
                     "Batch and time dimensions of a and x must match");
     STD_TORCH_CHECK(zi.size(1) == a.size(2),
                     "Initial conditions must have one state per coefficient of a");
+    STD_TORCH_CHECK(a.device() == x.device(),
+                    "Coefficients must be on the same device as input");
+    STD_TORCH_CHECK(zi.device() == x.device(),
+                    "Initial conditions must be on the same device as input");
 }
