@@ -196,9 +196,8 @@ inline void run_vector(const device T *a, const device T *zi,
 
 // Column k of map `map`'s P, as a vector (v = map * M + k) of the lanes: the
 // map's chunk's steps from the identity's column k, without inputs, zero for
-// map 0 of time-varying A, whose chunk's offset holds zi (see map_block). The
-// product wraps as run_vector's recursion does, which int64 needs, as it has
-// no matrix products.
+// map 0 of time-varying A, whose chunk's offset holds zi (see map_block). Built
+// as run_vector's recursion is, as int64 has no matrix products.
 inline void map_vector(const device T *a, device A *maps, uint index,
                        uint lane, uint n_maps, uint maps_per_a, long stride_b,
                        long stride_t)

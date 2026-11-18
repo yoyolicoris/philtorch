@@ -292,11 +292,8 @@ def test_cuda_scan_rejects_dtype():
         torch.ops.philtorch.scan(impulse, impulse, init)
 
 
-@pytest.mark.parametrize(
-    "dtype, tolerance",
-    [(torch.float16, 3e-3), (torch.bfloat16, 2e-2), (torch.complex32, 3e-3), (torch.int64, 0)],
-)
-def test_cpu_scan_takes_the_recurrence_dtypes(dtype: torch.dtype, tolerance: float):
+@pytest.mark.parametrize("dtype", [torch.float16, torch.bfloat16, torch.complex32, torch.int64])
+def test_cpu_scan_takes_the_recurrence_dtypes(dtype: torch.dtype):
     # Nothing routes these dtypes to the CPU scan, but a call takes them.
     B, T = 3, 50
     gen = torch.Generator().manual_seed(0)
@@ -318,4 +315,4 @@ def test_cpu_scan_takes_the_recurrence_dtypes(dtype: torch.dtype, tolerance: flo
     if dtype == torch.int64:
         assert torch.equal(actual, expected)
     else:
-        assert relative_error(actual, expected) < tolerance
+        assert relative_error(actual, expected) < DTYPE_TOLERANCES[dtype]

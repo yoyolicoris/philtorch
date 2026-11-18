@@ -38,14 +38,14 @@ def _lpc_gradients(run, A, zi, y, grad_y, needs_input_grad):
     grad_zi = flipped_grad_x[:, -order:] if needs_input_grad[2] else None
     if needs_input_grad[2]:
         flipped_grad_x = flipped_grad_x[:, :-order]
-    grad_x = _flip(flipped_grad_x, 1) if needs_input_grad[0] else None
+    grad_x = _flip(flipped_grad_x, 1) if needs_input_grad[0] or needs_input_grad[1] else None
     grad_A = None
     if needs_input_grad[1]:
         valid_y = y[:, :-1]
         padded_y = torch.cat([_flip(zi, 1), valid_y], dim=1)
         unfolded_y = _flip(padded_y.unfold(1, order, 1), 2)
-        grad_A = unfolded_y.conj_physical() * -_flip(flipped_grad_x, 1).unsqueeze(2)
-    return grad_x, grad_A, grad_zi
+        grad_A = unfolded_y.conj_physical() * -grad_x.unsqueeze(2)
+    return grad_x if needs_input_grad[0] else None, grad_A, grad_zi
 
 
 class AllPole(Function):

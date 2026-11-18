@@ -64,7 +64,7 @@ _MPS_OPS = {
 
 
 @MPS
-@pytest.mark.parametrize("dtype", [torch.float32, torch.complex64, torch.int64])
+@pytest.mark.parametrize("dtype", [torch.float32, torch.complex64])
 @pytest.mark.parametrize("op", ["lti_recur", "scan"])
 def test_mps_scalar_recur_block_chunks(op: str, dtype: torch.dtype):
     # Past 1024 * 512 steps, the tiles' totals are scanned in several chunks of
@@ -75,15 +75,6 @@ def test_mps_scalar_recur_block_chunks(op: str, dtype: torch.dtype):
     batch_size, samples = 2, 1024 * 512 + 5
     gen = torch.Generator().manual_seed(0)
     shape = (batch_size,) if op == "lti_recur" else (batch_size, samples)
-    if dtype == torch.int64:
-        # The carry across the chunks must match the CPU's exactly.
-        a, zi, x = (
-            random_int64(*s, generator=gen) for s in (shape, (batch_size,), (batch_size, samples))
-        )
-        args = (a, zi, x) if op == "lti_recur" else (x, a, zi)
-        actual = _MPS_OPS[op](*(arg.to("mps") for arg in args))
-        assert torch.equal(actual.cpu(), _MPS_OPS[op](*args))
-        return
     a = 1 - 5e-3 * torch.rand(shape, generator=gen)
     if dtype.is_complex:
         a = torch.polar(a, 0.05 * torch.rand(shape, generator=gen))
@@ -95,6 +86,23 @@ def test_mps_scalar_recur_block_chunks(op: str, dtype: torch.dtype):
     expected = _MPS_OPS[op](*(arg.to(reference) for arg in args))
     actual = _MPS_OPS[op](*(arg.to("mps", dtype) for arg in args))
     torch.testing.assert_close(actual.cpu().to(expected.dtype), expected, rtol=1e-5, atol=1e-3)
+
+
+@MPS
+@pytest.mark.parametrize("op", ["lti_recur", "scan"])
+def test_mps_scalar_recur_block_chunks_int64(op: str):
+    # The same carry across the chunks of tiles, which must match the CPU's
+    # exactly, products that wrap around included.
+    batch_size, samples = 2, 1024 * 512 + 5
+    gen = torch.Generator().manual_seed(0)
+    a_shape = (batch_size,) if op == "lti_recur" else (batch_size, samples)
+    a, zi, x = (
+        random_int64(*shape, generator=gen)
+        for shape in (a_shape, (batch_size,), (batch_size, samples))
+    )
+    args = (a, zi, x) if op == "lti_recur" else (x, a, zi)
+    actual = _MPS_OPS[op](*(arg.to("mps") for arg in args))
+    assert torch.equal(actual.cpu(), _MPS_OPS[op](*args))
 
 
 @MPS

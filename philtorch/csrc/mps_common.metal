@@ -50,5 +50,5 @@ inline float2 mul(float2 a, float2 b)
     return float2(a.x * b.x - a.y * b.y, a.x * b.y + a.y * b.x);
 }
 // Wrapping: signed overflow is undefined in C++, so a product multiplies as
-// ulong. The sums stay long, as they are in the CPU and CUDA kernels.
+// ulong. The sums stay long, as they are in host_recur.cpp and scalar_recur.cu.
 inline long mul(long a, long b) { return long(ulong(a) * ulong(b)); }
