@@ -286,11 +286,12 @@ Tensor recurN_cpu(const Tensor &A, const Tensor &zi,
 }
 
 // h[t] = decay[t] h[t - 1] + impulse[t]: the scalar recurrence with a
-// (B, T) A, one coefficient per step.
+// (B, T) A, one coefficient per step. It takes every dtype the recurrence
+// does; only CUDA's scan keeps torchlpc's four (check_scan_inputs).
 Tensor scan_cpu(const Tensor &impulse, const Tensor &decay,
                 const Tensor &init)
 {
-    check_scan_inputs(impulse, decay, init);
+    check_scan_shapes(impulse, decay, init);
     return recur_cpu_launch(decay, init, impulse, 1, impulse.size(1), 1);
 }
 

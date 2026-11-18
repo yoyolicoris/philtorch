@@ -44,8 +44,9 @@ inline void check_scan_shapes(const torch::stable::Tensor &impulse,
                     "impulse and decay must be (B, T) and init (B,)");
 }
 
-// The checks of scan on CPU and CUDA: its shapes, in torchlpc's dtypes; the
-// recurrence kernels it runs also take integers and half precision.
+// The checks of scan on CUDA: its shapes, in torchlpc's dtypes; the recurrence
+// kernels it runs also take integers and half precision. CPU checks only the
+// shapes.
 inline void check_scan_inputs(const torch::stable::Tensor &impulse,
                               const torch::stable::Tensor &decay,
                               const torch::stable::Tensor &init)

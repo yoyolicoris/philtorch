@@ -311,11 +311,16 @@ def test_torchlpc_broadcasts_unbatched_signals():
     assert lfilter(b, a, torch.ones(8, dtype=torch.float64), backend="torchlpc").shape == (4, 8)
 
 
-def test_torchlpc_backend_rejects_float16():
-    # The kernel's dispatch would raise RuntimeError for float16.
-    b, a, x = torch.randn(1, 8, 2).half(), torch.randn(1, 8, 2).half(), torch.randn(1, 8).half()
-    with pytest.raises(NotImplementedError, match="float32, float64, complex64 and complex128"):
-        lfilter(b, a, x, backend="torchlpc")
+@pytest.mark.parametrize("dtype", [torch.float16, torch.bfloat16])
+def test_torchlpc_backend_takes_half_precision(dtype: torch.dtype):
+    gen = torch.Generator().manual_seed(0)
+    b = torch.randn(1, 8, 2, generator=gen).to(dtype)
+    a = (0.4 * torch.rand(1, 8, 2, generator=gen)).to(dtype)
+    x = torch.randn(1, 8, generator=gen).to(dtype)
+    y = lfilter(b, a, x, backend="torchlpc")
+    assert y.dtype == dtype
+    expected = lfilter(*(t.double() for t in (b, a, x)), backend="torchlpc")
+    torch.testing.assert_close(y.double(), expected, rtol=2e-2, atol=2e-2)
 
 
 @pytest.mark.parametrize("transpose", [True, False])

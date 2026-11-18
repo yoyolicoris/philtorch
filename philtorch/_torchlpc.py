@@ -7,6 +7,21 @@ import torch.nn.functional as F
 from torch.autograd import Function
 
 
+def _flip(t: torch.Tensor, dim: int) -> torch.Tensor:
+    """``t.flip(dim)``. complex32 has no flip of an innermost dimension on CPU:
+    it runs in complex64, in which the kernels accumulate it."""
+    if t.dtype != torch.complex32:
+        return t.flip(dim)
+    return t.to(torch.complex64).flip(dim).to(torch.complex32)
+
+
+def _sum(t: torch.Tensor, dim: int) -> torch.Tensor:
+    """``t.sum(dim)``, in complex64 for complex32, which has no sum on CPU."""
+    if t.dtype != torch.complex32:
+        return t.sum(dim)
+    return t.to(torch.complex64).sum(dim).to(torch.complex32)
+
+
 def _lpc_gradients(run, A, zi, y, grad_y, needs_input_grad):
     """The gradients of x, A and zi from ``grad_y``; ``run`` is lpc: the op or
     ``AllPole.apply``.
@@ -15,13 +30,13 @@ def _lpc_gradients(run, A, zi, y, grad_y, needs_input_grad):
     with A's coefficients shifted to the steps they act on.
     """
     B, T, order = A.shape
-    flipped_A = A.flip(2)
+    flipped_A = _flip(A, 2)
     padded_flipped_A = F.pad(flipped_A.transpose(1, 2), (0, order + 1))
-    shifted_A = (
+    shifted_A = _flip(
         padded_flipped_A.reshape(B, T + order + 1, order)[:, :-1, :]
         .reshape(B, order, T + order)
-        .transpose(1, 2)
-        .flip(2)
+        .transpose(1, 2),
+        2,
     )
     if not needs_input_grad[2]:
         shifted_A = shifted_A[:, order:, :]
@@ -29,20 +44,20 @@ def _lpc_gradients(run, A, zi, y, grad_y, needs_input_grad):
     else:
         padded_grad_y = F.pad(grad_y.unsqueeze(1), (order, 0)).squeeze(1)
     flipped_grad_x = run(
-        padded_grad_y.flip(1),
-        shifted_A.flip(1).conj_physical(),
+        _flip(padded_grad_y, 1),
+        _flip(shifted_A, 1).conj_physical(),
         torch.zeros_like(zi),
     )
     grad_zi = flipped_grad_x[:, -order:] if needs_input_grad[2] else None
     if needs_input_grad[2]:
         flipped_grad_x = flipped_grad_x[:, :-order]
-    grad_x = flipped_grad_x.flip(1) if needs_input_grad[0] else None
+    grad_x = _flip(flipped_grad_x, 1) if needs_input_grad[0] else None
     grad_A = None
     if needs_input_grad[1]:
         valid_y = y[:, :-1]
-        padded_y = torch.cat([zi.flip(1), valid_y], dim=1)
-        unfolded_y = padded_y.unfold(1, order, 1).flip(2)
-        grad_A = unfolded_y.conj_physical() * -flipped_grad_x.flip(1).unsqueeze(2)
+        padded_y = torch.cat([_flip(zi, 1), valid_y], dim=1)
+        unfolded_y = _flip(padded_y.unfold(1, order, 1), 2)
+        grad_A = unfolded_y.conj_physical() * -_flip(flipped_grad_x, 1).unsqueeze(2)
     return grad_x, grad_A, grad_zi
 
 
@@ -71,8 +86,8 @@ class AllPole(Function):
         fwd_zi = grad_zi if grad_zi is not None else torch.zeros_like(zi)
         fwd_x = grad_x if grad_x is not None else torch.zeros_like(y)
         if grad_A is not None:
-            unfolded_y = torch.cat([zi.flip(1), y[:, :-1]], dim=1).unfold(1, order, 1).flip(2)
-            fwd_x = fwd_x - torch.sum(unfolded_y * grad_A, dim=2)
+            unfolded_y = _flip(torch.cat([_flip(zi, 1), y[:, :-1]], dim=1).unfold(1, order, 1), 2)
+            fwd_x = fwd_x - _sum(unfolded_y * grad_A, 2)
         return AllPole.apply(fwd_x, A, fwd_zi)
 
     @staticmethod
@@ -92,7 +107,15 @@ class AllPole(Function):
         return y.reshape(info.batch_size, -1, *y.shape[1:]), 0
 
 
-_DTYPES = (torch.float32, torch.float64, torch.complex64, torch.complex128)
+_DTYPES = (
+    torch.float16,
+    torch.bfloat16,
+    torch.float32,
+    torch.float64,
+    torch.complex32,
+    torch.complex64,
+    torch.complex128,
+)
 
 
 def lpc(x: torch.Tensor, A: torch.Tensor, zi: torch.Tensor) -> torch.Tensor:
@@ -100,7 +123,8 @@ def lpc(x: torch.Tensor, A: torch.Tensor, zi: torch.Tensor) -> torch.Tensor:
     # and complex dtypes get NotImplementedError here instead, integers don't.
     if (x.is_floating_point() or x.is_complex()) and x.dtype not in _DTYPES:
         raise NotImplementedError(
-            f"lpc takes float32, float64, complex64 and complex128, got {x.dtype}"
+            "lpc takes float16, bfloat16, float32, float64, complex32, complex64 and "
+            f"complex128, got {x.dtype}"
         )
     if torch.compiler.is_compiling():
         return torch.ops.philtorch.lpc(x, A, zi)
