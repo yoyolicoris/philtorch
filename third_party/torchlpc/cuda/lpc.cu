@@ -18,15 +18,18 @@ __device__ void atomic_add(c10::complex<scalar_t>* address,
     atomicAdd(parts + 1, val.imag());
 }
 
-// CUDA kernel for LPC computation, real or complex
+// CUDA kernel for LPC computation, real or complex. The history in shared
+// memory and the sums are in the accumulation type, as the recurrence kernels'
+// are; atomicAdd has no overload for c10's Half or BFloat16 either.
 template <typename scalar_t>
 __global__ void lpc_cuda_kernel(scalar_t* y,           // [B, T]
                                 const scalar_t* x,     // [B, T]
                                 const scalar_t* zi,    // [B, order]
                                 const scalar_t* A,     // [B, T, order]
                                 int64_t B, int64_t T, int64_t order) {
+    using acc_t = philtorch::opmath_type<scalar_t>;
     extern __shared__ char smem[];
-    scalar_t* sm = reinterpret_cast<scalar_t*>(smem);
+    acc_t* sm = reinterpret_cast<acc_t*>(smem);
 
     int b = blockIdx.x;
     int i = threadIdx.x;
@@ -34,26 +37,26 @@ __global__ void lpc_cuda_kernel(scalar_t* y,           // [B, T]
     if (b >= B || i >= order) return;
 
     // Initialize shared memory with the initial conditions, reversed
-    sm[i] = zi[b * order + order - 1 - i];
+    sm[i] = static_cast<acc_t>(zi[b * order + order - 1 - i]);
     __syncthreads();
 
     int circular_idx = 0;
     for (int t = 0; t < T; ++t) {
         circular_idx = t % order;
-        scalar_t a = -A[((b * T + t) * order) + i];
+        acc_t a = -static_cast<acc_t>(A[((b * T + t) * order) + i]);
 
         // Compute s as in the Python code
         int idx_offset = circular_idx - i - 1;
         if (i > circular_idx - 1) {
             idx_offset += order;
         }
-        scalar_t s = sm[(idx_offset + order) % order];
+        acc_t s = sm[(idx_offset + order) % order];
 
-        scalar_t v = a * s;
+        acc_t v = a * s;
 
         if (i == order - 1) {
             sm[circular_idx] = v;
-            v = x[b * T + t];
+            v = static_cast<acc_t>(x[b * T + t]);
         }
         __syncthreads();
 
@@ -62,7 +65,7 @@ __global__ void lpc_cuda_kernel(scalar_t* y,           // [B, T]
         __syncthreads();
 
         if (i == order - 1) {
-            y[b * T + t] = sm[circular_idx];
+            y[b * T + t] = static_cast<scalar_t>(sm[circular_idx]);
         }
         __syncthreads();
     }
@@ -72,8 +75,9 @@ __global__ void lpc_cuda_kernel(scalar_t* y,           // [B, T]
 template <typename scalar_t>
 void lpc_launch(Tensor& y, const Tensor& x, const Tensor& zi, const Tensor& a,
                 int64_t order, cudaStream_t stream) {
+    using acc_t = philtorch::opmath_type<scalar_t>;
     lpc_cuda_kernel<scalar_t>
-        <<<x.size(0), order, order * sizeof(scalar_t), stream>>>(
+        <<<x.size(0), order, order * sizeof(acc_t), stream>>>(
             y.mutable_data_ptr<scalar_t>(), x.const_data_ptr<scalar_t>(),
             zi.const_data_ptr<scalar_t>(), a.const_data_ptr<scalar_t>(),
             x.size(0), x.size(1), order);
@@ -83,10 +87,6 @@ void lpc_launch(Tensor& y, const Tensor& x, const Tensor& zi, const Tensor& a,
 Tensor lpc_cuda_wrapper(const Tensor& x, const Tensor& a, const Tensor& zi) {
     namespace ph = philtorch;
     check_lpc_inputs(x, a, zi);
-    STD_TORCH_CHECK(a.device() == x.device(),
-                    "Coefficients must be on the same device as input");
-    STD_TORCH_CHECK(zi.device() == x.device(),
-                    "Initial conditions must be on the same device as input");
 
     const torch::stable::accelerator::DeviceGuard device_guard(
         x.get_device_index());
@@ -96,17 +96,19 @@ Tensor lpc_cuda_wrapper(const Tensor& x, const Tensor& a, const Tensor& zi) {
     auto zi_contiguous = torch::stable::contiguous(zi);
 
     auto order = a_contiguous.size(2);
-    STD_TORCH_CHECK(order <= 1024, "LPC order must be less than or equal to 1024");
+    check_lpc_order(order);
     auto stream = ph::current_cuda_stream(x.get_device_index());
 
     auto out = torch::stable::empty_like(x_contiguous);
+    using S = torch::headeronly::ScalarType;
     THO_DISPATCH_V2(
         x.scalar_type(), "lpc_cuda",
         AT_WRAP([&] {
             lpc_launch<scalar_t>(out, x_contiguous, zi_contiguous, a_contiguous,
                                  order, stream);
         }),
-        AT_FLOATING_TYPES, AT_COMPLEX_TYPES);
+        AT_FLOATING_TYPES, AT_COMPLEX_TYPES, S::Half, S::BFloat16,
+        S::ComplexHalf);
     return out;
 }
 

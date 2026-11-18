@@ -10,7 +10,7 @@ h[b, t] = a * (t == 0 ? zi[b] : h[b, t - 1]) + x[b, t]
 ```
 
 with `a` one coefficient per step (`philtorch::scan`, time-varying) or per sequence, shared or not (`philtorch::lti_recur`, time-invariant), as an associative affine scan.
-It takes float32, float16, bfloat16, complex64 and complex32, accumulating float16 and bfloat16 in float32 and complex32 in complex64.
+It takes float32, float16, bfloat16, int64, complex64 and complex32, accumulating float16 and bfloat16 in float32, complex32 in complex64, and int64 in int64, which wraps on overflow.
 One three-pass design serves every input: reduce each tile, scan the tile totals of each sequence, and replay each tile from the state before it.
 
 ## Source map
@@ -22,13 +22,15 @@ One three-pass design serves every input: reduce each tile, scan the tile totals
 | [`recur_checks.h`](recur_checks.h) | The input checks the CPU, CUDA and MPS kernels of the recurrence ops share, and those of `lpc`. |
 | [`stable_support.h`](stable_support.h) | What every source needs beyond torch's stable C++ API, which they use alone (`torch/csrc/stable`, `torch/headeronly`): the target version, `build_support.MIN_TORCH`, `opmath_type`, `ceil_div`, dtype predicates, `current_cuda_stream`, and, for CUDA sources, the `USE_CUDA` definition. |
 | [`host_dot.h`](host_dot.h) | The dot product of the CPU kernels of the recurrence ops and of `lpc`, vectorized for float and double from size 8. |
-| [`torchlpc_shim.cpp`](torchlpc_shim.cpp) | The CPU kernel of `lpc`, one sequence per thread. |
+| [`torchlpc_shim.cpp`](torchlpc_shim.cpp) | The CPU kernel of `lpc`, one sequence per thread, carrying its history in the accumulation type. |
 | [`mps_shim.h`](mps_shim.h) | What the Metal host sources share of torch's Metal C shim: compiling a shader after `mps_common.metal`, looking up and launching kernels, and the Metal type and accumulation type of each dtype. |
-| [`mps_common.metal`](mps_common.metal) | What the Metal kernels share, compiled at the head of each shader: the SIMD width, the accumulation types and complex products. |
+| [`mps_common.metal`](mps_common.metal) | What the Metal kernels share, compiled at the head of each shader: the SIMD width, the accumulation types, complex products and the int64 shuffles and product. |
 | [`scalar_recur_mps.mm`](scalar_recur_mps.mm) | MPS host code of `lti_recur` and `scan`, on torch's stable ABI and Metal C shim. |
 | [`scalar_recur_mps.metal`](scalar_recur_mps.metal) | Their Metal kernels, embedded in the extension at build time. |
 | [`recur_mps.mm`](recur_mps.mm) | MPS host code of `lti_recurN` and `recurN`, which `lti_recur2`, `recur2`, `lti_recur3` and `recur3` run too. |
 | [`recur_mps.metal`](recur_mps.metal) | Their Metal kernels, compiled once per state size and dtype. |
+| [`lpc_mps.mm`](lpc_mps.mm) | MPS host code of `lpc`, on torch's stable ABI and Metal C shim. |
+| [`lpc_mps.metal`](lpc_mps.metal) | Its Metal kernels, serial over time like the CPU and CUDA ones: one threadgroup per sequence, one thread per coefficient, the last M outputs in a ring in threadgroup memory; order up to 1024. |
 | [`recurN.cu`](recurN.cu) | CUDA kernels of `lti_recurN` and `recurN`, for M up to 128 (64 for complex). |
 | [`recurN_scan.cuh`](recurN_scan.cuh) | Their chunked scan, with a decoupled look-back. |
 | [`../_ops.py`](../_ops.py) | Registers fake implementations and autograd for the recurrence ops. |
@@ -137,7 +139,7 @@ Time-varying coefficients are loaded the same way; a time-invariant one is read 
 
 ### Stage 2: scan tile totals
 
-`scan`, one kernel per accumulation type (float for float32, float16 and bfloat16, and float2 for complex64 and complex32), runs one 256-thread threadgroup per sequence, which scans its tile totals two per thread, 512 at a time, carrying the map so far between chunks of 512.
+`scan`, one kernel per accumulation type (float for float32, float16 and bfloat16, float2 for complex64 and complex32, and long for int64), runs one 256-thread threadgroup per sequence, which scans its tile totals two per thread, 512 at a time, carrying the map so far between chunks of 512.
 It writes `v`, the state, of each inclusive prefix to `states`: the state at the end of each tile.
 
 ### Stage 3: replay tiles
@@ -157,7 +159,7 @@ Replaying the scan costs SIMD arithmetic, but rereads the input instead of writi
 | `states` | `(B, n_tiles)` | The state at the end of each tile. |
 | `output` | `(B, T)` | Recurrence result. |
 
-Scratch, in float32 (two floats per value for complex64 and complex32), is `3 * B * n_tiles` values, and none for sequences of one tile.
+Scratch, in the accumulation type (two floats per value for complex64 and complex32), is `3 * B * n_tiles` values, and none for sequences of one tile.
 The dominant traffic is reading `x` (and per-step coefficients) twice and writing `output` once.
 
 | Property | Value |
@@ -216,7 +218,7 @@ pixi run python benchmarks/benchmark_mps_recur.py
 ```
 
 which reports the median latency of `torch.utils.benchmark.Timer.blocked_autorange` over at least 500 ms, interquartile range in parentheses, synchronizing PyTorch's MPS stream at each measurement boundary; input transfers are excluded.
-The CPU kernel of `scan` takes no float16 or bfloat16 (`n/a`).
+The CPU kernel of `scan` took no float16 or bfloat16 when these were measured (`n/a`).
 Every dtype and layout is on [issue #39](https://github.com/yoyolicoris/philtorch/issues/39/artifacts/2).
 
 | dtype | B | T | Coefficients | CPU median ms (IQR) | MPS median ms (IQR) | Speedup |
@@ -257,7 +259,7 @@ They run 301 and 2049 steps, one tile and three, each ending mid-vector, and `T 
 h[b, t] = A[b, t] h[b, t - 1] + x[b, t],   h[b, -1] = zi[b],
 ```
 
-for M up to 128 (64 for complex), the CUDA kernels' limit, in the same dtypes as the scalar kernels, accumulating in float32 (complex64 for complex64 and complex32).
+for M up to 128 (64 for complex), the CUDA kernels' limit, in the same dtypes as the scalar kernels, accumulating in float32 (complex64 for complex64 and complex32, int64 for int64).
 `_recur.py` sends M = 1 to the scalar kernels, which are faster, and M from 2 on here.
 
 ### Algorithm
@@ -289,6 +291,8 @@ The first round is taken as the shares are formed, so that a lane holds half a b
 **Maps.** A map's `P` runs 8 columns at a time on a SIMD group, as the product of the chunk's matrices by those columns of the identity: the `M x 8` block `X <- A[t] X`, in tiles of 8 x 8, by `simdgroup_multiply_accumulate`, the Metal counterpart of a tensor-core product, in float32, complex as four real products; maps of up to 4 states share a tile, 8 / M of them.
 The tiles of `A[t]` are read entry by entry into `thread_elements()`, converted to the accumulation type.
 A block's columns evolve apart from the others', so it needs only its own `2 ceil(M / 8)` floats a lane, in registers whatever `M`.
+
+**int64.** SIMD-group matrices hold floats and Metal's SIMD shuffles take no `long`, so int64 has no blocks and no tile maps: every vector runs on lanes, with `long`s shuffled as two 32-bit halves and products multiplied as `ulong`, and `map_vector` builds each column of a map as a vector that runs the chunk's steps from a column of the identity, with no input.
 
 Vectors run consecutive chunks of a sequence, 32 at most, in runs as even as a sequence's chunks allow, those of each sequence in turn, then the next run: the vectors in flight then read neighbouring inputs, and the matrices of time-varying `A` shared over the batch at once.
 

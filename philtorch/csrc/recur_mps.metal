@@ -1,19 +1,23 @@
 // The Metal kernels of recur_mps.mm, compiled after mps_common.metal once
-// per state size and dtype, with STATES (M), SCALAR (float, half, bfloat, or
-// float2 or half2 for complex64 or complex32), THREADS (per threadgroup) and
-// CHUNK (steps per chunk) defined, so that loops over the states unroll.
+// per state size and dtype, with STATES (M), SCALAR (float, half, bfloat, long
+// for int64, or float2 or half2 for complex64 or complex32), THREADS (per
+// threadgroup) and CHUNK (steps per chunk) defined, so that loops over the
+// states unroll.
 // README.md describes the algorithm: recur_reduce reduces each chunk but the
 // last to its map h -> P h + o, the host scans the maps as the same
 // recurrence, and recur_run runs each chunk from the state before it. A
 // chunk's vector of states runs in a block of 8 by 8 x 8 matrix products
 // (run_block) or on its own lanes (run_vector), and a map's P in blocks of 8
-// columns (map_block).
+// columns (map_block). int64 has no matrix products: its vectors always run on
+// lanes, and a map's columns, as vectors that start from the identity's
+// (map_vector).
 
 using T = SCALAR;
 using A = Acc<T>::type;
 constant constexpr uint M = STATES;
 constant constexpr uint CHUNK_STEPS = CHUNK;
-constant constexpr bool COMPLEX = sizeof(A) == 2 * sizeof(float);
+constant constexpr bool INTEGER = is_same_v<T, long>;
+constant constexpr bool COMPLEX = !INTEGER && sizeof(A) == 2 * sizeof(float);
 
 // Loops over states, lanes and tiles unroll whole, or their arrays leave
 // registers.
@@ -100,7 +104,9 @@ template <> inline void butterfly<0>(thread A *, uint) {}
 // offset by the lane: the matrix by the states, LANES rows at a time, whose
 // shares the butterfly sums, then x, added last so that cancelling products
 // meet first. The butterfly's first round is taken as the shares are
-// formed, so that a lane holds half of them at most, in registers.
+// formed, so that a lane holds half of them at most, in registers. Without
+// INPUT, a map's step, x isn't read.
+template <bool INPUT = true>
 inline void step(const device T *m, const device T *x, thread A *h, Lane l)
 {
     A next[SLOTS];
@@ -119,7 +125,7 @@ inline void step(const device T *m, const device T *x, thread A *h, Lane l)
                                     ushort(HALF));
         butterfly<HALF / 2>(v, l.lane);
         const uint s = state_of(l, block);
-        next[block] = s < M ? v[0] + A(x[column(l, block)]) : v[0];
+        next[block] = INPUT && s < M ? v[0] + A(x[column(l, block)]) : v[0];
     }
     UNROLL
     for (uint i = 0; i < SLOTS; ++i)
@@ -186,6 +192,34 @@ inline void run_vector(const device T *a, const device T *zi,
     for (uint i = 0; i < SLOTS; ++i)
         if (ends && state_of(l, i) < M)
             ends[(b * chunks + c) * M + state_of(l, i)] = h[i];
+}
+
+// Column k of map `map`'s P, as a vector (v = map * M + k) of the lanes: the
+// map's chunk's steps from the identity's column k, without inputs, zero for
+// map 0 of time-varying A, whose chunk's offset holds zi (see map_block). Built
+// as run_vector's recursion is, as int64 has no matrix products.
+inline void map_vector(const device T *a, device A *maps, uint index,
+                       uint lane, uint n_maps, uint maps_per_a, long stride_b,
+                       long stride_t)
+{
+    const Lane l = lane_of(index, lane);
+    const uint map = l.vector / M, k = l.vector % M;
+    if (map >= n_maps)
+        return;
+    const uint p = map / maps_per_a, j = map % maps_per_a;
+    const bool zero = stride_t != 0 && j == 0;
+    A h[SLOTS];
+    UNROLL
+    for (uint i = 0; i < SLOTS; ++i)
+        h[i] = !zero && state_of(l, i) == k ? Acc<A>::one() : A(0.0f);
+    const device T *m =
+        a + p * stride_b + j * CHUNK_STEPS * stride_t + clamp(l.lane);
+    for (uint t = 0; t < CHUNK_STEPS; ++t, m += stride_t)
+        step<false>(m, nullptr, h, l);
+    UNROLL
+    for (uint i = 0; i < SLOTS; ++i)
+        if (state_of(l, i) < M)
+            maps[(long(map) * M + state_of(l, i)) * M + k] = h[i];
 }
 
 // The row and first column of a lane's two entries of an 8 x 8
@@ -474,7 +508,8 @@ void recur_run(const device T *a [[buffer(0)]],
 // but from zero for c > 0. The SIMD groups after them write P to maps[p, j],
 // one per chunk j of time-varying A[p] and one for time-invariant A[p]:
 // SIMD group g * TILES + kb after them writes columns 8 kb to 8 kb + 7 of
-// maps g * packed to g * packed + packed - 1 (see map_block).
+// maps g * packed to g * packed + packed - 1 (see map_block); for int64, they
+// write the n_maps * M columns as vectors (see map_vector).
 [[kernel, max_total_threads_per_threadgroup(THREADS)]]
 void recur_reduce(const device T *a [[buffer(0)]],
                   const device T *zi [[buffer(1)]],
@@ -506,6 +541,9 @@ void recur_reduce(const device T *a [[buffer(0)]],
                                  maps_per_item, steps, stride_b, stride_t, run);
     const uint maps_per_a = stride_t == 0 ? 1 : maps_per_item;
     const uint n_maps = uint(a_batch) * maps_per_a;
+    if (INTEGER)
+        return map_vector(a, maps, index - uint(offset_groups) * SIMD_WIDTH,
+                          lane, n_maps, maps_per_a, stride_b, stride_t);
     const uint block = group - uint(offset_groups);
     const uint kb = block % TILES, first = block / TILES * uint(packed);
     if (first < n_maps)

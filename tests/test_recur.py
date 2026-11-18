@@ -4,7 +4,7 @@ import torch
 from philtorch import _recur
 from philtorch._recur import _forward, recurrence
 
-from ._cases import DEVICES, MPS
+from ._cases import DEVICES, DTYPE_TOLERANCES, MPS, random_int64, relative_error
 
 # How A is shared: (batch items, steps) it has, of B and T.
 SHARING = ["one", "per_item", "per_step", "both"]
@@ -105,16 +105,7 @@ def test_recurrence_overflows_to_inf_not_nan(M):
     torch.testing.assert_close(recurrence(A.cuda(), zi.cuda(), x.cuda()).cpu(), expected)
 
 
-@pytest.mark.parametrize(
-    "dtype, tolerance",
-    [
-        (torch.float32, 1e-5),
-        (torch.complex64, 1e-5),
-        (torch.float16, 3e-3),
-        (torch.bfloat16, 2e-2),
-        (torch.complex32, 3e-3),
-    ],
-)
+@pytest.mark.parametrize("dtype, tolerance", DTYPE_TOLERANCES.items())
 @pytest.mark.parametrize("sharing", SHARING)
 @pytest.mark.parametrize(
     "device, M, T",
@@ -137,8 +128,7 @@ def test_recurrence_low_precision(dtype, tolerance, sharing, device, M, T):
                              for t in (A, zi, x)))  # fmt: skip
     actual = recurrence(A, zi, x)
     assert actual.dtype == dtype
-    error = (actual.cpu().to(expected.dtype) - expected).abs().max() / expected.abs().max()
-    assert error < tolerance
+    assert relative_error(actual, expected) < tolerance
 
 
 def _mps_error(A, zi, x):
@@ -148,7 +138,7 @@ def _mps_error(A, zi, x):
     expected = recurrence(*(t.to(wide) for t in (A, zi, x)))
     actual = recurrence(*(t.to("mps") for t in (A, zi, x)))
     assert actual.dtype == x.dtype
-    return ((actual.cpu().to(wide) - expected).abs().max() / expected.abs().max()).item()
+    return relative_error(actual, expected).item()
 
 
 @MPS
@@ -166,6 +156,26 @@ def _mps_error(A, zi, x):
 def test_recurrence_mps(sharing, B, T, M, dtype):
     A, zi, x = _problem(B, T, M, sharing, dtype)
     assert _mps_error(A, zi, x) < 1e-5
+
+
+@MPS
+@pytest.mark.parametrize("sharing", SHARING)
+@pytest.mark.parametrize(
+    "B, T, M",
+    # Around chunks of 64 steps and tiles of 1024 (M = 1); 16 states is where
+    # float32 vectors would run in blocks, 17 leaves lanes idle, 40 and 100
+    # hold several states per lane; 9 sequences of few chunks each; 2**17 steps
+    # take three levels of maps over chunks of chunks.
+    [(3, T, M) for T in (1, 63, 64, 65, 200) for M in (2, 3, 16, 17)]
+    + [(3, T, 1) for T in (1, 1023, 1024, 1025, 4097)]
+    + [(2, 130, 40), (2, 70, 100), (9, 200, 3), (2, 2**17 + 3, 2)],
+)
+def test_recurrence_mps_int64(sharing, B, T, M):
+    # States that wrap around, which must match the CPU's exactly.
+    A, zi, x = _integer_problem(B, T, M, sharing, torch.int64, "cpu", wrap=True)
+    actual = recurrence(*(t.to("mps") for t in (A, zi, x)))
+    assert actual.dtype == torch.int64
+    assert torch.equal(actual.cpu(), recurrence(A, zi, x))
 
 
 @MPS
@@ -442,7 +452,7 @@ INTEGER_DISPATCH = [
 ]
 
 
-# The Metal kernels, which take these five dtypes: the scalar ones M = 1, and
+# The Metal kernels, which take these six dtypes: the scalar ones M = 1, and
 # those of order M the rest.
 MPS_DISPATCH = [
     pytest.param(*case, marks=MPS)
@@ -459,6 +469,7 @@ MPS_DISPATCH = [
             torch.bfloat16,
             torch.complex64,
             torch.complex32,
+            torch.int64,
         )
     ]
 ]
@@ -537,14 +548,20 @@ def test_recurrence_in_integers(device):
     assert h[0, :, 0].tolist() == fib[1:]
 
 
-def _integer_problem(B, T, M, sharing, dtype, device):
-    """Small integers, whose states grow, and overflow, as integer arithmetic does."""
+def _integer_problem(B, T, M, sharing, dtype, device, wrap=False):
+    """Small integers, whose states grow, and overflow, as integer arithmetic
+    does; with ``wrap``, random 62-bit ones, whose products wrap around at once."""
     gen = torch.Generator().manual_seed(0)
     Ba = B if sharing in ("per_item", "both") else 1
     Ta = T if sharing in ("per_step", "both") else 1
-    A = torch.randint(-2, 3, (Ba, Ta, M, M), generator=gen)
-    x = torch.randint(-5, 6, (B, T, M), generator=gen)
-    zi = torch.randint(-5, 6, (B, M), generator=gen)
+    shapes = ((Ba, Ta, M, M), (B, T, M), (B, M))
+    if wrap:
+        A, x, zi = (random_int64(*shape, generator=gen) for shape in shapes)
+    else:
+        A, x, zi = (
+            torch.randint(-bound, bound + 1, shape, generator=gen)
+            for shape, bound in zip(shapes, (2, 5, 5))
+        )
     return [t.to(device, dtype) for t in (A, zi, x)]
 
 

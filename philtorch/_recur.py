@@ -25,13 +25,13 @@ The forward pass runs the first kernel of ``_KERNELS`` that takes the input:
   in float32, float16 and bfloat16. Those of M = 2 and 3 apply only while
   B * (T + 1) fits in an int. ``lti_recurN`` and ``recurN`` take the rest,
   and the inputs past that size, for M up to 128 (64 complex);
-* MPS: the Metal kernels, in float32, float16, bfloat16, complex64 and
-  complex32: ``lti_recur`` and ``scan`` for M = 1, ``lti_recurN`` and
-  ``recurN`` for M up to 128 (64 complex).
+* MPS: the Metal kernels, in float32, float16, bfloat16, complex64,
+  complex32 and int64: ``lti_recur`` and ``scan`` for M = 1, ``lti_recurN``
+  and ``recurN`` for M up to 128 (64 complex).
 
-Every kernel but ``scan``, ``recur3``, ``lti_recur3`` and the Metal
-kernels takes int64 too, so integer recurrences such as the Fibonacci
-numbers run exactly. Anything else raises: there is no fallback to PyTorch ops.
+Every kernel but CUDA's ``scan``, ``recur3`` and ``lti_recur3`` takes int64 too,
+so integer recurrences such as the Fibonacci numbers run exactly. Anything else
+raises: there is no fallback to PyTorch ops.
 """
 
 import torch
@@ -39,7 +39,7 @@ import torch.nn.functional as F
 from torch import Tensor
 
 from ._ssm import to_lpv, to_lti
-from .utils import _check_shared
+from .utils import _FLOATING_DTYPES, _check_shared, _dtype_names, _flip
 
 # Each kernel is a condition on the input, (A, x), and a launch, (A, zi, x),
 # listed in _KERNELS in order of preference. The native kernels take A as one
@@ -58,16 +58,7 @@ def _floating_or_int64(x: Tensor) -> bool:
 
 # The dtypes the native kernels dispatch on; others, such as float8, would
 # raise RuntimeError there.
-_NATIVE_DTYPES = (
-    torch.float16,
-    torch.bfloat16,
-    torch.float32,
-    torch.float64,
-    torch.complex32,
-    torch.complex64,
-    torch.complex128,
-    torch.int64,
-)
+_NATIVE_DTYPES = (*_FLOATING_DTYPES, torch.int64)
 
 
 # The largest M of the Metal and CUDA kernels of order M, half that for complex.
@@ -79,7 +70,14 @@ def _fits_states(x: Tensor) -> bool:
 
 
 # The dtypes the Metal kernels take.
-_MPS_DTYPES = (torch.float32, torch.float16, torch.bfloat16, torch.complex64, torch.complex32)
+_MPS_DTYPES = (
+    torch.float32,
+    torch.float16,
+    torch.bfloat16,
+    torch.int64,
+    torch.complex64,
+    torch.complex32,
+)
 
 
 def _mps_takes(x: Tensor) -> bool:
@@ -142,7 +140,7 @@ def _lti_recur2(A: Tensor, zi: Tensor, x: Tensor) -> Tensor:
     return torch.ops.philtorch.lti_recur2(to_lti(A), zi, x)
 
 
-# The dtypes ``scan`` takes, the vendored torchlpc's.
+# The dtypes the CUDA ``scan`` takes, the vendored torchlpc's.
 _SCAN_DTYPES = (torch.float32, torch.float64, torch.complex64, torch.complex128)
 
 
@@ -242,8 +240,7 @@ def _forward(A: Tensor, zi: Tensor, x: Tensor) -> Tensor:
         if applies(A, x):
             if x.dtype not in _NATIVE_DTYPES:
                 raise NotImplementedError(
-                    "the native kernels take float16, bfloat16, float32, float64, "
-                    f"complex32, complex64, complex128 and int64, got {x.dtype}"
+                    f"the native kernels take {_dtype_names(_NATIVE_DTYPES)}, got {x.dtype}"
                 )
             return run(A, zi, x)
     kind = "time-invariant" if _time_invariant(A) else "time-varying"
@@ -256,7 +253,7 @@ def _forward(A: Tensor, zi: Tensor, x: Tensor) -> Tensor:
     elif x.device.type == "mps":  # pragma: no cover - MPS-only
         reason = (
             f"; the Metal kernels take M up to {_MAX_STATES} ({_MAX_STATES // 2} "
-            "complex) in float32, float16, bfloat16, complex64 and complex32"
+            f"complex) in {_dtype_names(_MPS_DTYPES)}"
         )
     raise NotImplementedError(
         f"no recurrence kernel for {kind} A with M = {x.size(-1)} in {x.dtype} "
@@ -343,10 +340,7 @@ def _gradients(run, A, zi, h, grad, needs_A, needs_zi):
     def narrow(t):
         return t.to(torch.complex32) if low else t
 
-    def flip(t):
-        return narrow(wide(t).flip(1))
-
-    lam = torch.cat([flip(run(A_H, grad[:, -1], flip(grad[:, :-1]))), grad[:, -1:]], 1)
+    lam = torch.cat([_flip(run(A_H, grad[:, -1], _flip(grad[:, :-1], 1)), 1), grad[:, -1:]], 1)
     grad_A = grad_zi = None
     if needs_A:
         grad_A = narrow(_sum_outer(wide(lam), wide(_previous(zi.conj(), h.conj())), Ba, Ta))

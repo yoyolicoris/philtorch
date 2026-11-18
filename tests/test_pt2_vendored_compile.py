@@ -49,7 +49,9 @@ def _assert_compiled_forward_and_backward(
     compiled_output = torch.compile(function, fullgraph=True)(*compiled_inputs)
     torch.testing.assert_close(compiled_output, eager_output)
 
-    grad_output = torch.randn_like(eager_output)
+    # randn_like has no complex32: draw it in complex64.
+    wide = torch.complex64 if eager_output.dtype == torch.complex32 else eager_output.dtype
+    grad_output = torch.randn_like(eager_output, dtype=wide).to(eager_output.dtype)
     eager_output.backward(grad_output)
     compiled_output.backward(grad_output)
 
@@ -78,6 +80,27 @@ def test_allpole_compile_forward_and_backward(device: str) -> None:
     x = torch.randn(2, 16, device=device)
 
     _assert_compiled_forward_and_backward(_run_allpole, (a, zi, x))
+
+
+# Inductor skips bfloat16 on a GPU without native support, as CI's T4 (sm_75),
+# which fullgraph=True turns into an error: bfloat16 is compiled on CPU only.
+_LOW_PRECISION_CASES = [
+    pytest.param("cpu", dtype, marks=_SKIP_WITHOUT_CPU_INDUCTOR)
+    for dtype in (torch.float16, torch.bfloat16, torch.complex32)
+] + [
+    pytest.param("cuda", dtype, marks=pytest.mark.cuda)
+    for dtype in (torch.float16, torch.complex32)
+]
+
+
+@pytest.mark.parametrize(("device", "dtype"), _LOW_PRECISION_CASES)
+def test_lpc_compile_forward_and_backward_in_low_precision(device: str, dtype: torch.dtype) -> None:
+    # lpc itself: allpole flips zi, which complex32 lacks on CPU.
+    A = (torch.randn(2, 16, 3) * 0.05).to(device, dtype)
+    zi = torch.randn(2, 3).to(device, dtype)
+    x = torch.randn(2, 16).to(device, dtype)
+
+    _assert_compiled_forward_and_backward(vendored_lpc, (x, A, zi))
 
 
 @pytest.mark.usefixtures("isolated_rng")

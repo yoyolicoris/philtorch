@@ -161,7 +161,9 @@ def allpole(
         ValueError: if :attr:`a`, :attr:`zi` and :attr:`x` don't share a dtype
             and a device, or the shapes do not match.
         NotImplementedError: if :attr:`x` is floating point or complex but not
-            float32, float64, complex64 or complex128.
+            float16, bfloat16, float32, float64, complex32, complex64 or
+            complex128.
+        RuntimeError: on CUDA and MPS, if :math:`M` is larger than 1024.
 
     Example::
 
@@ -292,8 +294,10 @@ def lfilter(
             has a batch size other than that of a batched :attr:`x`, or the
             other shapes do not match.
         NotImplementedError: with ``backend="torchlpc"``, for ``form="tdf2"``
-            or an :attr:`x` that is floating point or complex but not float32,
-            float64, complex64 or complex128.
+            or an :attr:`x` that is floating point or complex but not float16,
+            bfloat16, float32, float64, complex32, complex64 or complex128.
+        RuntimeError: with ``backend="torchlpc"``, on CUDA and MPS, if the order
+            of :attr:`a` is larger than 1024.
 
     Example::
 
