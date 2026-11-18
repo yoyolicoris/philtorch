@@ -149,6 +149,9 @@ def vandermonde(poles: Tensor) -> Tensor:
         Tensor: the Vandermonde matrices, of shape :math:`(*, M, M)`, with the
         dtype and device of :attr:`poles`.
 
+    Raises:
+        ValueError: if :attr:`poles` is 0-D.
+
     Example::
 
         >>> from philtorch.mat import companion, vandermonde
@@ -163,6 +166,8 @@ def vandermonde(poles: Tensor) -> Tensor:
         >>> torch.allclose(C @ V, V @ torch.diag(poles))
         True
     """
+    if poles.dim() == 0:
+        raise ValueError("poles must be at least 1-D.")
     # torch.linalg.vander takes two poles or more
     if poles.size(-1) == 1:
         return torch.ones_like(poles).unsqueeze(-1)

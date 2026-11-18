@@ -27,7 +27,7 @@ def test_matrices_cumdot(M: int):
 
 
 # One pole, whose matrix is [[1]], and several; complex32 runs in complex64, as
-# CPU's cumprod takes no complex32.
+# torch.linalg.vander takes no complex32.
 @pytest.mark.parametrize(
     "M, dtype", [(1, torch.complex128), (3, torch.complex128), (3, torch.complex32)]
 )
@@ -37,7 +37,8 @@ def test_vandermonde_batched(M: int, dtype: torch.dtype):
     expected = poles.to(torch.complex128).unsqueeze(-2) ** powers.unsqueeze(-1)
     V = vandermonde(poles)
     assert V.dtype == dtype
-    torch.testing.assert_close(V.to(torch.complex128), expected, rtol=2e-3, atol=2e-3)
+    tolerance = {} if dtype == torch.complex128 else {"rtol": 2e-3, "atol": 2e-3}
+    torch.testing.assert_close(V.to(torch.complex128), expected, **tolerance)
 
 
 # bfloat16 and complex32 run in float32 and complex64, as CPU's cumprod takes
