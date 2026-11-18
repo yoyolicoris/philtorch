@@ -16,6 +16,7 @@ from philtorch.mat import (
     find_eigenvectors,
     matrices_cumdot,
     matrix_power_accumulate,
+    vandermonde,
 )
 from philtorch.nl import newton_solve
 from philtorch.poly import polydiv, polymul
@@ -1163,6 +1164,12 @@ _MAT_CASES = [
         lambda: matrices_cumdot(_zeros(4, 2, 3)),
         "must have square matrices",
         id="cumdot-A-not-square",
+    ),
+    # vandermonde(poles): poles (*, M)
+    pytest.param(
+        lambda: vandermonde(_zeros(())),
+        "poles must be at least 1-D",
+        id="vandermonde-poles-0d",
     ),
     # confluent_vandermonde(poles, multiplicity): poles (*, U); multiplicity int32 or
     # int64 >= 1 of shape (U)

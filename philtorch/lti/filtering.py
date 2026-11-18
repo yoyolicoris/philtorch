@@ -8,7 +8,7 @@ import torch.nn.functional as F
 from torch import Tensor
 
 from .. import _ssm
-from ..mat import companion, confluent_vandermonde
+from ..mat import companion, vandermonde
 from ..poly import polydiv
 from ..utils import _check_shared, _squeeze_first_result, chain_functions
 from .recur import linear_recurrence
@@ -1098,7 +1098,7 @@ def _diag_ssm_lfilter(
         A = companion(a)
         kwargs["A"] = A if form == "df2" else A.mT
     elif kwargs.get("V") is None and kwargs.get("Vinv") is None:
-        V = confluent_vandermonde(L, torch.ones(L.size(-1), dtype=torch.long, device=L.device))
+        V = vandermonde(L)
         kwargs |= {"V": V} if form == "df2" else {"Vinv": V.mT}
 
     match form:

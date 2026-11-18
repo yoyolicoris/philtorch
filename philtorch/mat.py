@@ -124,7 +124,7 @@ def companion(a: Tensor) -> Tensor:
 
 
 def vandermonde(poles: Tensor) -> Tensor:
-    r"""Return the Vandermonde matrix of descending powers of poles.
+    r"""Return the Vandermonde matrices of descending powers of poles.
 
     For poles :math:`p_0, \dots, p_{M-1}`, this returns
 
@@ -136,17 +136,21 @@ def vandermonde(poles: Tensor) -> Tensor:
             1 & 1 & \cdots & 1
         \end{bmatrix},
 
-    the transpose of :func:`torch.vander`. Its columns are the eigenvectors of
-    the :func:`companion` matrix :math:`C` whose eigenvalues are the poles, so
+    the transpose of :func:`torch.linalg.vander`'s matrix, with the powers in
+    descending order. Its columns are the eigenvectors of the :func:`companion`
+    matrix :math:`C` whose eigenvalues are the poles, so
     :math:`C V = V \operatorname{diag}(p_0, \dots, p_{M-1})`.
 
     Args:
-        poles (Tensor): the poles, of shape :math:`(M)`. Batched poles are not
-            supported.
+        poles (Tensor): the poles, of shape :math:`(*, M)`, where :math:`*` is
+            zero or more batch dimensions.
 
     Returns:
-        Tensor: the Vandermonde matrix, of shape :math:`(M, M)`, with the dtype
-        and device of :attr:`poles`.
+        Tensor: the Vandermonde matrices, of shape :math:`(*, M, M)`, with the
+        dtype and device of :attr:`poles`.
+
+    Raises:
+        ValueError: if :attr:`poles` is 0-D.
 
     Example::
 
@@ -162,9 +166,13 @@ def vandermonde(poles: Tensor) -> Tensor:
         >>> torch.allclose(C @ V, V @ torch.diag(poles))
         True
     """
+    if poles.dim() == 0:
+        raise ValueError("poles must be at least 1-D.")
+    # torch.linalg.vander takes two poles or more
     if poles.size(-1) == 1:
         return torch.ones_like(poles).unsqueeze(-1)
-    return torch.vander(poles).mT
+    p = poles.to(_accumulation_dtype(poles.dtype))
+    return torch.linalg.vander(p).flip(-1).mT.to(poles.dtype)
 
 
 def confluent_vandermonde(poles: Tensor, multiplicity: Tensor) -> Tensor:
