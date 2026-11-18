@@ -29,9 +29,9 @@ The forward pass runs the first kernel of ``_KERNELS`` that takes the input:
   complex32 and int64: ``lti_recur`` and ``scan`` for M = 1, ``lti_recurN``
   and ``recurN`` for M up to 128 (64 complex).
 
-Every kernel but CUDA's ``scan``, ``recur3`` and ``lti_recur3`` takes int64 too,
-so integer recurrences such as the Fibonacci numbers run exactly. Anything else
-raises: there is no fallback to PyTorch ops.
+Every kernel but ``recur3`` and ``lti_recur3`` takes int64 too, so integer
+recurrences such as the Fibonacci numbers run exactly. Anything else raises:
+there is no fallback to PyTorch ops.
 """
 
 import torch
@@ -140,16 +140,12 @@ def _lti_recur2(A: Tensor, zi: Tensor, x: Tensor) -> Tensor:
     return torch.ops.philtorch.lti_recur2(to_lti(A), zi, x)
 
 
-# The dtypes the CUDA ``scan`` takes, the vendored torchlpc's.
-_SCAN_DTYPES = (torch.float32, torch.float64, torch.complex64, torch.complex128)
-
-
 def _scan_applies(A: Tensor, x: Tensor) -> bool:
     # On CPU, time-varying M = 1 falls through to recurN, whose kernel scan runs.
     return (
         not _time_invariant(A)
         and x.size(-1) == 1
-        and (x.is_cuda and x.dtype in _SCAN_DTYPES or _mps_takes(x))
+        and (x.is_cuda and _floating_or_int64(x) or _mps_takes(x))
     )
 
 

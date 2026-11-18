@@ -44,21 +44,6 @@ inline void check_scan_shapes(const torch::stable::Tensor &impulse,
                     "impulse and decay must be (B, T) and init (B,)");
 }
 
-// The checks of scan on CUDA: its shapes, in torchlpc's dtypes; the recurrence
-// kernels it runs also take integers and half precision. CPU checks only the
-// shapes.
-inline void check_scan_inputs(const torch::stable::Tensor &impulse,
-                              const torch::stable::Tensor &decay,
-                              const torch::stable::Tensor &init)
-{
-    check_scan_shapes(impulse, decay, init);
-    using S = torch::headeronly::ScalarType;
-    const auto type = impulse.scalar_type();
-    STD_TORCH_CHECK(type == S::Float || type == S::Double ||
-                        type == S::ComplexFloat || type == S::ComplexDouble,
-                    "Input must be float32, float64, complex64 or complex128");
-}
-
 // The order check of the ops of one order M (recur2, recur3 and their lti_
 // forms), ahead of check_recurN_shapes.
 inline void check_order(const torch::stable::Tensor &x, int64_t M)
