@@ -1,11 +1,14 @@
 # Phase 1 (low risk): auto-review every PR, read-only.
 # Uses `pull_request` (NOT pull_request_target) so forked PRs run with a
 # read-only token and cannot reach repo secrets for write access.
+# No `synchronize`: the review runs once when a PR opens (or reopens, or
+# leaves draft), not on every push. A full re-review per push is unbounded
+# cost for no benefit; re-review is on demand.
 name: opencode-pr-review
 
 on:
   pull_request:
-    types: [opened, synchronize, reopened, ready_for_review]
+    types: [opened, reopened, ready_for_review]
 
 jobs:
   review:
