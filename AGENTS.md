@@ -122,9 +122,9 @@ Keep the measurements behind an issue, its benchmark or error tables and the scr
 - Never merge into `main`. A release fast-forwards `main` to a `dev` commit and tags it with a three-part `vX.Y.Z` tag (setuptools_scm), as described in `CONTRIBUTING.md`.
 - **Copilot reviews** arrive as comments: "Approval recommended" in the summary is its approval. The summary can also list issues it previously missed, outside any review thread, so read the review body as well as its threads.
 
-## Automated PR review
+## Manual PR review
 
-An OpenCode review agent runs on every pull request (`.github/workflows/opencode-pr-review.yml`, `.opencode/agent/review.md`).
+A review runs only when a maintainer comments `/review` on a pull request (`.github/workflows/opencode-command.yml`, `.opencode/agent/review.md`).
 It follows `.github/skills/philtorch-code-review/SKILL.md`, reports findings by severity, and never approves or merges.
 Its comments are advisory: a human maintainer decides.
 
