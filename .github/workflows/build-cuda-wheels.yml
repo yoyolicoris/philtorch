@@ -53,6 +53,7 @@ on:
       - "philtorch/**/_*_kernels.py"
       - "philtorch/_recur.py"
       - "philtorch/_ops.py"
+      - "philtorch/_torchlpc.py"
       - "philtorch/align/*.py"
       - "philtorch/estimation/hmm.py"
       - "tests/_cases.py"
