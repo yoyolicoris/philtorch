@@ -82,8 +82,18 @@ def test_allpole_compile_forward_and_backward(device: str) -> None:
     _assert_compiled_forward_and_backward(_run_allpole, (a, zi, x))
 
 
-@pytest.mark.parametrize("device", _DEVICES)
-@pytest.mark.parametrize("dtype", [torch.float16, torch.bfloat16, torch.complex32])
+# Inductor skips bfloat16 on a GPU without native support, as CI's T4 (sm_75),
+# which fullgraph=True turns into an error: bfloat16 is compiled on CPU only.
+_LOW_PRECISION_CASES = [
+    pytest.param("cpu", dtype, marks=_SKIP_WITHOUT_CPU_INDUCTOR)
+    for dtype in (torch.float16, torch.bfloat16, torch.complex32)
+] + [
+    pytest.param("cuda", dtype, marks=pytest.mark.cuda)
+    for dtype in (torch.float16, torch.complex32)
+]
+
+
+@pytest.mark.parametrize(("device", "dtype"), _LOW_PRECISION_CASES)
 def test_lpc_compile_forward_and_backward_in_low_precision(device: str, dtype: torch.dtype) -> None:
     # lpc itself: allpole flips zi, which complex32 lacks on CPU.
     A = (torch.randn(2, 16, 3) * 0.05).to(device, dtype)
