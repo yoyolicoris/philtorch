@@ -24,8 +24,7 @@ import tarfile
 import tempfile
 from pathlib import Path
 
-sys.path.insert(0, str(Path(__file__).parent))
-from torch_matrix import INDEX_URL, REPO_ROOT, cuda_major, version_tuple  # noqa: E402
+from torch_matrix import INDEX_URL, REPO_ROOT, cuda_major, version_tuple
 
 GPUS = ("T4", "L4", "A100", "G4", "H100")
 # Printed by the remote code when it ends well: `colab exec` exits with 0 after
