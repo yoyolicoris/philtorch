@@ -92,4 +92,13 @@ target-version = "py311"
 extend-exclude = ["third_party"]
 
 [tool.ruff.lint]
-select = ["E", "F", "W", "I", "UP"]
+select = ["E", "F", "W", "I", "UP", "TID251"]
+
+[tool.ruff.lint.per-file-ignores]
+# The banned APIs below are banned in the benchmarks only.
+"!benchmarks/**" = ["TID251"]
+
+[tool.ruff.lint.flake8-tidy-imports.banned-api]
+"time".msg = "Benchmarks time with torch.utils.benchmark (benchmarks/_timing.py) or torch.profiler."
+"timeit".msg = "Benchmarks time with torch.utils.benchmark (benchmarks/_timing.py) or torch.profiler."
+"triton.testing".msg = "Benchmarks time with torch.utils.benchmark (benchmarks/_timing.py) or torch.profiler."

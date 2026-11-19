@@ -56,7 +56,7 @@ pixi run docs                    # Sphinx with -W: warnings, unresolved referenc
 
 Locally, run only the tests that exercise the change, selected by name: node IDs or `-k` expressions, not whole files. Find them by searching the tests for the changed function, op or kernel, and state which tests you ran and why they cover the change. The full suite runs on CI; run it locally only when the maintainer asks.
 
-Benchmarks live in `benchmarks/` and run as `pixi run python benchmarks/<name>.py`.
+Benchmarks live in `benchmarks/` and run as `pixi run python benchmarks/<name>.py`. They time with `torch.utils.benchmark`, through `benchmarks/_timing.py`'s `bench`, or with `torch.profiler`: Ruff rejects `time`, `timeit` and `triton.testing` there.
 
 Keep the measurements behind an issue, its benchmark or error tables and the scripts that produced them, on the issue as a `generic` artifact, or an `embedded_html` one for charts. Update it when they are run again, so that earlier versions stay comparable. Where a chart says more than a table, such as a speed-up or an error against a size, attach it to the pull request or comment as a PNG: `gh pr create`, `pr edit`, `issue comment` and the like take `--attach <file>#<alt text>` (gh 2.103 or later), and rewrite a body's `![alt](./plot.png)` to the upload.
 
