@@ -7,36 +7,16 @@ Run from the repository root on a CUDA machine:
 Times h[t] = A[t] h[t - 1] + x[t] with philtorch._recur.recurrence, which
 state_space_recursion runs with the default unroll_factor=None, and with
 philtorch.lti / philtorch.lpv's state_space_recursion at unroll_factor=32, the
-block-unrolled PyTorch recursion, forward alone and forward plus backward,
-after a warm-up call.
+block-unrolled PyTorch recursion, forward alone and forward plus backward:
+the median milliseconds per call, after a warm-up call.
 """
 
-import time
-
 import torch
+from _timing import bench
 
 from philtorch._recur import recurrence
 from philtorch.lpv import ssm as lpv_ssm
 from philtorch.lti import ssm as lti_ssm
-
-
-def bench(fn, budget=1.0):
-    """Mean milliseconds per call, or the error's name."""
-    try:
-        fn()
-        torch.cuda.synchronize()
-        start = time.perf_counter()
-        fn()
-        torch.cuda.synchronize()
-        n = max(1, min(20, int(budget / max(time.perf_counter() - start, 1e-6))))
-        start = time.perf_counter()
-        for _ in range(n):
-            fn()
-        torch.cuda.synchronize()
-        return f"{1e3 * (time.perf_counter() - start) / n:9.2f}"
-    # Out of memory and no kernel are RuntimeErrors too.
-    except RuntimeError as e:
-        return f"{type(e).__name__[:9]:>9}"
 
 
 def main():
