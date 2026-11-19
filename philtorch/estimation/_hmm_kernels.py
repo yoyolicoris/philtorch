@@ -372,7 +372,8 @@ def chain(
         trans_strides = (B, 0, trans.stride(0), trans.stride(1))
     BK, BC, BR, num_warps = _config(K, semiring)
     flags = dict(T=T, ADJOINT=adjoint, SEMIRING=_SEMIRINGS[semiring])
-    flags |= dict(BK=BK, BC=BC, num_warps=num_warps)
+    # Fused multiply-adds, whatever Triton's default (off from Triton 3.10).
+    flags |= dict(BK=BK, BC=BC, num_warps=num_warps, enable_fp_fusion=True)
     if C == 1:
         starts = y0.contiguous()
     else:

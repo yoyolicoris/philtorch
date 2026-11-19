@@ -1083,7 +1083,7 @@ def _backtrack(D, cost, ends, steps, diag_weight):
     walk = ends.new_full((B, P, 2), -1)
     _backtrack_kernel[(B,)](
         D, cost.contiguous(), ends.contiguous(), walk, R, L, diag_weight, _STEPS[steps],
-        _block(R, L, steps), num_warps=1,
+        _block(R, L, steps), num_warps=1, enable_fp_fusion=True,
     )  # fmt: skip
     return _in_order(walk)
 
@@ -1105,12 +1105,13 @@ backtrack.register_fake(_fake_path)
 
 
 def _num_warps(TL: int, backward: bool = False) -> int:
-    """Warps per tile by its columns, measured on an RTX 5060 Ti.
+    """Warps per tile by its columns, measured on an RTX 5060 Ti with Triton
+    3.7.1 to 3.9.
 
     The backward kernel keeps more of each row live.
     """
     if backward:
-        return 4 if TL <= 128 else 8 if TL <= 256 else 16
+        return 4 if TL <= 128 else 8 if TL <= 256 else 16 if TL <= 8192 else 32
     return 4 if TL <= 256 else 8 if TL <= 1024 else 16
 
 
@@ -1222,11 +1223,11 @@ def _diagonals(
         if win is not None:
             _hit_kernel[(P, k)](
                 hit, items, win, sizes[0], R, L, d0, TR, row0, shear, transpose, reverse, given,
-                TL, num_warps=_num_warps(TL),
+                TL, num_warps=_num_warps(TL), enable_fp_fusion=True,
             )  # fmt: skip
         _cost_kernel[(P, blocks, k)](
             scratch, hit, items, fx, fy, win, *sizes, R, L, d0, TR, row0, shear, transpose,
-            reverse, TL, BF, num_warps=4,
+            reverse, TL, BF, num_warps=4, enable_fp_fusion=True,
         )  # fmt: skip
         yield from ((d, scratch, hit, (d - d0) * P, tiles(d)) for d in range(d0, d0 + k))
 
@@ -1267,7 +1268,7 @@ def _launch(
         _dag_kernel[(n_tiles * B,)](
             cost, D, skip, *weights, x, y, out, scratch, hit, R, L, diag_weight, d, TR, slot, RB,
             sbase, soft, _STEPS[steps], reverse, TL, n_cols > 1, given, strip is not None,
-            num_warps=_num_warps(TL, D is not None),
+            num_warps=_num_warps(TL, D is not None), enable_fp_fusion=True,
         )  # fmt: skip
 
 
@@ -1291,6 +1292,7 @@ def _wavefront(feat, items, soft, steps, diag_weight, reverse, h_max, w_max, bac
         _frontier_kernel[(S * n_tiles,)](
             items, rows, cols, scratch, hit, codes, diag_weight, d, TR, W, h_max, slot, soft,
             steps == "symmetric", reverse, TL, n_cols > 1, num_warps=_num_warps(TL),
+            enable_fp_fusion=True,
         )  # fmt: skip
     return rows, TR, codes
 
@@ -1314,7 +1316,7 @@ def leaf_paths(
     walk = items.new_full((items.size(0), P, 2), -1)
     _walk_kernel[(items.size(0),)](
         codes, items, walk, codes.size(2), codes.size(1), P, _block(h_max, w_max, steps),
-        num_warps=1,
+        num_warps=1, enable_fp_fusion=True,
     )  # fmt: skip
     return _in_order(walk)
 
@@ -1565,7 +1567,7 @@ def ctc_viterbi(cost: Tensor, skip: Tensor) -> tuple[Tensor, Tensor]:
     # nearly doubling it on long rows.
     steps_back = torch.empty_like(D, dtype=torch.int8)
     _shares_kernel[(B * R, triton.cdiv(L, _SHARES_BLOCK))](
-        D, cost, skip, steps_back, R, L, BLOCK=_SHARES_BLOCK, num_warps=4,
+        D, cost, skip, steps_back, R, L, BLOCK=_SHARES_BLOCK, num_warps=4, enable_fp_fusion=True,
     )  # fmt: skip
     return D, steps_back
 
