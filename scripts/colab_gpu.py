@@ -24,7 +24,8 @@ import tarfile
 import tempfile
 from pathlib import Path
 
-from torch_matrix import INDEX_URL, REPO_ROOT, cuda_major, version_tuple
+sys.path.insert(0, str(Path(__file__).parent))
+from torch_matrix import INDEX_URL, REPO_ROOT, cuda_major, version_tuple  # noqa: E402
 
 GPUS = ("T4", "L4", "A100", "G4", "H100")
 # Printed by the remote code when it ends well: `colab exec` exits with 0 after
@@ -66,7 +67,8 @@ try:
     have_torch = importlib.metadata.version("torch")
 except importlib.metadata.PackageNotFoundError:
     have_torch = ""
-if have_torch.split("+")[0] != TORCH:
+# The index's wheels carry its CUDA build as their local version: 2.15.0+cu134.
+if have_torch != f"{TORCH}+{INDEX.rsplit('/', 1)[1]}":
     run(*pip, f"torch=={TORCH}", "--index-url", INDEX)
 run(*pip, "pytest", "pytest-cov", "numpy", "scipy")
 run(*pip, "--no-deps", "--force-reinstall", WHEEL)
