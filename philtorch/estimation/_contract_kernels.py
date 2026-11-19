@@ -95,7 +95,7 @@ def _contract(a, b, c, x, y, z) -> Tensor:
     strides = (*a.stride()[1:], *b.stride()[1:], *c.stride()[1:])
     _contract_kernel[grid](
         a, b, c, x, y, z, out, n_p, n_i, n_j, n_k, *strides, BP, BI, BK, BJ,
-        num_warps=1, num_stages=1,
+        num_warps=1, num_stages=1, enable_fp_fusion=True,
     )  # fmt: skip
     return out
 

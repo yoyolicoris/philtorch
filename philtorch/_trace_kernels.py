@@ -91,7 +91,8 @@ def trace(x0: Tensor, maps: Tensor, reverse: bool = False, relative: bool = Fals
     assert maps.stride()[1:] == (K, 1), "steps of K contiguous values"
     T = _CHUNK
     C = triton.cdiv(L, T)
-    flags = dict(T=T, REVERSE=reverse, RELATIVE=relative, num_warps=1)
+    # Fused multiply-adds, whatever Triton's default (off from Triton 3.10).
+    flags = dict(T=T, REVERSE=reverse, RELATIVE=relative, num_warps=1, enable_fp_fusion=True)
     if C == 1:
         starts = x0.contiguous()
     else:
