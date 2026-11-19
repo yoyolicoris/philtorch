@@ -51,14 +51,14 @@ def _time_invariant(A: Tensor) -> bool:
     return A.size(1) == 1
 
 
-def _floating_or_int64(x: Tensor) -> bool:
-    """The dtypes of the kernels of order M: integers only as int64."""
-    return x.is_floating_point() or x.is_complex() or x.dtype == torch.int64
-
-
 # The dtypes the native kernels dispatch on; others, such as float8, would
 # raise RuntimeError there.
 _NATIVE_DTYPES = (*_FLOATING_DTYPES, torch.int64)
+
+
+def _native(x: Tensor) -> bool:
+    """A device with kernels, and a dtype they take."""
+    return x.device.type in ("cpu", "cuda", "mps") and x.dtype in _NATIVE_DTYPES
 
 
 # The largest M of the Metal and CUDA kernels of order M, half that for complex.
@@ -69,35 +69,14 @@ def _fits_states(x: Tensor) -> bool:
     return x.size(-1) <= (_MAX_STATES // 2 if x.is_complex() else _MAX_STATES)
 
 
-# The dtypes the Metal kernels take.
-_MPS_DTYPES = (
-    torch.float32,
-    torch.float16,
-    torch.bfloat16,
-    torch.int64,
-    torch.complex64,
-    torch.complex32,
-)
-
-
-def _mps_takes(x: Tensor) -> bool:
-    return x.device.type == "mps" and x.dtype in _MPS_DTYPES and _fits_states(x)
-
-
 def _recurN_takes(x: Tensor) -> bool:
-    """The kernels of order M take x: any M on CPU, up to _MAX_STATES on CUDA,
-    and on MPS the Metal dtypes up to that size."""
-    if x.is_cpu or x.is_cuda and _fits_states(x):
-        return _floating_or_int64(x)
-    return _mps_takes(x)
+    """The kernels of order M take x: any M on CPU, up to _MAX_STATES on CUDA
+    and MPS."""
+    return _native(x) and (x.is_cpu or _fits_states(x))
 
 
 def _lti_recur_applies(A: Tensor, x: Tensor) -> bool:
-    return (
-        _time_invariant(A)
-        and x.size(-1) == 1
-        and (x.device.type in ("cpu", "cuda") and _floating_or_int64(x) or _mps_takes(x))
-    )
+    return _time_invariant(A) and x.size(-1) == 1 and _native(x)
 
 
 def _lti_recur(A: Tensor, zi: Tensor, x: Tensor) -> Tensor:
@@ -127,13 +106,7 @@ def _fits_cub_scan(x: Tensor) -> bool:
 
 
 def _lti_recur2_applies(A: Tensor, x: Tensor) -> bool:
-    return (
-        x.is_cuda
-        and _time_invariant(A)
-        and x.size(-1) == 2
-        and _floating_or_int64(x)
-        and _fits_cub_scan(x)
-    )
+    return x.is_cuda and _time_invariant(A) and x.size(-1) == 2 and _native(x) and _fits_cub_scan(x)
 
 
 def _lti_recur2(A: Tensor, zi: Tensor, x: Tensor) -> Tensor:
@@ -142,11 +115,7 @@ def _lti_recur2(A: Tensor, zi: Tensor, x: Tensor) -> Tensor:
 
 def _scan_applies(A: Tensor, x: Tensor) -> bool:
     # On CPU, time-varying M = 1 falls through to recurN, whose kernel scan runs.
-    return (
-        not _time_invariant(A)
-        and x.size(-1) == 1
-        and (x.is_cuda and _floating_or_int64(x) or _mps_takes(x))
-    )
+    return not _time_invariant(A) and x.size(-1) == 1 and not x.is_cpu and _native(x)
 
 
 def _scan(A: Tensor, zi: Tensor, x: Tensor) -> Tensor:
@@ -162,7 +131,7 @@ def _recur2_applies(A: Tensor, x: Tensor) -> bool:
         and not _time_invariant(A)
         and x.size(-1) == 2
         and x.dtype != torch.complex128
-        and _floating_or_int64(x)
+        and _native(x)
         and _fits_cub_scan(x)
     )
 
@@ -234,23 +203,15 @@ def _forward(A: Tensor, zi: Tensor, x: Tensor) -> Tensor:
         return x.new_empty(x.shape)
     for applies, run in _KERNELS:
         if applies(A, x):
-            if x.dtype not in _NATIVE_DTYPES:
-                raise NotImplementedError(
-                    f"the native kernels take {_dtype_names(_NATIVE_DTYPES)}, got {x.dtype}"
-                )
             return run(A, zi, x)
     kind = "time-invariant" if _time_invariant(A) else "time-varying"
     reason = ""
-    if x.is_cuda:
-        if not _floating_or_int64(x):
-            reason = "; the CUDA kernels take floating-point, complex and int64 dtypes"
-        else:
-            reason = f"; the CUDA kernels take M up to {_MAX_STATES} ({_MAX_STATES // 2} complex)"
+    if x.dtype not in _NATIVE_DTYPES:
+        reason = f"; the kernels take {_dtype_names(_NATIVE_DTYPES)}"
+    elif x.is_cuda:
+        reason = f"; the CUDA kernels take M up to {_MAX_STATES} ({_MAX_STATES // 2} complex)"
     elif x.device.type == "mps":  # pragma: no cover - MPS-only
-        reason = (
-            f"; the Metal kernels take M up to {_MAX_STATES} ({_MAX_STATES // 2} "
-            f"complex) in {_dtype_names(_MPS_DTYPES)}"
-        )
+        reason = f"; the Metal kernels take M up to {_MAX_STATES} ({_MAX_STATES // 2} complex)"
     raise NotImplementedError(
         f"no recurrence kernel for {kind} A with M = {x.size(-1)} in {x.dtype} "
         f"on {x.device.type}{reason}"

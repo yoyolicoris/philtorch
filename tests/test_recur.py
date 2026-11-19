@@ -707,7 +707,7 @@ def test_recurrence_takes_integers_as_int64_only(dtype):
     A = torch.eye(3, dtype=dtype, device="cuda")[None, None]
     zi = torch.zeros(1, 3, dtype=dtype, device="cuda")
     x = torch.ones(1, 5, 3, dtype=dtype, device="cuda")
-    with pytest.raises(NotImplementedError, match="complex and int64 dtypes"):
+    with pytest.raises(NotImplementedError, match="the kernels take float16"):
         recurrence(A, zi, x)
 
 
