@@ -701,13 +701,12 @@ def test_cpu_recurrence_split_over_time_in_integers(eight_threads, sharing):
     assert torch.equal(recurrence(A, zi, x), _sequential(A, zi, x))
 
 
-@pytest.mark.cuda
 @pytest.mark.parametrize("dtype", [torch.int32, torch.bool])
 def test_recurrence_takes_integers_as_int64_only(dtype):
-    A = torch.eye(3, dtype=dtype, device="cuda")[None, None]
-    zi = torch.zeros(1, 3, dtype=dtype, device="cuda")
-    x = torch.ones(1, 5, 3, dtype=dtype, device="cuda")
-    with pytest.raises(NotImplementedError, match="complex and int64 dtypes"):
+    A = torch.eye(3, dtype=dtype)[None, None]
+    zi = torch.zeros(1, 3, dtype=dtype)
+    x = torch.ones(1, 5, 3, dtype=dtype)
+    with pytest.raises(NotImplementedError, match="the kernels take float16"):
         recurrence(A, zi, x)
 
 
