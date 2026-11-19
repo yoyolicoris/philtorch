@@ -32,6 +32,7 @@ Once a task is agreed, the main agent (the one talking with the maintainer) dele
 - **One working tree, environment and build are shared,** even by parts with disjoint files. Nobody rebuilds the extension while subagents run; the main agent does, between rounds.
 - **Tests:** a subagent runs the tests its part exercises, selected by name, when they don't strain the machine, and reports which it ran and why they cover its part, so that the main agent can pass that on, as "Commands" asks. Builds and long or GPU-heavy runs are left to the main agent.
 - **Benchmarks** never run in parallel, and only when no other process competes for the machine, the GPU above all. The main agent runs them last, after the subagents have finished.
+- **A busy local GPU:** CUDA tests and benchmarks can run on a Google Colab GPU instead, with `scripts/colab_gpu.py`, which drives the `colab` CLI: `test --gpu <GPU> --wheel <wheel>`, or `bench --gpu <GPU> --wheel <wheel> benchmarks/<name>.py [args]`. It keeps its session for the next run, and a session bills while it exists: once the GPU work is done, pass `--stop` or run `colab stop -s <session>`. A result names the GPU it ran on, and a table never mixes GPUs.
 - **The main agent collects the results, reviews every diff, corrects what is wrong, and reports to the maintainer.** It is responsible for the result; a subagent's report is a claim to check.
 - **Without subagents:** an agent whose tool can't spawn them, or whose tool file defines no tiers, does the work itself.
 
@@ -55,7 +56,7 @@ pixi run docs                    # Sphinx with -W: warnings, unresolved referenc
 
 Locally, run only the tests that exercise the change, selected by name: node IDs or `-k` expressions, not whole files. Find them by searching the tests for the changed function, op or kernel, and state which tests you ran and why they cover the change. The full suite runs on CI; run it locally only when the maintainer asks.
 
-Benchmarks live in `benchmarks/` and run as `pixi run python benchmarks/<name>.py`.
+Benchmarks live in `benchmarks/` and run as `pixi run python benchmarks/<name>.py`. They time with `torch.utils.benchmark`, through `benchmarks/_timing.py`'s `bench`, or with `torch.profiler`: Ruff rejects `time`, `timeit` and `triton.testing` there.
 
 Keep the measurements behind an issue, its benchmark or error tables and the scripts that produced them, on the issue as a `generic` artifact, or an `embedded_html` one for charts. Update it when they are run again, so that earlier versions stay comparable. Where a chart says more than a table, such as a speed-up or an error against a size, attach it to the pull request or comment as a PNG: `gh pr create`, `pr edit`, `issue comment` and the like take `--attach <file>#<alt text>` (gh 2.103 or later), and rewrite a body's `![alt](./plot.png)` to the upload.
 
@@ -115,6 +116,7 @@ Keep the measurements behind an issue, its benchmark or error tables and the scr
 - When changing an op's registered backward or fake, test compiled code with `TORCHINDUCTOR_FX_GRAPH_CACHE=0 TORCHINDUCTOR_AUTOGRAD_CACHE=0`: the on-disk compile caches are keyed before tracing, so they can replay the old backward.
 - pytest runs with `--import-mode=importlib`, so the tests import the installed philtorch, with its compiled extension, rather than the source tree. A test that runs a subprocess should pass `cwd=tmp_path`, or the subprocess imports the checkout.
 - Mark tests that need a CUDA device with `pytest.mark.cuda`, on the test or on its `"cuda"` parameter. `tests/conftest.py` skips them where no CUDA device is available, as on the CPU CI runners, and the CUDA workflow (`build-cuda-wheels.yml`) runs exactly them, `-m cuda`, collecting only the modules that have them, on a Modal GPU, uploading their coverage to Codecov with the `gpu` flag, which `codecov.yml` carries forward to commits that don't run it. Coverage leaves out `@triton.jit` functions, which it can't trace, and `tests/conftest.py` runs autograd's backward passes on the calling thread, since coverage can't trace the thread autograd starts for CUDA.
+- **Colab GPUs before merging:** the CUDA workflow's GPU job runs on a T4 (sm_75) only. A pull request that changes a file its path filter lists passes its CUDA tests on Colab's A100 (sm_80) and L4 (sm_89) before it merges into `dev`: run `python scripts/colab_gpu.py test --gpu A100 --wheel <wheel>` and the same with `--gpu L4`, in parallel, with the cu13 wheel the pull request's CI built (`gh run download <run-id> -n cuda-wheels-cu13`).
 
 ## Branches and releases
 
