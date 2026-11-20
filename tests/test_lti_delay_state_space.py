@@ -953,11 +953,21 @@ def test_delay_state_space_absorption_passes_unroll_factor(monkeypatch, factor, 
     sections = 0.4 * torch.randn(2, 1, 5, dtype=dtype)
     calls = []
 
-    def spy(A, x, *args, **kwargs):
-        calls.append((x.size(1), kwargs["unroll_factor"]))
-        return state_space(A, x, *args, **kwargs)
+    recursion = delay_module._ssm.recursion
+    depth = 0
 
-    monkeypatch.setattr(delay_module, "state_space", spy)
+    def spy(A, zi, x, **kwargs):
+        # The unrolled recursion calls itself; count delay_state_space's calls.
+        nonlocal depth
+        if not depth:
+            calls.append((x.size(1), kwargs["unroll_factor"]))
+        depth += 1
+        try:
+            return recursion(A, zi, x, **kwargs)
+        finally:
+            depth -= 1
+
+    monkeypatch.setattr(delay_module._ssm, "recursion", spy)
     delay_state_space(
         A,
         x,

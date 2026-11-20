@@ -11,7 +11,7 @@ from torch import Tensor
 from .. import _ssm
 from ..utils import _check_shared
 from .conversions import _sos2ss
-from .ssm import _ssm_B, _ssm_C_D, state_space
+from .ssm import _ssm_B, _ssm_C_D
 
 _OUTPUT_CHUNK = 4096
 
@@ -72,8 +72,9 @@ def _absorption_filters(
 
     Returns the filters and their initial state. For gains, the filters are the
     gains, (B, 1, M), and the state is ``None``. For sections, the filters are
-    the state-space matrices of the ``B * M`` cascades, and the state is their
-    ``(B * M, 2K)`` initial state, for ``K`` sections.
+    the state-space matrices of the ``B * M`` cascades, with ``A`` as
+    ``_ssm.recursion`` takes it, ``(B * M, 1, 2K, 2K)``, and the state is
+    their ``(B * M, 2K)`` initial state, for ``K`` sections.
     """
     if not isinstance(absorption, Tensor):
         raise TypeError("absorption must be a Tensor")
@@ -126,7 +127,8 @@ def _absorption_filters(
         state = x.new_zeros(batch_size * M, 2 * K)
     else:
         state = absorption_zi.expand(batch_size, M, K, 2).reshape(batch_size * M, 2 * K)
-    return _sos2ss(absorption.expand(batch_size, M, K, 5).reshape(batch_size * M, K, 5)), state
+    A, B, C, D = _sos2ss(absorption.expand(batch_size, M, K, 5).reshape(batch_size * M, K, 5))
+    return (_ssm.from_lti(A), B, C, D), state
 
 
 def delay_state_space(
@@ -385,16 +387,13 @@ def delay_state_space(
         length = signal.size(1)
         flat = signal.permute(0, 2, 1).reshape(batch_size * M, length)
         filter_A, filter_B, filter_C, filter_D = filters
-        flat, state = state_space(
-            filter_A,
-            flat,
-            B=filter_B,
-            C=filter_C,
-            D=filter_D,
-            zi=state,
-            unroll_factor=unroll_factor,
+        # state_space's recursion, on the engine directly.
+        h = _ssm.recursion(
+            filter_A, state, flat.unsqueeze(-1) * filter_B.unsqueeze(1), unroll_factor=unroll_factor
         )
-        return flat.reshape(batch_size, M, length).permute(0, 2, 1), state
+        read = torch.cat([state.unsqueeze(1), h[:, :-1]], dim=1)
+        flat = (read @ filter_C.unsqueeze(-1)).squeeze(-1) + filter_D.unsqueeze(1) * flat
+        return flat.reshape(batch_size, M, length).permute(0, 2, 1), h[:, -1]
 
     # Line i reads the stream initial ++ s at position t - m_i for time t. The
     # stream is kept in chunks of block_size samples of all lines, behind a

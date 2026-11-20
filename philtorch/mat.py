@@ -119,7 +119,7 @@ def companion(a: Tensor) -> Tensor:
         raise ValueError("All-pole coefficients must be at least 1D.")
     M = a.size(-1)
     c = torch.cat([-a, a.new_zeros(a.shape[:-1] + (M * (M - 1),))], dim=-1).unflatten(-1, (M, M))
-    c[..., list(range(1, M)), list(range(M - 1))] = 1
+    c[..., 1:, :-1].diagonal(dim1=-2, dim2=-1).fill_(1)
     return c
 
 
