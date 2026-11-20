@@ -65,7 +65,7 @@ def test_ssm_shape_handling(x_B_shape, A_shape, C_shape, zi_shape):
     if D_shape is None:
         D = None
     else:
-        D = torch.randn(*D_shape) if len(D_shape) > 0 else torch.randn(1)
+        D = torch.randn(D_shape)
     zi = torch.randn(*zi_shape) if zi_shape is not None else None
 
     result = state_space(A=A, x=x, B=B, C=C, D=D, zi=zi, unroll_factor=unroll_factor)
@@ -150,7 +150,7 @@ def test_ssm_D_shape_handling(x_shape, A_shape, B_shape, C_shape, D_shape, zi_sh
     A = torch.randn(*A_shape)
     B = torch.randn(*B_shape)
     C = torch.randn(*C_shape)
-    D = torch.randn(*D_shape) if len(D_shape) > 0 else torch.randn(1)
+    D = torch.randn(D_shape)
     zi = torch.randn(*zi_shape) if zi_shape is not None else None
 
     result = state_space(A=A, x=x, B=B, C=C, D=D, zi=zi, unroll_factor=unroll_factor)
@@ -185,6 +185,15 @@ def test_state_space_scalar_D_of_one_with_a_single_signal():
     expected = state_space(A, x, B=B, C=C, D=torch.tensor(0.5))
     result = state_space(A, x, B=B, C=C, D=torch.tensor([0.5]))
     torch.testing.assert_close(result, expected)
+
+
+def test_state_space_D_of_one_output():
+    # With a (1, M) C, a (1,) D is the gain of that one output, not a scalar.
+    A = torch.rand(8, 2, 2) * 0.1
+    x = torch.randn(3, 8)
+    C, D = torch.randn(1, 2), torch.randn(1)
+    expected = state_space(A, x, C=C) + x[..., None] * D
+    torch.testing.assert_close(state_space(A, x, C=C, D=D), expected)
 
 
 def test_state_space_per_signal_B_when_time_states_and_features_agree():

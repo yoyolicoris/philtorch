@@ -4,12 +4,14 @@ The coefficients follow :mod:`scipy.signal`'s functions of the same names, with
 the differences noted in each docstring.
 """
 
+from collections.abc import Sequence
 from functools import reduce
 
 import torch
 import torch.nn.functional as F
 from torch import Tensor
 
+from .. import _ssm
 from ..mat import _confluent_vandermonde, companion
 from ..poly import polymul
 from ..utils import _check_shared
@@ -186,6 +188,65 @@ def sos2tf(sos: Tensor, batch_index: Tensor | None = None) -> tuple[Tensor, Tens
         sos = _sections_by_row(sos, batch_index)[0]
     both = _tree_prod(torch.stack((sos[..., :3], F.pad(sos[..., 3:], (1, 0), value=1)), -3))
     return both[..., 0, :], both[..., 1, 1:]
+
+
+def sos2ss(sos: Tensor, batch_index: Tensor | None = None) -> tuple[Tensor, Tensor, Tensor, Tensor]:
+    r"""Convert second-order sections to one state-space model.
+
+    Each section is the state-space model :func:`~philtorch.lti.sosfilt`
+    runs, in transposed direct form II, and the model returned is their
+    cascade, as :func:`cascade_ss` combines them: its state is the
+    sections' states in order, so the :math:`(K, 2)` states of
+    :func:`~philtorch.lti.sosfilt` flattened are its :math:`2K` states, and
+    back.
+
+    With :attr:`batch_index`, each filter is the cascade of its own sections,
+    in the order they are listed, and :math:`K` in the shapes below is the
+    most sections of a filter: a filter of fewer sections ends in sections
+    of gain 1, whose states stay zero from a zero state, and a filter
+    without a section is a gain of 1.
+
+    Args:
+        sos (Tensor): the sections, of shape :math:`(K, 5)` for one cascade,
+            :math:`K \ge 1`, or :math:`(S, 5)` with :attr:`batch_index`,
+            :math:`S \ge 1`, as in :func:`sos2tf`.
+        batch_index (Tensor, optional): the filter each section belongs to,
+            of shape :math:`(S)`, as in :func:`sos2tf`. Default: ``None``,
+            one cascade of all the sections.
+
+    Returns:
+        tuple of Tensor: the matrices :math:`A`, :math:`B`, :math:`C` and
+        :math:`D` of :func:`~philtorch.lti.state_space`, of :attr:`sos`'s
+        dtype, for a scalar input and output: of shapes :math:`(2K, 2K)`,
+        :math:`(2K)`, :math:`(2K)` and :math:`()`, or with :attr:`batch_index`
+        :math:`(B, 2K, 2K)`, :math:`(B, 2K)`, :math:`(B, 2K)` and
+        :math:`(B)`, :math:`B` being the largest value of
+        :attr:`batch_index` plus 1.
+
+    Raises:
+        ValueError: if :attr:`sos` or :attr:`batch_index` is invalid, as in
+            :func:`sos2tf`.
+
+    Example::
+
+        >>> from philtorch.lti import sos2ss, sosfilt, state_space
+        >>> sos = torch.tensor([[1.0, 1.0, 0.0, -0.5, 0.0],
+        ...                     [1.0, -1.0, 0.0, 0.5, 0.0]])
+        >>> A, B, C, D = sos2ss(sos)
+        >>> A.shape
+        torch.Size([4, 4])
+        >>> x = torch.tensor([[1.0, 0.0, 0.0, 0.0]])
+        >>> state_space(A, x, B, C, D)
+        tensor([[ 1.0000,  0.0000, -0.7500,  0.0000]])
+        >>> sosfilt(sos, x)
+        tensor([[ 1.0000,  0.0000, -0.7500,  0.0000]])
+    """
+    _check_sos(sos)
+    if batch_index is not None:
+        sos = _sections_by_row(sos, batch_index)[0]
+    _, a, B, D = _ssm.direct_form(sos[..., :3], sos[..., 3:])
+    C = F.pad(torch.ones_like(B[..., :1]), (0, 1))
+    return cascade_ss(companion(a).mT.unbind(-3), B.unbind(-2), C.unbind(-2), D.unbind(-1))
 
 
 def unique_roots(p: Tensor, tol: float = 1e-3, rtype: str = "min") -> tuple[Tensor, ...]:
@@ -710,3 +771,175 @@ def sos2pfe(
     if batch_index is None:
         return r, unique, g[0], None, multiplicity
     return r, unique, g, row, multiplicity
+
+
+def cascade_ss(
+    A: Sequence[Tensor], B: Sequence[Tensor], C: Sequence[Tensor], D: Sequence[Tensor]
+) -> tuple[Tensor, Tensor, Tensor, Tensor]:
+    r"""Combine state-space models in cascade into one.
+
+    In the cascade, the output of each model is the input of the next. Two
+    models :math:`(A_1, B_1, C_1, D_1)` and :math:`(A_2, B_2, C_2, D_2)`, in
+    the form of :func:`~philtorch.lti.state_space`, give
+
+    .. math::
+        A = \begin{bmatrix} A_1 & 0 \\ B_2 C_1 & A_2 \end{bmatrix},
+        \quad
+        B = \begin{bmatrix} B_1 \\ B_2 D_1 \end{bmatrix},
+        \quad
+        C = \begin{bmatrix} D_2 C_1 & C_2 \end{bmatrix},
+        \quad
+        D = D_2 D_1,
+
+    whose state is that of the first model followed by that of the second. A
+    longer cascade of :math:`K` models combines them in the same way, and its
+    state lists the states of :math:`l = 1, \dots, K` in order.
+
+    Args:
+        A (tuple or list of Tensor): the state matrices :math:`A_l`, one for
+            each model in cascade order, of shape :math:`(M_l, M_l)`, or
+            :math:`(B, M_l, M_l)` if batched. The first one decides whether
+            the cascade is batched, which every other tensor must follow.
+        B (tuple or list of Tensor): the input matrices :math:`B_l`, of shape
+            :math:`(M_l)` for a scalar input or :math:`(M_l, F_l)`, with
+            a leading :math:`B` if batched.
+        C (tuple or list of Tensor): the output matrices :math:`C_l`, of shape
+            :math:`(M_l)` for a scalar output or :math:`(P_l, M_l)`, with a
+            leading :math:`B` if batched.
+        D (tuple or list of Tensor): the feedthrough matrices :math:`D_l`, of
+            shape :math:`()` for a scalar input and output, :math:`(P_l)` for
+            a scalar input only, :math:`(F_l)` for a scalar output only, or
+            :math:`(P_l, F_l)`, with a leading :math:`B` if batched.
+
+    Returns:
+        tuple of Tensor: the matrices :math:`A`, :math:`B`, :math:`C` and
+        :math:`D` of the cascade, of the dtype and device of the arguments.
+        Its input is scalar if :math:`B_1` is a vector, and its output is
+        scalar if :math:`C_K` is a vector, so that the shapes follow the
+        arguments' conventions and :func:`~philtorch.lti.state_space` takes
+        them.
+
+    Raises:
+        ValueError: if the arguments aren't tuples or lists of the same
+            length, at least 1, if the tensors don't share a dtype and a
+            device, if a shape is not one of those above or is not batched
+            as the first tensor of :attr:`A` is, or if a model's number of
+            outputs differs from the next one's number of inputs, a scalar
+            counting as 1.
+        TypeError: if an element of the arguments is not a tensor.
+
+    Example::
+
+        >>> from philtorch.lti import cascade_ss, state_space
+        >>> # Two integrators in cascade: y[n + 1] = y[n] + x[n] for each.
+        >>> one, zero = torch.tensor([[1.0]]), torch.tensor(0.0)
+        >>> ss = cascade_ss([one] * 2, [one[0]] * 2, [one[0]] * 2, [zero] * 2)
+        >>> x = torch.tensor([[1.0, 0.0, 0.0, 0.0, 0.0]])
+        >>> state_space(ss[0], x, *ss[1:])
+        tensor([[0., 0., 1., 2., 3.]])
+    """
+    stages = dict(A=A, B=B, C=C, D=D)
+    for name, seq in stages.items():
+        if not isinstance(seq, (tuple, list)):
+            raise ValueError(f"{name} must be a tuple or list of tensors, got {type(seq).__name__}")
+    K = len(A)
+    if K < 1 or any(len(seq) != K for seq in stages.values()):
+        raise ValueError(
+            "A, B, C and D must have the same length, at least 1, got "
+            + ", ".join(f"{name}: {len(seq)}" for name, seq in stages.items())
+        )
+    named = {f"{name}[{k}]": t for name, seq in stages.items() for k, t in enumerate(seq)}
+    for name, t in named.items():
+        if not isinstance(t, Tensor):
+            raise TypeError(f"{name} must be a Tensor, got {type(t).__name__}")
+    _check_shared(**named)
+    if A[0].dim() not in (2, 3):
+        raise ValueError(f"A[0] must be 2D or 3D, got {tuple(A[0].shape)}")
+
+    # Lift every model to matrices, A (M, M), B (M, F), C (P, M) and D (P, F).
+    lead = A[0].shape[:-2]
+    n = len(lead)
+    lifted = []
+    for k, (a, b, c, d) in enumerate(zip(A, B, C, D)):
+        M = a.size(-1)
+        D_shape = (*lead, *c.shape[n:-1], *b.shape[n + 1 :])
+        for name, t, ok, expected in (
+            ("A", a, a.shape == (*lead, M, M), (*lead, M, M)),
+            (
+                "B",
+                b,
+                b.dim() - n in (1, 2) and b.shape[: n + 1] == (*lead, M),
+                f"{(*lead, M)} or {(*lead, M, 'F')}",
+            ),
+            (
+                "C",
+                c,
+                c.dim() - n in (1, 2) and c.shape[:n] == lead and c.size(-1) == M,
+                f"{(*lead, M)} or {(*lead, 'P', M)}",
+            ),
+            ("D", d, d.shape == D_shape, D_shape),
+        ):
+            if not ok:
+                raise ValueError(f"{name}[{k}] must be of shape {expected}, got {tuple(t.shape)}")
+        b = b if b.dim() > n + 1 else b.unsqueeze(-1)
+        c = c if c.dim() > n + 1 else c.unsqueeze(-2)
+        if lifted and lifted[-1][2].size(-2) != b.size(-1):
+            raise ValueError(
+                f"The number of outputs of model {k - 1} ({lifted[-1][2].size(-2)}) must equal "
+                f"the number of inputs of model {k} ({b.size(-1)})"
+            )
+        lifted.append((a, b, c, d.reshape(*lead, c.size(-2), b.size(-1))))
+
+    # Stack the models along dimension -3, zero-padded to the most states and to one width W
+    # of every signal between them: padded states, inputs and outputs stay zero throughout.
+    Ms = [a.size(-1) for a, *_ in lifted]
+    Mm = max(Ms)
+    W = max(max(b.size(-1), c.size(-2)) for _, b, c, _ in lifted)
+    stacked = (
+        torch.stack([F.pad(m[i], (0, w - m[i].size(-1), 0, h - m[i].size(-2))) for m in lifted], -3)
+        for i, (h, w) in enumerate(((Mm, Mm), (Mm, W), (W, Mm), (W, W)))
+    )
+    real = (torch.arange(Mm) < torch.tensor(Ms)[:, None]).to(A[0].device)
+    a, b, c, d = (t[..., 0, :, :] for t in _cascade_stacked(*stacked, real, Ms))
+
+    # The cascade's inputs are the first model's, its outputs the last one's.
+    F_in, P_out = lifted[0][1].size(-1), lifted[-1][2].size(-2)
+    b, c, d = b[..., :F_in], c[..., :P_out, :], d[..., :P_out, :F_in]
+    if C[-1].dim() == n + 1:
+        c, d = c[..., 0, :], d[..., 0, :]
+    if B[0].dim() == n + 1:
+        b, d = b[..., 0], d[..., 0]
+    return a, b, c, d
+
+
+def _cascade_stacked(
+    A: Tensor, B: Tensor, C: Tensor, D: Tensor, real: Tensor, Ms: list[int]
+) -> tuple[Tensor, Tensor, Tensor, Tensor]:
+    """Combine the S models stacked along dimension -3 in cascade, merging neighbours in pairs.
+
+    A, B, C and D are (..., S, M, M), (..., S, M, W), (..., S, W, M) and (..., S, W, W),
+    zero-padded; real (S, M) marks each model's states and Ms counts them. Returns the
+    cascade, stacked as one model.
+    """
+    if len(Ms) == 1:
+        return A, B, C, D
+    if len(Ms) % 2:
+        # An identity model, with no states, completes the last pair.
+        A, B, C = (F.pad(t, (0, 0, 0, 0, 0, 1)) for t in (A, B, C))
+        D = torch.cat(
+            [D, torch.eye(D.size(-1), dtype=D.dtype, device=D.device).expand_as(D[..., :1, :, :])],
+            -3,
+        )
+        real, Ms = F.pad(real, (0, 0, 0, 1)), [*Ms, 0]
+    A1, B1, C1, D1 = (t[..., 0::2, :, :] for t in (A, B, C, D))
+    A2, B2, C2, D2 = (t[..., 1::2, :, :] for t in (A, B, C, D))
+    A = torch.cat([torch.cat([A1, torch.zeros_like(A1)], -1), torch.cat([B2 @ C1, A2], -1)], -2)
+    B, C, D = torch.cat([B1, B2 @ D1], -2), torch.cat([D2 @ C1, C2], -1), D2 @ D1
+    real, Ms = torch.cat([real[0::2], real[1::2]], -1), [*map(sum, zip(Ms[0::2], Ms[1::2]))]
+    # Move each model's states ahead of its padding, and drop the padding beyond the most states.
+    order = (~real).byte().argsort(dim=-1, stable=True)[:, : max(Ms)]
+    real = real.take_along_dim(order, -1)
+    order = order.unsqueeze(-1).expand(*A.shape[:-3], -1, -1, -1)
+    A = A.take_along_dim(order, -2).take_along_dim(order.mT, -1)
+    B, C = B.take_along_dim(order, -2), C.take_along_dim(order.mT, -1)
+    return _cascade_stacked(A, B, C, D, real, Ms)

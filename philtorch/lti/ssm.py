@@ -132,7 +132,9 @@ def state_space(
             shape :math:`()`, :math:`(1)`, :math:`(B)`, :math:`(P)` or
             :math:`(B, P)`; for a 3-D one, :math:`()`, :math:`(1)`,
             :math:`(F)`, :math:`(B, F)`, :math:`(P, F)` or :math:`(B, P, F)`.
-            When two readings fit, such as :math:`P = B`, the batched one wins.
+            :math:`D` gives as many outputs as :attr:`C`, or as the states
+            without :attr:`C`; when two readings still fit, such as
+            :math:`P = B`, the batched one wins.
             Default: ``None``, no feedthrough.
         zi (Tensor, optional): the initial state, of shape :math:`(B, M)` or
             :math:`(M)`. Default: ``None``, all zero.
@@ -241,26 +243,29 @@ def _ssm_B_shape_error(B, x, batch_size, M):
     )
 
 
-def _ssm_D(D, x, batch_size):
+def _ssm_D(D, x, batch_size, scalar_output):
     r"""Return :math:`D \mathbf{x}[n]` for every step.
 
-    This takes the shapes :func:`state_space` accepts.
+    This takes the shapes :func:`state_space` accepts, read as giving one
+    output if :attr:`scalar_output`, and :math:`P` otherwise.
     """
     features = x.size(-1)
     match x.dim(), tuple(D.shape):
-        case 2, (b,) if b == batch_size:
+        case 2, (b,) if b == batch_size and scalar_output:
             return D.unsqueeze(1) * x
-        case 2, () | (1,):
+        case 2, ():
+            return x * D
+        case 2, (1,) if scalar_output:
             return x * D
         case 2, (_,):
             return x.unsqueeze(-1) * D
         case 2, (b, _) if b == batch_size:
             return x.unsqueeze(-1) * D.unsqueeze(1)
-        case 3, (f,) if f == features:
+        case 3, (f,) if f == features and scalar_output:
             return x @ D
         case 3, () | (1,):
             return x * D
-        case 3, (b, f) if (b, f) == (batch_size, features):
+        case 3, (b, f) if (b, f) == (batch_size, features) and scalar_output:
             return (x @ D.unsqueeze(-1)).squeeze(-1)
         case 3, (_, f) if f == features:
             return x @ D.T
@@ -285,8 +290,6 @@ def _ssm_C_D(h, x, C, D, batch_size, M):
     unbatched shape coincide, such as :math:`P = B`, the batched reading
     wins.
     """
-    Dx = None if D is None else _ssm_D(D, x, batch_size)
-
     if C is not None:
         match tuple(C.shape):
             case (m,) if m == M:
@@ -305,7 +308,7 @@ def _ssm_C_D(h, x, C, D, batch_size, M):
     else:
         Ch = h
 
-    return _ssm.outputs(Ch, Dx)
+    return _ssm.outputs(Ch, None if D is None else _ssm_D(D, x, batch_size, Ch.dim() == 2))
 
 
 def diag_state_space(
@@ -648,5 +651,5 @@ def diag_state_space(
             C_hat = times_V(C_hat)
         Ch = _ssm_C_D(Vinvh.mT[:, :-1], x, C_hat, None, batch_size, M)
         Ch = torch.cat([Czi, Ch.real if real else Ch], dim=1)[:, :N]
-        y = _ssm.outputs(Ch, None if D is None else _ssm_D(D, x, batch_size))
+        y = _ssm.outputs(Ch, None if D is None else _ssm_D(D, x, batch_size, Ch.dim() == 2))
     return (y, zf) if return_zf else y

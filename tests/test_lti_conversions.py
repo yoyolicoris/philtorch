@@ -5,7 +5,18 @@ import pytest
 import torch
 from scipy import signal
 
-from philtorch.lti import invresz, pfefilt, residuez, sos2pfe, sos2tf, sosfilt, unique_roots
+from philtorch.lti import (
+    cascade_ss,
+    invresz,
+    pfefilt,
+    residuez,
+    sos2pfe,
+    sos2ss,
+    sos2tf,
+    sosfilt,
+    state_space,
+    unique_roots,
+)
 
 from .test_lti_sosfilt import _flat
 
@@ -160,6 +171,27 @@ def test_sos2tf_matches_scipy(K, batched):
         expected_b, expected_a = signal.sos2tf(np.insert(row, 3, 1.0, axis=-1))
         np.testing.assert_allclose(got_b, expected_b, atol=1e-12)
         np.testing.assert_allclose(got_a, expected_a[1:], atol=1e-12)
+
+
+@pytest.mark.parametrize("K", [1, 3])
+def test_sos2ss_matches_sosfilt(K):
+    np.random.seed(K)
+    sos = torch.from_numpy(_random_sos(K=K))
+    x, zi = torch.randn(4, 16, dtype=F64), torch.randn(4, K, 2, dtype=F64)
+    A, B, C, D = sos2ss(sos)
+    y, zf = state_space(A, x, B, C, D, zi=zi.flatten(1))
+    expected, expected_zf = sosfilt(sos, x, zi=zi)
+    torch.testing.assert_close(y, expected)
+    torch.testing.assert_close(zf, expected_zf.flatten(1))
+
+
+def test_sos2ss_ragged_rows_equal_sosfilt_with_batch_index():
+    sos, batch_index = _flat(_ragged_rows(), interleave=True)
+    x = torch.randn(4, 16, dtype=F64)
+    A, B, C, D = sos2ss(sos, batch_index)
+    assert A.shape == (4, 6, 6)
+    expected = sosfilt(sos, x, batch_index=batch_index)
+    torch.testing.assert_close(state_space(A, x, B, C, D), expected)
 
 
 def test_sos2tf_ragged_rows_equal_each_row_alone_padded_with_zeros():
@@ -511,3 +543,47 @@ def test_sos2pfe_groups_a_cluster_of_conjugate_pairs_symmetrically():
     r, p, g, _, multiplicity = sos2pfe(sos, tol=1e-3)
     assert p.shape == (1,) and p[0].imag == 0
     assert multiplicity.tolist() == [4]
+
+
+# Input and output sizes between the stages of a cascade, 0 for a scalar signal; the sizes of
+# the stages' states follow.
+_CASCADES = {
+    1: ([0, 0], [3]),
+    2: ([2, 0, 3], [2, 3]),
+    5: ([0, 2, 0, 3, 1, 0], [2, 3, 1, 4, 2]),
+}
+
+
+def _random_stage(M: int, F: int, P: int, lead: tuple[int, ...]):
+    """A stable stage with A (M, M), B (M, F), C (P, M) and D (P, F), a size of 0 dropping its
+    dimension, and `lead` batch dimensions."""
+    A = torch.randn((*lead, M, M), dtype=F64)
+    A = A * (0.8 / torch.linalg.eigvals(A).abs().amax(-1))[..., None, None]
+    B = torch.randn((*lead, M, *([F] if F else [])), dtype=F64)
+    C = torch.randn((*lead, *([P] if P else []), M), dtype=F64)
+    D = torch.randn((*lead, *([P] if P else []), *([F] if F else [])), dtype=F64)
+    return A, B, C, D
+
+
+@pytest.mark.parametrize(("K", "batched"), [(1, False), (2, False), (5, True)])
+def test_cascade_ss_matches_the_stages_in_series(K, batched):
+    torch.manual_seed(K)
+    sizes, orders = _CASCADES[K]
+    # more signals than any size, so that no shape of a stage reads as another
+    batch, steps = 5, 12
+    lead = (batch,) if batched else ()
+    stages = [
+        _random_stage(M, F, P, lead) for M, F, P in zip(orders, sizes[:-1], sizes[1:], strict=True)
+    ]
+    zi = torch.randn(batch, sum(orders), dtype=F64)
+    x = torch.randn(batch, steps, *([sizes[0]] if sizes[0] else []), dtype=F64)
+
+    A, B, C, D = cascade_ss(*zip(*stages))
+    y, zf = state_space(A, x, B, C, D, zi=zi)
+
+    expected, finals = x, []
+    for stage, z in zip(stages, zi.split(orders, 1), strict=True):
+        expected, final = state_space(stage[0], expected, *stage[1:], zi=z)
+        finals.append(final)
+    torch.testing.assert_close(y, expected)
+    torch.testing.assert_close(zf, torch.cat(finals, 1))
