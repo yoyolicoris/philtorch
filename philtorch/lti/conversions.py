@@ -816,16 +816,16 @@ def cascade_ss(
             whether the cascade is batched, which every other tensor must
             follow.
         B (tuple or list of Tensor): the input matrices :math:`B_l`, of shape
-            :math:`(M_l)` for a scalar input or :math:`(M_l, F_l)`, with
-            a leading :math:`\text{batch}` if batched.
+            :math:`(M_l)` for a scalar input or :math:`(M_l, F_l)`, with a
+            leading dimension of size :math:`\text{batch}` if batched.
         C (tuple or list of Tensor): the output matrices :math:`C_l`, of shape
             :math:`(M_l)` for a scalar output or :math:`(P_l, M_l)`, with a
-            leading :math:`\text{batch}` if batched.
+            leading dimension of size :math:`\text{batch}` if batched.
         D (tuple or list of Tensor): the feedthrough matrices :math:`D_l`, of
             shape :math:`()` for a scalar input and output, :math:`(P_l)` for
             a scalar input only, :math:`(F_l)` for a scalar output only, or
-            :math:`(P_l, F_l)`, with a leading :math:`\text{batch}` if
-            batched.
+            :math:`(P_l, F_l)`, with a leading dimension of size
+            :math:`\text{batch}` if batched.
 
     Returns:
         tuple of Tensor: the matrices :math:`A`, :math:`B`, :math:`C` and
