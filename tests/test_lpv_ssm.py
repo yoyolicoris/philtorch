@@ -187,6 +187,15 @@ def test_state_space_scalar_D_of_one_with_a_single_signal():
     torch.testing.assert_close(result, expected)
 
 
+def test_state_space_D_of_one_output():
+    # With a (1, M) C, a (1,) D is the gain of that one output, not a scalar.
+    A = torch.rand(8, 2, 2) * 0.1
+    x = torch.randn(3, 8)
+    C, D = torch.randn(1, 2), torch.randn(1)
+    expected = state_space(A, x, C=C) + x[..., None] * D
+    torch.testing.assert_close(state_space(A, x, C=C, D=D), expected)
+
+
 def test_state_space_per_signal_B_when_time_states_and_features_agree():
     # With N = M = F, B of shape (batch, M, F) is one input matrix per signal,
     # for a 3-D x: it used to be read as (batch, N, M), a 2-D x's layout.

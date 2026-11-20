@@ -437,6 +437,106 @@ _LPV_UTILS_CASES = [
 ]
 
 
+def _cascade_args(*lead, **overrides):
+    """Two valid stages with a scalar input, 3 signals between them and a scalar output."""
+    args = dict(
+        A=(_ones(*lead, 2, 2), _ones(*lead, 1, 1)),
+        B=(_ones(*lead, 2), _ones(*lead, 1, 3)),
+        C=(_ones(*lead, 3, 2), _ones(*lead, 1)),
+        D=(_ones(*lead, 3), _ones(*lead, 3)),
+    )
+    args.update(overrides)
+    return args
+
+
+def _cascade_with(name, index, convert):
+    """Call cascade_ss with `convert` applied to stage `index` of argument `name`."""
+    args = _cascade_args()
+    args[name] = tuple(convert(t) if i == index else t for i, t in enumerate(args[name]))
+    return lti.cascade_ss(**args)
+
+
+_LTI_CONVERSIONS_CASES = [
+    # cascade_ss(A, B, C, D): tuples of tensors of one length, batched as A[0] is
+    pytest.param(
+        lambda: lti.cascade_ss(**_cascade_args(A=_eye(2))),
+        "A must be a tuple or list of tensors",
+        id="cascade_ss-not-a-sequence",
+    ),
+    pytest.param(
+        lambda: lti.cascade_ss(**_cascade_args(B=(_ones(2),))),
+        "same length, at least 1, got A: 2, B: 1, C: 2, D: 2",
+        id="cascade_ss-lengths",
+    ),
+    pytest.param(
+        lambda: lti.cascade_ss((), (), (), ()),
+        "same length, at least 1, got A: 0",
+        id="cascade_ss-empty",
+    ),
+    pytest.param(
+        lambda: lti.cascade_ss(**_cascade_args(A=(_ones(2), _ones(1, 1)))),
+        r"A\[0\] must be 2D or 3D",
+        id="cascade_ss-A-1d",
+    ),
+    pytest.param(
+        lambda: lti.cascade_ss(**_cascade_args(A=(_ones(2, 2), _ones(1, 2)))),
+        r"A\[1\] must be of shape \(2, 2\), got \(1, 2\)",
+        id="cascade_ss-A-not-square",
+    ),
+    pytest.param(
+        lambda: lti.cascade_ss(**_cascade_args(4, A=(_ones(4, 2, 2), _ones(1, 1)))),
+        r"A\[1\] must be of shape \(4, 1, 1\)",
+        id="cascade_ss-A-not-batched",
+    ),
+    pytest.param(
+        lambda: lti.cascade_ss(**_cascade_args(4, B=(_ones(4, 2), _ones(5, 1, 3)))),
+        r"B\[1\] must be of shape \(4, 1\) or \(4, 1, 'F'\)",
+        id="cascade_ss-B-batch-mismatch",
+    ),
+    pytest.param(
+        lambda: lti.cascade_ss(**_cascade_args(B=(_ones(3), _ones(1, 3)))),
+        r"B\[0\] must be of shape \(2,\) or \(2, 'F'\), got \(3,\)",
+        id="cascade_ss-B-states",
+    ),
+    pytest.param(
+        lambda: lti.cascade_ss(**_cascade_args(C=(_ones(3, 3), _ones(1)))),
+        r"C\[0\] must be of shape \(2,\) or \('P', 2\), got \(3, 3\)",
+        id="cascade_ss-C-states",
+    ),
+    pytest.param(
+        lambda: lti.cascade_ss(**_cascade_args(D=(_ones(2), _ones(3)))),
+        r"D\[0\] must be of shape \(3,\), got \(2,\)",
+        id="cascade_ss-D-shape",
+    ),
+    pytest.param(
+        lambda: lti.cascade_ss(**_cascade_args(D=(_ones(3), _ones(1, 3)))),
+        r"D\[1\] must be of shape \(3,\), got \(1, 3\)",
+        id="cascade_ss-D-matrix-for-vectors",
+    ),
+    pytest.param(
+        lambda: lti.cascade_ss(**_cascade_args(C=(_ones(2, 2), _ones(1)), D=(_ones(2), _ones(3)))),
+        r"outputs of model 0 \(2\) must equal the number of inputs of model 1 \(3\)",
+        id="cascade_ss-stage-sizes",
+    ),
+    *(
+        pytest.param(
+            lambda name=name, index=index: _cascade_with(name, index, lambda t: t.float()),
+            r"and D\[1\] must share a dtype and a device",
+            id=f"cascade_ss-{name}-dtype",
+        )
+        for name, index in (("A", 1), ("B", 0), ("C", 1), ("D", 0))
+    ),
+    *(
+        pytest.param(
+            lambda name=name, index=index: _cascade_with(name, index, lambda t: t.to("meta")),
+            r"and D\[1\] must share a dtype and a device",
+            id=f"cascade_ss-{name}-device",
+        )
+        for name, index in (("A", 0), ("B", 1), ("C", 0), ("D", 1))
+    ),
+]
+
+
 _LTI_FILTERING_CASES = [
     # comb_filter(a, delay, x)
     pytest.param(
@@ -640,6 +740,17 @@ _LTI_FILTERING_CASES = [
         lambda: lti.sos2tf(_ones(0, 5)),
         "at least one section",
         id="sos2tf-sos-no-sections",
+    ),
+    # sos2ss(sos, batch_index): sos and batch_index are checked as sos2tf's are
+    pytest.param(
+        lambda: lti.sos2ss(_ones(5)),
+        "sos must be 2D",
+        id="sos2ss-sos-1d",
+    ),
+    pytest.param(
+        lambda: lti.sos2ss(_ones(2, 5), batch_index=torch.tensor([-1, 0])),
+        "batch_index must not be negative",
+        id="sos2ss-batch_index-negative",
     ),
     # sos2pfe(sos, tol, rtype, batch_index): sos and batch_index are checked as sos2tf's are,
     # rtype as residuez's
@@ -932,6 +1043,11 @@ def test_cubic_spline_of_factor_one_is_the_input():
 def test_cubic_spline_rejects_smoothing(m):
     with pytest.raises(NotImplementedError, match="Regularization"):
         lti.cubic_spline(_ones(1, 4), m, lamb=1.0)
+
+
+def test_cascade_ss_rejects_non_tensors():
+    with pytest.raises(TypeError, match=r"D\[1\] must be a Tensor, got list"):
+        lti.cascade_ss(**_cascade_args(D=(_ones(3), [1.0, 1.0, 1.0])))
 
 
 _LTI_RECUR_CASES = [
@@ -1282,6 +1398,7 @@ def _group(name, cases):
         *_group("lpv-recur", _LPV_RECUR_CASES),
         *_group("lpv-ssm", _LPV_SSM_CASES),
         *_group("lpv-utils", _LPV_UTILS_CASES),
+        *_group("lti-conversions", _LTI_CONVERSIONS_CASES),
         *_group("lti-filtering", _LTI_FILTERING_CASES),
         *_group("lti-interp", _LTI_INTERP_CASES),
         *_group("lti-recur", _LTI_RECUR_CASES),

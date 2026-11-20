@@ -261,6 +261,11 @@ def test_ssm_B_layouts(x_shape, B_shape, equation, dtype):
         ((_b, _N, _F), (_b, _P, _F), "bnf,bpf->bnp"),
         # batch == 1: a (1,) gain on vector input stays a scalar gain.
         ((1, _N, _F), (1,), "bnf,o->bnf"),
+        # with one output of a (1, M) C, D reads as (P,) or (P, F), batch == 1 or not
+        ((_b, _N), (1,), "bn,p->bnp"),
+        ((1, _N), (1,), "bn,p->bnp"),
+        ((1, _N, 1), (1, 1), "bnf,pf->bnp"),
+        ((_b, _N, 1), (1,), "bnf,o->bnf"),
     ],
 )
 def test_ssm_D_layouts(x_shape, D_shape, equation, dtype):
@@ -345,6 +350,14 @@ def test_ssm_scalar_D_with_single_batch_vector_input(ssm):
     y = ssm(A=A, x=x, B=B, C=C, D=D)
 
     torch.testing.assert_close(y, ssm(A=A, x=x, B=B, C=C, D=D[0]))
+
+
+@pytest.mark.parametrize("ssm", [state_space, diag_state_space])
+def test_ssm_D_of_one_output(ssm):
+    # With a (1, M) C, a (1,) D is the gain of that one output, not a scalar.
+    x, A = torch.randn(3, 17), _generate_diagonalizable_matrix((3, 3))
+    C, D = torch.randn(1, 3), torch.randn(1)
+    torch.testing.assert_close(ssm(A=A, x=x, C=C, D=D), ssm(A=A, x=x, C=C) + x[..., None] * D)
 
 
 @pytest.mark.parametrize(

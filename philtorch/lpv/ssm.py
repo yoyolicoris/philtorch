@@ -137,8 +137,9 @@ def state_space(
     and shared or one per signal: its base shape below can be prefixed with
     :math:`N` for time-varying values, :math:`B` for one per signal, or
     :math:`(B, N)` for both, except a scalar :attr:`D` with a 3-D :attr:`x`.
-    When two readings fit, such as :math:`N = B`, the time-varying one is
-    tried first, then the per-signal one.
+    :math:`D` gives as many outputs as :attr:`C`, or as the states without
+    :attr:`C`; when two readings still fit, such as :math:`N = B`, the
+    time-varying one is tried first, then the per-signal one.
 
     Args:
         A (Tensor): state matrices :math:`A[n]`, of shape :math:`(N, M, M)` or
@@ -237,55 +238,6 @@ def state_space(
         final_state=return_zf,
     )
 
-    if D is None:
-        Dx = None
-    else:
-        features = x.size(-1)
-        match x.dim(), tuple(D.shape):
-            case 3, (f,) if f == features:
-                Dx = x @ D
-            case 2, (n,) if n == N:
-                Dx = D * x
-            case 2, (b,) if b == batch_size:
-                Dx = D.unsqueeze(1) * x
-            case _, (1,) | ():
-                Dx = x * D
-            case 2, (_,):
-                Dx = x.unsqueeze(-1) * D
-            case 3, (n, f) if (n, f) == (N, features):
-                Dx = torch.linalg.vecdot(D.conj(), x)
-            case 3, (b, f) if (b, f) == (batch_size, features):
-                Dx = torch.linalg.vecdot(D.conj().unsqueeze(1), x)
-            case 2, (n, _) if n == N:
-                Dx = D * x.unsqueeze(-1)
-            case 2, (b, n) if (b, n) == (batch_size, N):
-                Dx = D * x
-            case 2, (b, _) if b == batch_size:
-                Dx = D.unsqueeze(1) * x.unsqueeze(-1)
-            case 3, (_, f) if f == features:
-                Dx = x @ D.T
-            case 3, (b, n, f) if (b, n, f) == (batch_size, N, features):
-                Dx = torch.linalg.vecdot(D.conj(), x)
-            case 2, (b, n, _) if (b, n) == (batch_size, N):
-                Dx = D * x.unsqueeze(-1)
-            case 3, (n, _, f) if (n, f) == (N, features):
-                Dx = torch.linalg.vecdot(D.conj(), x.unsqueeze(-2))
-            case 3, (b, _, f) if (b, f) == (batch_size, features):
-                Dx = x @ D.mT
-            case 3, (b, n, _, f) if (b, n, f) == (batch_size, N, features):
-                Dx = torch.linalg.vecdot(D.conj(), x.unsqueeze(-2))
-            case _:
-                shapes = (
-                    f"base shape () or (P,){_prefixes(batch_size, N)}"
-                    if x.dim() == 2
-                    else f"shape () or (1,), or base shape ({features},) or "
-                    f"(P, {features}){_prefixes(batch_size, N)}"
-                )
-                raise ValueError(
-                    f"Input matrix D must be of {shapes} for {x.dim()}D input x, "
-                    f"got {tuple(D.shape)}"
-                )
-
     if C is not None:
         match C.shape:
             case (CM,) if CM == M:
@@ -312,6 +264,61 @@ def state_space(
                 )
     else:
         Ch = h
+
+    if D is None:
+        Dx = None
+    else:
+        # a reading of D gives the outputs C h gives
+        scalar_output = Ch.dim() == 2
+        features = x.size(-1)
+        match x.dim(), tuple(D.shape):
+            case 3, (f,) if f == features and scalar_output:
+                Dx = x @ D
+            case 2, (n,) if n == N and scalar_output:
+                Dx = D * x
+            case 2, (b,) if b == batch_size and scalar_output:
+                Dx = D.unsqueeze(1) * x
+            case 2, ():
+                Dx = x * D
+            case 2, (1,) if scalar_output:
+                Dx = x * D
+            case 3, (1,) | ():
+                Dx = x * D
+            case 2, (_,):
+                Dx = x.unsqueeze(-1) * D
+            case 3, (n, f) if (n, f) == (N, features) and scalar_output:
+                Dx = torch.linalg.vecdot(D.conj(), x)
+            case 3, (b, f) if (b, f) == (batch_size, features) and scalar_output:
+                Dx = torch.linalg.vecdot(D.conj().unsqueeze(1), x)
+            case 2, (n, _) if n == N:
+                Dx = D * x.unsqueeze(-1)
+            case 2, (b, n) if (b, n) == (batch_size, N) and scalar_output:
+                Dx = D * x
+            case 2, (b, _) if b == batch_size:
+                Dx = D.unsqueeze(1) * x.unsqueeze(-1)
+            case 3, (_, f) if f == features:
+                Dx = x @ D.T
+            case 3, (b, n, f) if (b, n, f) == (batch_size, N, features) and scalar_output:
+                Dx = torch.linalg.vecdot(D.conj(), x)
+            case 2, (b, n, _) if (b, n) == (batch_size, N):
+                Dx = D * x.unsqueeze(-1)
+            case 3, (n, _, f) if (n, f) == (N, features):
+                Dx = torch.linalg.vecdot(D.conj(), x.unsqueeze(-2))
+            case 3, (b, _, f) if (b, f) == (batch_size, features):
+                Dx = x @ D.mT
+            case 3, (b, n, _, f) if (b, n, f) == (batch_size, N, features):
+                Dx = torch.linalg.vecdot(D.conj(), x.unsqueeze(-2))
+            case _:
+                shapes = (
+                    f"base shape () or (P,){_prefixes(batch_size, N)}"
+                    if x.dim() == 2
+                    else f"shape () or (1,), or base shape ({features},) or "
+                    f"(P, {features}){_prefixes(batch_size, N)}"
+                )
+                raise ValueError(
+                    f"Input matrix D must be of {shapes} for {x.dim()}D input x, "
+                    f"got {tuple(D.shape)}"
+                )
 
     y = _ssm.outputs(Ch, Dx)
 
