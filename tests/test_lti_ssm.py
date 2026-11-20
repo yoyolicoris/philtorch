@@ -261,7 +261,7 @@ def test_ssm_B_layouts(x_shape, B_shape, equation, dtype):
         ((_b, _N, _F), (_b, _P, _F), "bnf,bpf->bnp"),
         # batch == 1: a (1,) gain on vector input stays a scalar gain.
         ((1, _N, _F), (1,), "bnf,o->bnf"),
-        # with one output of a (1, M) C, D reads as (P,) or (P, F), batch == 1 or not
+        # with one output (here one state), D is that output's gain, batch == 1 or not
         ((_b, _N), (1,), "bn,p->bnp"),
         ((1, _N), (1,), "bn,p->bnp"),
         ((1, _N, 1), (1, 1), "bnf,pf->bnp"),

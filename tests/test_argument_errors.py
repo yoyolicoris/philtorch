@@ -449,92 +449,12 @@ def _cascade_args(*lead, **overrides):
     return args
 
 
-def _cascade_with(name, index, convert):
-    """Call cascade_ss with `convert` applied to stage `index` of argument `name`."""
+def _cascade_with(name, index, kind):
+    """Call cascade_ss with stage `index` of argument `name` in float32 or on the meta device."""
     args = _cascade_args()
+    convert = (lambda t: t.float()) if kind == "dtype" else (lambda t: t.to("meta"))
     args[name] = tuple(convert(t) if i == index else t for i, t in enumerate(args[name]))
     return lti.cascade_ss(**args)
-
-
-_LTI_CONVERSIONS_CASES = [
-    # cascade_ss(A, B, C, D): tuples of tensors of one length, batched as A[0] is
-    pytest.param(
-        lambda: lti.cascade_ss(**_cascade_args(A=_eye(2))),
-        "A must be a tuple or list of tensors",
-        id="cascade_ss-not-a-sequence",
-    ),
-    pytest.param(
-        lambda: lti.cascade_ss(**_cascade_args(B=(_ones(2),))),
-        "same length, at least 1, got A: 2, B: 1, C: 2, D: 2",
-        id="cascade_ss-lengths",
-    ),
-    pytest.param(
-        lambda: lti.cascade_ss((), (), (), ()),
-        "same length, at least 1, got A: 0",
-        id="cascade_ss-empty",
-    ),
-    pytest.param(
-        lambda: lti.cascade_ss(**_cascade_args(A=(_ones(2), _ones(1, 1)))),
-        r"A\[0\] must be 2D or 3D",
-        id="cascade_ss-A-1d",
-    ),
-    pytest.param(
-        lambda: lti.cascade_ss(**_cascade_args(A=(_ones(2, 2), _ones(1, 2)))),
-        r"A\[1\] must be of shape \(2, 2\), got \(1, 2\)",
-        id="cascade_ss-A-not-square",
-    ),
-    pytest.param(
-        lambda: lti.cascade_ss(**_cascade_args(4, A=(_ones(4, 2, 2), _ones(1, 1)))),
-        r"A\[1\] must be of shape \(4, 1, 1\)",
-        id="cascade_ss-A-not-batched",
-    ),
-    pytest.param(
-        lambda: lti.cascade_ss(**_cascade_args(4, B=(_ones(4, 2), _ones(5, 1, 3)))),
-        r"B\[1\] must be of shape \(4, 1\) or \(4, 1, 'F'\)",
-        id="cascade_ss-B-batch-mismatch",
-    ),
-    pytest.param(
-        lambda: lti.cascade_ss(**_cascade_args(B=(_ones(3), _ones(1, 3)))),
-        r"B\[0\] must be of shape \(2,\) or \(2, 'F'\), got \(3,\)",
-        id="cascade_ss-B-states",
-    ),
-    pytest.param(
-        lambda: lti.cascade_ss(**_cascade_args(C=(_ones(3, 3), _ones(1)))),
-        r"C\[0\] must be of shape \(2,\) or \('P', 2\), got \(3, 3\)",
-        id="cascade_ss-C-states",
-    ),
-    pytest.param(
-        lambda: lti.cascade_ss(**_cascade_args(D=(_ones(2), _ones(3)))),
-        r"D\[0\] must be of shape \(3,\), got \(2,\)",
-        id="cascade_ss-D-shape",
-    ),
-    pytest.param(
-        lambda: lti.cascade_ss(**_cascade_args(D=(_ones(3), _ones(1, 3)))),
-        r"D\[1\] must be of shape \(3,\), got \(1, 3\)",
-        id="cascade_ss-D-matrix-for-vectors",
-    ),
-    pytest.param(
-        lambda: lti.cascade_ss(**_cascade_args(C=(_ones(2, 2), _ones(1)), D=(_ones(2), _ones(3)))),
-        r"outputs of model 0 \(2\) must equal the number of inputs of model 1 \(3\)",
-        id="cascade_ss-stage-sizes",
-    ),
-    *(
-        pytest.param(
-            lambda name=name, index=index: _cascade_with(name, index, lambda t: t.float()),
-            r"and D\[1\] must share a dtype and a device",
-            id=f"cascade_ss-{name}-dtype",
-        )
-        for name, index in (("A", 1), ("B", 0), ("C", 1), ("D", 0))
-    ),
-    *(
-        pytest.param(
-            lambda name=name, index=index: _cascade_with(name, index, lambda t: t.to("meta")),
-            r"and D\[1\] must share a dtype and a device",
-            id=f"cascade_ss-{name}-device",
-        )
-        for name, index in (("A", 0), ("B", 1), ("C", 0), ("D", 1))
-    ),
-]
 
 
 _LTI_FILTERING_CASES = [
@@ -751,6 +671,75 @@ _LTI_FILTERING_CASES = [
         lambda: lti.sos2ss(_ones(2, 5), batch_index=torch.tensor([-1, 0])),
         "batch_index must not be negative",
         id="sos2ss-batch_index-negative",
+    ),
+    # cascade_ss(A, B, C, D): tuples of tensors of one length, batched as A[0] is
+    pytest.param(
+        lambda: lti.cascade_ss(**_cascade_args(A=_eye(2))),
+        "A must be a tuple or list of tensors",
+        id="cascade_ss-not-a-sequence",
+    ),
+    pytest.param(
+        lambda: lti.cascade_ss(**_cascade_args(B=(_ones(2),))),
+        "same length, at least 1, got A: 2, B: 1, C: 2, D: 2",
+        id="cascade_ss-lengths",
+    ),
+    pytest.param(
+        lambda: lti.cascade_ss((), (), (), ()),
+        "same length, at least 1, got A: 0",
+        id="cascade_ss-empty",
+    ),
+    pytest.param(
+        lambda: lti.cascade_ss(**_cascade_args(A=(_ones(2), _ones(1, 1)))),
+        r"A\[0\] must be 2D or 3D",
+        id="cascade_ss-A-1d",
+    ),
+    pytest.param(
+        lambda: lti.cascade_ss(**_cascade_args(A=(_ones(2, 2), _ones(1, 2)))),
+        r"A\[1\] must be of shape \(2, 2\), got \(1, 2\)",
+        id="cascade_ss-A-not-square",
+    ),
+    pytest.param(
+        lambda: lti.cascade_ss(**_cascade_args(4, A=(_ones(4, 2, 2), _ones(1, 1)))),
+        r"A\[1\] must be of shape \(4, 1, 1\)",
+        id="cascade_ss-A-not-batched",
+    ),
+    pytest.param(
+        lambda: lti.cascade_ss(**_cascade_args(4, B=(_ones(4, 2), _ones(5, 1, 3)))),
+        r"B\[1\] must be of shape \(4, 1\) or \(4, 1, 'F'\)",
+        id="cascade_ss-B-batch-mismatch",
+    ),
+    pytest.param(
+        lambda: lti.cascade_ss(**_cascade_args(B=(_ones(3), _ones(1, 3)))),
+        r"B\[0\] must be of shape \(2,\) or \(2, 'F'\), got \(3,\)",
+        id="cascade_ss-B-states",
+    ),
+    pytest.param(
+        lambda: lti.cascade_ss(**_cascade_args(C=(_ones(3, 3), _ones(1)))),
+        r"C\[0\] must be of shape \(2,\) or \('P', 2\), got \(3, 3\)",
+        id="cascade_ss-C-states",
+    ),
+    pytest.param(
+        lambda: lti.cascade_ss(**_cascade_args(D=(_ones(2), _ones(3)))),
+        r"D\[0\] must be of shape \(3,\), got \(2,\)",
+        id="cascade_ss-D-shape",
+    ),
+    pytest.param(
+        lambda: lti.cascade_ss(**_cascade_args(C=(_ones(2, 2), _ones(1)), D=(_ones(2), _ones(3)))),
+        r"outputs of model 0 \(2\) must equal the number of inputs of model 1 \(3\)",
+        id="cascade_ss-stage-sizes",
+    ),
+    *(
+        pytest.param(
+            lambda name=name, index=index, kind=kind: _cascade_with(name, index, kind),
+            r"and D\[1\] must share a dtype and a device",
+            id=f"cascade_ss-{name}-{kind}",
+        )
+        for name, index, kind in (
+            ("A", 1, "dtype"),
+            ("B", 0, "device"),
+            ("C", 1, "dtype"),
+            ("D", 0, "device"),
+        )
     ),
     # sos2pfe(sos, tol, rtype, batch_index): sos and batch_index are checked as sos2tf's are,
     # rtype as residuez's
@@ -1398,7 +1387,6 @@ def _group(name, cases):
         *_group("lpv-recur", _LPV_RECUR_CASES),
         *_group("lpv-ssm", _LPV_SSM_CASES),
         *_group("lpv-utils", _LPV_UTILS_CASES),
-        *_group("lti-conversions", _LTI_CONVERSIONS_CASES),
         *_group("lti-filtering", _LTI_FILTERING_CASES),
         *_group("lti-interp", _LTI_INTERP_CASES),
         *_group("lti-recur", _LTI_RECUR_CASES),

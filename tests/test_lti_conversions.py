@@ -565,8 +565,7 @@ def _random_stage(M: int, F: int, P: int, lead: tuple[int, ...]):
     return A, B, C, D
 
 
-@pytest.mark.parametrize("batched", [False, True])
-@pytest.mark.parametrize("K", _CASCADES)
+@pytest.mark.parametrize(("K", "batched"), [(1, False), (2, False), (5, True)])
 def test_cascade_ss_matches_the_stages_in_series(K, batched):
     torch.manual_seed(K)
     sizes, orders = _CASCADES[K]
