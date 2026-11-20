@@ -428,7 +428,7 @@ def diag_state_space(
             raise ValueError("V and Vinv need L")
         _check_A(A, x)
         # torch.linalg.eig on CUDA overwrites a transposed input, such as A.mT, in place
-        # (a PyTorch bug, seen in torch 2.13 to 2.15); .contiguous() copies such a view.
+        # (pytorch/pytorch#202629, seen in torch 2.13 to 2.15); .contiguous() copies a view.
         L, V = torch.linalg.eig(A.contiguous())
         M = A.size(-1)
     elif A is not None:
