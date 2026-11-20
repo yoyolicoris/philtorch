@@ -244,9 +244,20 @@ def sos2ss(sos: Tensor, batch_index: Tensor | None = None) -> tuple[Tensor, Tens
     _check_sos(sos)
     if batch_index is not None:
         sos = _sections_by_row(sos, batch_index)[0]
+    return _sos2ss(sos)
+
+
+def _sos2ss(sos: Tensor) -> tuple[Tensor, Tensor, Tensor, Tensor]:
+    """The cascade of sections (..., K, 5) as one model: A (..., 2K, 2K), B and C
+    (..., 2K), D (...), each section in transposed direct form II."""
     _, a, B, D = _ssm.direct_form(sos[..., :3], sos[..., 3:])
     C = F.pad(torch.ones_like(B[..., :1]), (0, 1))
-    return cascade_ss(companion(a).mT.unbind(-3), B.unbind(-2), C.unbind(-2), D.unbind(-1))
+    K = sos.size(-2)
+    real = torch.ones(K, 2, dtype=torch.bool, device=sos.device)
+    A, B, C, D = _cascade_stacked(
+        companion(a).mT, B.unsqueeze(-1), C.unsqueeze(-2), D[..., None, None], real, [2] * K
+    )
+    return A[..., 0, :, :], B[..., 0, :, 0], C[..., 0, 0, :], D[..., 0, 0, 0]
 
 
 def unique_roots(p: Tensor, tol: float = 1e-3, rtype: str = "min") -> tuple[Tensor, ...]:
@@ -793,7 +804,9 @@ def cascade_ss(
 
     whose state is that of the first model followed by that of the second. A
     longer cascade of :math:`K` models combines them in the same way, and its
-    state lists the states of :math:`l = 1, \dots, K` in order.
+    state lists the states of :math:`l = 1, \dots, K` in order: its initial
+    state is the models' initial states concatenated, and its final state
+    splits into theirs.
 
     Args:
         A (tuple or list of Tensor): the state matrices :math:`A_l`, one for

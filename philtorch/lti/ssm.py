@@ -427,7 +427,9 @@ def diag_state_space(
         if V is not None or Vinv is not None:
             raise ValueError("V and Vinv need L")
         _check_A(A, x)
-        L, V = torch.linalg.eig(A)
+        # torch.linalg.eig on CUDA overwrites a transposed input, such as A.mT, in place
+        # (a PyTorch bug, seen in torch 2.13 to 2.15); .contiguous() copies such a view.
+        L, V = torch.linalg.eig(A.contiguous())
         M = A.size(-1)
     elif A is not None:
         raise ValueError("A takes no L: its eigendecomposition gives the eigenvalues.")
