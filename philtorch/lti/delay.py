@@ -387,7 +387,7 @@ def delay_state_space(
         length = signal.size(1)
         flat = signal.permute(0, 2, 1).reshape(batch_size * M, length)
         filter_A, filter_B, filter_C, filter_D = filters
-        # state_space's recursion, on the engine directly.
+        # h[n + 1] = A h[n] + B x[n] from h[0] = state; y[n] = C h[n] + D x[n].
         h = _ssm.recursion(
             filter_A, state, flat.unsqueeze(-1) * filter_B.unsqueeze(1), unroll_factor=unroll_factor
         )
