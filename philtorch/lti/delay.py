@@ -11,7 +11,7 @@ from torch import Tensor
 from .. import _ssm
 from ..utils import _check_shared
 from .conversions import _sos2ss
-from .ssm import _ssm_B, _ssm_C_D, state_space
+from .ssm import _ssm_B, _ssm_C_D
 
 _OUTPUT_CHUNK = 4096
 
@@ -72,8 +72,9 @@ def _absorption_filters(
 
     Returns the filters and their initial state. For gains, the filters are the
     gains, (B, 1, M), and the state is ``None``. For sections, the filters are
-    the state-space matrices of the ``B * M`` cascades, and the state is their
-    ``(B * M, 2K)`` initial state, for ``K`` sections.
+    the state-space matrices of the ``B * M`` cascades, with ``A`` as
+    ``_ssm.recursion`` takes it, ``(B * M, 1, 2K, 2K)``, and the state is
+    their ``(B * M, 2K)`` initial state, for ``K`` sections.
     """
     if not isinstance(absorption, Tensor):
         raise TypeError("absorption must be a Tensor")
@@ -126,7 +127,8 @@ def _absorption_filters(
         state = x.new_zeros(batch_size * M, 2 * K)
     else:
         state = absorption_zi.expand(batch_size, M, K, 2).reshape(batch_size * M, 2 * K)
-    return _sos2ss(absorption.expand(batch_size, M, K, 5).reshape(batch_size * M, K, 5)), state
+    A, B, C, D = _sos2ss(absorption.expand(batch_size, M, K, 5).reshape(batch_size * M, K, 5))
+    return (_ssm.from_lti(A), B, C, D), state
 
 
 def delay_state_space(
@@ -202,11 +204,10 @@ def delay_state_space(
 
     Args:
         A (Tensor): the feedback matrix, of shape :math:`(M, M)` or
-            :math:`(B, M, M)`.
-        x (Tensor): inputs, of shape :math:`(B, N)` or :math:`(B, N, F)`:
-            :math:`B` signals of :math:`N` samples, each sample a scalar or
-            :math:`F` features. The batch size :math:`B` is not the matrix
-            :attr:`B`.
+            :math:`(\text{batch}, M, M)`.
+        x (Tensor): inputs, of shape :math:`(\text{batch}, N)` or
+            :math:`(\text{batch}, N, F)`: :math:`\text{batch}` signals of
+            :math:`N` samples, each sample a scalar or :math:`F` features.
         delays (int, Sequence[int], or Tensor): the positive integer delay
             lengths of the :math:`M` lines, as Python, NumPy or integer tensor
             values; a scalar gives a single delay line.
@@ -219,26 +220,28 @@ def delay_state_space(
             feedthrough.
         zi (Sequence[Tensor], optional): the first outputs of each delay line,
             :math:`s_i[0], \dots, s_i[m_i - 1]`, as one queue per line, of
-            shape :math:`(m_i)` or :math:`(B, m_i)`. Default: ``None``, all
-            zero.
+            shape :math:`(m_i)` or :math:`(\text{batch}, m_i)`. Default:
+            ``None``, all zero.
         block_size (int, optional): the number of samples computed at once,
             at most :math:`\min_i m_i`. It changes the speed and memory use,
             not the outputs. Default: ``None``, which uses :math:`\min_i m_i`.
         out_idx (int, optional): output only this delay line, instead of using
             :attr:`C`. Default: ``None``.
         absorption (Tensor, optional): the per-line filters :math:`\gamma_i`,
-            as sections of shape :math:`(M, K, 5)` or :math:`(B, M, K, 5)`,
-            :math:`K \ge 1`, one cascade of :math:`K` sections per line, each
-            section a row :math:`b_0, b_1, b_2, a_1, a_2`, without
-            :math:`a_0 = 1`, as in :func:`sosfilt`, or as gains of shape
-            :math:`(M)` or :math:`(B, M)`, one per line. The number of
-            dimensions tells them apart. It must have the dtype and device of
-            :attr:`x`. Default: ``None``, no filters.
+            as sections of shape :math:`(M, K, 5)` or
+            :math:`(\text{batch}, M, K, 5)`, :math:`K \ge 1`, one cascade of
+            :math:`K` sections per line, each section a row
+            :math:`b_0, b_1, b_2, a_1, a_2`, without :math:`a_0 = 1`, as in
+            :func:`sosfilt`, or as gains of shape :math:`(M)` or
+            :math:`(\text{batch}, M)`, one per line. The number of dimensions
+            tells them apart. It must have the dtype and device of :attr:`x`.
+            Default: ``None``, no filters.
         absorption_zi (Tensor, optional): the initial states of the cascades,
             as the ``zi`` of :func:`sosfilt` for each line, of shape
-            :math:`(M, K, 2)` or :math:`(B, M, K, 2)`. It must have the dtype
-            and device of :attr:`x`, and be ``None`` for gains, which have no
-            state. Needs :attr:`absorption`. Default: ``None``, all zero.
+            :math:`(M, K, 2)` or :math:`(\text{batch}, M, K, 2)`. It must have
+            the dtype and device of :attr:`x`, and be ``None`` for gains, which
+            have no state. Needs :attr:`absorption`. Default: ``None``, all
+            zero.
         absorption_position (str, optional): where the filters are:
             ``"delay"``, ``"matrix"`` or ``"feedback"``, as above. A value
             other than ``"delay"`` needs :attr:`absorption`. Default:
@@ -253,26 +256,27 @@ def delay_state_space(
 
     Returns:
         Tensor or (Tensor, tuple of Tensor) or (Tensor, tuple of Tensor,
-        Tensor): the outputs, of shape :math:`(B, N)` with :attr:`out_idx` or
-        a :math:`(M)` or :math:`(B, M)` :attr:`C`, :math:`(B, N, P)` with
-        :math:`P` outputs, or :math:`(B, N, M)` without :attr:`C`. With
+        Tensor): the outputs, of shape :math:`(\text{batch}, N)` with
+        :attr:`out_idx` or a :math:`(M)` or :math:`(\text{batch}, M)`
+        :attr:`C`, :math:`(\text{batch}, N, P)` with :math:`P` outputs, or
+        :math:`(\text{batch}, N, M)` without :attr:`C`. With
         :attr:`zi`, the pair ``(y, zf)``, where ``zf`` is a tuple of the next
         outputs of each delay line, :math:`s_i[N], \dots, s_i[N + m_i - 1]`,
-        one queue per line, of shape :math:`(B, m_i)`: pass it as :attr:`zi` to
-        continue.
+        one queue per line, of shape :math:`(\text{batch}, m_i)`: pass it as
+        :attr:`zi` to continue.
         With :attr:`absorption` as sections, and :attr:`zi` or
         :attr:`absorption_zi`, the triple ``(y, zf, absorption_zf)``, where
         ``absorption_zf`` is the final state of the cascades, of shape
-        :math:`(B, M, K, 2)`; whichever initial state is not given starts at
-        zero. With gains, which have no state, the return value is that
-        without :attr:`absorption`.
+        :math:`(\text{batch}, M, K, 2)`; whichever initial state is not given
+        starts at zero. With gains, which have no state, the return value is
+        that without :attr:`absorption`.
 
     Raises:
         ValueError: if :attr:`x` is not 2-D or 3-D; if a delay or
             :attr:`block_size` is invalid, or :attr:`zi` does not hold one
             queue per delay line, each of shape :math:`(m_i)` or
-            :math:`(B, m_i)`; if :attr:`A`
-            is not of shape :math:`(M, M)` or :math:`(B, M, M)`; if
+            :math:`(\text{batch}, m_i)`; if :attr:`A` is not of shape
+            :math:`(M, M)` or :math:`(\text{batch}, M, M)`; if
             :attr:`B` is ``None`` and a 3-D :attr:`x` does not have
             :math:`F = M`, if :attr:`B`, :attr:`C` or :attr:`D` has a shape
             that :func:`state_space` rejects, or if :attr:`D` gives a
@@ -282,7 +286,7 @@ def delay_state_space(
             batch size do not match :math:`M` or that of :attr:`x`, its
             sections do not have 5 coefficients, or it has no section; if
             :attr:`absorption_zi` is not of shape :math:`(M, K, 2)` or
-            :math:`(B, M, K, 2)`, or is given with gains; if
+            :math:`(\text{batch}, M, K, 2)`, or is given with gains; if
             :attr:`absorption_zi`, :attr:`unroll_factor` or an
             :attr:`absorption_position` other than ``"delay"`` is given
             without :attr:`absorption`; if :attr:`absorption_position` is
@@ -383,16 +387,13 @@ def delay_state_space(
         length = signal.size(1)
         flat = signal.permute(0, 2, 1).reshape(batch_size * M, length)
         filter_A, filter_B, filter_C, filter_D = filters
-        flat, state = state_space(
-            filter_A,
-            flat,
-            B=filter_B,
-            C=filter_C,
-            D=filter_D,
-            zi=state,
-            unroll_factor=unroll_factor,
+        # h[n + 1] = A h[n] + B x[n] from h[0] = state; y[n] = C h[n] + D x[n].
+        h = _ssm.recursion(
+            filter_A, state, flat.unsqueeze(-1) * filter_B.unsqueeze(1), unroll_factor=unroll_factor
         )
-        return flat.reshape(batch_size, M, length).permute(0, 2, 1), state
+        read = torch.cat([state.unsqueeze(1), h[:, :-1]], dim=1)
+        flat = (read @ filter_C.unsqueeze(-1)).squeeze(-1) + filter_D.unsqueeze(1) * flat
+        return flat.reshape(batch_size, M, length).permute(0, 2, 1), h[:, -1]
 
     # Line i reads the stream initial ++ s at position t - m_i for time t. The
     # stream is kept in chunks of block_size samples of all lines, behind a

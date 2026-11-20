@@ -32,10 +32,11 @@ def state_space_recursion(
 
     Args:
         A (Tensor): state matrices, of shape :math:`(M, M)` or
-            :math:`(B, M, M)`.
+            :math:`(\text{batch}, M, M)`.
         zi (Tensor): the initial state :math:`\mathbf{h}[0]`, of shape
-            :math:`(B, M)`.
-        x (Tensor): inputs, of shape :math:`(B, N, M)` or :math:`(B, N)`.
+            :math:`(\text{batch}, M)`.
+        x (Tensor): inputs, of shape :math:`(\text{batch}, N, M)` or
+            :math:`(\text{batch}, N)`.
         unroll_factor (int, optional): ``None`` runs a native kernel, which
             doesn't take every input (see Raises). An integer runs PyTorch ops
             on any device, in the dtypes their matrix products take there:
@@ -46,7 +47,8 @@ def state_space_recursion(
 
     Returns:
         Tensor: the states :math:`\mathbf{h}[1], \dots, \mathbf{h}[N]`, of
-        shape :math:`(B, N, M)`, or :math:`(B, N)` with :attr:`out_idx`.
+        shape :math:`(\text{batch}, N, M)`, or :math:`(\text{batch}, N)` with
+        :attr:`out_idx`.
 
     Raises:
         ValueError: if :attr:`A`, :attr:`zi` and :attr:`x` don't share a dtype
@@ -116,38 +118,41 @@ def state_space(
 
     Args:
         A (Tensor): state matrices, of shape :math:`(M, M)` or
-            :math:`(B, M, M)`.
-        x (Tensor): inputs, of shape :math:`(B, N, F)`, or :math:`(B, N)` for
-            a scalar input.
+            :math:`(\text{batch}, M, M)`.
+        x (Tensor): inputs, of shape :math:`(\text{batch}, N, F)`, or
+            :math:`(\text{batch}, N)` for a scalar input.
         B (Tensor, optional): the input matrix, of shape :math:`(M)` or
-            :math:`(B, M)` for a 2-D :attr:`x`, and :math:`(M, F)` or
-            :math:`(B, M, F)` for a 3-D one. Default: ``None``: a 2-D
-            :attr:`x` feeds the first state, and a 3-D one needs
+            :math:`(\text{batch}, M)` for a 2-D :attr:`x`, and :math:`(M, F)`
+            or :math:`(\text{batch}, M, F)` for a 3-D one. Default: ``None``:
+            a 2-D :attr:`x` feeds the first state, and a 3-D one needs
             :math:`F = M`.
         C (Tensor, optional): the output matrix, of shape :math:`(M)` or
-            :math:`(B, M)` for a scalar output, or :math:`(P, M)` or
-            :math:`(B, P, M)` for :math:`P` outputs. Default: ``None``, which
-            outputs the states.
+            :math:`(\text{batch}, M)` for a scalar output, or :math:`(P, M)`
+            or :math:`(\text{batch}, P, M)` for :math:`P` outputs.
+            Default: ``None``, which outputs the states.
         D (Tensor, optional): the feedthrough matrix. For a 2-D :attr:`x`, of
-            shape :math:`()`, :math:`(1)`, :math:`(B)`, :math:`(P)` or
-            :math:`(B, P)`; for a 3-D one, :math:`()`, :math:`(1)`,
-            :math:`(F)`, :math:`(B, F)`, :math:`(P, F)` or :math:`(B, P, F)`.
+            shape :math:`()`, :math:`(1)`, :math:`(\text{batch})`,
+            :math:`(P)` or :math:`(\text{batch}, P)`; for a 3-D one,
+            :math:`()`, :math:`(1)`, :math:`(F)`, :math:`(\text{batch}, F)`,
+            :math:`(P, F)` or :math:`(\text{batch}, P, F)`.
             :math:`D` gives as many outputs as :attr:`C`, or as the states
             without :attr:`C`; when two readings still fit, such as
-            :math:`P = B`, the batched one wins.
+            :math:`P = \text{batch}`, the batched one wins.
             Default: ``None``, no feedthrough.
-        zi (Tensor, optional): the initial state, of shape :math:`(B, M)` or
-            :math:`(M)`. Default: ``None``, all zero.
+        zi (Tensor, optional): the initial state, of shape
+            :math:`(\text{batch}, M)` or :math:`(M)`. Default: ``None``, all
+            zero.
         unroll_factor (int, optional): see :func:`state_space_recursion`.
             Default: ``None``.
         out_idx (int, optional): output only this state, instead of using
             :attr:`C`. Default: ``None``.
 
     Returns:
-        Tensor or tuple of Tensor: the outputs, of shape :math:`(B, N)`,
-        :math:`(B, N, P)`, or :math:`(B, N, M)` without :attr:`C`, and with
-        :attr:`zi`, the final state :math:`\mathbf{h}[N]`, of shape
-        :math:`(B, M)`.
+        Tensor or tuple of Tensor: the outputs, of shape
+        :math:`(\text{batch}, N)`, :math:`(\text{batch}, N, P)`, or
+        :math:`(\text{batch}, N, M)` without :attr:`C`, and with :attr:`zi`,
+        the final state :math:`\mathbf{h}[N]`, of shape
+        :math:`(\text{batch}, M)`.
 
     Raises:
         ValueError: if both :attr:`C` and :attr:`out_idx` are given, if
@@ -352,8 +357,8 @@ def diag_state_space(
 
     Note:
         With :attr:`zi`, one input (a 2-D :attr:`x`) and one output
-        (:attr:`C` of shape :math:`(M)` or :math:`(B, M)`, or :attr:`out_idx`),
-        the rounding error of the gradients grows with
+        (:attr:`C` of shape :math:`(M)` or :math:`(\text{batch}, M)`, or
+        :attr:`out_idx`), the rounding error of the gradients grows with
         :math:`|\hat{h}_i[0] / \hat{B}_i|`, where
         :math:`\hat{\mathbf{h}}[0] = V^{-1} \text{zi}`: large for a state that
         the input barely drives (a small :math:`\hat{B}_i`) but :attr:`zi`
@@ -361,15 +366,17 @@ def diag_state_space(
         precision.
 
     Args:
-        x (Tensor): inputs, of shape :math:`(B, N, F)` or :math:`(B, N)`.
+        x (Tensor): inputs, of shape :math:`(\text{batch}, N, F)` or
+            :math:`(\text{batch}, N)`.
         L (Tensor, optional): the eigenvalues :math:`\boldsymbol{\lambda}`,
-            of shape :math:`(M)` or :math:`(B, M)`. Default: ``None``.
+            of shape :math:`(M)` or :math:`(\text{batch}, M)`.
+            Default: ``None``.
         V (Tensor, optional): the eigenvectors as columns, of shape
-            :math:`(M, M)` or :math:`(B, M, M)`. Default: ``None``.
+            :math:`(M, M)` or :math:`(\text{batch}, M, M)`. Default: ``None``.
         Vinv (Tensor, optional): the inverse of :attr:`V`, of the same shape.
             Default: ``None``.
         A (Tensor, optional): the state matrix, of shape :math:`(M, M)` or
-            :math:`(B, M, M)`. Default: ``None``.
+            :math:`(\text{batch}, M, M)`. Default: ``None``.
         B (Tensor, optional): see :func:`state_space`, except that with
             :attr:`L` alone a 2-D :attr:`x` without :attr:`B` drives every
             state. Default: ``None``.

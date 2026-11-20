@@ -945,33 +945,21 @@ def test_delay_state_space_absorption_across_spans(monkeypatch, chunk, x_dim, po
 
 
 @pytest.mark.parametrize("position", POSITIONS)
-@pytest.mark.parametrize("factor", [None, 1, 2])
-def test_delay_state_space_absorption_passes_unroll_factor(monkeypatch, factor, position):
-    dtype, delays = torch.double, (4, 6)
-    x = torch.randn(2, 22, dtype=dtype)  # blocks of 4 samples, the last of 2
-    A = 0.5 * torch.randn(2, 2, dtype=dtype)
-    sections = 0.4 * torch.randn(2, 1, 5, dtype=dtype)
-    calls = []
-
-    def spy(A, x, *args, **kwargs):
-        calls.append((x.size(1), kwargs["unroll_factor"]))
-        return state_space(A, x, *args, **kwargs)
-
-    monkeypatch.setattr(delay_module, "state_space", spy)
-    delay_state_space(
-        A,
-        x,
-        delays,
-        absorption=sections,
-        absorption_position=position,
-        unroll_factor=factor,
-    )
-
-    assert calls == [(4, factor)] * 5 + [(2, factor)]
-
-    calls.clear()
-    delay_state_space(A, x, delays, absorption=sections[:, 0, 0], unroll_factor=factor)
-    assert calls == []
+def test_delay_state_space_absorption_unroll_factor_without_a_kernel(position):
+    # No kernel takes int32: the default raises; an integer unroll_factor runs
+    # PyTorch ops and gives the int64 kernels' outputs.
+    A = torch.tensor([[0, 1], [1, 0]])
+    x = torch.randint(-3, 4, (2, 22))
+    sections = torch.randint(-1, 2, (2, 1, 5))
+    kwargs = dict(absorption_position=position)
+    expected = delay_state_space(A, x, (4, 6), absorption=sections, **kwargs)
+    A, x, sections = (t.int() for t in (A, x, sections))
+    with pytest.raises(NotImplementedError, match="pass unroll_factor=1"):
+        delay_state_space(A, x, (4, 6), absorption=sections, **kwargs)
+    for factor in (1, 2):
+        y = delay_state_space(A, x, (4, 6), absorption=sections, unroll_factor=factor, **kwargs)
+        assert y.dtype == torch.int32
+        assert torch.equal(y.long(), expected)
 
 
 @pytest.mark.parametrize(
