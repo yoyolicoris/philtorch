@@ -1120,6 +1120,11 @@ _LTI_SSM_CASES = [
         "Either L or A must be provided",
         id="diag-no-L-or-A",
     ),
+    pytest.param(
+        lambda: lti.diag_state_space(_ones(1, 4), L=_zeros(1, 1, 2)),
+        "L must be a vector or a batch of vectors",
+        id="diag-L-3d",
+    ),
     # The model has x's dtype, and so has the decomposition, except that a real
     # A's may be complex.
     pytest.param(

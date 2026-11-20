@@ -9,8 +9,8 @@ import torch.nn.functional as F
 from torch import Tensor
 
 from .. import _ssm
-from ..mat import companion
 from ..utils import _check_shared
+from .conversions import _sos2ss
 from .ssm import _ssm_B, _ssm_C_D, state_space
 
 _OUTPUT_CHUNK = 4096
@@ -62,56 +62,71 @@ def _initial_queues(
 
 
 def _absorption_filters(
-    absorption: tuple[Tensor, Tensor],
+    absorption: Tensor,
     absorption_zi: Tensor | None,
     M: int,
     batch_size: int,
     x: Tensor,
-) -> tuple[Tensor | None, Tensor, Tensor, int, Tensor]:
-    """Check the absorption filters and build their transposed direct form II.
+) -> tuple[Tensor | tuple[Tensor, Tensor, Tensor, Tensor], Tensor | None]:
+    """Check the absorption filters and build them.
 
-    Returns the state-space ``A``, ``B`` and ``D`` of the ``B * M`` filters,
-    as in :func:`lfilter` with ``form="tdf2"``, their order ``K`` (``A`` is
-    ``None`` when it is 0), and their ``(B * M, K)`` initial state.
+    Returns the filters and their initial state. For gains, the filters are the
+    gains, (B, 1, M), and the state is ``None``. For sections, the filters are
+    the state-space matrices of the ``B * M`` cascades, and the state is their
+    ``(B * M, 2K)`` initial state, for ``K`` sections.
     """
-    if not isinstance(absorption, (tuple, list)) or len(absorption) != 2:
-        raise ValueError("absorption must be a pair of tensors (b, a)")
-    named = {"absorption b": absorption[0], "absorption a": absorption[1]}
-    if absorption_zi is not None:
-        named["absorption_zi"] = absorption_zi
-    for name, tensor in named.items():
-        if not isinstance(tensor, Tensor):
-            raise TypeError(f"{name} must be a Tensor")
-        if tensor.dim() not in (2, 3):
-            raise ValueError(f"{name} must be 2D or 3D, got {tensor.shape}")
-        if tensor.size(-2) != M:
-            raise ValueError(
-                f"Second to last dimension of {name} must match the number of delays, "
-                f"got {tensor.size(-2)}, delays: {M}"
-            )
-        if tensor.dim() == 3 and tensor.size(0) != batch_size:
-            raise ValueError(
-                f"Batch size of {name} must match batch size of x, "
-                f"got {tensor.size(0)}, x: {batch_size}"
-            )
-    if absorption[0].size(-1) == 0:
-        raise ValueError("absorption b must have at least one coefficient")
-    _check_shared(**named, x=x)
-
-    b, a = (c.expand(batch_size, M, -1).reshape(batch_size * M, c.size(-1)) for c in absorption)
-    K = max(b.size(-1) - 1, a.size(-1))
-    if absorption_zi is None:
-        state = x.new_zeros(batch_size * M, K)
-    elif absorption_zi.size(-1) != K:
+    if not isinstance(absorption, Tensor):
+        raise TypeError("absorption must be a Tensor")
+    if absorption.dim() not in (1, 2, 3, 4):
+        raise ValueError(f"absorption must be 1D to 4D, got {absorption.shape}")
+    gains = absorption.dim() <= 2
+    # The lines are the last dimension of gains, the third to last of sections.
+    lines = absorption.size(-1 if gains else -3)
+    if lines != M:
         raise ValueError(
-            f"Last dimension of absorption_zi must be max(len(a), len(b) - 1) = {K}, "
-            f"got {absorption_zi.size(-1)}"
+            f"The lines dimension of absorption must match the number of delays, "
+            f"got {lines}, delays: {M}"
         )
+    # Batched gains are 2-D and batched sections 4-D.
+    if absorption.dim() % 2 == 0 and absorption.size(0) != batch_size:
+        raise ValueError(
+            f"Batch size of absorption must match batch size of x, "
+            f"got {absorption.size(0)}, x: {batch_size}"
+        )
+    if gains:
+        if absorption_zi is not None:
+            raise ValueError("absorption_zi must be None for gains, which have no state")
+        _check_shared(absorption=absorption, x=x)
+        return absorption.expand(batch_size, M).unsqueeze(1), None
+
+    K = absorption.size(-2)
+    if absorption.size(-1) != 5:
+        raise ValueError(
+            f"The last dimension of absorption sections must be 5, got {absorption.size(-1)}"
+        )
+    if K == 0:
+        raise ValueError("absorption must have at least one section")
+    if absorption_zi is not None:
+        if not isinstance(absorption_zi, Tensor):
+            raise TypeError("absorption_zi must be a Tensor")
+        if absorption_zi.dim() not in (3, 4):
+            raise ValueError(f"absorption_zi must be 3D or 4D, got {absorption_zi.shape}")
+        if absorption_zi.shape[-3:] != (M, K, 2):
+            raise ValueError(
+                f"The last three dimensions of absorption_zi must be ({M}, {K}, 2), "
+                f"got {tuple(absorption_zi.shape[-3:])}"
+            )
+        if absorption_zi.dim() == 4 and absorption_zi.size(0) != batch_size:
+            raise ValueError(
+                f"Batch size of absorption_zi must match batch size of x, "
+                f"got {absorption_zi.size(0)}, x: {batch_size}"
+            )
+    _check_shared(absorption=absorption, absorption_zi=absorption_zi, x=x)
+    if absorption_zi is None:
+        state = x.new_zeros(batch_size * M, 2 * K)
     else:
-        state = absorption_zi.expand(batch_size, M, K).reshape(batch_size * M, K)
-    _, a, B, D = _ssm.direct_form(b, a)
-    A = companion(a).mT if K else None
-    return A, B, D, K, state
+        state = absorption_zi.expand(batch_size, M, K, 2).reshape(batch_size * M, 2 * K)
+    return _sos2ss(absorption.expand(batch_size, M, K, 5).reshape(batch_size * M, K, 5)), state
 
 
 def delay_state_space(
@@ -124,7 +139,7 @@ def delay_state_space(
     zi: Sequence[Tensor] | None = None,
     block_size: int | None = None,
     out_idx: int | None = None,
-    absorption: tuple[Tensor, Tensor] | None = None,
+    absorption: Tensor | None = None,
     absorption_zi: Tensor | None = None,
     absorption_after_matrix: bool = False,
     unroll_factor: int | None = None,
@@ -145,13 +160,13 @@ def delay_state_space(
     :math:`\mathbf{h} = \mathbf{s}`; :attr:`B`, :attr:`C`, :attr:`D`,
     :attr:`out_idx` and the return value follow the same conventions.
 
-    With :attr:`absorption`, each line also has an IIR filter :math:`g_i`, with
-    the transfer function of :func:`lfilter`, for the loss of a feedback delay
-    network. Write :math:`\hat{s}_i = g_i \ast s_i` for the filtered output of
-    line :math:`i`, the convolution of :math:`s_i` with the impulse response
-    of :math:`g_i`. By default the filtered output replaces :math:`\mathbf{s}`
-    on the right of both equations, so :math:`A`, :math:`C` and
-    :attr:`out_idx` all see it:
+    With :attr:`absorption`, each line also has a filter :math:`g_i`, for the
+    loss of a feedback delay network: a cascade of second-order sections, as in
+    :func:`sosfilt`, or a gain. Write :math:`\hat{s}_i = g_i \ast s_i` for the
+    filtered output of line :math:`i`, the convolution of :math:`s_i` with the
+    impulse response of :math:`g_i`. By default the filtered output replaces
+    :math:`\mathbf{s}` on the right of both equations, so :math:`A`, :math:`C`
+    and :attr:`out_idx` all see it:
 
     .. math::
         \mathbf{s}[n + \mathbf{m}] &= A \hat{\mathbf s}[n] + B \mathbf{x}[n], \\
@@ -188,19 +203,19 @@ def delay_state_space(
             :math:`\min_i m_i`.
         out_idx (int, optional): output only this delay line, instead of using
             :attr:`C`. Default: ``None``.
-        absorption (tuple or list of Tensor, optional): the per-line filters
-            :math:`g_i`, as a pair :math:`(b, a)` of tensors, as in
-            :func:`lfilter`, so :math:`a` omits the leading 1. :math:`b` has
-            shape :math:`(M, M_b + 1)` or :math:`(B, M, M_b + 1)`, and
-            :math:`a` has shape :math:`(M, M_a)` or :math:`(B, M, M_a)`, where
-            :math:`M_a` may be 0. Batched and unbatched coefficients can be
-            mixed. Both must have the dtype and device of :attr:`x`.
-            Default: ``None``, no filters.
-        absorption_zi (Tensor, optional): the initial states of the filters,
-            as the :attr:`zi` of :func:`lfilter` with ``form="tdf2"``, of
-            shape :math:`(M, K)` or :math:`(B, M, K)`, where
-            :math:`K = \max(M_a, M_b)`. It must have the dtype and device of
-            :attr:`x`. Needs :attr:`absorption`. Default: ``None``, all zero.
+        absorption (Tensor, optional): the per-line filters :math:`g_i`, either
+            as sections of shape :math:`(M, K, 5)` or :math:`(B, M, K, 5)`,
+            :math:`K \ge 1`, one cascade of :math:`K` sections per line, each
+            section a row :math:`b_0, b_1, b_2, a_1, a_2` as in
+            :func:`sosfilt`, or as gains of shape :math:`(M)` or
+            :math:`(B, M)`, one per line. The number of dimensions tells them
+            apart. It must have the dtype and device of :attr:`x`. Default:
+            ``None``, no filters.
+        absorption_zi (Tensor, optional): the initial states of the cascades,
+            as the ``zi`` of :func:`sosfilt` for each line, of shape
+            :math:`(M, K, 2)` or :math:`(B, M, K, 2)`. It must have the dtype
+            and device of :attr:`x`, and be ``None`` for gains, which have no
+            state. Needs :attr:`absorption`. Default: ``None``, all zero.
         absorption_after_matrix (bool, optional): put the filters after
             :math:`A` instead of after the delay lines, as above. Needs
             :attr:`absorption`. Default: ``False``.
@@ -209,8 +224,8 @@ def delay_state_space(
             samples at a time (see :func:`state_space`): ``None`` runs native
             kernels; an integer :math:`\ge 1` runs PyTorch ops on any device,
             the sequential loop for ``1`` or any value of at least the block
-            length. A pure gain (:math:`K = 0`) ignores it. Needs
-            :attr:`absorption`. Default: ``None``.
+            length. Gains ignore it. Needs :attr:`absorption`. Default:
+            ``None``.
 
     Returns:
         Tensor or (Tensor, tuple of Tensor) or (Tensor, tuple of Tensor,
@@ -219,29 +234,31 @@ def delay_state_space(
         outputs of each delay line, :math:`s_i[N], \dots, s_i[N + m_i - 1]`,
         one queue per line, of shape :math:`(B, m_i)`: pass it as :attr:`zi` to
         continue.
-        With :attr:`absorption`, and
-        :attr:`zi` or :attr:`absorption_zi`, the triple
-        ``(y, zf, absorption_zf)``, where ``absorption_zf`` is the final state
-        of the filters, of shape :math:`(B, M, K)`; whichever initial state is
-        not given starts at zero.
+        With :attr:`absorption` as sections, and :attr:`zi` or
+        :attr:`absorption_zi`, the triple ``(y, zf, absorption_zf)``, where
+        ``absorption_zf`` is the final state of the cascades, of shape
+        :math:`(B, M, K, 2)`; whichever initial state is not given starts at
+        zero. With gains, which have no state, the return value is that
+        without :attr:`absorption`.
 
     Raises:
         ValueError: if a delay or :attr:`block_size` is invalid, if
             :attr:`zi` does not hold one queue per delay line, if both
             :attr:`C` and :attr:`out_idx` are given, if :attr:`D` gives a
             different number of outputs from :attr:`C`, :attr:`out_idx` or
-            the states, if :attr:`absorption` is not a pair of tensors, if
-            its coefficients or :attr:`absorption_zi` are not 2-D or 3-D or
-            do not match :math:`M`, the batch size or :math:`K`, if
-            :math:`b` is empty, if :attr:`A`, :attr:`B`, :attr:`C`,
-            :attr:`D`, a queue in :attr:`zi`, the coefficients or
-            :attr:`absorption_zi` differ from :attr:`x` in dtype or device, if
-            :attr:`unroll_factor` is not ``None`` or an integer of at least 1,
-            if :attr:`absorption_zi`, :attr:`absorption_after_matrix` or
-            :attr:`unroll_factor` is given without :attr:`absorption`, or if
-            the other shapes do not match.
-        TypeError: if a queue in :attr:`zi`, either coefficient in
-            :attr:`absorption`, or :attr:`absorption_zi` is not a tensor.
+            the states, if :attr:`absorption` does not have 1 to 4
+            dimensions, if its lines or batch size do not match :math:`M` or
+            the batch size of :attr:`x`, if its sections do not have 5
+            coefficients, if there is no section, if :attr:`absorption_zi` is
+            not of shape :math:`(M, K, 2)` or :math:`(B, M, K, 2)`, or is
+            given with gains, if :attr:`A`, :attr:`B`, :attr:`C`, :attr:`D`, a queue in
+            :attr:`zi`, :attr:`absorption` or :attr:`absorption_zi` differ from
+            :attr:`x` in dtype or device, if :attr:`unroll_factor` is not
+            ``None`` or an integer of at least 1, if :attr:`absorption_zi`,
+            :attr:`absorption_after_matrix` or :attr:`unroll_factor` is given
+            without :attr:`absorption`, or if the other shapes do not match.
+        TypeError: if a queue in :attr:`zi`, :attr:`absorption` or
+            :attr:`absorption_zi` is not a tensor.
 
     Example::
 
@@ -251,7 +268,7 @@ def delay_state_space(
         >>> delay_state_space(torch.tensor([[0.5]]), x, [3]).squeeze(-1)
         tensor([[0.0000, 0.0000, 0.0000, 1.0000, 0.0000, 0.0000, 0.5000]])
         >>> # the same, with g_1 = 0.5 / (1 - 0.5 z^-1) on the delay line
-        >>> absorption = torch.tensor([[0.5]]), torch.tensor([[-0.5]])
+        >>> absorption = torch.tensor([[[0.5, 0.0, 0.0, -0.5, 0.0]]])
         >>> delay_state_space(
         ...     torch.tensor([[0.5]]), x, [3], absorption=absorption
         ... ).squeeze(-1)
@@ -310,28 +327,28 @@ def delay_state_space(
         )
     _check_shared(A=A, B=B, C=C, D=D, x=x)
     Bx = _ssm_B(B, x, batch_size, M)
+    filters, absorption_state = None, None
     if absorb:
-        filter_A, filter_B, filter_D, K, absorption_state = _absorption_filters(
-            absorption, absorption_zi, M, batch_size, x
-        )
+        filters, absorption_state = _absorption_filters(absorption, absorption_zi, M, batch_size, x)
     initial = _initial_queues(zi, delays, batch_size, x)
     return_states = zi is not None or absorption_zi is not None
 
-    def absorb_block(signal: Tensor, state: Tensor) -> tuple[Tensor, Tensor]:
-        """Filter a (B, L, M) block line by line, from and to a (B * M, K) state."""
-        if not K:
-            # A pure gain has no state.
-            return signal * filter_D.view(batch_size, 1, M), state
+    def absorb_block(signal: Tensor, state: Tensor | None) -> tuple[Tensor, Tensor | None]:
+        """Filter a (B, L, M) block line by line, from and to a (B * M, 2K) state."""
+        if state is None:
+            # Gains have no state, and need no recursion.
+            return signal * filters, state
         length = signal.size(1)
         flat = signal.permute(0, 2, 1).reshape(batch_size * M, length)
+        filter_A, filter_B, filter_C, filter_D = filters
         flat, state = state_space(
             filter_A,
             flat,
             B=filter_B,
+            C=filter_C,
             D=filter_D,
             zi=state,
             unroll_factor=unroll_factor,
-            out_idx=0,
         )
         return flat.reshape(batch_size, M, length).permute(0, 2, 1), state
 
@@ -407,6 +424,6 @@ def delay_state_space(
     stream = torch.cat(chunks[tail:], dim=1)
     end = samples + prefix - tail * block_size
     zf = tuple(stream[:, end - delay : end, line].contiguous() for line, delay in enumerate(delays))
-    if absorb:
-        return y, zf, absorption_state.reshape(batch_size, M, K)
+    if absorption_state is not None:
+        return y, zf, absorption_state.view(batch_size, M, -1, 2)
     return y, zf
