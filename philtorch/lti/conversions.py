@@ -815,7 +815,7 @@ def cascade_ss(
         tuple of Tensor: the matrices :math:`A`, :math:`B`, :math:`C` and
         :math:`D` of the cascade, of the dtype and device of the arguments.
         Its input is scalar if :math:`B_1` is a vector, and its output is
-        scalar if :math:`C_K` is one, so that the shapes follow the
+        scalar if :math:`C_K` is a vector, so that the shapes follow the
         arguments' conventions and :func:`~philtorch.lti.state_space` takes
         them.
 
