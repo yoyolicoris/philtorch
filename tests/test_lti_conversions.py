@@ -549,7 +549,7 @@ def test_sos2pfe_groups_a_cluster_of_conjugate_pairs_symmetrically():
 # the stages' states follow.
 _CASCADES = {
     1: ([0, 0], [3]),
-    2: ([0, 2, 0], [2, 3]),
+    2: ([2, 0, 3], [2, 3]),
     5: ([0, 2, 0, 3, 1, 0], [2, 3, 1, 4, 2]),
 }
 
