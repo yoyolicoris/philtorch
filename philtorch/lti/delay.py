@@ -157,15 +157,16 @@ def delay_state_space(
     where :math:`\mathbf{s}[n + \mathbf{m}]` stacks the :math:`s_i[n + m_i]`:
     each line emits what was written into it :math:`m_i` steps earlier. With
     every delay equal to 1, this is :func:`state_space`, with the delay-line
-    outputs as its states; :attr:`B`, :attr:`C`, :attr:`D`, :attr:`out_idx`
-    and the return value follow the same conventions.
+    outputs as its states; :attr:`B`, :attr:`C`, :attr:`D` and
+    :attr:`out_idx` follow the same conventions.
 
-    With :attr:`absorption`, each line also has a filter :math:`g_i`, for the
-    loss of a feedback delay network: a cascade of second-order sections, as in
-    :func:`sosfilt`, or a gain. Write :math:`\hat{s}_i` for the output of line
-    :math:`i` filtered by :math:`g_i`, from the filter state
-    :attr:`absorption_zi`, and :math:`G` for the filters of all lines, with
-    transfer function :math:`G(z) = \operatorname{diag}(g_i(z))`.
+    With :attr:`absorption`, each line also has a filter :math:`\gamma_i`, for
+    the loss of a feedback delay network: a cascade of second-order sections,
+    as in :func:`sosfilt`, or a gain. Write :math:`\hat{s}_i` for the output of
+    line :math:`i` filtered by :math:`\gamma_i`, from the filter state
+    :attr:`absorption_zi`, and :math:`\Gamma` for the filters of all lines,
+    with transfer function
+    :math:`\Gamma(z) = \operatorname{diag}(\gamma_i(z))`.
     :attr:`absorption_position` places the filters. With ``"delay"``, the
     default, the filtered output replaces :math:`\mathbf{s}` on the right of
     both equations, so :math:`A`, :math:`C` and :attr:`out_idx` all see it:
@@ -181,7 +182,7 @@ def delay_state_space(
     :math:`\mathbf{y}` is as without filters:
 
     .. math::
-        \mathbf{s}[n + \mathbf{m}] = G(A \mathbf{s})[n] + B \mathbf{x}[n].
+        \mathbf{s}[n + \mathbf{m}] = \Gamma(A \mathbf{s})[n] + B \mathbf{x}[n].
 
     .. image:: /figures/delay_state_space_matrix.svg
         :alt: The filters after A, on the feedback path only.
@@ -225,7 +226,7 @@ def delay_state_space(
             not the outputs. Default: ``None``, which uses :math:`\min_i m_i`.
         out_idx (int, optional): output only this delay line, instead of using
             :attr:`C`. Default: ``None``.
-        absorption (Tensor, optional): the per-line filters :math:`g_i`, either
+        absorption (Tensor, optional): the per-line filters :math:`\gamma_i`,
             as sections of shape :math:`(M, K, 5)` or :math:`(B, M, K, 5)`,
             :math:`K \ge 1`, one cascade of :math:`K` sections per line, each
             section a row :math:`b_0, b_1, b_2, a_1, a_2`, without
@@ -238,12 +239,10 @@ def delay_state_space(
             :math:`(M, K, 2)` or :math:`(B, M, K, 2)`. It must have the dtype
             and device of :attr:`x`, and be ``None`` for gains, which have no
             state. Needs :attr:`absorption`. Default: ``None``, all zero.
-        absorption_position (str, optional): where the filters are, as above:
-            ``"delay"`` (after the delay lines, read by :math:`A` and
-            :math:`C`), ``"matrix"`` (after :math:`A`, with :math:`C` reading
-            the unfiltered lines) or ``"feedback"`` (after the delay lines,
-            read by :math:`A` only). A value other than ``"delay"`` needs
-            :attr:`absorption`. Default: ``"delay"``.
+        absorption_position (str, optional): where the filters are:
+            ``"delay"``, ``"matrix"`` or ``"feedback"``, as above. A value
+            other than ``"delay"`` needs :attr:`absorption`. Default:
+            ``"delay"``.
         unroll_factor (int, optional): the ``unroll_factor`` of the filters'
             recursion, which runs on blocks of at most :attr:`block_size`
             samples (see :func:`state_space`). With ``None``, it runs native
@@ -269,8 +268,10 @@ def delay_state_space(
         without :attr:`absorption`.
 
     Raises:
-        ValueError: if a delay or :attr:`block_size` is invalid, or
-            :attr:`zi` does not hold one queue per delay line; if :attr:`A`
+        ValueError: if :attr:`x` is not 2-D or 3-D; if a delay or
+            :attr:`block_size` is invalid, or :attr:`zi` does not hold one
+            queue per delay line, each of shape :math:`(m_i)` or
+            :math:`(B, m_i)`; if :attr:`A`
             is not of shape :math:`(M, M)` or :math:`(B, M, M)`; if
             :attr:`B` is ``None`` and a 3-D :attr:`x` does not have
             :math:`F = M`, if :attr:`B`, :attr:`C` or :attr:`D` has a shape
@@ -300,7 +301,7 @@ def delay_state_space(
         >>> x = torch.tensor([[1.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0]])
         >>> delay_state_space(torch.tensor([[0.5]]), x, [3]).squeeze(-1)
         tensor([[0.0000, 0.0000, 0.0000, 1.0000, 0.0000, 0.0000, 0.5000]])
-        >>> # the same, with g_1 = 0.5 / (1 - 0.5 z^-1) on the delay line
+        >>> # the same, with gamma_1 = 0.5 / (1 - 0.5 z^-1) on the delay line
         >>> absorption = torch.tensor([[[0.5, 0.0, 0.0, -0.5, 0.0]]])
         >>> delay_state_space(
         ...     torch.tensor([[0.5]]), x, [3], absorption=absorption

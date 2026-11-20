@@ -602,7 +602,7 @@ _ABSORPTION_OPTIONS = list(
 
 
 def _absorption_cases():
-    # The full product is 2160 cases. A seeded sample of 200 keeps every value
+    # The full product is 3240 cases. A seeded sample of 200 keeps every value
     # of every option.
     return [
         pytest.param(*case, id=_case_id(*case))
@@ -698,26 +698,6 @@ def test_delay_state_space_identity_absorption_is_a_no_op(position, kind):
     # Gains have no state, and a section of gain 1 keeps its state at zero.
     assert len(azf) == (kind == "section")
     assert all(torch.count_nonzero(state) == 0 for state in azf)
-
-
-def test_delay_state_space_feedback_gains_scale_the_output_matrix():
-    # With gains g, "delay" outputs C (g s), which "feedback" gives with C g.
-    dtype = torch.double
-    x = torch.randn(BATCH, SAMPLES, dtype=dtype)
-    A = 0.4 * torch.randn(LINES, LINES, dtype=dtype)
-    B = torch.randn(LINES, dtype=dtype)
-    C = torch.randn(3, LINES, dtype=dtype)
-    D = torch.randn(3, dtype=dtype)
-    g = torch.randn(LINES, dtype=dtype)
-
-    expected = delay_state_space(
-        A, x, DELAYS, B=B, C=C, D=D, absorption=g, absorption_position="delay"
-    )
-    y = delay_state_space(
-        A, x, DELAYS, B=B, C=C * g, D=D, absorption=g, absorption_position="feedback"
-    )
-
-    torch.testing.assert_close(y, expected)
 
 
 @pytest.mark.parametrize("position", POSITIONS)

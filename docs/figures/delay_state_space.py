@@ -21,15 +21,16 @@ matplotlib.rcParams.update({"mathtext.fontset": "cm", "svg.hashsalt": "philtorch
 STEP = 0.9  # the length of a wire between blocks
 WIDTH = 1.1  # the width of a box
 
-# The filters G(z) on the feedback path, from the tap back to the input sum.
-LOOPS = {"delay": ["$A$"], "matrix": ["$A$", "$G(z)$"], "feedback": ["$G(z)$", "$A$"]}
+GAMMA = r"$\Gamma(z)$"  # the label of the filters
+# The blocks on the feedback path, from the tap back to the input sum.
+LOOPS = {"delay": ["$A$"], "matrix": ["$A$", GAMMA], "feedback": [GAMMA, "$A$"]}
 
 
 def block(d, element, direction="right"):
     """Add a box or sum at the cursor, entering from its side, and move past it."""
-    entry, exit = ("W", "E") if direction == "right" else ("E", "W")
-    placed = d.add(element.anchor(entry))
-    d.move_from(getattr(placed, exit))
+    inlet, outlet = ("W", "E") if direction == "right" else ("E", "W")
+    placed = d.add(element.anchor(inlet))
+    d.move_from(getattr(placed, outlet))
     return placed
 
 
@@ -44,13 +45,13 @@ def draw(position):
     d += dsp.Arrow().right(STEP / 2)
     block(d, box("$B$"))
     d += dsp.Arrow().right(STEP)
-    add = block(d, dsp.Sum())
+    add = block(d, dsp.Sum().scale(0.4))
     d += dsp.Arrow().right(STEP)
     block(d, box(r"$z^{-\mathbf{m}}$"))
     d += dsp.Line().right(STEP / 2).label(r"$\mathbf{s}$", "top")
     if position == "delay":
         d += dsp.Arrow().right(STEP / 2)
-        block(d, box("$G(z)$"))
+        block(d, box(GAMMA))
         d += dsp.Line().right(STEP / 2).label(r"$\hat{\mathbf{s}}$", "top")
     else:
         # The same width, so that the three diagrams line up.
@@ -59,12 +60,14 @@ def draw(position):
     d += dsp.Arrow().right(STEP / 2)
     block(d, box("$C$"))
     d += dsp.Arrow().right(STEP)
-    out = block(d, dsp.Sum())
+    out = block(d, dsp.Sum().scale(0.4))
     d += dsp.Arrow().right(STEP / 2).label(r"$\mathbf{y}$", "right")
 
     d += dsp.Line().at(tap.center).down(1.4)
-    for label in LOOPS[position]:
-        arrow = dsp.Arrow().left(STEP / 2)
+    # The first box sits under the main row's filter column and the second
+    # under z^{-m}'s, so the wire between them is as long as theirs.
+    for i, label in enumerate(LOOPS[position]):
+        arrow = dsp.Arrow().left(STEP if i else STEP / 2)
         if position == "feedback" and label == "$A$":
             arrow.label(r"$\hat{\mathbf{s}}$", "bottom")
         d += arrow
