@@ -99,6 +99,7 @@ Filter equations follow Julius O. Smith's *Introduction to Digital Filters with 
 | `r_i`, `p_i`, `j_i` | residues, poles and powers of a partial fraction expansion, one entry per term, as in `residuez` |
 | `U`, `m_i`, `r_{ij}` | the number of poles of an expansion listed once each, their multiplicities, and the residue of pole `i` at power `j`, as in `pfefilt` |
 | `D` | a delay in samples |
+| `\text{batch}` | the batch size in the docstrings of the state-space functions (`state_space`, `state_space_recursion`, `diag_state_space`, `delay_state_space`, `cascade_ss`, `sos2ss`), which take or return a matrix `B`; `B` elsewhere |
 | `\gamma_i`, `\Gamma(z)` | per-line filters of a delay network, and their diagonal transfer function, as in `delay_state_space` |
 
 `k` is only an index, never a gain or a coefficient. The exception is the functions that mirror SciPy (`residuez`, `invresz`), which keep SciPy's `k` for the direct term. Where a function has two forms selected by an argument, such as `delayed_form`, show both equations rather than one parameterized equation. Write a cascade as a plain product over its sections, `H(z) = \prod_{l=1}^{K} ...`, with no intermediate `H_l(z)`. Give a product or sum explicit bounds, not a condition subscript such as `\prod_{j < k}`.

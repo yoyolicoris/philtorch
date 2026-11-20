@@ -219,9 +219,10 @@ def sos2ss(sos: Tensor, batch_index: Tensor | None = None) -> tuple[Tensor, Tens
         :math:`D` of :func:`~philtorch.lti.state_space`, of :attr:`sos`'s
         dtype, for a scalar input and output: of shapes :math:`(2K, 2K)`,
         :math:`(2K)`, :math:`(2K)` and :math:`()`, or with :attr:`batch_index`
-        :math:`(B, 2K, 2K)`, :math:`(B, 2K)`, :math:`(B, 2K)` and
-        :math:`(B)`, :math:`B` being the largest value of
-        :attr:`batch_index` plus 1.
+        :math:`(\text{batch}, 2K, 2K)`, :math:`(\text{batch}, 2K)`,
+        :math:`(\text{batch}, 2K)` and :math:`(\text{batch})`,
+        :math:`\text{batch}` being the largest value of :attr:`batch_index`
+        plus 1.
 
     Raises:
         ValueError: if :attr:`sos` or :attr:`batch_index` is invalid, as in
@@ -811,18 +812,20 @@ def cascade_ss(
     Args:
         A (tuple or list of Tensor): the state matrices :math:`A_l`, one for
             each model in cascade order, of shape :math:`(M_l, M_l)`, or
-            :math:`(B, M_l, M_l)` if batched. The first one decides whether
-            the cascade is batched, which every other tensor must follow.
+            :math:`(\text{batch}, M_l, M_l)` if batched. The first one decides
+            whether the cascade is batched, which every other tensor must
+            follow.
         B (tuple or list of Tensor): the input matrices :math:`B_l`, of shape
             :math:`(M_l)` for a scalar input or :math:`(M_l, F_l)`, with
-            a leading :math:`B` if batched.
+            a leading :math:`\text{batch}` if batched.
         C (tuple or list of Tensor): the output matrices :math:`C_l`, of shape
             :math:`(M_l)` for a scalar output or :math:`(P_l, M_l)`, with a
-            leading :math:`B` if batched.
+            leading :math:`\text{batch}` if batched.
         D (tuple or list of Tensor): the feedthrough matrices :math:`D_l`, of
             shape :math:`()` for a scalar input and output, :math:`(P_l)` for
             a scalar input only, :math:`(F_l)` for a scalar output only, or
-            :math:`(P_l, F_l)`, with a leading :math:`B` if batched.
+            :math:`(P_l, F_l)`, with a leading :math:`\text{batch}` if
+            batched.
 
     Returns:
         tuple of Tensor: the matrices :math:`A`, :math:`B`, :math:`C` and

@@ -202,11 +202,10 @@ def delay_state_space(
 
     Args:
         A (Tensor): the feedback matrix, of shape :math:`(M, M)` or
-            :math:`(B, M, M)`.
-        x (Tensor): inputs, of shape :math:`(B, N)` or :math:`(B, N, F)`:
-            :math:`B` signals of :math:`N` samples, each sample a scalar or
-            :math:`F` features. The batch size :math:`B` is not the matrix
-            :attr:`B`.
+            :math:`(\text{batch}, M, M)`.
+        x (Tensor): inputs, of shape :math:`(\text{batch}, N)` or
+            :math:`(\text{batch}, N, F)`: :math:`\text{batch}` signals of
+            :math:`N` samples, each sample a scalar or :math:`F` features.
         delays (int, Sequence[int], or Tensor): the positive integer delay
             lengths of the :math:`M` lines, as Python, NumPy or integer tensor
             values; a scalar gives a single delay line.
@@ -219,26 +218,28 @@ def delay_state_space(
             feedthrough.
         zi (Sequence[Tensor], optional): the first outputs of each delay line,
             :math:`s_i[0], \dots, s_i[m_i - 1]`, as one queue per line, of
-            shape :math:`(m_i)` or :math:`(B, m_i)`. Default: ``None``, all
-            zero.
+            shape :math:`(m_i)` or :math:`(\text{batch}, m_i)`. Default:
+            ``None``, all zero.
         block_size (int, optional): the number of samples computed at once,
             at most :math:`\min_i m_i`. It changes the speed and memory use,
             not the outputs. Default: ``None``, which uses :math:`\min_i m_i`.
         out_idx (int, optional): output only this delay line, instead of using
             :attr:`C`. Default: ``None``.
         absorption (Tensor, optional): the per-line filters :math:`\gamma_i`,
-            as sections of shape :math:`(M, K, 5)` or :math:`(B, M, K, 5)`,
-            :math:`K \ge 1`, one cascade of :math:`K` sections per line, each
-            section a row :math:`b_0, b_1, b_2, a_1, a_2`, without
-            :math:`a_0 = 1`, as in :func:`sosfilt`, or as gains of shape
-            :math:`(M)` or :math:`(B, M)`, one per line. The number of
-            dimensions tells them apart. It must have the dtype and device of
-            :attr:`x`. Default: ``None``, no filters.
+            as sections of shape :math:`(M, K, 5)` or
+            :math:`(\text{batch}, M, K, 5)`, :math:`K \ge 1`, one cascade of
+            :math:`K` sections per line, each section a row
+            :math:`b_0, b_1, b_2, a_1, a_2`, without :math:`a_0 = 1`, as in
+            :func:`sosfilt`, or as gains of shape :math:`(M)` or
+            :math:`(\text{batch}, M)`, one per line. The number of dimensions
+            tells them apart. It must have the dtype and device of :attr:`x`.
+            Default: ``None``, no filters.
         absorption_zi (Tensor, optional): the initial states of the cascades,
             as the ``zi`` of :func:`sosfilt` for each line, of shape
-            :math:`(M, K, 2)` or :math:`(B, M, K, 2)`. It must have the dtype
-            and device of :attr:`x`, and be ``None`` for gains, which have no
-            state. Needs :attr:`absorption`. Default: ``None``, all zero.
+            :math:`(M, K, 2)` or :math:`(\text{batch}, M, K, 2)`. It must have
+            the dtype and device of :attr:`x`, and be ``None`` for gains, which
+            have no state. Needs :attr:`absorption`. Default: ``None``, all
+            zero.
         absorption_position (str, optional): where the filters are:
             ``"delay"``, ``"matrix"`` or ``"feedback"``, as above. A value
             other than ``"delay"`` needs :attr:`absorption`. Default:
@@ -253,26 +254,27 @@ def delay_state_space(
 
     Returns:
         Tensor or (Tensor, tuple of Tensor) or (Tensor, tuple of Tensor,
-        Tensor): the outputs, of shape :math:`(B, N)` with :attr:`out_idx` or
-        a :math:`(M)` or :math:`(B, M)` :attr:`C`, :math:`(B, N, P)` with
-        :math:`P` outputs, or :math:`(B, N, M)` without :attr:`C`. With
+        Tensor): the outputs, of shape :math:`(\text{batch}, N)` with
+        :attr:`out_idx` or a :math:`(M)` or :math:`(\text{batch}, M)`
+        :attr:`C`, :math:`(\text{batch}, N, P)` with :math:`P` outputs, or
+        :math:`(\text{batch}, N, M)` without :attr:`C`. With
         :attr:`zi`, the pair ``(y, zf)``, where ``zf`` is a tuple of the next
         outputs of each delay line, :math:`s_i[N], \dots, s_i[N + m_i - 1]`,
-        one queue per line, of shape :math:`(B, m_i)`: pass it as :attr:`zi` to
-        continue.
+        one queue per line, of shape :math:`(\text{batch}, m_i)`: pass it as
+        :attr:`zi` to continue.
         With :attr:`absorption` as sections, and :attr:`zi` or
         :attr:`absorption_zi`, the triple ``(y, zf, absorption_zf)``, where
         ``absorption_zf`` is the final state of the cascades, of shape
-        :math:`(B, M, K, 2)`; whichever initial state is not given starts at
-        zero. With gains, which have no state, the return value is that
-        without :attr:`absorption`.
+        :math:`(\text{batch}, M, K, 2)`; whichever initial state is not given
+        starts at zero. With gains, which have no state, the return value is
+        that without :attr:`absorption`.
 
     Raises:
         ValueError: if :attr:`x` is not 2-D or 3-D; if a delay or
             :attr:`block_size` is invalid, or :attr:`zi` does not hold one
             queue per delay line, each of shape :math:`(m_i)` or
-            :math:`(B, m_i)`; if :attr:`A`
-            is not of shape :math:`(M, M)` or :math:`(B, M, M)`; if
+            :math:`(\text{batch}, m_i)`; if :attr:`A` is not of shape
+            :math:`(M, M)` or :math:`(\text{batch}, M, M)`; if
             :attr:`B` is ``None`` and a 3-D :attr:`x` does not have
             :math:`F = M`, if :attr:`B`, :attr:`C` or :attr:`D` has a shape
             that :func:`state_space` rejects, or if :attr:`D` gives a
@@ -282,7 +284,7 @@ def delay_state_space(
             batch size do not match :math:`M` or that of :attr:`x`, its
             sections do not have 5 coefficients, or it has no section; if
             :attr:`absorption_zi` is not of shape :math:`(M, K, 2)` or
-            :math:`(B, M, K, 2)`, or is given with gains; if
+            :math:`(\text{batch}, M, K, 2)`, or is given with gains; if
             :attr:`absorption_zi`, :attr:`unroll_factor` or an
             :attr:`absorption_position` other than ``"delay"`` is given
             without :attr:`absorption`; if :attr:`absorption_position` is

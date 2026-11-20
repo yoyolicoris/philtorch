@@ -31,17 +31,19 @@ def state_space_recursion(
 
     Args:
         A (Tensor): state matrices :math:`A[n]`, of shape :math:`(N, M, M)` to
-            share them or :math:`(B, N, M, M)`.
+            share them or :math:`(\text{batch}, N, M, M)`.
         zi (Tensor): the initial state :math:`\mathbf{h}[0]`, of shape
-            :math:`(B, M)`.
-        x (Tensor): inputs, of shape :math:`(B, N, M)` or :math:`(B, N)`.
+            :math:`(\text{batch}, M)`.
+        x (Tensor): inputs, of shape :math:`(\text{batch}, N, M)` or
+            :math:`(\text{batch}, N)`.
         unroll_factor (int, optional): as in
             :func:`philtorch.lti.state_space_recursion`. Default: ``None``.
         out_idx (int, optional): return only this state. Default: ``None``.
 
     Returns:
         Tensor: the states :math:`\mathbf{h}[1], \dots, \mathbf{h}[N]`, of
-        shape :math:`(B, N, M)`, or :math:`(B, N)` with :attr:`out_idx`.
+        shape :math:`(\text{batch}, N, M)`, or :math:`(\text{batch}, N)` with
+        :attr:`out_idx`.
 
     Raises:
         ValueError: if :attr:`A`, :attr:`zi` and :attr:`x` don't share a dtype
@@ -135,17 +137,18 @@ def state_space(
 
     Each of :attr:`B`, :attr:`C` and :attr:`D` may be constant or time-varying,
     and shared or one per signal: its base shape below can be prefixed with
-    :math:`N` for time-varying values, :math:`B` for one per signal, or
-    :math:`(B, N)` for both, except a scalar :attr:`D` with a 3-D :attr:`x`.
-    :math:`D` gives as many outputs as :attr:`C`, or as the states without
-    :attr:`C`; when two readings still fit, such as :math:`N = B`, the
-    time-varying one is tried first, then the per-signal one.
+    :math:`N` for time-varying values, :math:`\text{batch}` for one per
+    signal, or :math:`(\text{batch}, N)` for both, except a scalar :attr:`D`
+    with a 3-D :attr:`x`. :math:`D` gives as many outputs as :attr:`C`, or as
+    the states without :attr:`C`; when two readings still fit, such as
+    :math:`N = \text{batch}`, the time-varying one is tried first, then the
+    per-signal one.
 
     Args:
         A (Tensor): state matrices :math:`A[n]`, of shape :math:`(N, M, M)` or
-            :math:`(B, N, M, M)`.
-        x (Tensor): inputs, of shape :math:`(B, N, F)`, or :math:`(B, N)` for
-            a scalar input.
+            :math:`(\text{batch}, N, M, M)`.
+        x (Tensor): inputs, of shape :math:`(\text{batch}, N, F)`, or
+            :math:`(\text{batch}, N)` for a scalar input.
         B (Tensor, optional): the input matrices, of base shape :math:`(M)`
             for a 2-D :attr:`x` or :math:`(M, F)` for a 3-D one.
             Default: ``None``: a 2-D :attr:`x` feeds the first state, and a 3-D
@@ -160,18 +163,20 @@ def state_space(
             :math:`()` or :math:`(1)` is only accepted constant and shared,
             as :math:`D` times the identity, so the output size must equal
             :math:`F`. Default: ``None``, no feedthrough.
-        zi (Tensor, optional): the initial state, of shape :math:`(B, M)` or
-            :math:`(M)`. Default: ``None``, all zero.
+        zi (Tensor, optional): the initial state, of shape
+            :math:`(\text{batch}, M)` or :math:`(M)`. Default: ``None``, all
+            zero.
         unroll_factor (int, optional): see :func:`state_space_recursion`.
             Default: ``None``.
         out_idx (int, optional): output only this state, instead of using
             :attr:`C`. Default: ``None``.
 
     Returns:
-        Tensor or tuple of Tensor: the outputs, of shape :math:`(B, N)`,
-        :math:`(B, N, P)`, or :math:`(B, N, M)` without :attr:`C`, and with
-        :attr:`zi`, the final state :math:`\mathbf{h}[N]`, of shape
-        :math:`(B, M)`.
+        Tensor or tuple of Tensor: the outputs, of shape
+        :math:`(\text{batch}, N)`, :math:`(\text{batch}, N, P)`, or
+        :math:`(\text{batch}, N, M)` without :attr:`C`, and with :attr:`zi`,
+        the final state :math:`\mathbf{h}[N]`, of shape
+        :math:`(\text{batch}, M)`.
 
     Raises:
         ValueError: if both :attr:`C` and :attr:`out_idx` are given, if
