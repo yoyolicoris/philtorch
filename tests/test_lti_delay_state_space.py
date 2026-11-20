@@ -801,6 +801,16 @@ def test_delay_state_space_absorption_return_contract(after_matrix):
     torch.testing.assert_close(zero_y, plain)
 
 
+def test_delay_state_space_gains_zero_length():
+    # Gains have no state: the queues alone come back.
+    zi = (torch.tensor([[1.0, 2.0], [3.0, 4.0]]), torch.tensor([5.0, 6.0, 7.0]))
+    y, zf = delay_state_space(
+        torch.eye(2), torch.empty(2, 0), (2, 3), zi=zi, absorption=torch.ones(2)
+    )
+    assert y.shape == (2, 0, 2)
+    _assert_states_close(zf, (zi[0], zi[1].expand(2, -1)))
+
+
 @pytest.mark.parametrize("after_matrix", POSITIONS, ids=POSITION_IDS)
 @pytest.mark.parametrize("az_dim", [3, 4])
 @pytest.mark.parametrize("with_zi", [False, True])
