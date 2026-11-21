@@ -6,7 +6,7 @@ the differences noted in each docstring.
 
 from collections.abc import Sequence
 from functools import reduce
-from itertools import accumulate
+from itertools import accumulate, groupby
 
 import torch
 import torch.nn.functional as F
@@ -970,16 +970,16 @@ def _cascade(models: list[tuple[Tensor, Tensor, Tensor, Tensor]]) -> tuple[Tenso
         levels.extend([] for _ in range(level[i, j] - len(levels)))
         levels[level[i, j] - 1].append((i, k, j))
 
+    def shape(merge: tuple[int, int, int]) -> tuple[int, ...]:
+        i, k, j = merge
+        return S[k] - S[i], S[j] - S[k], ws[i], ws[k], ws[j]
+
     def stack(ts):  # a group of one needs no copy
         return ts[0].unsqueeze(-3) if len(ts) == 1 else torch.stack(ts, -3)
 
-    nodes = {(t, t + 1): m for t, m in enumerate(models)}
-    for merges in levels:
-        groups = {}
-        for i, k, j in merges:
-            key = (S[k] - S[i], S[j] - S[k], ws[i], ws[k], ws[j])
-            groups.setdefault(key, []).append((i, k, j))
-        for (m_l, m_r, *_), group in groups.items():
+    def merge_level(nodes: dict, merges: list[tuple[int, int, int]]) -> dict:
+        for (m_l, m_r, *_), group in groupby(sorted(merges, key=shape), shape):
+            group = [*group]
             al, bl, cl, dl = (stack(t) for t in zip(*(nodes.pop((i, k)) for i, k, _ in group)))
             ar, br, cr, dr = (stack(t) for t in zip(*(nodes.pop((k, j)) for _, k, j in group)))
             prod = torch.cat([br, dr], -2) @ torch.cat([cl, dl], -1)
@@ -991,4 +991,6 @@ def _cascade(models: list[tuple[Tensor, Tensor, Tensor, Tensor]]) -> tuple[Tenso
             )
             for (i, _, j), node in zip(group, zip(*(t.unbind(-3) for t in parts))):
                 nodes[i, j] = node
-    return nodes[0, K]
+        return nodes
+
+    return reduce(merge_level, levels, {(t, t + 1): m for t, m in enumerate(models)})[0, K]
