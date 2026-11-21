@@ -923,8 +923,8 @@ def _merge_order(S: list[int], w: list[int]) -> list[list[int]]:
     """The cheapest merge order of a cascade, by the matrix-chain dynamic program.
 
     S (K + 1) holds the prefix sums of the models' states and w (K + 1) the widths of the
-    signals between them. Returns split[i][j], the split of the chain of models i to j - 1
-    where the cost is least, the most central one among equals.
+    signals between them. Returns the table split, where split[i][j] is the split of the chain
+    of models i to j - 1 of least cost, the most central one among equals.
     """
     K = len(S) - 1
     best = [[0] * (K + 1) for _ in range(K + 1)]
@@ -957,13 +957,13 @@ def _cascade(models: list[tuple[Tensor, Tensor, Tensor, Tensor]]) -> tuple[Tenso
     split = None if len({*Ms}) == len({*ws}) == 1 else _merge_order(S, ws)
 
     # The merges in preorder, then their levels, children before parents.
-    tree, stack = [], [(0, K)]
-    while stack:
-        i, j = stack.pop()
+    tree, todo = [], [(0, K)]
+    while todo:
+        i, j = todo.pop()
         if j - i > 1:
             k = (i + j) // 2 if split is None else split[i][j]
             tree.append((i, k, j))
-            stack += [(i, k), (k, j)]
+            todo += [(i, k), (k, j)]
     level, levels = {}, []
     for i, k, j in reversed(tree):
         level[i, j] = 1 + max(level.get((i, k), 0), level.get((k, j), 0))
