@@ -970,6 +970,9 @@ def _cascade(models: list[tuple[Tensor, Tensor, Tensor, Tensor]]) -> tuple[Tenso
         levels.extend([] for _ in range(level[i, j] - len(levels)))
         levels[level[i, j] - 1].append((i, k, j))
 
+    def stack(ts):  # a group of one needs no copy
+        return ts[0].unsqueeze(-3) if len(ts) == 1 else torch.stack(ts, -3)
+
     nodes = {(t, t + 1): m for t, m in enumerate(models)}
     for merges in levels:
         groups = {}
@@ -977,16 +980,11 @@ def _cascade(models: list[tuple[Tensor, Tensor, Tensor, Tensor]]) -> tuple[Tenso
             key = (S[k] - S[i], S[j] - S[k], ws[i], ws[k], ws[j])
             groups.setdefault(key, []).append((i, k, j))
         for (m_l, m_r, *_), group in groups.items():
-            al, bl, cl, dl = (
-                torch.stack(t, -3) for t in zip(*(nodes.pop((i, k)) for i, k, _ in group))
-            )
-            ar, br, cr, dr = (
-                torch.stack(t, -3) for t in zip(*(nodes.pop((k, j)) for _, k, j in group))
-            )
+            al, bl, cl, dl = (stack(t) for t in zip(*(nodes.pop((i, k)) for i, k, _ in group)))
+            ar, br, cr, dr = (stack(t) for t in zip(*(nodes.pop((k, j)) for _, k, j in group)))
             prod = torch.cat([br, dr], -2) @ torch.cat([cl, dl], -1)
-            upper = torch.cat([al, al.new_zeros(*al.shape[:-1], m_r)], -1)
             parts = (
-                torch.cat([upper, torch.cat([prod[..., :m_r, :m_l], ar], -1)], -2),
+                torch.cat([F.pad(al, (0, m_r)), torch.cat([prod[..., :m_r, :m_l], ar], -1)], -2),
                 torch.cat([bl, prod[..., :m_r, m_l:]], -2),
                 torch.cat([prod[..., m_r:, :m_l], cr], -1),
                 prod[..., m_r:, m_l:],
