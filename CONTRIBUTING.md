@@ -1,12 +1,12 @@
 # Contributing to PhilTorch
 
-Thank you for helping improve PhilTorch. Contributions should stay focused, be easy to review, and preserve the numerical behavior of the affected filters unless a change is explicitly intended and documented.
+Thank you for helping improve PhilTorch. Contributions should stay focused, be easy to review, and preserve the numerical behaviour of the affected filters unless a change is explicitly intended and documented.
 
 ## Before starting
 
 - Check the [issue tracker](https://github.com/yoyolicoris/philtorch/issues) and [project roadmap](https://github.com/users/yoyolicoris/projects/5) for related work.
 - For a bug, open a bug report with a minimal reproduction.
-- For a new API or a substantial behavior change, open a feature request before implementation so the scope can be agreed first.
+- For a new API or a substantial behaviour change, open a feature request before implementation so the scope can be agreed first.
 - Keep unrelated refactors, formatting changes, and documentation rewrites out of the same pull request.
 
 ## Development setup
@@ -47,6 +47,10 @@ pixi run ruff format --check .
 ```
 
 Apply formatting only to files in the scope of your change.
+
+## Spelling
+
+Write British English, with *-ise* spellings (*normalise*, *behaviour*, *centre*), in new names, docstrings, comments and documentation. Existing public names keep their spelling, since renaming one breaks callers. Names and words from elsewhere keep theirs: those of PyTorch, NumPy and SciPy, such as `torch.nn.functional.normalize`, quotations, and the titles of cited papers.
 
 ## Docstrings
 
@@ -102,7 +106,7 @@ Filter equations follow Julius O. Smith's *Introduction to Digital Filters with 
 | `\text{batch}` | the batch size in the docstrings of the state-space functions (`state_space`, `state_space_recursion`, `diag_state_space`, `delay_state_space`, `cascade_ss`, `sos2ss`), which take or return a matrix `B`; `B` elsewhere |
 | `\gamma_i`, `\Gamma(z)` | per-line filters of a delay network, and their diagonal transfer function, as in `delay_state_space` |
 
-`k` is only an index, never a gain or a coefficient. The exception is the functions that mirror SciPy (`residuez`, `invresz`), which keep SciPy's `k` for the direct term. Where a function has two forms selected by an argument, such as `delayed_form`, show both equations rather than one parameterized equation. Write a cascade as a plain product over its sections, `H(z) = \prod_{l=1}^{K} ...`, with no intermediate `H_l(z)`. Give a product or sum explicit bounds, not a condition subscript such as `\prod_{j < k}`.
+`k` is only an index, never a gain or a coefficient. The exception is the functions that mirror SciPy (`residuez`, `invresz`), which keep SciPy's `k` for the direct term. Where a function has two forms selected by an argument, such as `delayed_form`, show both equations rather than one parameterised equation. Write a cascade as a plain product over its sections, `H(z) = \prod_{l=1}^{K} ...`, with no intermediate `H_l(z)`. Give a product or sum explicit bounds, not a condition subscript such as `\prod_{j < k}`.
 
 ## Pull requests
 
@@ -110,8 +114,8 @@ Open pull requests against `dev`, not `main`. A pull request should:
 
 - explain the problem and the chosen solution;
 - link the relevant issue when one exists;
-- include tests for behavior changes or explain why tests are not applicable;
-- document user-visible API or behavior changes;
+- include tests for behaviour changes or explain why tests are not applicable;
+- document user-visible API or behaviour changes;
 - avoid generated files, unrelated cleanup, and dependency changes unless required by the stated scope;
 - pass the applicable CI checks.
 
