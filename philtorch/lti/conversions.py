@@ -920,11 +920,12 @@ def cascade_ss(
 
 
 def _merge_order(S: list[int], w: list[int]) -> list[list[int]]:
-    """The cheapest merge order of a cascade, by the matrix-chain dynamic program.
+    """The cheapest merge order of a cascade, by the matrix-chain DP.
 
-    S (K + 1) holds the prefix sums of the models' states and w (K + 1) the widths of the
-    signals between them. Returns the table split, where split[i][j] is the split of the chain
-    of models i to j - 1 of least cost, the most central one among equals.
+    S (K + 1) holds the prefix sums of the models' states and w (K + 1) the
+    widths of the signals between them. Returns the table split, where
+    split[i][j] is the split of the chain of models i to j - 1 of least cost,
+    the most central one among equals.
     """
     K = len(S) - 1
     best = [[0] * (K + 1) for _ in range(K + 1)]
@@ -944,10 +945,10 @@ def _merge_order(S: list[int], w: list[int]) -> list[list[int]]:
 
 
 def _cascade(models: list[tuple[Tensor, Tensor, Tensor, Tensor]]) -> tuple[Tensor, ...]:
-    """Combine lifted models (a, b, c, d) in cascade, merging in the order of fewest multiplies.
+    """Combine lifted models (a, b, c, d) in cascade, in the fewest multiplies.
 
-    Each level of merges runs one batched matmul per group of equal shapes. Returns A, B, C
-    and D.
+    Each level of merges runs one batched matmul per group of equal shapes.
+    Returns A, B, C and D.
     """
     K = len(models)
     Ms = [a.size(-1) for a, *_ in models]
@@ -974,7 +975,7 @@ def _cascade(models: list[tuple[Tensor, Tensor, Tensor, Tensor]]) -> tuple[Tenso
         i, k, j = merge
         return S[k] - S[i], S[j] - S[k], ws[i], ws[k], ws[j]
 
-    def stack(ts):  # a group of one needs no copy
+    def stack(ts: Sequence[Tensor]) -> Tensor:  # a group of one needs no copy
         return ts[0].unsqueeze(-3) if len(ts) == 1 else torch.stack(ts, -3)
 
     def merge_level(nodes: dict, merges: list[tuple[int, int, int]]) -> dict:
