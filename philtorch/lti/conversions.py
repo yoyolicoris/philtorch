@@ -6,6 +6,7 @@ the differences noted in each docstring.
 
 from collections.abc import Sequence
 from functools import reduce
+from itertools import accumulate
 
 import torch
 import torch.nn.functional as F
@@ -253,12 +254,14 @@ def _sos2ss(sos: Tensor) -> tuple[Tensor, Tensor, Tensor, Tensor]:
     (..., 2K), D (...), each section in transposed direct form II."""
     _, a, B, D = _ssm.direct_form(sos[..., :3], sos[..., 3:])
     C = F.pad(torch.ones_like(B[..., :1]), (0, 1))
-    K = sos.size(-2)
-    real = torch.ones(K, 2, dtype=torch.bool, device=sos.device)
-    A, B, C, D = _cascade_stacked(
-        companion(a).mT, B.unsqueeze(-1), C.unsqueeze(-2), D[..., None, None], real, [2] * K
+    models = zip(
+        companion(a).mT.unbind(-3),
+        B.unsqueeze(-1).unbind(-3),
+        C.unsqueeze(-2).unbind(-3),
+        D[..., None, None].unbind(-3),
     )
-    return A[..., 0, :, :], B[..., 0, :, 0], C[..., 0, 0, :], D[..., 0, 0, 0]
+    A, B, C, D = _cascade([*models])
+    return A, B[..., 0], C[..., 0, :], D[..., 0, 0]
 
 
 def unique_roots(p: Tensor, tol: float = 1e-3, rtype: str = "min") -> tuple[Tensor, ...]:
@@ -906,21 +909,9 @@ def cascade_ss(
             )
         lifted.append((a, b, c, d.reshape(*lead, c.size(-2), b.size(-1))))
 
-    # Stack the models along dimension -3, zero-padded to the most states and to one width W
-    # of every signal between them: padded states, inputs and outputs stay zero throughout.
-    Ms = [a.size(-1) for a, *_ in lifted]
-    Mm = max(Ms)
-    W = max(max(b.size(-1), c.size(-2)) for _, b, c, _ in lifted)
-    stacked = (
-        torch.stack([F.pad(m[i], (0, w - m[i].size(-1), 0, h - m[i].size(-2))) for m in lifted], -3)
-        for i, (h, w) in enumerate(((Mm, Mm), (Mm, W), (W, Mm), (W, W)))
-    )
-    real = (torch.arange(Mm) < torch.tensor(Ms)[:, None]).to(A[0].device)
-    a, b, c, d = (t[..., 0, :, :] for t in _cascade_stacked(*stacked, real, Ms))
+    a, b, c, d = _cascade(lifted)
 
-    # The cascade's inputs are the first model's, its outputs the last one's.
-    F_in, P_out = lifted[0][1].size(-1), lifted[-1][2].size(-2)
-    b, c, d = b[..., :F_in], c[..., :P_out, :], d[..., :P_out, :F_in]
+    # The vector cases drop the unit input or output dimension.
     if C[-1].dim() == n + 1:
         c, d = c[..., 0, :], d[..., 0, :]
     if B[0].dim() == n + 1:
@@ -928,34 +919,96 @@ def cascade_ss(
     return a, b, c, d
 
 
-def _cascade_stacked(
-    A: Tensor, B: Tensor, C: Tensor, D: Tensor, real: Tensor, Ms: list[int]
-) -> tuple[Tensor, Tensor, Tensor, Tensor]:
-    """Combine the S models stacked along dimension -3 in cascade, merging neighbours in pairs.
+def _merge_order(S: list[int], w: list[int]) -> list[list[int]]:
+    """The cheapest merge order of a cascade, by the matrix-chain dynamic program.
 
-    A, B, C and D are (..., S, M, M), (..., S, M, W), (..., S, W, M) and (..., S, W, W),
-    zero-padded; real (S, M) marks each model's states and Ms counts them. Returns the
-    cascade, stacked as one model.
+    S (K + 1) holds the prefix sums of the models' states and w (K + 1) the widths of the
+    signals between them. Returns split[i][j], the split of the chain of models i to j - 1
+    where the cost is least, the most central one among equals.
     """
-    if len(Ms) == 1:
-        return A, B, C, D
-    if len(Ms) % 2:
-        # An identity model, with no states, completes the last pair.
-        A, B, C = (F.pad(t, (0, 0, 0, 0, 0, 1)) for t in (A, B, C))
-        D = torch.cat(
-            [D, torch.eye(D.size(-1), dtype=D.dtype, device=D.device).expand_as(D[..., :1, :, :])],
-            -3,
-        )
-        real, Ms = F.pad(real, (0, 0, 0, 1)), [*Ms, 0]
-    A1, B1, C1, D1 = (t[..., 0::2, :, :] for t in (A, B, C, D))
-    A2, B2, C2, D2 = (t[..., 1::2, :, :] for t in (A, B, C, D))
-    A = torch.cat([torch.cat([A1, torch.zeros_like(A1)], -1), torch.cat([B2 @ C1, A2], -1)], -2)
-    B, C, D = torch.cat([B1, B2 @ D1], -2), torch.cat([D2 @ C1, C2], -1), D2 @ D1
-    real, Ms = torch.cat([real[0::2], real[1::2]], -1), [*map(sum, zip(Ms[0::2], Ms[1::2]))]
-    # Move each model's states ahead of its padding, and drop the padding beyond the most states.
-    order = (~real).byte().argsort(dim=-1, stable=True)[:, : max(Ms)]
-    real = real.take_along_dim(order, -1)
-    order = order.unsqueeze(-1).expand(*A.shape[:-3], -1, -1, -1)
-    A = A.take_along_dim(order, -2).take_along_dim(order.mT, -1)
-    B, C = B.take_along_dim(order, -2), C.take_along_dim(order.mT, -1)
-    return _cascade_stacked(A, B, C, D, real, Ms)
+    K = len(S) - 1
+    best = [[0] * (K + 1) for _ in range(K + 1)]
+    split = [[0] * (K + 1) for _ in range(K + 1)]
+    for L in range(2, K + 1):
+        for i in range(K - L + 1):
+            j = i + L
+            best[i][j], _, split[i][j] = min(
+                (
+                    best[i][k] + best[k][j] + (S[j] - S[k] + w[j]) * w[k] * (S[k] - S[i] + w[i]),
+                    abs(2 * (k - i) - L),
+                    k,
+                )
+                for k in range(i + 1, j)
+            )
+    return split
+
+
+def _cascade(models: list[tuple[Tensor, Tensor, Tensor, Tensor]]) -> tuple[Tensor, ...]:
+    """Combine lifted models (a, b, c, d) in cascade, merging in the order of fewest multiplies.
+
+    Each merge is one batched matmul per group of equal shapes; the state matrix is written
+    once, from the models' blocks and the merges' lower-left blocks. Returns A, B, C and D.
+    """
+    K = len(models)
+    Ms = [a.size(-1) for a, *_ in models]
+    ws = [models[0][1].size(-1)] + [c.size(-2) for _, _, c, _ in models]
+    S = [0, *accumulate(Ms)]
+    # Equal models and widths: the even split is the cheapest, and the most central.
+    split = None if len({*Ms}) == len({*ws}) == 1 else _merge_order(S, ws)
+
+    # The merges in preorder, then their levels, children before parents.
+    tree, stack = [], [(0, K)]
+    while stack:
+        i, j = stack.pop()
+        if j - i > 1:
+            k = (i + j) // 2 if split is None else split[i][j]
+            tree.append((i, k, j))
+            stack += [(i, k), (k, j)]
+    level, levels = {}, []
+    for i, k, j in reversed(tree):
+        level[i, j] = 1 + max(level.get((i, k), 0), level.get((k, j), 0))
+        levels.extend([] for _ in range(level[i, j] - len(levels)))
+        levels[level[i, j] - 1].append((i, k, j))
+
+    N = S[-1]
+    lead = models[0][0].shape[:-2]
+
+    def block(rows, cols, h, w):  # flat indices of h x w blocks with these top-left corners
+        r = torch.tensor(rows)[:, None, None] + torch.arange(h)[:, None]
+        return ((r * N + torch.tensor(cols)[:, None, None]) + torch.arange(w)).reshape(-1)
+
+    nodes = {(t, t + 1): m[1:] for t, m in enumerate(models)}
+    vals, idx, by_size = [], [], {}
+    for t, M in enumerate(Ms):
+        by_size.setdefault(M, []).append(t)
+    for M, group in by_size.items():
+        vals.append(torch.stack([models[t][0] for t in group], -3).flatten(-3))
+        idx.append(block([S[t] for t in group], [S[t] for t in group], M, M))
+    for merges in levels:
+        groups = {}
+        for i, k, j in merges:
+            key = (S[k] - S[i], S[j] - S[k], ws[i], ws[k], ws[j])
+            groups.setdefault(key, []).append((i, k, j))
+        for (m_l, m_r, *_), group in groups.items():
+            bl, cl, dl = (
+                torch.stack(t, -3) for t in zip(*(nodes.pop((i, k)) for i, k, _ in group))
+            )
+            br, cr, dr = (
+                torch.stack(t, -3) for t in zip(*(nodes.pop((k, j)) for _, k, j in group))
+            )
+            prod = torch.cat([br, dr], -2) @ torch.cat([cl, dl], -1)
+            parts = (
+                torch.cat([bl, prod[..., :m_r, m_l:]], -2),
+                torch.cat([prod[..., m_r:, :m_l], cr], -1),
+                prod[..., m_r:, m_l:],
+            )
+            for (i, _, j), node in zip(group, zip(*(t.unbind(-3) for t in parts))):
+                nodes[i, j] = node
+            vals.append(prod[..., :m_r, :m_l].flatten(-3))
+            idx.append(block([S[k] for _, k, _ in group], [S[i] for i, _, _ in group], m_r, m_l))
+    A = (
+        models[0][0]
+        .new_zeros(*lead, N * N)
+        .index_copy(-1, torch.cat(idx).to(models[0][0].device), torch.cat(vals, -1))
+    )
+    return (A.reshape(*lead, N, N), *nodes[0, K])
