@@ -31,7 +31,7 @@ B x N x K x K step matrices are never stored. With ``ADJOINT``, the chain
 runs from the last time back over each M[t]'s transpose: a chain's
 derivative, a linear chain backwards, runs here too.
 
-A max-plus chain can also record each message's maximizing previous state,
+A max-plus chain can also record each message's maximising previous state,
 and :func:`philtorch._trace_kernels.trace` follows such backpointers in the same two
 levels: Viterbi decoding's traceback, in parallel.
 
@@ -335,7 +335,7 @@ def chain(
             of A[t][r, c] = exp(M[t][r, c] + p[t][r] + q[t][c]) with r
             summed; None for explicit matrices.
         argmax: for a max-plus chain, a (B, N, K) int32 tensor that receives
-            each message's maximizing previous state, the lowest-index one
+            each message's maximising previous state, the lowest-index one
             under ties; or None.
 
     Returns:

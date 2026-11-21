@@ -1,6 +1,6 @@
 """The requirements of the functions that run only as Triton kernels on CUDA GPUs.
 
-These functions parallelize a recursion over time in custom kernels, which
+These functions parallelise a recursion over time in custom kernels, which
 only pay off on a GPU; elsewhere they raise instead of falling back. Their
 docstrings say so in a note:
 

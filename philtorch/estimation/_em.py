@@ -1,4 +1,4 @@
-"""Expectation-maximization over the steps of any model."""
+"""Expectation-maximisation over the steps of any model."""
 
 from collections.abc import Callable
 

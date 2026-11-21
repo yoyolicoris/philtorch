@@ -95,7 +95,7 @@ def _log_softmax(x: Tensor) -> Tensor:
 
     With k the index of the largest entry, entry j is
     ``(x[j] - x[k]) - softplus(logsumexp(x[i] - x[k] for i != k))``: the
-    normalizer is the softplus of the others' log-odds against the top entry,
+    normaliser is the softplus of the others' log-odds against the top entry,
     as in "A Fix for Softmax and Cross-Entropy" (Barron et al., 2026). The
     gradient of ``x - logsumexp(x)`` has 1 - q at a near-certain entry, which
     rounds to 0 once q is within epsilon of 1; here it is a sum of small
