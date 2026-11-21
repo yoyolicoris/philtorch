@@ -197,7 +197,7 @@ def confluent_vandermonde(poles: Tensor, multiplicity: Tensor) -> Tensor:
     derivative of order :math:`k` in :math:`p_i` of :func:`vandermonde`'s
     column, divided by :math:`k!`, so with every multiplicity 1, :math:`V` is
     :func:`vandermonde`'s matrix. When the :math:`p_i` differ from each other,
-    the columns are the generalized eigenvectors of the :func:`companion`
+    the columns are the generalised eigenvectors of the :func:`companion`
     matrix :math:`C` whose eigenvalues are the poles, of those multiplicities:
     :math:`C V = V J`, with :math:`J` the Jordan form of :math:`C`, its block
     of :math:`p_i`, of size :math:`m_i`, in the place of :math:`V_i`.

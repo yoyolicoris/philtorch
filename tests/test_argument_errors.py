@@ -1030,7 +1030,7 @@ def test_cubic_spline_of_factor_one_is_the_input():
 
 @pytest.mark.parametrize("m", [1, 2])
 def test_cubic_spline_rejects_smoothing(m):
-    with pytest.raises(NotImplementedError, match="Regularization"):
+    with pytest.raises(NotImplementedError, match="Regularisation"):
         lti.cubic_spline(_ones(1, 4), m, lamb=1.0)
 
 

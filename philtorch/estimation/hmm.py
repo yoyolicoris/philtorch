@@ -1,4 +1,4 @@
-"""Hidden Markov model inference parallelized over time.
+"""Hidden Markov model inference parallelised over time.
 
 The forward algorithm, forward-backward smoothing and Viterbi decoding as
 parallel scans over time of per-step K x K matrices in the log or max-plus
@@ -388,7 +388,7 @@ def hmm_filter(log_emit: Tensor, log_trans: Tensor, log_init: Tensor) -> tuple[T
     respect to every input, so the log-likelihood can train the model's
     probabilities, or a network that predicts them; its gradient with respect
     to :attr:`log_emit` is the posteriors of :func:`hmm_smoother`. Forward-mode
-    automatic differentiation is not supported. The posteriors are normalized
+    automatic differentiation is not supported. The posteriors are normalised
     as in `A Fix for Softmax and Cross-Entropy`_ (Barron et al., 2026), so that
     their gradients keep a near-certain state's share.
 
@@ -525,7 +525,7 @@ def hmm_viterbi(log_emit: Tensor, log_trans: Tensor, log_init: Tensor) -> tuple[
     r"""Decode a hidden Markov model: its most probable state sequence.
 
     For the model of :func:`hmm_filter`, this is the Viterbi algorithm with
-    both of its passes parallelized over time, as in `On the Temporal
+    both of its passes parallelised over time, as in `On the Temporal
     Parallelisation of the Viterbi Algorithm`_ (Särkkä and García-Fernández,
     2023). The path is always one of the optimal paths: under ties, the one
     that prefers lower state indices. The score's gradient is that of the
@@ -581,11 +581,11 @@ def hmm_em_step(
     r"""Re-estimate a hidden Markov model's transitions by one Baum-Welch step.
 
     For the model of :func:`hmm_filter`, this is one step of
-    expectation-maximization (the Baum-Welch algorithm) of the transitions and
+    expectation-maximisation (the Baum-Welch algorithm) of the transitions and
     the initial distribution. Shared parameters are fitted to all signals
     together, per-signal ones to each signal alone. The expected transition
     counts and initial states are the gradients of the log-likelihood with
-    respect to :attr:`log_trans` and :attr:`log_init`. The M-step normalizes
+    respect to :attr:`log_trans` and :attr:`log_init`. The M-step normalises
     them; a state that is never left keeps its row of :attr:`log_trans`.
 
     The emissions belong to the caller: the state posteriors, the gradient

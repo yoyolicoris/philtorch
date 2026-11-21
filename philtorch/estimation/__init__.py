@@ -1,8 +1,8 @@
 """State estimation: inferring hidden states from noisy measurements.
 
 These compute the posterior distributions of a state-space model's states,
-continuous (Kalman) or discrete (hidden Markov models), parallelized over
-time, and fit the models' parameters by expectation-maximization.
+continuous (Kalman) or discrete (hidden Markov models), parallelised over
+time, and fit the models' parameters by expectation-maximisation.
 """
 
 from ._em import em

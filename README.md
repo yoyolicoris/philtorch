@@ -136,7 +136,7 @@ from philtorch.lti import filtfilt, lfilter, lfilter_zi
 x = torch.randn(201, dtype=torch.float64)
 
 b_np, a_np = butter(3, 0.05)
-# Normalize so that a0 = 1, then drop a0 from the denominator.
+# Normalise so that a0 = 1, then drop a0 from the denominator.
 b = torch.from_numpy(b_np / a_np[0])
 a = torch.from_numpy(a_np[1:] / a_np[0])
 
@@ -188,13 +188,13 @@ y_zero_phase = filtfilt(b, a, x)
             - Delayed all-pole comb filters.
         - `cubic_spline`:
             - Cubic-spline interpolation for integer upsampling.
-    - `estimation`: Functions under it estimate hidden states from noisy measurements and fit the models by expectation-maximization.
+    - `estimation`: Functions under it estimate hidden states from noisy measurements and fit the models by expectation-maximisation.
         - `kalman_filter`, `kalman_smoother`:
-            - Kalman filters and Rauch–Tung–Striebel smoothers for linear Gaussian state-space models, parallelized over time with associative scans, with the log-likelihood and the smoother's lag-one cross-covariances for fitting by gradients or EM.
+            - Kalman filters and Rauch–Tung–Striebel smoothers for linear Gaussian state-space models, parallelised over time with associative scans, with the log-likelihood and the smoother's lag-one cross-covariances for fitting by gradients or EM.
         - `hmm_filter`, `hmm_smoother`, `hmm_viterbi`:
-            - The forward algorithm, forward-backward smoothing and Viterbi decoding for hidden Markov models, parallelized over time and differentiable to any order in reverse mode. CUDA GPUs only, as Triton kernels.
+            - The forward algorithm, forward-backward smoothing and Viterbi decoding for hidden Markov models, parallelised over time and differentiable to any order in reverse mode. CUDA GPUs only, as Triton kernels.
         - `em`, `kalman_em_step`, `hmm_em_step`:
-            - Expectation-maximization: `em` repeats any model's step until the log-likelihood stops rising; the Kalman step has Shumway and Stoffer's closed-form M-step, the HMM step is Baum–Welch for the transitions and initial distribution. Parameters are shared or per signal.
+            - Expectation-maximisation: `em` repeats any model's step until the log-likelihood stops rising; the Kalman step has Shumway and Stoffer's closed-form M-step, the HMM step is Baum–Welch for the transitions and initial distribution. Parameters are shared or per signal.
     - `align`: Functions under it align sequences.
         - `dtw`, `dtw_path`, `soft_dtw_divergence`:
             - Dynamic time warping and soft-DTW distances from a cost matrix, whose gradients are the alignments, differentiable to any order, and DTW's optimal warping path. CUDA GPUs only, as Triton kernels.
@@ -214,7 +214,7 @@ The supported high-level interfaces are exported from [`philtorch.lti`](philtorc
 | --- | --- | --- |
 | Apply a fixed-coefficient causal IIR or FIR filter. | `philtorch.lti.lfilter` or `philtorch.lti.fir` | `lfilter` supports `df2`, `tdf2`, `df1`, and `tdf1` forms. |
 | Apply a fixed-coefficient zero-phase filter. | `philtorch.lti.filtfilt` | Runs the LTI filter forward and backward; edge padding is enabled by default and can be disabled with `padmode=None`. |
-| Construct or recover IIR filter state. | `philtorch.lti.lfilter_zi` or `philtorch.lti.lfiltic` | These helpers use the same normalized `a0 = 1` coefficients as `lfilter`. |
+| Construct or recover IIR filter state. | `philtorch.lti.lfilter_zi` or `philtorch.lti.lfiltic` | These helpers use the same normalised `a0 = 1` coefficients as `lfilter`. |
 | Apply a time-varying filter. | `philtorch.lpv.lfilter`, `philtorch.lpv.fir`, or `philtorch.lpv.allpole` | Coefficient tensors include a time dimension aligned with the input. `lpv.lfilter` defaults to `backend="ssm"`; `backend="torchlpc"` does not support `form="tdf2"`. |
 | Evaluate a scalar linear recurrence. | `philtorch.lti.linear_recurrence` or `philtorch.lpv.linear_recurrence` | Choose the namespace according to whether the recurrence coefficient is fixed or time-varying. |
 | Evaluate a state-space system. | `philtorch.lti.state_space` or `philtorch.lpv.state_space` | Use `state_space_recursion` directly when only the internal state sequence is needed. |
@@ -222,7 +222,7 @@ The supported high-level interfaces are exported from [`philtorch.lti`](philtorc
 | Align two sequences, or measure their distance, by dynamic time warping. | `philtorch.align.dtw`, `philtorch.align.dtw_path`, or `philtorch.align.soft_dtw_divergence` | **CUDA GPUs only.** Takes any `(B, N, M)` cost, or features `x=`, `y=` of shapes `(B, N, F)` and `(B, M, F)` for their squared Euclidean distances, computed in the kernels (in memory linear in N + M, but for soft-DTW's gradient); `gamma=0` for DTW, positive for soft-DTW. Symmetric, asymmetric or orthogonal steps, padded lengths and, from features, a Sakoe-Chiba band. The gradient with respect to the cost is the alignment. |
 | Train a sequence model on unsegmented targets with the CTC loss, or align targets to frames. | `philtorch.align.ctc_loss` or `philtorch.align.forced_align` | **CUDA GPUs only.** The arguments of `torch.nn.functional.ctc_loss`, batch first: `(N, T, C)` log-probabilities, padded or concatenated targets, the same reductions. Faster than `torch.nn.functional.ctc_loss` on long inputs with targets of up to about 60 labels, and differentiable to any order. |
 | Infer or decode the states of a hidden Markov model. | `philtorch.estimation.hmm_filter`, `philtorch.estimation.hmm_smoother`, or `philtorch.estimation.hmm_viterbi` | **CUDA GPUs only.** Log-probabilities in; transitions shared, time-varying, per signal, or both. Chunked parallel scans in Triton, differentiable to any order in reverse mode; the work grows as K³, so they suit small state spaces on long sequences. |
-| Fit a Kalman or hidden Markov model by expectation-maximization. | `philtorch.estimation.em` with `philtorch.estimation.kalman_em_step` or `philtorch.estimation.hmm_em_step` | Parameters shared by all signals or one per signal. `hmm_em_step` re-estimates the transitions and initial distribution and returns the posteriors for your emission model; **CUDA GPUs only.** |
+| Fit a Kalman or hidden Markov model by expectation-maximisation. | `philtorch.estimation.em` with `philtorch.estimation.kalman_em_step` or `philtorch.estimation.hmm_em_step` | Parameters shared by all signals or one per signal. `hmm_em_step` re-estimates the transitions and initial distribution and returns the posteriors for your emission model; **CUDA GPUs only.** |
 | Evaluate an LTI state-space system through eigendecomposition. | `philtorch.lti.diag_state_space` | Requires a diagonalisable `A`, or explicitly supplied `L`, `V`, and/or `Vinv`; diagonalisation failures propagate. |
 | Evaluate an LTI system whose states are delay lines, such as a feedback delay network. | `philtorch.lti.delay_state_space` | Computes `s[n + m] = A s[n] + B x[n]` and `y[n] = C s[n] + D x[n]`, with `s` the delay-line outputs. `delays` are positive integers, one per line; `B`, `C`, `D`, and `out_idx` follow `state_space`. `zi` holds each line's first `m_i` outputs, and `(y, zf)` is returned only when it is given. `absorption` adds a filter to each line, a cascade of second-order sections as in `sosfilt`, `(M, K, 5)`, or a gain, `(M,)`, placed by `absorption_position` after the delay (`"delay"`, the default), after `A` (`"matrix"`), or before `A` with the output unfiltered (`"feedback"`); with sections, `(y, zf, absorption_zf)` is returned when `zi` or `absorption_zi` is given. |
 | Apply an LTI comb filter or cubic-spline interpolation. | `philtorch.lti.comb_filter` or `philtorch.lti.cubic_spline` | These utilities are also part of the public LTI exports. |
@@ -230,7 +230,7 @@ The supported high-level interfaces are exported from [`philtorch.lti`](philtorc
 ## Comparison with `scipy.signal`
 
 PhilTorch functions take PyTorch tensors, support autograd and batching, and keep the input dtype and device.
-Coefficients are normalized so that `a0 = 1`: divide SciPy's `b` and `a` by `a[0]`, then pass `a[1:]` as the denominator, as in the [Quickstart](#quickstart) example.
+Coefficients are normalised so that `a0 = 1`: divide SciPy's `b` and `a` by `a[0]`, then pass `a[1:]` as the denominator, as in the [Quickstart](#quickstart) example.
 
 | SciPy | PhilTorch | Differences |
 | --- | --- | --- |
@@ -242,13 +242,13 @@ Coefficients are normalized so that `a0 = 1`: divide SciPy's `b` and `a` by `a[0
 | `dlsim` | `philtorch.lti.state_space` | Takes `A`, `B`, `C`, `D` tensors instead of a system object and returns the output, plus the final state when `zi` is given; no time vector or full state trajectory. `dimpulse` and `dstep` can be reproduced with explicit impulse or step inputs. |
 | — | `philtorch.lpv.lfilter`, `philtorch.lpv.fir`, `philtorch.lpv.allpole`, `philtorch.lpv.state_space` | Time-varying filters and state-space models whose coefficients carry a time dimension. |
 | — | `philtorch.lti.linear_recurrence`, `philtorch.lpv.linear_recurrence`, `state_space_recursion` | Differentiable scalar recurrences and internal state sequences. |
-| — | `philtorch.lti.diag_state_space` | State-space evaluation through the eigendecomposition of a diagonalizable `A`. |
+| — | `philtorch.lti.diag_state_space` | State-space evaluation through the eigendecomposition of a diagonalisable `A`. |
 | — | `philtorch.lti.comb_filter` | Delayed all-pole comb recurrence with a given coefficient and delay; it does not design filters like `iircomb`. |
 
 
 ## Performance
 
-Recursive filters are hard to parallelize, so PhilTorch implements custom C++ and CUDA kernels, with Metal ones for MPS.
+Recursive filters are hard to parallelise, so PhilTorch implements custom C++ and CUDA kernels, with Metal ones for MPS.
 With the default `unroll_factor=None`, the state-space paths (`lfilter`, `state_space`, and `state_space_recursion`) choose a kernel from the device, the dtype and the filter order, which is the state size `M`:
 
 | Device | LTI, M = 1 | LTI, M = 2 | LTI, M ≥ 3 | LPV, M = 1 | LPV, M = 2 | LPV, M = 3 | LPV, M ≥ 4 |

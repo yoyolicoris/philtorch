@@ -344,7 +344,7 @@ def diag_state_space(
     with :math:`\hat{B} = V^{-1} B` and :math:`\hat{C} = C V`. As
     :math:`\Lambda` is diagonal, the states are :math:`M` independent
     first-order recurrences. The outputs are those of :func:`state_space` for a
-    diagonalizable :math:`A`.
+    diagonalisable :math:`A`.
 
     Give the decomposition in one of these ways:
 

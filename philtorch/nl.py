@@ -256,7 +256,7 @@ def newton_solve(
 
     starting from :math:`y[-1] = \text{init}`, for all :math:`t` at once, as
     in `ParaRNN: Unlocking Parallel Training of Nonlinear RNNs for Large
-    Language Models`_ (Danieli et al., 2026): each Newton step linearizes
+    Language Models`_ (Danieli et al., 2026): each Newton step linearises
     :math:`f` about the current trajectory and solves the linear recurrence
     that results with :func:`philtorch.lpv.linear_recurrence` or
     :func:`philtorch.lpv.state_space_recursion`. A step makes one more

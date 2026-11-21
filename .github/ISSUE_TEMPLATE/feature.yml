@@ -20,8 +20,8 @@ body:
   - type: textarea
     id: proposal
     attributes:
-      label: Proposed behavior
-      description: Describe the intended API and observable behavior. Include tensor shapes, dtypes, devices, and numerical expectations when relevant.
+      label: Proposed behaviour
+      description: Describe the intended API and observable behaviour. Include tensor shapes, dtypes, devices, and numerical expectations when relevant.
     validations:
       required: true
 

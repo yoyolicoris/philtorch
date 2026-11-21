@@ -162,7 +162,7 @@ def cspline(
     """
     if lamb != 0.0:
         raise NotImplementedError(
-            "Regularization for cubic spline interpolation is not implemented."
+            "Regularisation for cubic spline interpolation is not implemented."
         )
     return _cubic_coeff(x, parallel_form, scipy_padding)
 

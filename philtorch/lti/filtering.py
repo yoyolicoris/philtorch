@@ -386,7 +386,7 @@ def lfilter(
             direct form I or its transpose. Default: ``"tdf2"``.
         backend (str, optional): ``"ssm"`` runs the filter as a state-space
             model of the :func:`~philtorch.mat.companion` matrix (see
-            :func:`state_space`). ``"diag_ssm"`` diagonalizes it and runs one
+            :func:`state_space`). ``"diag_ssm"`` diagonalises it and runs one
             first-order recurrence per pole (see :func:`diag_state_space`);
             it supports ``"df2"`` and ``"tdf2"`` only. Default: ``"ssm"``.
         **kwargs: passed to the backend: ``unroll_factor`` (see

@@ -155,7 +155,7 @@ def dtw(
             (1, 0) and (0, 1) only, so that every path has :math:`N + M - 1`
             cells. Default: ``"symmetric"``.
         diagonal_weight (float, optional): :math:`w > 0`, the weight of a
-            diagonal step's cost in the symmetric steps. 1 favors diagonal
+            diagonal step's cost in the symmetric steps. 1 favours diagonal
             paths, which sum fewer costs; 2 weighs each step's cost by how far
             it advances, :math:`\Delta n + \Delta m`, so that every path has
             the same total weight: the symmetric form of `Dynamic

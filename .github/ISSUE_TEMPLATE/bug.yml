@@ -1,5 +1,5 @@
 name: Bug report
-description: Report reproducible incorrect behavior or a regression in PhilTorch.
+description: Report reproducible incorrect behaviour or a regression in PhilTorch.
 title: "[Bug]: "
 labels:
   - bug
@@ -14,7 +14,7 @@ body:
     attributes:
       label: Summary
       description: What went wrong, and which PhilTorch API is affected?
-      placeholder: Describe the observed behavior and its impact.
+      placeholder: Describe the observed behaviour and its impact.
     validations:
       required: true
 
@@ -30,7 +30,7 @@ body:
   - type: textarea
     id: expected
     attributes:
-      label: Expected behavior
+      label: Expected behaviour
       description: What result did you expect?
     validations:
       required: true
@@ -38,7 +38,7 @@ body:
   - type: textarea
     id: actual
     attributes:
-      label: Actual behavior
+      label: Actual behaviour
       description: Include the complete error message, traceback, or relevant numerical output.
     validations:
       required: true

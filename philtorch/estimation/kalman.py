@@ -1,5 +1,5 @@
-"""Kalman filters and smoothers parallelized over time with associative scans,
-and their expectation-maximization step.
+"""Kalman filters and smoothers parallelised over time with associative scans,
+and their expectation-maximisation step.
 
 These follow Särkkä and García-Fernández, "Temporal parallelization of
 Bayesian smoothers" (IEEE Transactions on Automatic Control, 2021), and their
@@ -416,7 +416,7 @@ def kalman_smoother(
     E[n] \, \mathrm{Cov}(\mathbf{x}[n + 1] \mid \mathbf{y})`, with
     :math:`E[n]` the smoother's gain.
 
-    These are the expectations of the E-step of expectation-maximization;
+    These are the expectations of the E-step of expectation-maximisation;
     :func:`kalman_em_step` runs its closed-form M-step.
 
     Args:
@@ -469,7 +469,7 @@ def kalman_smoother(
 def kalman_em_step(
     y: Tensor, A: Tensor, C: Tensor, Q: Tensor, R: Tensor, m0: Tensor, P0: Tensor
 ) -> tuple[Tensor, tuple[Tensor, ...]]:
-    r"""Run one expectation-maximization step of :func:`kalman_filter`'s model.
+    r"""Run one expectation-maximisation step of :func:`kalman_filter`'s model.
 
     The E-step is :func:`kalman_smoother`. The M-step has a closed form, from
     `An Approach to Time Series Smoothing and Forecasting Using the EM

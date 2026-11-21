@@ -16,7 +16,7 @@
 
 - [ ] Relevant tests pass locally.
 - [ ] Formatting checks pass for changed Python files.
-- [ ] Documentation was updated for user-visible behavior changes.
+- [ ] Documentation was updated for user-visible behaviour changes.
 - [ ] Not applicable (explain below).
 
 ## Scope check

@@ -12,7 +12,7 @@ def em(
     max_iter: int = 100,
     tol: float = 1e-6,
 ) -> tuple[tuple, Tensor]:
-    r"""Fit a model by expectation-maximization, repeating one of its steps.
+    r"""Fit a model by expectation-maximisation, repeating one of its steps.
 
     Each call ``step(*params)`` runs an E-step and an M-step and returns the
     log-likelihood of :attr:`params`, of shape :math:`(B)`, and the new
@@ -22,7 +22,7 @@ def em(
     :attr:`tol`.
 
     Args:
-        step (Callable): one step of expectation-maximization.
+        step (Callable): one step of expectation-maximisation.
         params (tuple of Tensor): the initial parameters.
         max_iter (int, optional): the most steps to run. Default: 100.
         tol (float, optional): the least rise of the log-likelihood to go on.

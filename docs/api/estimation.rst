@@ -41,7 +41,7 @@ Hidden Markov models
    hmm_viterbi
    hmm_em_step
 
-Expectation-maximization
+Expectation-maximisation
 ------------------------
 
 .. autosummary::
