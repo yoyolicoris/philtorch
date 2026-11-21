@@ -50,7 +50,7 @@ Apply formatting only to files in the scope of your change.
 
 ## Spelling
 
-Write what users see in British English, with *-ise* spellings (*normalise*, *behaviour*, *centre*): public names, the docstrings of public functions, error and warning messages, and the documentation. Internal code, its comments and private names may mix spellings. Names and words from elsewhere keep theirs: those of PyTorch, NumPy and SciPy, such as `torch.nn.functional.normalize`, quotations, and the titles of cited papers.
+Write British English, with *-ise* spellings (*normalise*, *behaviour*, *centre*): names, docstrings, comments, messages and documentation. Some older comments and private names are still in American spelling; update them when a change touches that code, not in a pull request of their own. Names and words from elsewhere keep theirs: those of PyTorch, NumPy and SciPy, such as `torch.nn.functional.normalize`, quotations, and the titles of cited papers.
 
 ## Docstrings
 
