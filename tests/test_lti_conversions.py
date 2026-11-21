@@ -173,7 +173,7 @@ def test_sos2tf_matches_scipy(K, batched):
         np.testing.assert_allclose(got_a, expected_a[1:], atol=1e-12)
 
 
-@pytest.mark.parametrize("K", [1, 3])
+@pytest.mark.parametrize("K", [1, 5])
 def test_sos2ss_matches_sosfilt(K):
     np.random.seed(K)
     sos = torch.from_numpy(_random_sos(K=K))

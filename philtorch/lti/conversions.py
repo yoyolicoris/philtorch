@@ -946,8 +946,8 @@ def _merge_order(S: list[int], w: list[int]) -> list[list[int]]:
 def _cascade(models: list[tuple[Tensor, Tensor, Tensor, Tensor]]) -> tuple[Tensor, ...]:
     """Combine lifted models (a, b, c, d) in cascade, merging in the order of fewest multiplies.
 
-    Each merge is one batched matmul per group of equal shapes; the state matrix is written
-    once, from the models' blocks and the merges' lower-left blocks. Returns A, B, C and D.
+    Each level of merges runs one batched matmul per group of equal shapes. Returns A, B, C
+    and D.
     """
     K = len(models)
     Ms = [a.size(-1) for a, *_ in models]
@@ -970,45 +970,27 @@ def _cascade(models: list[tuple[Tensor, Tensor, Tensor, Tensor]]) -> tuple[Tenso
         levels.extend([] for _ in range(level[i, j] - len(levels)))
         levels[level[i, j] - 1].append((i, k, j))
 
-    N = S[-1]
-    lead = models[0][0].shape[:-2]
-
-    def block(rows, cols, h, w):  # flat indices of h x w blocks with these top-left corners
-        r = torch.tensor(rows)[:, None, None] + torch.arange(h)[:, None]
-        return ((r * N + torch.tensor(cols)[:, None, None]) + torch.arange(w)).reshape(-1)
-
-    nodes = {(t, t + 1): m[1:] for t, m in enumerate(models)}
-    vals, idx, by_size = [], [], {}
-    for t, M in enumerate(Ms):
-        by_size.setdefault(M, []).append(t)
-    for M, group in by_size.items():
-        vals.append(torch.stack([models[t][0] for t in group], -3).flatten(-3))
-        idx.append(block([S[t] for t in group], [S[t] for t in group], M, M))
+    nodes = {(t, t + 1): m for t, m in enumerate(models)}
     for merges in levels:
         groups = {}
         for i, k, j in merges:
             key = (S[k] - S[i], S[j] - S[k], ws[i], ws[k], ws[j])
             groups.setdefault(key, []).append((i, k, j))
         for (m_l, m_r, *_), group in groups.items():
-            bl, cl, dl = (
+            al, bl, cl, dl = (
                 torch.stack(t, -3) for t in zip(*(nodes.pop((i, k)) for i, k, _ in group))
             )
-            br, cr, dr = (
+            ar, br, cr, dr = (
                 torch.stack(t, -3) for t in zip(*(nodes.pop((k, j)) for _, k, j in group))
             )
             prod = torch.cat([br, dr], -2) @ torch.cat([cl, dl], -1)
+            upper = torch.cat([al, al.new_zeros(*al.shape[:-1], m_r)], -1)
             parts = (
+                torch.cat([upper, torch.cat([prod[..., :m_r, :m_l], ar], -1)], -2),
                 torch.cat([bl, prod[..., :m_r, m_l:]], -2),
                 torch.cat([prod[..., m_r:, :m_l], cr], -1),
                 prod[..., m_r:, m_l:],
             )
             for (i, _, j), node in zip(group, zip(*(t.unbind(-3) for t in parts))):
                 nodes[i, j] = node
-            vals.append(prod[..., :m_r, :m_l].flatten(-3))
-            idx.append(block([S[k] for _, k, _ in group], [S[i] for i, _, _ in group], m_r, m_l))
-    A = (
-        models[0][0]
-        .new_zeros(*lead, N * N)
-        .index_copy(-1, torch.cat(idx).to(models[0][0].device), torch.cat(vals, -1))
-    )
-    return (A.reshape(*lead, N, N), *nodes[0, K])
+    return nodes[0, K]
