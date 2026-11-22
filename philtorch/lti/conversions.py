@@ -922,6 +922,12 @@ def cascade_ss(
 def _merge_order(S: list[int], w: list[int]) -> list[list[int]]:
     """The cheapest merge order of a cascade, by the matrix-chain DP.
 
+    The cost of a merge is not the matrix-chain cost: no state matrices
+    are multiplied, only the coupling block [B_R; D_R] @ [C_L, D_L],
+    (m_R + P) w (m_L + F) multiplies for the two sides' state counts m,
+    the left side's input width F, the right side's output width P and
+    the width w between them.
+
     S (K + 1) holds the prefix sums of the models' states and w (K + 1) the
     widths of the signals between them. Returns the table split, where
     split[i][j] is the split of the chain of models i to j - 1 of least cost,
