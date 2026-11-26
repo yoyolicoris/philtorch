@@ -37,7 +37,7 @@ helion = ">=1.0.0, <2"
 
 
 [target.osx-arm64.dependencies]
-pytorch-cpu = ">=2.13,<3"
+pytorch-cpu = ">=2.14,<3"
 
 [pypi-options]
 no-build-isolation = true
