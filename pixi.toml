@@ -2,7 +2,10 @@
 authors = ["Chin-Yun Yu <chin-yun.yu@qmul.ac.uk>"]
 channels = ["https://prefix.dev/conda-forge", "nvidia"]
 name = "philtorch"
-platforms = [{ platform = "linux-64", cuda = "13" }, "osx-arm64"]
+platforms = [
+    { subdir = "linux-64", cuda = { driver = "13", arch = "7.5" } },
+    "osx-arm64",
+]
 
 [dependencies]
 ninja = ">=1.13.2,<2"

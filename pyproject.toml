@@ -86,7 +86,7 @@ source = ["philtorch/", "*/site-packages/philtorch/"]
 
 [tool.ruff]
 # CI and pixi pin 0.16.9; formatting style can change between minor releases.
-required-version = ">=0.16,<0.17"
+required-version = ">=0.16,<0.18"
 line-length = 100
 target-version = "py311"
 extend-exclude = ["third_party"]
